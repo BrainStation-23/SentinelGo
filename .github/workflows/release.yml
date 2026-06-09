@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  GO_VERSION: '1.25.11'
+
+jobs:
+  # ── 1. Reuse the full CI pipeline ──────────────────────────────────────────
+  # Runs lint (all 3 OSes), security scan, tests (Linux/macOS/Windows), and a
+  # compile check for all 5 release targets. No logic is duplicated here.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # ── 2. Build release artifacts ─────────────────────────────────────────────
+  # One job, one runner. `make all` cross-compiles all 5 targets sequentially
+  # using the version tag injected via VERSION=. Uploads a single artifact
+  # bundle so the release job can attach everything to the GitHub Release.
+  build:
+    name: Build all platforms
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build all platforms
+        run: make all VERSION="${GITHUB_REF#refs/tags/}"
+
+      - name: Collect binaries into dist/
+        run: |
+          mkdir -p dist
+          cp build/windows/sentinelgo-windows-amd64.exe dist/
+          cp build/linux/sentinelgo-linux-amd64          dist/
+          cp build/linux/sentinelgo-linux-arm64           dist/
+          cp build/darwin/sentinelgo-darwin-amd64         dist/
+          cp build/darwin/sentinelgo-darwin-arm64         dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/
+
+  # ── 3. Publish GitHub Release ──────────────────────────────────────────────
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: artifacts
+
+      - name: Generate AI release notes
+        id: ai_notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURR_TAG="${GITHUB_REF#refs/tags/}"
+          PREV_TAG=$(git tag -l 'v[0-9]*' | sort -V | grep -v "^${CURR_TAG}$" | tail -1)
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "${PREV_TAG}..${CURR_TAG}" --pretty=format:"- %s" | head -60)
+          else
+            COMMITS=$(git log --pretty=format:"- %s" | head -60)
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg curr "$CURR_TAG" \
+            --arg commits "$COMMITS" \
+            '{
+              model: "openai/gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content: "You are a technical writer creating release notes for SentinelGo, a cross-platform Go system monitoring agent (Linux, macOS, Windows). Write concise, user-focused release notes in markdown. Group into: Breaking Changes, New Features, Bug Fixes, Improvements. Omit empty sections. Use bullet points. Be brief."
+                },
+                {
+                  role: "user",
+                  content: ("Generate release notes for " + $curr + " from these commits:\n\n" + $commits)
+                }
+              ],
+              temperature: 0.3,
+              max_tokens: 800
+            }')
+
+          RESPONSE=$(curl -sf -X POST https://models.github.ai/inference/chat/completions \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "")
+
+          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null || echo "")
+
+          if [ -n "$NOTES" ]; then
+            {
+              echo "notes<<AIEOF"
+              echo "$NOTES"
+              echo "AIEOF"
+              echo "success=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        with:
+          body: ${{ steps.ai_notes.outputs.success == 'true' && steps.ai_notes.outputs.notes || '' }}
+          generate_release_notes: ${{ steps.ai_notes.outputs.success != 'true' }}
+          files: |
+            artifacts/sentinelgo-*
+            installation-doc/install.sh
+            installation-doc/install.bat
+            installation-doc/INSTALLATION.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

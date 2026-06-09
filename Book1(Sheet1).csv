@@ -1,0 +1,193 @@
+﻿Enterprise Security Audit Report,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Executive Summary,Audit Information,Audit Date,Completed,Info,5/19/2026,Maintain Regular Audits,PASS
+Executive Summary,Audit Information,Computer Name,Detected,Info,DESKTOP-01,None,PASS
+Executive Summary,Audit Information,Current User,Administrator,Info,Admin Session Active,Use Least Privilege if Possible,PASS
+Executive Summary,Security Score,Overall Security Score,92 / 100,Info,Security posture evaluated,Improve failed controls,GOOD
+Executive Summary,Compliance Grade,Overall Grade,EXCELLENT,Info,Enterprise Compliance,Maintain Configuration,PASS
+Security Product Detection,Antivirus Protection,Third-Party Antivirus,Detected,Warning,Kaspersky Internet Security,Verify policy compliance,WARNING
+Security Product Detection,Antivirus Protection,Microsoft Defender Antivirus,Enabled,Info,Defender Active,No Action Required,PASS
+Security Product Detection,Antivirus Protection,Real-Time Protection,Enabled,Info,Real-Time Monitoring Running,No Action Required,PASS
+Security Product Detection,Antivirus Protection,Tamper Protection,Disabled,Critical,Defender Tamper Protection OFF,Enable Immediately,FAIL
+Firewall Protection,Network Security,Domain Firewall,Enabled,Info,Domain Profile Protected,No Action Required,PASS
+Firewall Protection,Network Security,Private Firewall,Enabled,Info,Private Profile Protected,No Action Required,PASS
+Firewall Protection,Network Security,Public Firewall,Disabled,Critical,Public Network Exposed,Enable Public Firewall,FAIL
+Windows Update Status,Patch Compliance,Critical Updates Pending,2 Pending,Critical,Missing Security Updates,Install Immediately,FAIL
+Windows Update Status,Patch Compliance,Optional Updates Pending,4 Pending,Warning,Non-Critical Updates Available,Review & Install,WARNING
+Windows Update Status,Patch Compliance,Update Compliance,Non-Compliant,Critical,Device Not Fully Updated,Apply Missing Updates,FAIL
+Windows Update Status,Update Details,KB5039211,Pending,Critical,Windows Security Update,Install Update,FAIL
+Windows Update Status,Update Details,KB5039345,Pending,Warning,.NET Framework Update,Install if Required,WARNING
+Hardware & Boot Security,Platform Security,Secure Boot,Enabled,Info,UEFI Secure Boot Active,No Action Required,PASS
+Hardware & Boot Security,Platform Security,TPM Present,Yes,Info,TPM 2.0 Available,No Action Required,PASS
+Hardware & Boot Security,Platform Security,TPM Ready,Yes,Info,TPM Initialized,No Action Required,PASS
+Core Isolation & Exploit Protection,Exploit Protection,Memory Integrity,Disabled,Critical,Core Isolation Disabled,Enable Memory Integrity,FAIL
+Core Isolation & Exploit Protection,Exploit Protection,Device Guard,Enabled,Info,Virtualization Security Active,No Action Required,PASS
+BitLocker Encryption,Disk Encryption,C:\ Drive,Encrypted,Info,BitLocker Protection Enabled,No Action Required,PASS
+BitLocker Encryption,Disk Encryption,D:\ Drive,Not Encrypted,Critical,Data Drive Unprotected,Enable BitLocker,FAIL
+Account Protection,User Security,UAC Level,Secure,Info,Recommended UAC Configuration,No Action Required,PASS
+Account Protection,Password Policy,Minimum Password Length,8 Characters,Info,Password Policy Applied,Increase to 12+ Recommended,PASS
+App & Browser Control,Browser Protection,Microsoft SmartScreen,Enabled,Info,Web Protection Active,No Action Required,PASS
+Device Health & Startup,Performance & Security,Startup Programs,15 Programs,Warning,Too Many Startup Applications,Reduce Startup Items,WARNING
+Device Health & Startup,Device Health,System Performance,Healthy,Info,Normal Device Operation,Continue Monitoring,PASS
+Critical Issues,High Risk Findings,Public Firewall Disabled,Active Issue,Critical,System Exposed on Public Networks,Enable Firewall Immediately,FAIL
+Critical Issues,High Risk Findings,Memory Integrity Disabled,Active Issue,Critical,Reduced Kernel Protection,Enable Core Isolation,FAIL
+Critical Issues,High Risk Findings,Tamper Protection Disabled,Active Issue,Critical,Defender Can Be Modified,Enable Tamper Protection,FAIL
+Warning Findings,Medium Risk Findings,Third-Party Antivirus Detected,Warning,Warning,External AV Installed,Validate Vendor Compliance,WARNING
+Warning Findings,Medium Risk Findings,Excess Startup Programs,Warning,Warning,Startup Performance Impact,Disable Unnecessary Apps,WARNING
+Final Compliance Report,Security Compliance,Antivirus Compliance,PASS,Info,Antivirus Protection Active,Maintain Security Updates,PASS
+Final Compliance Report,Security Compliance,Firewall Compliance,FAIL,Critical,Public Firewall Disabled,Enable All Profiles,FAIL
+Final Compliance Report,Security Compliance,Windows Update Compliance,FAIL,Critical,Critical Updates Missing,Patch System Immediately,FAIL
+Final Compliance Report,Security Compliance,Hardware Security Compliance,PASS,Info,Secure Boot & TPM Enabled,Maintain Settings,PASS
+Final Compliance Report,Security Compliance,Encryption Compliance,WARNING,Warning,One Drive Unencrypted,Encrypt All Drives,WARNING
+Final Compliance Report,Security Compliance,Account Protection Compliance,PASS,Info,UAC & Password Policies Applied,Maintain Policies,PASS
+Final Compliance Report,Security Compliance,Browser Protection Compliance,PASS,Info,SmartScreen Enabled,Continue Monitoring,PASS
+,,,,,,,
+Ultimate-Windows-Security,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Executive Summary,Audit Information,Audit Date,Completed,Info,5/19/2026,Maintain Scheduled Audits,PASS
+Executive Summary,Security Assessment,Security Score,95 / 100,Info,Overall System Security Score,Maintain Secure Configuration,GOOD
+Executive Summary,Security Assessment,Overall Grade,EXCELLENT,Info,Enterprise Security Level,Continue Monitoring,PASS
+Virus & Threat Protection,Antivirus Security,Microsoft Defender Antivirus,Enabled,Info,Antivirus Engine Running,No Action Required,PASS
+Virus & Threat Protection,Antivirus Security,Real-Time Protection,Enabled,Info,Real-Time Monitoring Active,No Action Required,PASS
+Virus & Threat Protection,Antivirus Security,Tamper Protection,Enabled,Info,Security Settings Protected,No Action Required,PASS
+Virus & Threat Protection,Cloud Security,Cloud Protection,Enabled,Info,Cloud-Based Protection Active,No Action Required,PASS
+Firewall Protection,Network Security,Domain Firewall,Enabled,Info,Domain Network Protected,No Action Required,PASS
+Firewall Protection,Network Security,Private Firewall,Enabled,Info,Private Network Protected,No Action Required,PASS
+Firewall Protection,Network Security,Public Firewall,Enabled,Info,Public Network Protected,No Action Required,PASS
+Windows Update,Patch Management,Pending Updates,0,Info,System Fully Updated,Maintain Automatic Updates,PASS
+Windows Update,Patch Compliance,Update Status,Compliant,Info,No Missing Updates Found,Continue Monitoring,PASS
+Hardware Security,Platform Protection,Secure Boot,Enabled,Info,UEFI Secure Boot Active,No Action Required,PASS
+Hardware Security,Trusted Platform Module,TPM Present,Yes,Info,TPM Module Available,No Action Required,PASS
+Hardware Security,Trusted Platform Module,TPM Ready,Yes,Info,TPM Initialized and Ready,No Action Required,PASS
+Core Isolation & Exploit Protection,Virtualization Security,Memory Integrity,Enabled,Info,Kernel Memory Protection Active,No Action Required,PASS
+BitLocker Encryption,Disk Protection,C:\ Drive,Encrypted,Info,BitLocker Enabled on System Drive,No Action Required,PASS
+BitLocker Encryption,Disk Protection,D:\ Drive,Encrypted,Info,Data Drive Protected,No Action Required,PASS
+Account Protection,User Account Control,UAC Status,Secure,Info,Recommended UAC Configuration Applied,No Action Required,PASS
+Account Protection,Password Policy,Minimum Password Length,12 Characters,Info,Strong Password Policy Configured,Maintain Security Policy,PASS
+SmartScreen & Browser Control,Browser Protection,Microsoft SmartScreen,Enabled,Info,Web & App Reputation Protection Active,No Action Required,PASS
+Device Health & Startup,Startup Optimization,Startup Programs,8 Programs (Normal),Info,Startup Applications Within Recommended Range,Continue Monitoring,PASS
+Device Health & Startup,Device Performance,System Health,Healthy,Info,Device Operating Normally,No Action Required,PASS
+Final Security Report,Compliance Review,Antivirus Compliance,PASS,Info,Antivirus Security Operational,Maintain Updates,PASS
+Final Security Report,Compliance Review,Firewall Compliance,PASS,Info,All Firewall Profiles Enabled,Maintain Configuration,PASS
+Final Security Report,Compliance Review,Windows Update Compliance,PASS,Info,System Fully Patched,Continue Monitoring,PASS
+Final Security Report,Compliance Review,Hardware Security Compliance,PASS,Info,TPM & Secure Boot Enabled,Maintain Settings,PASS
+Final Security Report,Compliance Review,Encryption Compliance,PASS,Info,All Drives Encrypted,Maintain BitLocker Keys Securely,PASS
+Final Security Report,Compliance Review,Account Protection Compliance,PASS,Info,Secure UAC & Password Policy,Continue Monitoring,PASS
+Final Security Report,Compliance Review,Browser Protection Compliance,PASS,Info,SmartScreen Enabled,Maintain Security Policies,PASS
+Final Security Report,Compliance Review,Overall Security Compliance,PASS,Info,No Major Security Issues Found,Maintain Best Practices,PASS
+,,,,,,,
+Ultimate-Security-Audit,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Executive Summary,Audit Information,Audit Tool,PRODUCTION WINDOWS SECURITY AUDITOR v3.0,Info,Enterprise Ready Security Auditor,Maintain Scheduled Audits,PASS
+Executive Summary,Audit Information,Audit Execution,Run as Administrator,Info,Administrative Privileges Active,Continue Using Elevated Access,PASS
+Executive Summary,Security Assessment,Security Score,94 / 100,Info,Overall Security Posture Evaluated,Improve Warning Items,GOOD
+Executive Summary,Security Assessment,Overall Grade,EXCELLENT,Info,Enterprise Compliance Achieved,Maintain Secure Configuration,PASS
+Security Products Detection,Antivirus Security,Third-Party Antivirus,Detected,Warning,Third-Party Security Solution Installed,Verify Vendor Compliance,WARNING
+Security Products Detection,Antivirus Security,Third-Party AV Details,Active,Info,Kaspersky / Bitdefender / Norton Detected,Ensure Product is Updated,PASS
+Security Products Detection,Antivirus Security,Microsoft Defender Antivirus,Enabled,Info,Defender Antivirus Active,No Action Required,PASS
+Security Products Detection,Antivirus Security,Real-Time Protection,Enabled,Info,Real-Time Threat Monitoring Active,No Action Required,PASS
+Security Products Detection,Antivirus Security,Tamper Protection,Disabled,Warning,Defender Tamper Protection OFF,Enable Tamper Protection,WARNING
+Security Products Detection,Security Architecture,Primary Protection Source,Third-Party AV,Info,Microsoft Defender in Passive Mode,Verify Security Policies,PASS
+Firewall Protection,Network Security,Domain Firewall Profile,Enabled,Info,Domain Network Protected,No Action Required,PASS
+Firewall Protection,Network Security,Private Firewall Profile,Enabled,Info,Private Network Protected,No Action Required,PASS
+Firewall Protection,Network Security,Public Firewall Profile,Enabled,Info,Public Network Protected,No Action Required,PASS
+Windows Update Compliance,Patch Management,Windows Update Service,Operational,Info,Update Service Accessible,Continue Monitoring,PASS
+Windows Update Compliance,Patch Compliance,Critical Updates Pending,0,Info,No Critical Updates Missing,Maintain Automatic Updates,PASS
+Windows Update Compliance,Patch Compliance,Optional Updates Pending,2,Warning,Optional Feature Updates Available,Review and Install if Needed,WARNING
+Windows Update Compliance,Compliance Status,Update Compliance State,COMPLIANT,Info,System Fully Updated,Continue Patch Monitoring,PASS
+Hardware & Boot Security,Platform Security,Secure Boot,Enabled,Info,UEFI Secure Boot Active,No Action Required,PASS
+Hardware & Boot Security,Platform Security,TPM Present,Yes,Info,TPM 2.0 Available,No Action Required,PASS
+Hardware & Boot Security,Platform Security,TPM Ready,Yes,Info,TPM Initialized Successfully,No Action Required,PASS
+Core Isolation & Exploit Protection,Virtualization Security,Memory Integrity,Enabled,Info,Core Isolation Active,No Action Required,PASS
+Core Isolation & Exploit Protection,Exploit Mitigation,Device Guard,Enabled,Info,Virtualization-Based Security Active,Continue Monitoring,PASS
+BitLocker Encryption,Disk Encryption,C:\ Drive,Encrypted,Info,Operating System Drive Protected,No Action Required,PASS
+BitLocker Encryption,Disk Encryption,D:\ Drive,Encrypted,Info,Data Drive Encrypted,Maintain Recovery Keys Securely,PASS
+Account Protection,User Access Control,UAC Security Level,Secure,Info,Recommended UAC Policy Configured,No Action Required,PASS
+Account Protection,Password Policy,Minimum Password Length,12 Characters,Info,Strong Password Policy Applied,Maintain Password Standards,PASS
+SmartScreen & Browser Control,Browser Security,Microsoft SmartScreen,Enabled,Info,Web Reputation Protection Active,No Action Required,PASS
+SmartScreen & Browser Control,Browser Security,Application Reputation Filter,Enabled,Info,Malicious App Blocking Active,Continue Monitoring,PASS
+Device Health & Startup,Startup Optimization,Startup Programs,9 Programs (Normal),Info,Startup Load Within Recommended Range,Continue Monitoring,PASS
+Device Health & Startup,Device Health,Performance Status,Healthy,Info,No Major Device Health Issues Detected,Maintain System Maintenance,PASS
+Critical Issues,Security Findings,Critical Issues Count,0,Info,No Critical Security Issues Found,Continue Best Practices,PASS
+Warning Findings,Security Findings,Warning Count,2,Warning,Minor Security Recommendations Present,Review Recommendations,WARNING
+Warning Findings,Security Findings,Tamper Protection Disabled,Active Warning,Warning,Reduced Defender Hardening,Enable Tamper Protection,WARNING
+Warning Findings,Security Findings,Optional Updates Pending,Active Warning,Warning,Optional Updates Available,Install Recommended Updates,WARNING
+Final Security Report,Compliance Review,Antivirus Compliance,PASS,Info,Antivirus Security Operational,Maintain Signature Updates,PASS
+Final Security Report,Compliance Review,Firewall Compliance,PASS,Info,All Firewall Profiles Enabled,Continue Monitoring,PASS
+Final Security Report,Compliance Review,Windows Update Compliance,PASS,Info,No Critical Updates Missing,Maintain Automatic Updates,PASS
+Final Security Report,Compliance Review,Hardware Security Compliance,PASS,Info,Secure Boot & TPM Enabled,Maintain BIOS Security,PASS
+Final Security Report,Compliance Review,Encryption Compliance,PASS,Info,All Required Drives Encrypted,Maintain Recovery Keys,PASS
+Final Security Report,Compliance Review,Account Protection Compliance,PASS,Info,Secure UAC & Password Policy Applied,Continue Policy Enforcement,PASS
+Final Security Report,Compliance Review,Browser Protection Compliance,PASS,Info,SmartScreen Protection Active,Continue Monitoring,PASS
+Final Security Report,Compliance Review,Overall Enterprise Compliance,PASS,Info,Enterprise Security Baseline Achieved,Maintain Security Standards,PASS
+,,,,,,,
+Advanced-Security-Audit,,,,,,,
+,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Executive Summary,Audit Tool,ADVANCED WINDOWS SECURITY AUDITOR v2.1,Active,Info,PowerShell 5.1 Compatible Security Audit Script,Maintain Regular Execution,PASS
+Executive Summary,Execution Mode,Administrator Privileges,Enabled,Info,Script Running with Elevated Rights,Continue Running as Admin,PASS
+Executive Summary,Security Score,Overall Score,91 / 100,Info,System Security Evaluated Successfully,Improve Weak Areas,GOOD
+Executive Summary,Security Grade,Overall Grade,EXCELLENT,Info,Strong Security Posture,Maintain Configuration,PASS
+Virus & Threat Protection,Antivirus Protection,Microsoft Defender Antivirus,Enabled,Info,Antivirus Engine Active,No Action Required,PASS
+Virus & Threat Protection,Real-Time Protection,Live Protection,Enabled,Info,Continuous Threat Monitoring Active,No Action Required,PASS
+Virus & Threat Protection,Tamper Protection,Security Lock,Enabled,Info,Defender Settings Protected from Changes,Keep Enabled,PASS
+Virus & Threat Protection,Cloud Protection,Cloud-Based Defense,Enabled,Info,Cloud Threat Intelligence Active,No Action Required,PASS
+Firewall & Network Protection,Domain Firewall,Network Protection,Enabled,Info,Domain Network Secured,No Action Required,PASS
+Firewall & Network Protection,Private Firewall,Network Protection,Enabled,Info,Private Network Secured,No Action Required,PASS
+Firewall & Network Protection,Public Firewall,Network Protection,Enabled,Info,Public Network Secured,No Action Required,PASS
+Windows Update Status,Pending Updates,Update Compliance,0 Pending (Fully Updated),Info,System Fully Patched,Maintain Auto Updates,PASS
+Device Security,Secure Boot,Boot Security,Enabled,Info,UEFI Secure Boot Active,No Action Required,PASS
+Device Security,TPM,Trusted Platform Module,Present & Ready,Info,TPM 2.0 Initialized Successfully,No Action Required,PASS
+Device Security,Core Isolation,Memory Integrity,Enabled,Info,Kernel-Level Protection Active,Keep Enabled,PASS
+BitLocker Encryption,System Drive,C:\ Drive Encryption,Enabled,Info,OS Drive Fully Encrypted,Maintain Recovery Keys,PASS
+BitLocker Encryption,Data Drive,D:\ Drive Encryption,Enabled,Info,Data Drive Fully Encrypted,Maintain Encryption Policy,PASS
+UAC & Critical Services,User Account Control,UAC Level,Secure,Info,Administrative Approval Required for Changes,No Action Required,PASS
+UAC & Critical Services,WinDefend Service,Security Service,Running,Info,Microsoft Defender Service Active,No Action Required,PASS
+UAC & Critical Services,SecurityHealthService,Health Monitoring,Running,Info,Windows Security Health Service Active,No Action Required,PASS
+UAC & Critical Services,MpsSvc,Firewall Service,Running,Info,Windows Firewall Service Active,No Action Required,PASS
+Critical Issues,System Health,Critical Issues Count,0,Info,No Critical Security Issues Found,Maintain Security Best Practices,PASS
+Warning Findings,System Health,Warning Count,0,Info,No Security Warnings Detected,Continue Monitoring,PASS
+Final Security Report,Antivirus Compliance,Compliance Status,PASS,Info,Antivirus Fully Operational,Keep Updated,PASS
+Final Security Report,Firewall Compliance,Compliance Status,PASS,Info,All Firewall Profiles Active,Maintain Configuration,PASS
+Final Security Report,Update Compliance,Compliance Status,PASS,Info,System Fully Updated,Continue Patch Management,PASS
+Final Security Report,Device Security Compliance,Compliance Status,PASS,Info,"Secure Boot, TPM & Memory Integrity Enabled",Maintain Settings,PASS
+Final Security Report,Encryption Compliance,Compliance Status,PASS,Info,BitLocker Enabled on All Drives,Secure Recovery Keys,PASS
+Final Security Report,Service Health Compliance,Compliance Status,PASS,Info,All Critical Services Running,Monitor Continuously,PASS
+Recommendations,System Updates,Windows Update,Recommended,Recommendation,Ensure Continuous Patch Management,Enable Auto Updates,WARNING
+Recommendations,BIOS Security,Secure Boot,Recommended,Recommendation,Verify Secure Boot Enabled in Firmware,Keep Enabled,WARNING
+Recommendations,Disk Encryption,BitLocker,Recommended,Recommendation,Ensure Full Disk Encryption Across Drives,Maintain Encryption Policy,WARNING
+Recommendations,Maintenance,Monthly Audit,Recommended,Recommendation,Run Security Audit Regularly,Schedule Monthly Scan,INFO
+,,,,,,,
+Windows Security Status Checker,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Virus & Threat Protection,Antivirus,Microsoft Defender Antivirus,ON,Info,Antivirus engine active and running,Keep enabled and updated,PASS
+Virus & Threat Protection,Real-Time Protection,Live Protection,ON,Critical,Real-time monitoring active,Keep enabled,PASS
+Virus & Threat Protection,Behavior Monitor,Threat Behavior Analysis,ON,Info,Behavior monitoring active,Keep enabled,PASS
+Virus & Threat Protection,Tamper Protection,Defender Settings Lock,ON,Info,Tamper protection active,Keep enabled,PASS
+Account Protection,Credential Guard,Windows Credential Guard,Enabled,Warning,Credential Guard enabled,Verify Credential Guard & Windows Hello,PARTIAL
+Account Protection,Windows Hello / Credential Guard,User Authentication,Check manually,Warning,Needs manual verification in Windows Security,Open Windows Security app,MANUAL
+Firewall & Network Protection,Domain Firewall,Domain Network,ENABLED,Info,Domain network firewall active,Maintain configuration,PASS
+Firewall & Network Protection,Private Firewall,Private Network,ENABLED,Info,Private network firewall active,Maintain configuration,PASS
+Firewall & Network Protection,Public Firewall,Public Network,ENABLED,Info,Public network firewall active,Maintain configuration,PASS
+App & Browser Control,SmartScreen,App & File SmartScreen,ON,Info,SmartScreen protection active,Keep enabled,PASS
+Device Security,Secure Boot,UEFI Secure Boot,ENABLED,Critical,Secure Boot active,Ensure Secure Boot remains enabled,PASS
+Device Security,TPM,Trusted Platform Module Present,Yes,Info,TPM hardware present,Maintain TPM settings,PASS
+Device Security,TPM Ready,TPM Initialization Status,Yes,Info,TPM ready for encryption,Maintain TPM,PASS
+Device Security,Core Isolation,Memory Integrity,ENABLED,Critical,Kernel-level protection active,Keep Memory Integrity enabled,PASS
+Device Performance & Health,Storage Capacity,Disk Health,Manual Check,Info,Check via Windows Security,Verify storage and optimize,MANUAL
+Device Performance & Health,Startup Apps,Startup Program Management,Manual Check,Info,Needs manual review,Check startup apps in Windows Security,MANUAL
+Device Performance & Health,Recent Activity,Device Health,Manual Check,Info,Review manually,Open Windows Security app,MANUAL
+Summary,Overall Status,Security Compliance,COMPLIANT,Info,All major features enabled,Continue monitoring,PASS
+Summary,Issues Found,Non-compliance Alerts,0,Info,No major issues detected,Maintain current configuration,PASS
+Recommendations,General,Full Windows Security Check,Recommended,Info,Run as Administrator for complete status,Open Windows Security app,INFO
+,,,,,,,
+Windows Update Compliance Checker,,,,,,,
+,,,,,,,
+Audit Section,Check Category,Component / Feature,Current Status,Severity Level,Details / Result,Recommendation,Compliance
+Windows Update,Pending Updates,System Updates,COMPLIANT / NON-COMPLIANT,Critical,Device has 0 pending updates (COMPLIANT) or X pending updates (NON-COMPLIANT),Install all pending critical updates,PASS / FAIL
+Windows Update,Important Updates,Critical Updates,COMPLIANT / NON-COMPLIANT,Critical,Each update marked as Important or Optional; pending critical updates must be applied,Apply all Important updates immediately,PASS / FAIL
+Windows Update,Optional Updates,Optional Updates,INFO,Info,Optional updates pending may exist,Apply optional updates as needed,INFO
+Windows Update History,Recent Update History,Last 20 Updates,SUCCESS / FAILED / IN PROGRESS,Info / Warning / Critical,"Lists last 20 updates with status: Success, Failed, Aborted, In Progress, Not Started",Monitor failed updates and retry,PASS / FAIL
+Windows Update History,Failed Updates,Any Failed Updates,Failed,Critical,Updates that failed to install,Retry failed updates using Windows Update or WSUS,FAIL
+Windows Update History,Successful Updates,Successfully Installed Updates,Success,Info,Last updates installed successfully,Maintain regular update schedule,PASS
+Windows Update,Error Handling,Update Query,Error,Critical,Script may fail if not run as Administrator or COM object fails,Run script as Administrator,FAIL

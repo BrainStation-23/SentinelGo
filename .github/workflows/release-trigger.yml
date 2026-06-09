@@ -1,0 +1,75 @@
+name: Trigger Release
+
+# HOW THIS WORKS
+# ──────────────
+# GitHub blocks workflows that use GITHUB_TOKEN from triggering other
+# workflows (loop-prevention). So if we push a tag with GITHUB_TOKEN,
+# release.yml's `on: push: tags: v*` never fires.
+#
+# Fix: push the tag with a PAT (Personal Access Token). A PAT push IS
+# treated as a real user push and DOES trigger downstream workflows.
+#
+# REQUIRED SECRET: RELEASE_PAT
+#   Go to GitHub → Settings → Developer settings → Personal access tokens
+#   → Fine-grained tokens → Generate new token
+#   Set: Repository access → this repo only
+#   Permissions: Contents → Read and write
+#   Then add it at: repo → Settings → Secrets and variables → Actions
+#   Name: RELEASE_PAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Explicit version override (e.g. v3.0.0) — leave empty to use bump'
+        required: false
+
+jobs:
+  create-tag:
+    name: Compute version and push tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use PAT so the subsequent tag push is treated as a real user
+          # event and triggers release.yml's `on: push: tags` handler.
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Compute next version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            LATEST=$(git tag -l 'v[0-9]*' | sort -V | tail -1)
+            [ -z "$LATEST" ] && LATEST="v0.0.0"
+            VER=${LATEST#v}
+            IFS='.' read -r MAJ MIN PAT <<< "$VER"
+            case "${{ inputs.bump }}" in
+              major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
+              minor) MIN=$((MIN+1)); PAT=0 ;;
+              patch) PAT=$((PAT+1)) ;;
+            esac
+            echo "tag=v$MAJ.$MIN.$PAT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.ver.outputs.tag }}
+          git push origin ${{ steps.ver.outputs.tag }}
+          echo "Tagged and pushed ${{ steps.ver.outputs.tag }}"
