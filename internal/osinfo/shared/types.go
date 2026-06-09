@@ -96,14 +96,17 @@ type OSLastBootTime struct {
 }
 
 type OSInformation struct {
-	OSName         string         `json:"os_name"`
-	OSVersion      string         `json:"os_version"`
-	OSType         string         `json:"os_type"`
-	OSServicePack  string         `json:"os_service_pack"`
-	Architecture   string         `json:"architecture"`
-	OSPlatform     string         `json:"os_platform"`
-	OSTimeZone     string         `json:"os_time_zone"`
-	OSLastBootTime OSLastBootTime `json:"os_last_boot_time"`
+	OSName                  string         `json:"os_name"`
+	OSVersion               string         `json:"os_version"`
+	OSType                  string         `json:"os_type"`
+	OSServicePack           string         `json:"os_service_pack"`
+	Architecture            string         `json:"architecture"`
+	OSPlatform              string         `json:"os_platform"`
+	OSLocale                string         `json:"os_locale,omitempty"`
+	OSLanguage              string         `json:"os_language,omitempty"`
+	OSTimeZone              string         `json:"os_time_zone"`
+	OSTimeZoneOffsetMinutes int            `json:"os_time_zone_offset_minutes"`
+	OSLastBootTime          OSLastBootTime `json:"os_last_boot_time"`
 }
 
 type RAMStick struct {

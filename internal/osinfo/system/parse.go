@@ -95,6 +95,35 @@ func parseWindowsOSInfoJSON(output string) (name, version, build string) {
 	return
 }
 
+// parseWindowsOSInfoExtendedJSON parses the comprehensive Windows OS info JSON produced by
+// a single PowerShell command that combines Win32_OperatingSystem, the CurrentVersion
+// registry hive (for UBR and DisplayVersion), timezone, and locale.
+//
+// Expected keys: Caption, Version (already includes UBR suffix), DisplayVersion,
+// Locale, Language, TimeZoneId, TimeZoneOffset (int minutes from UTC).
+func parseWindowsOSInfoExtendedJSON(output string) (name, version, displayVersion, locale, language, tzID string, tzOffset int) {
+	var result map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &result); err != nil {
+		return
+	}
+	getString := func(key string) string {
+		if v, ok := result[key].(string); ok {
+			return strings.TrimSpace(v)
+		}
+		return ""
+	}
+	name = getString("Caption")
+	version = getString("Version")
+	displayVersion = getString("DisplayVersion")
+	locale = getString("Locale")
+	language = getString("Language")
+	tzID = getString("TimeZoneId")
+	if v, ok := result["TimeZoneOffset"].(float64); ok {
+		tzOffset = int(v)
+	}
+	return
+}
+
 // parseOSReleaseContent parses /etc/os-release and returns the pretty name and version.
 // Both quoted and unquoted values are handled.
 func parseOSReleaseContent(content string) (name, version string) {
