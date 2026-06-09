@@ -121,6 +121,9 @@ func TestLoggingIntegration(t *testing.T) {
 
 // TestSoftwareService tests the software service
 func TestSoftwareService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping software collection (real OS shell-outs) in -short mode")
+	}
 	// Create software service
 	softwareService := swsvc.NewSoftwareService()
 
