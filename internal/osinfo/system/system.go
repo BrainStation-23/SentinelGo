@@ -63,8 +63,9 @@ func osInfoBase() shared.OSInformation {
 	osInfo.Architecture = arch
 	osInfo.OSPlatform = runtime.GOOS
 
-	tz, _ := time.Now().Zone()
+	tz, tzOffsetSecs := time.Now().Zone()
 	osInfo.OSTimeZone = tz
+	osInfo.OSTimeZoneOffsetMinutes = tzOffsetSecs / 60
 
 	var bootTime time.Time
 	if hInfo, err := host.Info(); err == nil && hInfo.BootTime > 0 {

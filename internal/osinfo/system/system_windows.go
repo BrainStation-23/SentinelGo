@@ -106,10 +106,47 @@ func getChassisType() string {
 
 func getOSInformation() shared.OSInformation {
 	osInfo := osInfoBase()
-	if out, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
-		"Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json"); err == nil {
-		osInfo.OSName, osInfo.OSVersion, osInfo.OSServicePack = parseWindowsOSInfoJSON(out)
+
+	// Single PowerShell call: combines Win32_OperatingSystem, the registry CurrentVersion
+	// hive (for UBR = Update Build Revision and DisplayVersion e.g. "25H2"), timezone,
+	// locale, and UI language — avoids multiple subprocess round-trips.
+	const ps = `$os = Get-CimInstance Win32_OperatingSystem;` +
+		`$reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion';` +
+		`$tz = Get-TimeZone;` +
+		`[PSCustomObject]@{` +
+		`Caption=''+$os.Caption;` +
+		`Version=''+$os.Version+'.'+$reg.UBR;` +
+		`DisplayVersion=''+$reg.DisplayVersion;` +
+		`Locale=(Get-WinSystemLocale).Name;` +
+		`Language=(Get-UICulture).Name;` +
+		`TimeZoneId=$tz.Id;` +
+		`TimeZoneOffset=[int]$tz.BaseUtcOffset.TotalMinutes` +
+		`} | ConvertTo-Json -Compress`
+
+	if out, err := shared.RunCommand("powershell", "-NoProfile", "-Command", ps); err == nil {
+		name, version, displayVer, locale, language, tzID, tzOffset :=
+			parseWindowsOSInfoExtendedJSON(out)
+		if name != "" {
+			osInfo.OSName = name
+		}
+		if version != "" {
+			osInfo.OSVersion = version
+		}
+		if displayVer != "" {
+			osInfo.OSServicePack = displayVer
+		}
+		if locale != "" {
+			osInfo.OSLocale = locale
+		}
+		if language != "" {
+			osInfo.OSLanguage = language
+		}
+		if tzID != "" {
+			osInfo.OSTimeZone = tzID
+			osInfo.OSTimeZoneOffsetMinutes = tzOffset
+		}
 	}
+
 	osInfo.OSType = "Microsoft Windows"
 	if osInfo.OSName == "" {
 		osInfo.OSName = "windows"

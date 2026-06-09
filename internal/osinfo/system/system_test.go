@@ -165,6 +165,103 @@ func TestParseWindowsOSInfoJSON_Invalid(t *testing.T) {
 	}
 }
 
+// ── parseWindowsOSInfoExtendedJSON ────────────────────────────────────────────
+
+const winOSInfoExtendedJSON = `{
+  "Caption":        "Microsoft Windows 11 Enterprise",
+  "Version":        "10.0.26200.8524",
+  "DisplayVersion": "25H2",
+  "Locale":         "en-US",
+  "Language":       "en-US",
+  "TimeZoneId":     "Bangladesh Standard Time",
+  "TimeZoneOffset": 360
+}`
+
+func TestParseWindowsOSInfoExtendedJSON(t *testing.T) {
+	name, version, displayVer, locale, language, tzID, tzOffset :=
+		parseWindowsOSInfoExtendedJSON(winOSInfoExtendedJSON)
+
+	if name != "Microsoft Windows 11 Enterprise" {
+		t.Errorf("name = %q, want 'Microsoft Windows 11 Enterprise'", name)
+	}
+	if version != "10.0.26200.8524" {
+		t.Errorf("version = %q, want '10.0.26200.8524'", version)
+	}
+	if displayVer != "25H2" {
+		t.Errorf("displayVersion = %q, want '25H2'", displayVer)
+	}
+	if locale != "en-US" {
+		t.Errorf("locale = %q, want 'en-US'", locale)
+	}
+	if language != "en-US" {
+		t.Errorf("language = %q, want 'en-US'", language)
+	}
+	if tzID != "Bangladesh Standard Time" {
+		t.Errorf("tzID = %q, want 'Bangladesh Standard Time'", tzID)
+	}
+	if tzOffset != 360 {
+		t.Errorf("tzOffset = %d, want 360", tzOffset)
+	}
+}
+
+func TestParseWindowsOSInfoExtendedJSON_NegativeOffset(t *testing.T) {
+	// UTC-5 (e.g. Eastern Standard Time)
+	const input = `{"Caption":"Windows 11","Version":"10.0.22631.1000","DisplayVersion":"23H2",` +
+		`"Locale":"en-US","Language":"en-US","TimeZoneId":"Eastern Standard Time","TimeZoneOffset":-300}`
+	_, _, _, _, _, tzID, tzOffset := parseWindowsOSInfoExtendedJSON(input)
+	if tzID != "Eastern Standard Time" {
+		t.Errorf("tzID = %q, want 'Eastern Standard Time'", tzID)
+	}
+	if tzOffset != -300 {
+		t.Errorf("tzOffset = %d, want -300", tzOffset)
+	}
+}
+
+func TestParseWindowsOSInfoExtendedJSON_MissingFields(t *testing.T) {
+	name, version, displayVer, locale, language, tzID, tzOffset :=
+		parseWindowsOSInfoExtendedJSON(`{"Caption":"Windows 10"}`)
+	if name != "Windows 10" {
+		t.Errorf("name = %q, want 'Windows 10'", name)
+	}
+	if version != "" || displayVer != "" || locale != "" || language != "" || tzID != "" {
+		t.Errorf("absent string fields should be empty: version=%q displayVer=%q locale=%q language=%q tzID=%q",
+			version, displayVer, locale, language, tzID)
+	}
+	if tzOffset != 0 {
+		t.Errorf("absent tzOffset should be 0, got %d", tzOffset)
+	}
+}
+
+func TestParseWindowsOSInfoExtendedJSON_InvalidJSON(t *testing.T) {
+	name, version, displayVer, locale, language, tzID, tzOffset :=
+		parseWindowsOSInfoExtendedJSON("not json")
+	if name != "" || version != "" || displayVer != "" || locale != "" ||
+		language != "" || tzID != "" || tzOffset != 0 {
+		t.Error("expected all zero values for invalid JSON")
+	}
+}
+
+func TestParseWindowsOSInfoExtendedJSON_CompressedOutput(t *testing.T) {
+	// ConvertTo-Json -Compress emits a single line — verify parser handles it.
+	const input = `{"Caption":"Microsoft Windows 11 Pro","Version":"10.0.22631.4169","DisplayVersion":"23H2","Locale":"fr-FR","Language":"fr-FR","TimeZoneId":"Romance Standard Time","TimeZoneOffset":60}`
+	name, version, _, locale, _, tzID, tzOffset := parseWindowsOSInfoExtendedJSON(input)
+	if name != "Microsoft Windows 11 Pro" {
+		t.Errorf("name = %q", name)
+	}
+	if version != "10.0.22631.4169" {
+		t.Errorf("version = %q", version)
+	}
+	if locale != "fr-FR" {
+		t.Errorf("locale = %q", locale)
+	}
+	if tzID != "Romance Standard Time" {
+		t.Errorf("tzID = %q", tzID)
+	}
+	if tzOffset != 60 {
+		t.Errorf("tzOffset = %d, want 60", tzOffset)
+	}
+}
+
 // ── parseOSReleaseContent ─────────────────────────────────────────────────────
 
 const osReleaseSample = `NAME="Ubuntu"
@@ -384,8 +481,10 @@ func TestGetOSInformation_Integration(t *testing.T) {
 	}
 
 	info := GetOSInformation()
-	t.Logf("OSType=%q OSName=%q OSVersion=%q OSPlatform=%q Architecture=%q",
-		info.OSType, info.OSName, info.OSVersion, info.OSPlatform, info.Architecture)
+	t.Logf("OSType=%q OSName=%q OSVersion=%q OSServicePack=%q OSPlatform=%q Architecture=%q",
+		info.OSType, info.OSName, info.OSVersion, info.OSServicePack, info.OSPlatform, info.Architecture)
+	t.Logf("OSLocale=%q OSLanguage=%q OSTimeZone=%q OSTimeZoneOffsetMinutes=%d",
+		info.OSLocale, info.OSLanguage, info.OSTimeZone, info.OSTimeZoneOffsetMinutes)
 
 	if info.OSType == "" {
 		t.Error("OSType is empty")
@@ -398,6 +497,9 @@ func TestGetOSInformation_Integration(t *testing.T) {
 	}
 	if info.OSPlatform == "" {
 		t.Error("OSPlatform is empty")
+	}
+	if info.OSTimeZone == "" {
+		t.Error("OSTimeZone is empty")
 	}
 }
 
