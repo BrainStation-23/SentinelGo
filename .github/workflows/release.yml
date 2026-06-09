@@ -9,6 +9,7 @@ permissions:
   contents: write
   pull-requests: write
   models: read
+  security-events: write
 
 env:
   GO_VERSION: '1.25.11'
