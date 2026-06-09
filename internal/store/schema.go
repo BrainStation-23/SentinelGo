@@ -14,6 +14,11 @@ type Migration struct {
 // CurrentVersion returns the schema version stored in the database.
 // Returns 0 if the schema_version table does not exist or is empty.
 func CurrentVersion(db *sql.DB) (int, error) {
+	// Use WAL mode for better concurrency on Windows
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		return 0, fmt.Errorf("set WAL mode: %w", err)
+	}
+
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return 0, fmt.Errorf("ensure schema_version table: %w", err)
 	}
