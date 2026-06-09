@@ -152,27 +152,38 @@ type GPU struct {
 	CurrentStatus string `json:"current_status"`
 }
 
-type NetAdapterIPv4 struct {
+type IPv4Address struct {
 	Address    string `json:"address"`
 	Subnet     string `json:"subnet"`
 	SubnetMask string `json:"subnet_mask"`
+	IsDHCP     bool   `json:"is_dhcp"`
 }
 
-type NetAdapterIPv6 struct {
-	Address    string `json:"address"`
-	Subnet     string `json:"subnet"`
-	SubnetMask string `json:"subnet_mask"`
+type IPv6Address struct {
+	Address   string `json:"address"`
+	PrefixLen int    `json:"prefix_len"`
+}
+
+type WiFiInfo struct {
+	SSID           string `json:"ssid"`
+	SignalStrength int    `json:"signal_strength_dbm"`
+	FrequencyBand  string `json:"frequency_band"`
 }
 
 type NetAdapter struct {
-	Type           string         `json:"type"`
-	ConnectionName string         `json:"connection_name"`
-	Description    string         `json:"description"`
-	Manufacturer   string         `json:"manufacturer"`
-	MACAddress     string         `json:"mac_address"`
-	IPv4           NetAdapterIPv4 `json:"ipv4,omitempty"`
-	IPv6           NetAdapterIPv6 `json:"ipv6,omitempty"`
-	IsConnected    bool           `json:"is_connected"`
+	InterfaceName  string        `json:"interface_name"`
+	FriendlyName   string        `json:"friendly_name"`
+	AdapterType    string        `json:"adapter_type"`
+	Status         string        `json:"status"`
+	IsConnected    bool          `json:"is_connected"`
+	MACAddress     string        `json:"mac_address"`
+	Manufacturer   string        `json:"manufacturer"`
+	SpeedMbps      int64         `json:"speed_mbps"`
+	IPv4Addresses  []IPv4Address `json:"ipv4_addresses,omitempty"`
+	IPv6Addresses  []IPv6Address `json:"ipv6_addresses,omitempty"`
+	DefaultGateway string        `json:"default_gateway,omitempty"`
+	DNSServers     []string      `json:"dns_servers,omitempty"`
+	WiFi           *WiFiInfo     `json:"wifi,omitempty"`
 }
 
 type AudioDevice struct {

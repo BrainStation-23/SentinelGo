@@ -71,10 +71,14 @@ func TestNewAgentService(t *testing.T) {
 	}
 }
 
-func TestNewAgentService_Nil(t *testing.T) {
-	svc := agent.NewAgentService()
-	if svc == nil {
+func TestNewAgentService_IndependentInstances(t *testing.T) {
+	svc1 := agent.NewAgentService()
+	svc2 := agent.NewAgentService()
+	if svc1 == nil || svc2 == nil {
 		t.Fatal("NewAgentService() returned nil")
+	}
+	if svc1 == svc2 {
+		t.Error("NewAgentService() should return independent instances, not a singleton")
 	}
 }
 

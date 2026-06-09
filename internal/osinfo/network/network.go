@@ -1,7 +1,6 @@
 package network
 
 import (
-	"fmt"
 	stdnet "net"
 	"strings"
 
@@ -11,63 +10,87 @@ import (
 )
 
 func Get() []shared.NetAdapter {
-	var adapters []shared.NetAdapter
-
 	ifaces, err := psnet.Interfaces()
 	if err != nil {
-		return adapters
+		return nil
 	}
-
-	wifiDevices := getWiFiDevices()
-
+	var adapters []shared.NetAdapter
 	for _, iface := range ifaces {
-		if isLoopback(iface) {
-			continue
+		if !isLoopback(iface) {
+			adapters = append(adapters, buildAdapter(iface))
 		}
-
-		adapter := shared.NetAdapter{
-			Type:         "Physical",
-			Description:  iface.Name,
-			Manufacturer: getAdapterManufacturer(iface.Name),
-			MACAddress:   iface.HardwareAddr,
-		}
-
-		for _, flag := range iface.Flags {
-			if strings.ToLower(flag) == "up" {
-				adapter.IsConnected = true
-				break
-			}
-		}
-
-		for _, addr := range iface.Addrs {
-			cidr := addr.Addr
-			ip, ipNet, err := stdnet.ParseCIDR(cidr)
-			if err != nil {
-				ip = stdnet.ParseIP(cidr)
-				if ip == nil {
-					continue
-				}
-			}
-			if ip.To4() != nil {
-				adapter.IPv4 = shared.NetAdapterIPv4{Address: ip.String()}
-				if ipNet != nil {
-					adapter.IPv4.SubnetMask = stdnet.IP(ipNet.Mask).String()
-					adapter.IPv4.Subnet = ipNet.IP.String()
-				}
-			} else if ip.To16() != nil {
-				adapter.IPv6 = shared.NetAdapterIPv6{Address: ip.String()}
-				if ipNet != nil {
-					ones, _ := ipNet.Mask.Size()
-					adapter.IPv6.SubnetMask = fmt.Sprintf("%d", ones)
-					adapter.IPv6.Subnet = ipNet.IP.String()
-				}
-			}
-		}
-
-		adapter.ConnectionName = resolveConnectionName(iface.Name, wifiDevices)
-		adapters = append(adapters, adapter)
 	}
 	return adapters
+}
+
+func buildAdapter(iface psnet.InterfaceStat) shared.NetAdapter {
+	isUp := hasFlag(iface, "up")
+	ipv4s, ipv6s, hasRoutableIPv4 := parseAddresses(iface.Addrs)
+	adapterType := getAdapterType(iface.Name)
+
+	a := shared.NetAdapter{
+		InterfaceName:  iface.Name,
+		FriendlyName:   getFriendlyName(iface.Name),
+		AdapterType:    adapterType,
+		Status:         adapterStatus(isUp),
+		IsConnected:    isUp && hasRoutableIPv4,
+		MACAddress:     iface.HardwareAddr,
+		Manufacturer:   getAdapterManufacturer(iface.Name),
+		SpeedMbps:      getSpeedMbps(iface.Name),
+		IPv4Addresses:  ipv4s,
+		IPv6Addresses:  ipv6s,
+		DefaultGateway: getDefaultGateway(iface.Name),
+		DNSServers:     getDNSServers(iface.Name),
+	}
+	if adapterType == "WiFi" {
+		a.WiFi = getWiFiInfo(iface.Name)
+	}
+	return a
+}
+
+func adapterStatus(isUp bool) string {
+	if isUp {
+		return "Up"
+	}
+	return "Down"
+}
+
+func parseAddresses(addrs []psnet.InterfaceAddr) (ipv4s []shared.IPv4Address, ipv6s []shared.IPv6Address, hasRoutableIPv4 bool) {
+	for _, addr := range addrs {
+		ip, ipNet, err := stdnet.ParseCIDR(addr.Addr)
+		if err != nil {
+			ip = stdnet.ParseIP(addr.Addr)
+			if ip == nil {
+				continue
+			}
+		}
+		if ip.To4() != nil {
+			ipv4s = append(ipv4s, makeIPv4Entry(ip, ipNet))
+			if !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				hasRoutableIPv4 = true
+			}
+		} else if ip.To16() != nil {
+			ipv6s = append(ipv6s, makeIPv6Entry(ip, ipNet))
+		}
+	}
+	return
+}
+
+func makeIPv4Entry(ip stdnet.IP, ipNet *stdnet.IPNet) shared.IPv4Address {
+	entry := shared.IPv4Address{Address: ip.String()}
+	if ipNet != nil {
+		entry.SubnetMask = stdnet.IP(ipNet.Mask).String()
+		entry.Subnet = ipNet.IP.String()
+	}
+	return entry
+}
+
+func makeIPv6Entry(ip stdnet.IP, ipNet *stdnet.IPNet) shared.IPv6Address {
+	entry := shared.IPv6Address{Address: ip.String()}
+	if ipNet != nil {
+		entry.PrefixLen, _ = ipNet.Mask.Size()
+	}
+	return entry
 }
 
 func GetPrimaryMACAddress(netInterfaces []psnet.InterfaceStat) string {
@@ -80,8 +103,13 @@ func GetPrimaryMACAddress(netInterfaces []psnet.InterfaceStat) string {
 }
 
 func isLoopback(iface psnet.InterfaceStat) bool {
-	for _, flag := range iface.Flags {
-		if strings.ToLower(flag) == "loopback" {
+	return hasFlag(iface, "loopback")
+}
+
+func hasFlag(iface psnet.InterfaceStat, flag string) bool {
+	flagL := strings.ToLower(flag)
+	for _, f := range iface.Flags {
+		if strings.ToLower(f) == flagL {
 			return true
 		}
 	}
