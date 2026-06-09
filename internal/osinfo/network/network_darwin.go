@@ -20,17 +20,17 @@ func hardwarePortMap() (friendlyNames map[string]string, serviceNames map[string
 func parseHardwarePorts(output string) (friendlyNames map[string]string, serviceNames map[string]string) {
 	friendlyNames = make(map[string]string)
 	serviceNames = make(map[string]string)
-	var currentPort, currentDev string
+	var currentPort string
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Hardware Port:") {
 			currentPort = strings.TrimSpace(strings.TrimPrefix(line, "Hardware Port:"))
-			currentDev = ""
 		} else if strings.HasPrefix(line, "Device:") {
-			currentDev = strings.TrimSpace(strings.TrimPrefix(line, "Device:"))
-			if currentDev != "" && currentPort != "" {
-				friendlyNames[currentDev] = currentPort
-				serviceNames[currentDev] = currentPort
+			dev := strings.TrimSpace(strings.TrimPrefix(line, "Device:"))
+			if dev != "" && currentPort != "" {
+				friendlyNames[dev] = currentPort
+				serviceNames[dev] = currentPort
+				currentPort = "" // consumed; prevent pairing with the next device line
 			}
 		}
 	}
