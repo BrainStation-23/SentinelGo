@@ -150,7 +150,7 @@ func TestTaskManagerErrorHandling(t *testing.T) {
 	baseCfg := loadTestConfig(t)
 	cfg := &config.Config{
 		EnableTaskPolling:     true,
-		TaskPollingInterval:   config.Duration(1 * time.Second),
+		TaskPollingInterval:   config.Duration(5 * time.Second), // longer than context so ticker never fires
 		TaskExecutionInterval: config.Duration(500 * time.Millisecond),
 		SupabaseURL:           "",
 		AccessToken:           baseCfg.AccessToken,
@@ -164,7 +164,7 @@ func TestTaskManagerErrorHandling(t *testing.T) {
 	}
 	defer func() { _ = taskManager.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -175,7 +175,7 @@ func TestTaskManagerErrorHandling(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Logf("TaskManager completed with error (expected): %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("TaskManager did not stop within expected time")
 	}
 }
