@@ -89,10 +89,6 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: security
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
