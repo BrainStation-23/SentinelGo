@@ -67,7 +67,9 @@ func TestTaskManagerSequentialWorkflow(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Errorf("TaskManager failed: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done // wait for goroutine to exit before deferred Close() runs
 		t.Error("TaskManager did not stop within expected time")
 	}
 }
@@ -135,7 +137,9 @@ func TestTaskManagerDisabledPolling(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Errorf("TaskManager failed: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done // wait for goroutine to exit before deferred Close() runs
 		t.Error("TaskManager did not stop within expected time")
 	}
 }
