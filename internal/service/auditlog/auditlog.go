@@ -380,4 +380,3 @@ func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchDat
 
 	return nil
 }
-

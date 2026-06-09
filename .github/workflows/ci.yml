@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 env:
   GO_VERSION: '1.25.11'
@@ -88,6 +89,10 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: security
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +112,21 @@ jobs:
       - name: Show coverage summary
         shell: bash
         run: go tool cover -func=coverage.out
+
+      # Commented out until actions/upload-code-coverage@v1 permissions are resolved
+      # - name: Convert coverage to Cobertura XML
+      #   if: matrix.os == 'ubuntu-latest'
+      #   run: |
+      #     go install github.com/boumenot/gocover-cobertura@latest
+      #     gocover-cobertura < coverage.out > coverage.xml
+
+      # - name: Upload coverage report
+      #   if: matrix.os == 'ubuntu-latest' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      #   uses: actions/upload-code-coverage@v1
+      #   with:
+      #     file: coverage.xml
+      #     language: go
+      #     label: Unit Tests
 
 
   build:
