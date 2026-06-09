@@ -2,6 +2,7 @@ package system
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 
@@ -104,15 +105,24 @@ func getChassisType() string {
 
 func getOSInformation() shared.OSInformation {
 	osInfo := osInfoBase()
+	var version, buildVersion string
 	if out, err := shared.RunCommand("sw_vers", "-productVersion"); err == nil {
-		osInfo.OSVersion = strings.TrimSpace(out)
+		version = strings.TrimSpace(out)
 	}
 	if out, err := shared.RunCommand("sw_vers", "-productName"); err == nil {
 		osInfo.OSName = strings.TrimSpace(out)
 	}
 	if out, err := shared.RunCommand("sw_vers", "-buildVersion"); err == nil {
-		osInfo.OSServicePack = strings.TrimSpace(out)
+		buildVersion = strings.TrimSpace(out)
 	}
+
+	// Combine version and build version into full version string
+	if version != "" && buildVersion != "" {
+		osInfo.OSVersion = fmt.Sprintf("%s (%s)", version, buildVersion)
+	} else if version != "" {
+		osInfo.OSVersion = version
+	}
+
 	osInfo.OSType = "macOS"
 	if osInfo.OSName == "" {
 		osInfo.OSName = "darwin"
