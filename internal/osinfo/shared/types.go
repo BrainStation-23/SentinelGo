@@ -165,9 +165,9 @@ type IPv6Address struct {
 }
 
 type WiFiInfo struct {
-	SSID          string `json:"ssid"`
+	SSID           string `json:"ssid"`
 	SignalStrength int    `json:"signal_strength_dbm"`
-	FrequencyBand string `json:"frequency_band"`
+	FrequencyBand  string `json:"frequency_band"`
 }
 
 type NetAdapter struct {

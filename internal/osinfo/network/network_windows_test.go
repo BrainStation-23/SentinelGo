@@ -65,9 +65,9 @@ There is 1 interface on the system:
 
 func TestParseSpeedMbps(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   int64
+		name  string
+		input string
+		want  int64
 	}{
 		{"mbps value", netshInterfaceSpeed, 1000},
 		{"gbps value", netshInterfaceSpeedGbps, 1000},
