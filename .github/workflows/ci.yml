@@ -109,20 +109,12 @@ jobs:
         shell: bash
         run: go tool cover -func=coverage.out
 
-      # Commented out until actions/upload-code-coverage@v1 permissions are resolved
-      # - name: Convert coverage to Cobertura XML
-      #   if: matrix.os == 'ubuntu-latest'
-      #   run: |
-      #     go install github.com/boumenot/gocover-cobertura@latest
-      #     gocover-cobertura < coverage.out > coverage.xml
-
-      # - name: Upload coverage report
-      #   if: matrix.os == 'ubuntu-latest' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-      #   uses: actions/upload-code-coverage@v1
-      #   with:
-      #     file: coverage.xml
-      #     language: go
-      #     label: Unit Tests
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage.out
+          retention-days: 1
 
 
   build:
@@ -175,8 +167,28 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Generate coverage report
-        run: go test -timeout=3m -coverprofile=coverage.out -coverpkg=./... -short ./...
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: false
+
+      - name: Merge coverage reports
+        run: |
+          awk '
+            /^mode:/ { next }
+            {
+              key = $1 " " $2
+              count = $3 + 0
+              if (!(key in best) || count > best[key]) best[key] = count
+            }
+            END {
+              print "mode: set"
+              for (k in best) print k, best[k]
+            }
+          ' coverage-ubuntu-latest/coverage.out \
+            coverage-macos-latest/coverage.out \
+            coverage-windows-latest/coverage.out > coverage.out
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
