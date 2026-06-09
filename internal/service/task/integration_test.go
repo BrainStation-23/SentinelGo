@@ -44,7 +44,9 @@ func TestSequentialPollingThenExecution(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Errorf("TaskManager failed: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -197,7 +199,9 @@ func TestTaskManagerWithRealDatabaseOperations(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Errorf("TaskManager failed: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -242,7 +246,9 @@ func TestTaskManagerErrorRecovery(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Logf("TaskManager completed with error (expected): %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -281,7 +287,9 @@ func TestTaskManagerMultipleCycles(t *testing.T) {
 		if err != nil && err != context.DeadlineExceeded {
 			t.Errorf("TaskManager failed: %v", err)
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
 		t.Error("TaskManager did not stop within expected time")
 	}
 

@@ -1,6 +1,7 @@
 package software
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os/exec"
@@ -20,18 +21,15 @@ func (s *SoftwareService) platformSoftware() []SoftwareInfo {
 }
 
 func (s *SoftwareService) getWindowsSoftware() []SoftwareInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}} | ConvertTo-Json`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", registryQuery)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: registry uninstall query failed: %v", err)
-		cmd = exec.Command("powershell", "-NoProfile", "-Command",
-			"Get-CimInstance -ClassName Win32_Product | Select-Object Name, Version, InstallLocation | ConvertTo-Json")
-		output, err = cmd.Output()
-		if err != nil {
-			log.Printf("software: Win32_Product fallback failed: %v", err)
-			return nil
-		}
+		return nil
 	}
 
 	var result []SoftwareInfo
@@ -40,8 +38,11 @@ func (s *SoftwareService) getWindowsSoftware() []SoftwareInfo {
 }
 
 func (s *SoftwareService) getWindowsStoreApps() []SoftwareInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	query := `Get-AppxPackage | Where-Object {$_.SignatureKind -ne "System"} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}} | ConvertTo-Json`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", query)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: Get-AppxPackage failed: %v", err)
