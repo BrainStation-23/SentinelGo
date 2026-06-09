@@ -292,22 +292,26 @@ func (c *windowsCollector) Subscribe(ctx context.Context, ch chan<- RawLogEntry)
 	}
 }
 
+// buildXPathQuery combines the channel's base XPath filter with a record ID lower bound.
+func buildXPathQuery(baseQuery string, rid int64) string {
+	if baseQuery == "*" {
+		return fmt.Sprintf("*[System[EventRecordID > %d]]", rid)
+	}
+	inner := strings.TrimPrefix(baseQuery, "*[System[")
+	inner = strings.TrimSuffix(inner, "]]")
+	return fmt.Sprintf("*[System[EventRecordID > %d and (%s)]]", rid, inner)
+}
+
 // queryChannel queries a single event log channel from the checkpoint position.
 func (c *windowsCollector) queryChannel(ctx context.Context, ch eventChannel, checkpoint CheckpointData) ([]RawLogEntry, int64, error) {
-	// Build query with record ID filter if checkpoint exists
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
+	}
+
 	query := ch.query
 	if recordID, ok := checkpoint[ch.checkpointKey()]; ok {
-		rid, _ := recordID.(float64) // JSON decode
-		if rid > 0 {
-			// Modify XPath to only get events after the checkpoint
-			query = fmt.Sprintf("*[System[EventRecordID > %d]]", int64(rid))
-			if ch.query != "*" {
-				// Combine with existing filter
-				// Extract the inner predicate from the original query
-				inner := strings.TrimPrefix(ch.query, "*[System[")
-				inner = strings.TrimSuffix(inner, "]]")
-				query = fmt.Sprintf("*[System[EventRecordID > %d and (%s)]]", int64(rid), inner)
-			}
+		if rid := int64(recordID.(float64)); rid > 0 { // JSON decode
+			query = buildXPathQuery(ch.query, rid)
 		}
 	}
 
