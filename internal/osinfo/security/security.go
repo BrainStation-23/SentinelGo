@@ -4,8 +4,8 @@ import (
 	"log"
 	"math"
 
-	gnet "github.com/shirou/gopsutil/v3/net"
-	"github.com/shirou/gopsutil/v3/process"
+	gnet "github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/process"
 
 	"sentinelgo/internal/osinfo/shared"
 )

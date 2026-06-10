@@ -58,11 +58,11 @@ func (ws *windowsService) Install() error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	existing, err := m.OpenService(ws.name)
 	if err == nil {
-		existing.Close()
+		_ = existing.Close()
 		return fmt.Errorf("service %q already exists", ws.name)
 	}
 
@@ -74,7 +74,7 @@ func (ws *windowsService) Install() error {
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
-	s.Close()
+	_ = s.Close()
 
 	_ = eventlog.InstallAsEventCreate(ws.name, eventlog.Error|eventlog.Warning|eventlog.Info)
 	return nil
@@ -85,13 +85,13 @@ func (ws *windowsService) Start() error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	s, err := m.OpenService(ws.name)
 	if err != nil {
 		return fmt.Errorf("open service: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	return s.Start(ws.cfg.Arguments...)
 }
@@ -101,13 +101,13 @@ func (ws *windowsService) Uninstall() error {
 	if err != nil {
 		return fmt.Errorf("connect to service manager: %w", err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 
 	s, err := m.OpenService(ws.name)
 	if err != nil {
 		return fmt.Errorf("open service: %w", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Delete(); err != nil {
 		return fmt.Errorf("delete service: %w", err)

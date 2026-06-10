@@ -4,7 +4,7 @@ import (
 	stdnet "net"
 	"strings"
 
-	psnet "github.com/shirou/gopsutil/v3/net"
+	psnet "github.com/shirou/gopsutil/v4/net"
 
 	"sentinelgo/internal/osinfo/shared"
 )

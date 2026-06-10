@@ -3,7 +3,7 @@ package network
 import (
 	"testing"
 
-	psnet "github.com/shirou/gopsutil/v3/net"
+	psnet "github.com/shirou/gopsutil/v4/net"
 )
 
 func TestHasFlag(t *testing.T) {

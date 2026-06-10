@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v4/host"
 
 	"sentinelgo/internal/osinfo/shared"
 )
