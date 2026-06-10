@@ -115,6 +115,19 @@ func parseDNSServers(output string) []string {
 	return servers
 }
 
+func getDeviceName(name string) string {
+	output, err := shared.RunCommand("powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"(Get-NetAdapter -Name '"+name+"' -ErrorAction SilentlyContinue).InterfaceDescription")
+	if err != nil {
+		return ""
+	}
+	return parseDeviceName(output)
+}
+
+func parseDeviceName(output string) string {
+	return strings.TrimSpace(output)
+}
+
 func getAdapterManufacturer(_ string) string {
 	return "Unknown"
 }

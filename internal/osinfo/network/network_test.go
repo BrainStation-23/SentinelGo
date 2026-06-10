@@ -111,8 +111,8 @@ func TestGet_Integration(t *testing.T) {
 		if a.Status == "" {
 			t.Errorf("adapter[%d] %s: Status is empty", i, a.InterfaceName)
 		}
-		t.Logf("adapter[%d]: name=%s friendly=%s type=%s status=%s connected=%v mac=%s speed=%d gw=%s dns=%v wifi=%v",
-			i, a.InterfaceName, a.FriendlyName, a.AdapterType, a.Status,
+		t.Logf("adapter[%d]: name=%s friendly=%s device=%s type=%s status=%s connected=%v mac=%s speed=%d gw=%s dns=%v wifi=%v",
+			i, a.InterfaceName, a.FriendlyName, a.DeviceName, a.AdapterType, a.Status,
 			a.IsConnected, a.MACAddress, a.SpeedMbps, a.DefaultGateway, a.DNSServers, a.WiFi)
 	}
 }

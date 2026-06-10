@@ -31,6 +31,7 @@ func buildAdapter(iface psnet.InterfaceStat) shared.NetAdapter {
 	a := shared.NetAdapter{
 		InterfaceName:  iface.Name,
 		FriendlyName:   getFriendlyName(iface.Name),
+		DeviceName:     getDeviceName(iface.Name),
 		AdapterType:    adapterType,
 		Status:         adapterStatus(isUp),
 		IsConnected:    isUp && hasRoutableIPv4,
