@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 	authsvc "sentinelgo/internal/service/auth"
 )
 
-func handleAuditLogsStandalone(cfg *config.Config) {
+func HandleAuditLogsStandalone(cfg *config.Config) {
 	fmt.Println("Starting audit logs service in standalone mode...")
 
 	auditService := auditlogsvc.NewAuditLogService(cfg)
@@ -60,7 +60,7 @@ func handleAuditLogsStandalone(cfg *config.Config) {
 	fmt.Println("\nAudit logs service stopped")
 }
 
-func handleAuditLogsStatus(cfg *config.Config) {
+func HandleAuditLogsStatus(cfg *config.Config) {
 	fmt.Println("Audit Logs Service Status")
 	fmt.Println("=========================")
 	fmt.Printf("Service Enabled: %v\n", cfg.AuditLogsEnabled)
@@ -105,7 +105,7 @@ func withLoggingIntegration(action func(*logging.LoggingIntegration, context.Con
 	}
 }
 
-func handleCollectLogs() {
+func HandleCollectLogs() {
 	fmt.Println("Collecting logs...")
 	withLoggingIntegration(func(li *logging.LoggingIntegration, ctx context.Context) error {
 		if err := li.CollectLogsNow(ctx); err != nil {
@@ -116,7 +116,7 @@ func handleCollectLogs() {
 	})
 }
 
-func handleUploadLogs() {
+func HandleUploadLogs() {
 	fmt.Println("Uploading pending logs...")
 	withLoggingIntegration(func(li *logging.LoggingIntegration, ctx context.Context) error {
 		if err := li.ForceUpload(ctx); err != nil {
@@ -126,7 +126,7 @@ func handleUploadLogs() {
 	})
 }
 
-func handleLoggingStats() {
+func HandleLoggingStats() {
 	withLoggingIntegration(func(li *logging.LoggingIntegration, ctx context.Context) error {
 		stats := li.GetStatistics()
 		fmt.Printf("Logging Statistics\n")
@@ -138,8 +138,8 @@ func handleLoggingStats() {
 	})
 }
 
-// handleEnableAutoUpdate sets auto_update=true in the config and saves it.
-func handleEnableAutoUpdate(cfgPath string) {
+// HandleEnableAutoUpdate sets auto_update=true in the config and saves it.
+func HandleEnableAutoUpdate(cfgPath string) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -152,9 +152,9 @@ func handleEnableAutoUpdate(cfgPath string) {
 	fmt.Println("Auto-update enabled in config")
 }
 
-// handleAgentInfoUpdate refreshes auth (if possible) and pushes current system
+// HandleAgentInfoUpdate refreshes auth (if possible) and pushes current system
 // info to the backend.
-func handleAgentInfoUpdate(cfg *config.Config) {
+func HandleAgentInfoUpdate(cfg *config.Config) {
 	fmt.Println("Updating agent information...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

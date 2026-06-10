@@ -3,7 +3,6 @@ module sentinelgo
 go 1.25.11
 
 require (
-	github.com/kardianos/service v1.2.2
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/supabase-community/postgrest-go v0.0.12
 	github.com/supabase-community/supabase-go v0.0.4
@@ -11,6 +10,8 @@ require (
 	golang.org/x/sys v0.42.0
 	modernc.org/sqlite v1.50.1
 )
+
+replace github.com/shoenig/go-m1cpu => ./internal/stubs/go-m1cpu
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

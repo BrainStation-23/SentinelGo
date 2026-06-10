@@ -1,4 +1,4 @@
-package main
+package service
 
 import (
 	"fmt"
@@ -8,9 +8,9 @@ import (
 )
 
 func createLaunchdPlist() error {
-	currentVersion := Version
-	if currentVersion == "" {
-		currentVersion = "unknown"
+	version := agentVersion
+	if version == "" {
+		version = "unknown"
 	}
 
 	plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -37,7 +37,7 @@ func createLaunchdPlist() error {
   <key>Comment</key>
   <string>SentinelGo Agent v%s - Cross-platform system monitoring</string>
 </dict>
-</plist>`, currentVersion)
+</plist>`, version)
 
 	// #nosec G301 - /Library/LaunchDaemons is a system directory with standard permissions
 	if err := os.MkdirAll("/Library/LaunchDaemons", 0755); err != nil {
@@ -77,7 +77,9 @@ func removeLaunchdPlist() error {
 	return nil
 }
 
-func checkLaunchdService() error {
+// CheckLaunchdService prints the launchd status for sentinelgo entries.
+// Called by the cli/process.go HandleStatus command.
+func CheckLaunchdService() error {
 	cmd := exec.Command("sh", "-c", "launchctl list | grep sentinelgo")
 	output, err := cmd.CombinedOutput()
 	if err != nil {

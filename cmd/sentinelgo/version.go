@@ -5,14 +5,10 @@ import (
 	"runtime"
 
 	"sentinelgo/internal/config"
-
-	svcc "github.com/kardianos/service"
 )
 
 // Version is injected at build time via -ldflags. Falls back to config.Version if empty.
 var Version string
-
-var logger svcc.Logger
 
 func GetVersion() string {
 	if Version != "" {

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -60,8 +60,8 @@ func outputSoftwareJSON(softwareList []swsvc.SoftwareInfo) {
 	fmt.Println(string(jsonData))
 }
 
-// handleSoftwareSync runs the software sync service until interrupted.
-func handleSoftwareSync(cfg *config.Config) {
+// HandleSoftwareSync runs the software sync service until interrupted.
+func HandleSoftwareSync(cfg *config.Config) {
 	if !cfg.SoftwareSyncEnabled {
 		fmt.Println("Software sync is disabled. Enable with software_sync_enabled in config")
 		return
@@ -93,9 +93,9 @@ func handleSoftwareSync(cfg *config.Config) {
 	fmt.Println("Software sync service stopped")
 }
 
-// handleSoftwareListCommand collects installed software and prints it as a list,
+// HandleSoftwareListCommand collects installed software and prints it as a list,
 // JSON, or count depending on the flags.
-func handleSoftwareListCommand(cfgPath string, asJSON, countOnly bool) {
+func HandleSoftwareListCommand(cfgPath string, asJSON, countOnly bool) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		log.Printf("Warning: Could not load config: %v", err)
