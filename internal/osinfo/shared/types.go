@@ -173,6 +173,7 @@ type WiFiInfo struct {
 type NetAdapter struct {
 	InterfaceName  string        `json:"interface_name"`
 	FriendlyName   string        `json:"friendly_name"`
+	DeviceName     string        `json:"device_name,omitempty"`
 	AdapterType    string        `json:"adapter_type"`
 	Status         string        `json:"status"`
 	IsConnected    bool          `json:"is_connected"`

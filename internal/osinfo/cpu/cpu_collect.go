@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	gocpu "github.com/shirou/gopsutil/v3/cpu"
+	gocpu "github.com/shirou/gopsutil/v4/cpu"
 
 	"sentinelgo/internal/osinfo/shared"
 )

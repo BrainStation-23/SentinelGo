@@ -144,6 +144,10 @@ func parseDNSServersOutput(output string) []string {
 	return servers
 }
 
+func getDeviceName(_ string) string {
+	return ""
+}
+
 func getAdapterManufacturer(_ string) string {
 	return "Unknown"
 }

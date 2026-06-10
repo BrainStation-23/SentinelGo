@@ -9,7 +9,6 @@ permissions:
   contents: write
   pull-requests: write
   models: read
-  security-events: write
 
 env:
   GO_VERSION: '1.25.11'
@@ -21,6 +20,10 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
 
   # ── 2. Build release artifacts ─────────────────────────────────────────────
   # One job, one runner. `make all` cross-compiles all 5 targets sequentially

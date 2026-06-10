@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"fmt"
@@ -8,20 +8,21 @@ import (
 	"strconv"
 	"time"
 
+	svcsub "sentinelgo/cmd/sentinelgo/service"
 	"sentinelgo/internal/procinfo"
 )
 
-// handleStop stops all running SentinelGo processes.
-func handleStop() {
+// HandleStop stops all running SentinelGo processes.
+func HandleStop() {
 	if err := stopSentinelGoProcesses(); err != nil {
 		fmt.Printf("Error stopping processes: %v\n", err)
 	}
 }
 
-// handleStatus shows running processes, versions, and (on macOS) launchd status.
-func handleStatus() {
+// HandleStatus shows running processes, versions, and (on macOS) launchd status.
+func HandleStatus() {
 	if runtime.GOOS == "darwin" {
-		if err := checkLaunchdService(); err != nil {
+		if err := svcsub.CheckLaunchdService(); err != nil {
 			fmt.Printf("Error checking launchd service: %v\n", err)
 		}
 	}

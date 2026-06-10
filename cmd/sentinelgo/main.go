@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 
+	"sentinelgo/cmd/sentinelgo/cli"
+	svcsub "sentinelgo/cmd/sentinelgo/service"
 	"sentinelgo/internal/config"
-
-	svcc "github.com/kardianos/service"
 )
 
 func main() {
@@ -15,19 +15,19 @@ func main() {
 	// CLI subcommands that don't require a loaded config.
 	switch {
 	case *f.collectLogs:
-		handleCollectLogs()
+		cli.HandleCollectLogs()
 		return
 	case *f.uploadLogs:
-		handleUploadLogs()
+		cli.HandleUploadLogs()
 		return
 	case *f.loggingStats:
-		handleLoggingStats()
+		cli.HandleLoggingStats()
 		return
 	case *f.version:
 		printVersion()
 		return
 	case *f.enableAutoUpdate:
-		handleEnableAutoUpdate(*f.cfgPath)
+		cli.HandleEnableAutoUpdate(*f.cfgPath)
 		return
 	}
 
@@ -39,39 +39,39 @@ func main() {
 
 	// CLI subcommands that operate on the config and then exit.
 	if *f.agentTaskPolling {
-		handleAgentTaskPolling(cfg)
+		cli.HandleAgentTaskPolling(cfg)
 		return
 	}
 	if *f.agentTaskExecution {
-		handleAgentTaskExecution(cfg)
+		cli.HandleAgentTaskExecution(cfg)
 		return
 	}
 	if *f.agentTaskManager {
-		handleAgentTaskManager(cfg)
+		cli.HandleAgentTaskManager(cfg)
 		return
 	}
 	if *f.softwareSync {
-		handleSoftwareSync(cfg)
+		cli.HandleSoftwareSync(cfg)
 		return
 	}
 	if *f.agentInfoUpdate {
-		handleAgentInfoUpdate(cfg)
+		cli.HandleAgentInfoUpdate(cfg)
 		return
 	}
 	if *f.runAuditLogs {
-		handleAuditLogsStandalone(cfg)
+		cli.HandleAuditLogsStandalone(cfg)
 		return
 	}
 	if *f.auditLogsStatus {
-		handleAuditLogsStatus(cfg)
+		cli.HandleAuditLogsStatus(cfg)
 		return
 	}
 	if *f.softwareList || *f.softwareListJSON || *f.softwareListCount {
-		handleSoftwareListCommand(*f.cfgPath, *f.softwareListJSON, *f.softwareListCount)
+		cli.HandleSoftwareListCommand(*f.cfgPath, *f.softwareListJSON, *f.softwareListCount)
 		return
 	}
 	if *f.stop {
-		handleStop()
+		cli.HandleStop()
 		return
 	}
 
@@ -83,43 +83,39 @@ func main() {
 	}
 
 	if *f.statusFlag {
-		handleStatus()
+		cli.HandleStatus()
 		return
 	}
 
 	// Service lifecycle (install / uninstall / foreground run / run-as-service).
-	prg := &program{cfg: cfg}
+	prg := svcsub.NewProgram(cfg)
 
-	svcCfg := &svcc.Config{
+	svcCfg := svcsub.ServiceConfig{
 		Name:        "SentinelGo",
 		DisplayName: "SentinelGo Agent",
 		Description: "Cross-platform agent to collect OS info and report heartbeat to Supabase",
 		Arguments:   []string{"-config", cfg.Path},
-		Option:      svcc.KeyValue{"StartType": "automatic"},
 	}
 
-	svc, err := svcc.New(prg, svcCfg)
+	svc, lgr, err := svcsub.NewAgentService(prg, svcCfg)
 	if err != nil {
 		log.Fatalf("Failed to create service: %v", err)
 	}
-
-	logger, err = svc.Logger(nil)
-	if err != nil {
-		log.Fatalf("Failed to get service logger: %v", err)
-	}
+	svcsub.SetLogger(lgr)
+	svcsub.SetVersion(GetVersion())
 
 	if *f.install {
-		handleInstall(svc)
+		svcsub.HandleInstall(svc)
 		return
 	}
 	if *f.uninstall {
-		handleUninstall(svc)
+		svcsub.HandleUninstall(svc)
 		return
 	}
 	if *f.run {
-		runForeground(cfg)
+		svcsub.RunForeground(cfg)
 		return
 	}
 
-	runAsService(svc)
+	svcsub.RunAsService(svc)
 }

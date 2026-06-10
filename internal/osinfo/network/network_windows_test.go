@@ -287,14 +287,83 @@ func TestIsIPAddress(t *testing.T) {
 	}
 }
 
-func TestGetAdapterType_Integration(t *testing.T) {
+func TestParseDeviceName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"wifi adapter",
+			"MediaTek Wi-Fi 6E MT7922 (RZ616) 160MHz PCIe Adapter\r\n",
+			"MediaTek Wi-Fi 6E MT7922 (RZ616) 160MHz PCIe Adapter",
+		},
+		{
+			"ethernet adapter",
+			"Realtek PCIe GbE Family Controller\r\n",
+			"Realtek PCIe GbE Family Controller",
+		},
+		{
+			"empty output",
+			"",
+			"",
+		},
+		{
+			"whitespace only",
+			"  \r\n  ",
+			"",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseDeviceName(tc.input); got != tc.want {
+				t.Errorf("parseDeviceName() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// isLocallyAdministeredMAC returns true when the MAC's second bit is set,
+// indicating a software-assigned address (Wi-Fi Direct, hosted network, etc.).
+func isLocallyAdministeredMAC(mac string) bool {
+	if len(mac) < 2 {
+		return false
+	}
+	var first byte
+	for _, c := range mac[:2] {
+		first <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			first |= byte(c - '0')
+		case c >= 'a' && c <= 'f':
+			first |= byte(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			first |= byte(c-'A') + 10
+		}
+	}
+	return first&0x02 != 0
+}
+
+func TestGet_Windows_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
 	adapters := Get()
-	for _, a := range adapters {
+	for i, a := range adapters {
+		t.Logf("adapter[%d]: name=%s friendly=%s device=%s type=%s status=%s connected=%v mac=%s speed=%d gw=%s dns=%v",
+			i, a.InterfaceName, a.FriendlyName, a.DeviceName, a.AdapterType,
+			a.Status, a.IsConnected, a.MACAddress, a.SpeedMbps, a.DefaultGateway, a.DNSServers)
 		if a.AdapterType == "" {
-			t.Errorf("adapter %q has empty AdapterType", a.InterfaceName)
+			t.Errorf("adapter[%d] %q: AdapterType is empty", i, a.InterfaceName)
+		}
+		switch a.AdapterType {
+		case "Ethernet", "WiFi", "Bluetooth":
+			// Skip locally-administered MACs — Windows virtual adapters (Wi-Fi Direct,
+			// hosted network) share hardware with a real adapter but Get-NetAdapter
+			// doesn't expose them under the gopsutil name, so DeviceName is empty.
+			if !isLocallyAdministeredMAC(a.MACAddress) && a.DeviceName == "" {
+				t.Errorf("adapter[%d] %q (type=%s): DeviceName is empty", i, a.InterfaceName, a.AdapterType)
+			}
 		}
 	}
 }

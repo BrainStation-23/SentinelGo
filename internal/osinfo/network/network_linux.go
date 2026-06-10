@@ -85,6 +85,10 @@ func parseDNSServersFromResolvConf(content string) []string {
 	return servers
 }
 
+func getDeviceName(_ string) string {
+	return ""
+}
+
 func getAdapterManufacturer(name string) string {
 	if output, err := shared.ReadFileContent(fmt.Sprintf("/sys/class/net/%s/device/vendor", name)); err == nil {
 		vendor := strings.TrimSpace(output)

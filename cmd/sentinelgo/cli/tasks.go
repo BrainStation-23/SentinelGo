@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -16,8 +16,8 @@ import (
 	tasksvc "sentinelgo/internal/service/task"
 )
 
-// handleAgentTaskPolling polls for tasks once and stores them locally.
-func handleAgentTaskPolling(cfg *config.Config) {
+// HandleAgentTaskPolling polls for tasks once and stores them locally.
+func HandleAgentTaskPolling(cfg *config.Config) {
 	configDir := system.GetConfigDir()
 	if err := os.MkdirAll(configDir, 0750); err != nil {
 		log.Fatalf("Error: Failed to create task storage directory %s: %v. Try running with sudo or check permissions.", configDir, err)
@@ -42,8 +42,8 @@ func handleAgentTaskPolling(cfg *config.Config) {
 	}
 }
 
-// handleAgentTaskExecution runs the task execution loop over locally stored tasks.
-func handleAgentTaskExecution(cfg *config.Config) {
+// HandleAgentTaskExecution runs the task execution loop over locally stored tasks.
+func HandleAgentTaskExecution(cfg *config.Config) {
 	configDir := system.GetConfigDir()
 	if err := os.MkdirAll(configDir, 0750); err != nil {
 		log.Fatalf("Error: Failed to create task storage directory %s: %v. Try running with sudo or check permissions.", configDir, err)
@@ -73,9 +73,9 @@ func handleAgentTaskExecution(cfg *config.Config) {
 	agentTaskExecutionService.RunExecutionLoop(ctx)
 }
 
-// handleAgentTaskManager runs the integrated polling + execution task manager
+// HandleAgentTaskManager runs the integrated polling + execution task manager
 // until an interrupt signal is received.
-func handleAgentTaskManager(cfg *config.Config) {
+func HandleAgentTaskManager(cfg *config.Config) {
 	fmt.Println("Starting integrated task polling and execution service...")
 
 	taskManager, err := tasksvc.NewTaskManager(cfg)
