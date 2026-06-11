@@ -145,6 +145,12 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 			return fmt.Errorf("failed to add task %s: %w", task.Name, err)
 		}
 	}
+
+	log.Printf("Scheduler intervals: agent-info=%v, software-sync=%v, auto-update=%v, token-refresh=1m",
+		mi.cfg.GetAgentInfoUpdateInterval(),
+		mi.cfg.GetSoftwareInfoUpdateInterval(),
+		mi.cfg.GetAutoUpdateInterval(),
+	)
 	return nil
 }
 

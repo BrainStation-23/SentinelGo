@@ -37,7 +37,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release version test-version deps test coverage coverage-html pre-release quality-check format-check setup packages check-no-cgo verify-cross
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format-check setup packages check-no-cgo verify-cross
 
 all: windows linux macos
 
@@ -52,7 +52,9 @@ macos:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-amd64 ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-arm64 ./cmd/sentinelgo
 
-# Build all platforms for release
+# Build all platforms for release, then sign and generate SHA256SUMS.
+# Requires SENTINELGO_SIGNING_KEY env var (base64-encoded ed25519 private key).
+# In CI this is injected from GitHub Actions secrets; locally set it before running.
 release: pre-release clean all
 	@echo "Release built with version $(VERSION)"
 	@echo "Assets created in build/ directory:"
@@ -67,10 +69,24 @@ release: pre-release clean all
 	@cp build/linux/sentinelgo-linux-arm64 release/
 	@cp build/darwin/sentinelgo-darwin-amd64 release/
 	@cp build/darwin/sentinelgo-darwin-arm64 release/
+	@$(MAKE) sign
 	@echo "\nRelease packages ready in release/ directory:"
 	@ls -la release/
 	@echo "\nCleaning build folder files and subdirectories..."
 	@rm -rf build/* || true
+
+# Sign release binaries and generate SHA256SUMS.
+# Reads SENTINELGO_SIGNING_KEY from the environment (base64 ed25519 private key).
+# Run `go run ./scripts/keygen` once to generate the keypair if needed.
+sign:
+	@echo "Signing release binaries..."
+	@go run ./scripts/sign \
+	  release/sentinelgo-linux-amd64 \
+	  release/sentinelgo-linux-arm64 \
+	  release/sentinelgo-darwin-amd64 \
+	  release/sentinelgo-darwin-arm64 \
+	  release/sentinelgo-windows-amd64.exe
+	@echo "Signatures and SHA256SUMS written to release/"
 
 clean:
 	rm -rf build/

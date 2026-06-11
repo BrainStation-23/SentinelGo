@@ -62,27 +62,46 @@ func (s *TaskExecutorService) ExecutePendingTasks(ctx context.Context) {
 	}
 
 	for _, task := range tasks {
-		log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
-		note, err := s.runTask(ctx, task)
-		if err != nil {
-			log.Printf("Executor: Task %s failed: %v", task.ID, err)
-			statusNote := err.Error()
-			if note != "" {
-				statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
-			}
-			if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", statusNote); err != nil {
-				log.Printf("Executor: Failed to report task status: %v", err)
-			}
-		} else {
-			log.Printf("Executor: Task %s completed successfully", task.ID)
-			statusNote := note
-			if statusNote == "" {
-				statusNote = "Executed successfully"
-			}
-			if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", statusNote); err != nil {
-				log.Printf("Executor: Failed to report task status: %v", err)
-			}
+		s.executeTask(ctx, task)
+	}
+}
+
+// executeTask marks a single task as executing, runs it, and reports the result.
+// Extracted from ExecutePendingTasks to keep complexity within the linter limit.
+func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Task) {
+	// Mark 'executing' in SQLite BEFORE running the script. If the agent is
+	// killed mid-execution (e.g. by a reboot script), the task stays
+	// 'executing' on disk. GetAssignedTasks only returns 'assigned' rows, so
+	// it won't be re-picked on restart. ResetInterruptedTasks (called at
+	// startup in PollAndStoreTasks) then moves it to 'failed (interrupted)'
+	// and syncs it to the server. Skipping on error is intentional: if we
+	// can't write the marker, executing would leave us in the unsafe state.
+	if err := s.pollingSvc.MarkTaskExecuting(task.ID); err != nil {
+		log.Printf("Executor: could not mark task %s as 'executing' — skipping to avoid unsafe re-execution: %v", task.ID, err)
+		return
+	}
+
+	log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
+	note, err := s.runTask(ctx, task)
+	if err != nil {
+		log.Printf("Executor: Task %s failed: %v", task.ID, err)
+		statusNote := err.Error()
+		if note != "" {
+			statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
 		}
+		if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", statusNote); err != nil {
+			log.Printf("Executor: Failed to report task status: %v", err)
+		}
+		return
+	}
+
+	log.Printf("Executor: Task %s completed successfully", task.ID)
+	statusNote := note
+	if statusNote == "" {
+		statusNote = "Executed successfully"
+	}
+	if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", statusNote); err != nil {
+		log.Printf("Executor: Failed to report task status: %v", err)
 	}
 }
 

@@ -53,6 +53,17 @@ jobs:
           cp build/darwin/sentinelgo-darwin-amd64         dist/
           cp build/darwin/sentinelgo-darwin-arm64         dist/
 
+      - name: Sign binaries and generate SHA256SUMS
+        env:
+          SENTINELGO_SIGNING_KEY: ${{ secrets.SENTINELGO_SIGNING_KEY }}
+        run: |
+          go run ./scripts/sign \
+            dist/sentinelgo-linux-amd64 \
+            dist/sentinelgo-linux-arm64 \
+            dist/sentinelgo-darwin-amd64 \
+            dist/sentinelgo-darwin-arm64 \
+            dist/sentinelgo-windows-amd64.exe
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -136,6 +147,7 @@ jobs:
           generate_release_notes: ${{ steps.ai_notes.outputs.success != 'true' }}
           files: |
             artifacts/sentinelgo-*
+            artifacts/SHA256SUMS
             installation-doc/install.sh
             installation-doc/install.bat
             installation-doc/INSTALLATION.md
