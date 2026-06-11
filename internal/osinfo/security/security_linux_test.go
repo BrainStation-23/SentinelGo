@@ -36,10 +36,10 @@ func writeModprobeConf(t *testing.T, dir, name, content string) {
 
 func TestUsbStorageStateFromModprobeDir(t *testing.T) {
 	cases := []struct {
-		name     string
-		file     string
-		content  string
-		want     string
+		name    string
+		file    string
+		content string
+		want    string
 	}{
 		{"blacklist directive disables", "usb.conf", "blacklist usb_storage\n", "disabled"},
 		{"install /bin/false disables", "usb.conf", "install usb_storage /bin/false\n", "disabled"},
@@ -70,9 +70,9 @@ func TestUsbStorageStateFromModprobeDir(t *testing.T) {
 
 func TestParseSEStatusOutput(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{"enforcing mode", "SELinux status:                 enabled\nCurrent mode:                   enforcing\n", "enforcing"},
 		{"permissive mode", "SELinux status:                 enabled\nCurrent mode:                   permissive\n", "permissive"},

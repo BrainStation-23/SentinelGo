@@ -15,6 +15,36 @@ env:
   CGO_ENABLED: '0'
 
 jobs:
+  # ── fast, platform-agnostic checks ──────────────────────────────────────────
+  static-checks:
+    name: Static Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+
+      - uses: actions/setup-go@v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -s -l .)
+          [ -z "$unformatted" ] || { echo "$unformatted"; exit 1; }
+
+      - name: Check no CGO
+        run: |
+          if grep -rlE '^import "C"' --include="*.go" .; then
+            echo "CGO import detected — violates CGO_ENABLED=0 policy (see CLAUDE.md)"
+            exit 1
+          fi
+
+  # ── per-GOOS lint: catches issues in platform-specific files ─────────────────
   lint:
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest
@@ -33,22 +63,6 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Verify go.mod is tidy
-        if: matrix.goos == 'linux'
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
-
-      - name: Format check
-        if: matrix.goos == 'linux'
-        run: |
-          unformatted=$(gofmt -s -l .)
-          if [ -n "$unformatted" ]; then
-            echo "Files not formatted (run 'gofmt -s -w .'):"
-            echo "$unformatted"
-            exit 1
-          fi
-
       - name: Vet
         env:
           GOOS: ${{ matrix.goos }}
@@ -61,10 +75,10 @@ jobs:
         with:
           version: v2.12.2
 
+  # ── security: independent — runs in parallel with lint ───────────────────────
   security:
     name: Security Scan
     runs-on: ubuntu-latest
-    needs: lint
     permissions:
       contents: read
       security-events: write
@@ -81,6 +95,8 @@ jobs:
       - name: Verify modules
         run: go mod verify
 
+      # Gosec: insight only — uploads findings to GitHub Security tab but does not
+      # gate the build. govulncheck and Trivy are the enforcing gates below.
       - name: Run Gosec
         uses: securego/gosec@v2.27.1
         with:
@@ -97,7 +113,7 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1.0.4
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -107,10 +123,11 @@ jobs:
           exit-code: 1
           format: table
 
+  # ── tests on real OSes ───────────────────────────────────────────────────────
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: lint
+    needs: [static-checks, lint]
     permissions:
       contents: read
     strategy:
@@ -133,14 +150,17 @@ jobs:
         shell: bash
         run: go tool cover -func=coverage.out
 
-      - name: Upload coverage artifact
+      # Upload all 3 platform coverage files — the codebase has heavy platform-
+      # specific implementations (every osinfo module has _linux/_darwin/_windows
+      # files), so all 3 runs are needed for a meaningful merged coverage report.
+      - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.os }}
           path: coverage.out
           retention-days: 1
 
-
+  # ── cross-compile all targets ─────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -182,14 +202,9 @@ jobs:
     needs: test
     if: github.event_name != 'workflow_call'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v6.0.3
         with:
           fetch-depth: 0
-
-      - uses: actions/setup-go@v6.4.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
 
       - name: Download all coverage artifacts
         uses: actions/download-artifact@v4

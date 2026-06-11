@@ -18,12 +18,12 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 	return shared.SecurityInfo{
-		AntivirusProducts:    collectAV(),
-		FirewallEnabled:      enabled,
-		FirewallProfiles:     profiles,
-		CoreIsolation:        collectCoreIsolation(),
-		SecureBootEnabled:    collectSecureBoot(),
-		ListeningPorts:       collectListeningPorts(),
+		AntivirusProducts:     collectAV(),
+		FirewallEnabled:       enabled,
+		FirewallProfiles:      profiles,
+		CoreIsolation:         collectCoreIsolation(),
+		SecureBootEnabled:     collectSecureBoot(),
+		ListeningPorts:        collectListeningPorts(),
 		USBMassStorageEnabled: collectUSBMassStorage(),
 	}
 }

@@ -106,13 +106,13 @@ func TestUsbStorStartToState(t *testing.T) {
 		v    int
 		want string
 	}{
-		{4, "disabled"},  // SERVICE_DISABLED — Group Policy / MDM enforcement
-		{3, "enabled"},   // SERVICE_DEMAND_START
-		{2, "enabled"},   // SERVICE_AUTO_START
-		{1, "enabled"},   // SERVICE_SYSTEM_START
-		{0, "enabled"},   // SERVICE_BOOT_START
-		{-1, "unknown"},  // parseRegDWORD sentinel for missing key
-		{5, "unknown"},   // unexpected value
+		{4, "disabled"}, // SERVICE_DISABLED — Group Policy / MDM enforcement
+		{3, "enabled"},  // SERVICE_DEMAND_START
+		{2, "enabled"},  // SERVICE_AUTO_START
+		{1, "enabled"},  // SERVICE_SYSTEM_START
+		{0, "enabled"},  // SERVICE_BOOT_START
+		{-1, "unknown"}, // parseRegDWORD sentinel for missing key
+		{5, "unknown"},  // unexpected value
 	}
 	for _, c := range cases {
 		got := usbStorStartToState(c.v)
