@@ -161,6 +161,10 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 	}
 
 	now := time.Now().Format(time.RFC3339)
+	firstSeen := now
+	if fi, err := os.Stat(path); err == nil {
+		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)
+	}
 	return &SoftwareInfo{
 		Name:             m.Name,
 		DisplayName:      m.Name,
@@ -169,7 +173,7 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		Type:             extType,
 		FilePath:         path,
 		Status:           "installed",
-		FirstSeenAt:      now,
+		FirstSeenAt:      firstSeen,
 		LastSeenAt:       now,
 		IsActive:         true,
 	}
