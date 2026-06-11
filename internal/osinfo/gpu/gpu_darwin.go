@@ -70,7 +70,7 @@ func getGPUs() []shared.GPU {
 			DriverVersion: "Unknown",
 			DriverDate:    "Unknown",
 			HardwareID:    "Unknown",
-			CurrentStatus: "OK",
+			CurrentStatus: "unknown",
 		}
 		if v, ok := dm["_name"].(string); ok {
 			g.Name = v

@@ -24,7 +24,7 @@ func (s *SoftwareService) getWindowsSoftware() []SoftwareInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}} | ConvertTo-Json`
+	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
@@ -72,6 +72,12 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 		installLocation, _ := item["InstallLocation"].(string)
 
 		now := time.Now().Format(time.RFC3339)
+		firstSeen := now
+		if installDate, _ := item["InstallDate"].(string); installDate != "" {
+			if t, err := time.Parse("20060102", installDate); err == nil {
+				firstSeen = t.UTC().Format(time.RFC3339)
+			}
+		}
 		*software = append(*software, SoftwareInfo{
 			Name:             name,
 			InstalledVersion: version,
@@ -79,7 +85,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			Source:           source,
 			Type:             source,
 			Status:           "installed",
-			FirstSeenAt:      now,
+			FirstSeenAt:      firstSeen,
 			LastSeenAt:       now,
 			IsActive:         true,
 		})

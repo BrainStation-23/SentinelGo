@@ -62,7 +62,7 @@ func (ls *linuxService) Install() error {
 	execStart := strings.Join(parts, " ")
 
 	unit := fmt.Sprintf(linuxUnitFmt, ls.cfg.Description, execStart)
-	if err := os.WriteFile(linuxUnitPath, []byte(unit), 0644); err != nil {
+	if err := os.WriteFile(linuxUnitPath, []byte(unit), 0644); err != nil { //nolint:gosec // systemd unit files must be world-readable
 		return fmt.Errorf("write unit file: %w", err)
 	}
 
