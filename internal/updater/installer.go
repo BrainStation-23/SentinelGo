@@ -132,6 +132,17 @@ func rollbackFromBackup(backupPath string) error {
 	return nil
 }
 
+// recodesignForGatekeeper re-signs the binary with an ad-hoc identity and
+// registers its new CDHash with Gatekeeper. Must be called after every atomic
+// replace on macOS: spctl --add stores the CDHash at install time, and the
+// replaced binary has a completely different hash, so without this launchd
+// cannot restart the updated binary (Gatekeeper rejects it silently).
+func recodesignForGatekeeper(selfPath string) {
+	_ = exec.Command("xattr", "-d", "com.apple.quarantine", selfPath).Run()
+	_ = exec.Command("codesign", "--force", "--sign", "-", selfPath).Run()
+	_ = exec.Command("spctl", "--add", selfPath).Run()
+}
+
 // restart hands control to the OS service manager so the new binary runs.
 //
 // On Linux/macOS the binary has ALREADY been replaced in place by atomicReplace
@@ -160,6 +171,12 @@ func restart(newPath string) error {
 
 	if runtime.GOOS == "darwin" {
 		log.Println("Updater: update applied; exiting for launchd (KeepAlive) to relaunch the new binary")
+		// Re-sign and re-register with Gatekeeper before exit. spctl --add stores
+		// the binary's CDHash in the policy DB; after atomicReplace the CDHash has
+		// changed, so the old install-time entry no longer matches. Without this,
+		// launchd relaunches the new binary but Gatekeeper rejects it and the
+		// daemon silently never comes back up.
+		recodesignForGatekeeper(selfPath)
 		os.Exit(0)
 		return nil
 	}
