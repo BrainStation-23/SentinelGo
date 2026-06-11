@@ -101,6 +101,27 @@ HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\DeviceGuard
 	}
 }
 
+func TestUsbStorStartToState(t *testing.T) {
+	cases := []struct {
+		v    int
+		want string
+	}{
+		{4, "disabled"}, // SERVICE_DISABLED — Group Policy / MDM enforcement
+		{3, "enabled"},  // SERVICE_DEMAND_START
+		{2, "enabled"},  // SERVICE_AUTO_START
+		{1, "enabled"},  // SERVICE_SYSTEM_START
+		{0, "enabled"},  // SERVICE_BOOT_START
+		{-1, "unknown"}, // parseRegDWORD sentinel for missing key
+		{5, "unknown"},  // unexpected value
+	}
+	for _, c := range cases {
+		got := usbStorStartToState(c.v)
+		if got != c.want {
+			t.Errorf("usbStorStartToState(%d) = %q, want %q", c.v, got, c.want)
+		}
+	}
+}
+
 func TestParseAVProductsJSON(t *testing.T) {
 	t.Run("array with one enabled product", func(t *testing.T) {
 		// productState 397568 = 0x61100: bits 12-15 = 1 (enabled), bits 4-7 = 0 (up-to-date)

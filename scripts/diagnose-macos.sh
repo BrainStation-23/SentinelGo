@@ -18,6 +18,8 @@ if [ -f "/opt/sentinelgo/sentinelgo" ]; then
     echo "✅ Binary found at /opt/sentinelgo/sentinelgo"
     echo "   Version: $(/opt/sentinelgo/sentinelgo -version 2>/dev/null || echo 'Unknown')"
     echo "   Permissions: $(ls -la /opt/sentinelgo/sentinelgo)"
+    echo "   Gatekeeper: $(spctl -a -v /opt/sentinelgo/sentinelgo 2>&1 | head -1)"
+    echo "   CodeSign:   $(codesign -dv /opt/sentinelgo/sentinelgo 2>&1 | grep -E 'Signature|TeamIdentifier' | tr '\n' ' ')"
 else
     echo "❌ Binary not found at /opt/sentinelgo/sentinelgo"
     echo "   Expected location: /opt/sentinelgo/sentinelgo"

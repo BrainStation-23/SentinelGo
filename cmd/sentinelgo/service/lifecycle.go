@@ -22,6 +22,15 @@ func HandleInstall(svc AgentService) {
 	if runtime.GOOS == "darwin" {
 		fmt.Println("Installing SentinelGo as launchd service...")
 
+		// Remove the quarantine flag macOS attaches to downloaded binaries, then
+		// re-codesign with an ad-hoc identity so Gatekeeper accepts the daemon
+		// without prompting the user to approve "unidentified developer" software.
+		// spctl --add registers the binary in the Gatekeeper allowlist.
+		const binaryPath = "/opt/sentinelgo/sentinelgo"
+		_ = exec.Command("xattr", "-d", "com.apple.quarantine", binaryPath).Run()
+		_ = exec.Command("codesign", "--force", "--sign", "-", binaryPath).Run()
+		_ = exec.Command("spctl", "--add", binaryPath).Run()
+
 		if err := createLaunchdPlist(); err != nil {
 			log.Fatalf("Failed to create launchd plist: %v", err)
 		}

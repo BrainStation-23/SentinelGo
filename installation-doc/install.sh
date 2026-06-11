@@ -167,14 +167,19 @@ setup_directories() {
     
     # Set permissions
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
-    
+
     local os=$(detect_os)
-    
+
     # Set permissions based on OS
     if [[ "$os" == "macos" ]]; then
         # macOS: Use chown with proper group handling
         chown -R "$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
         chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
+        # Remove download quarantine flag and register with Gatekeeper so macOS does
+        # not block the daemon with "cannot be verified for malware" on first run.
+        xattr -d com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        spctl --add "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
     elif [[ "$os" == "windows" ]]; then
         # Windows: Skip ownership change
         echo "[INFO] Skipping ownership change on Windows"

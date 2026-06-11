@@ -18,12 +18,39 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 	return shared.SecurityInfo{
-		AntivirusProducts: collectAV(),
-		FirewallEnabled:   enabled,
-		FirewallProfiles:  profiles,
-		CoreIsolation:     collectCoreIsolation(),
-		SecureBootEnabled: collectSecureBoot(),
-		ListeningPorts:    collectListeningPorts(),
+		AntivirusProducts:     collectAV(),
+		FirewallEnabled:       enabled,
+		FirewallProfiles:      profiles,
+		CoreIsolation:         collectCoreIsolation(),
+		SecureBootEnabled:     collectSecureBoot(),
+		ListeningPorts:        collectListeningPorts(),
+		USBMassStorageEnabled: collectUSBMassStorage(),
+	}
+}
+
+// collectUSBMassStorage checks whether the USB Mass Storage driver (USBSTOR) is
+// enabled via its service start type in the registry.
+// Group Policy / MDM sets Start=4 (SERVICE_DISABLED) to block removable drives.
+func collectUSBMassStorage() string {
+	output, err := shared.RunCommand("reg", "query",
+		`HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR`, "/v", "Start")
+	if err != nil {
+		return "unknown"
+	}
+	return usbStorStartToState(parseRegDWORD(output, "Start"))
+}
+
+// usbStorStartToState maps a USBSTOR service Start DWORD value to a state string.
+// Start=4 is SERVICE_DISABLED; 0–3 are boot/system/auto/demand (all permit the driver to load).
+// parseRegDWORD returns -1 when the value is absent; any other unexpected value → "unknown".
+func usbStorStartToState(v int) string {
+	switch v {
+	case 4:
+		return "disabled"
+	case 0, 1, 2, 3:
+		return "enabled"
+	default:
+		return "unknown"
 	}
 }
 
