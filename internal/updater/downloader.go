@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+
+	"sentinelgo/internal/winsec"
 )
 
 // downloadAndVerify downloads the binary from url, writes it to a temp file,
@@ -19,7 +21,7 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, version strin
 		return "", "", err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -50,5 +52,13 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, version strin
 	}
 
 	actualChecksum := hex.EncodeToString(hash.Sum(nil))
+
+	// Lock the staged binary down so a standard user cannot swap it for a
+	// malicious one between download and the privileged replace/restart.
+	if err := winsec.SecurePath(newPath); err != nil {
+		// Non-fatal: log and proceed (checksum is still verified by the caller).
+		fmt.Printf("Warning: failed to secure staged binary ACL: %v\n", err)
+	}
+
 	return newPath, actualChecksum, nil
 }

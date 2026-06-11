@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -112,6 +113,36 @@ type Config struct {
 	SoftwareSyncEnabled bool   `json:"software_sync_enabled"` // Enable software synchronization
 	AuditLogsEnabled    bool   `json:"audit_logs_enabled"`    // Enable audit logs service
 	EdgeFunctionURL     string `json:"edge_function_url"`     // Edge Function URL for software data
+
+	// tokenMu guards concurrent token writes (SetTokens) and serialises
+	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
+	// software-sync, and upload tasks read the tokens; without this they race,
+	// and two concurrent SaveAtomic calls could collide on the temp file and
+	// persist a torn config. Unexported, so it is ignored by JSON (un)marshal.
+	tokenMu sync.Mutex
+}
+
+// SetTokens atomically replaces the access and refresh tokens in memory.
+func (c *Config) SetTokens(accessToken, refreshToken string) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	c.AccessToken = accessToken
+	c.RefreshToken = refreshToken
+}
+
+// GetAccessToken returns the current access token under lock. Use this from
+// concurrent task goroutines rather than reading the field directly.
+func (c *Config) GetAccessToken() string {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	return c.AccessToken
+}
+
+// GetRefreshToken returns the current refresh token under lock.
+func (c *Config) GetRefreshToken() string {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	return c.RefreshToken
 }
 
 // GetSoftwareInfoUpdateInterval returns software update interval as time.Duration
@@ -172,11 +203,11 @@ func Load(path string) (*Config, error) {
 		GitHubOwner:             "BrainStation-23",
 		GitHubRepo:              "SentinelGo",
 		CurrentVersion:          Version, // Use injected version
-		AutoUpdate:              true,    // Disabled by default for safety
+		AutoUpdate:              true,    // Enabled by default; updates require a published SHA256 checksum and a semver-newer release (see internal/updater)
 		AutoUpdateInterval:      Duration(24 * time.Hour),
 		AgentInfoUpdateInterval: Duration(time.Hour),
 		TaskPollingInterval:     Duration(5 * time.Minute),
-		EnableTaskPolling:       true, // Disabled by default for safety
+		EnableTaskPolling:       true, // Enabled by default; remote task execution is gated by backend RLS (and, as a follow-up, task-script signing)
 		// Supabase configuration — SupabaseURL has no default; it must be set in config.json.
 		AgentSecret: "",
 		// Log collection configuration
@@ -191,8 +222,14 @@ func Load(path string) (*Config, error) {
 		cfg.Path = GetDefaultConfigPath()
 		// Ensure config directory exists
 		configDir := filepath.Dir(cfg.Path)
-		if err := os.MkdirAll(configDir, 0750); err != nil {
+		if err := os.MkdirAll(configDir, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create config directory: %v", err)
+		}
+		// Harden the directory holding the agent's secrets (SYSTEM/Admins-only
+		// DACL on Windows; 0700 on Unix). Best-effort: log-and-continue so a
+		// permissions failure doesn't prevent the agent from starting.
+		if err := secureDir(configDir); err != nil {
+			log.Printf("warning: failed to secure config directory %s: %v", configDir, err)
 		}
 	}
 
@@ -220,6 +257,15 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 	}
+
+	// Reconcile the reported version with the version actually running. The
+	// compiled-in Version (injected via -ldflags) is the authoritative source of
+	// truth for what binary is executing; the persisted current_version can drift
+	// (e.g. if a self-update swap failed after the version was written). Asserting
+	// the real version here means a failed update is detected and retried on the
+	// next check instead of the agent silently reporting a version it isn't
+	// running. See internal/updater.CheckAndApply.
+	cfg.CurrentVersion = Version
 
 	// Ensure DeviceID exists
 	if cfg.DeviceID == "" {
@@ -265,8 +311,13 @@ func (c *Config) Save() error {
 	return os.WriteFile(c.Path, data, 0600)
 }
 
-// SaveAtomic saves config atomically to prevent corruption
+// SaveAtomic saves config atomically to prevent corruption. It serialises with
+// token writes and uses a unique temp file per call so concurrent saves cannot
+// collide on a fixed ".tmp" path and persist a torn/interleaved config.
 func (c *Config) SaveAtomic() error {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
 	dir := filepath.Dir(c.Path)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
@@ -283,9 +334,31 @@ func (c *Config) SaveAtomic() error {
 		return err
 	}
 
-	// Create temporary file
-	tempPath := c.Path + ".tmp"
-	if err := os.WriteFile(tempPath, data, 0600); err != nil {
+	// Unique temp file in the same directory (so the rename stays on one device).
+	tmp, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		if removeErr := os.Remove(tempPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			log.Printf("failed to remove temp file %s: %v", tempPath, removeErr)
+		}
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	// Restrict to owner read/write (effective on Unix; Windows ACLs are applied
+	// to the final file via secureConfigFile below).
+	if err := tmp.Chmod(0600); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tempPath)
 		return err
 	}
 
@@ -295,6 +368,12 @@ func (c *Config) SaveAtomic() error {
 			log.Printf("failed to remove temp file %s: %v", tempPath, removeErr)
 		}
 		return err
+	}
+
+	// Harden on-disk permissions for the secrets file (no-op on Unix where the
+	// 0600 mode already applies; sets an explicit DACL on Windows).
+	if err := secureConfigFile(c.Path); err != nil {
+		log.Printf("warning: failed to secure config file permissions: %v", err)
 	}
 
 	return nil

@@ -206,13 +206,21 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 			break
 		}
 
-		if err := auditStore.DeleteByIDs(ids); err != nil {
-			log.Printf("[uploader] failed to delete uploaded logs from store: %v", err)
-			// Rows were uploaded successfully; best-effort delete — don't block the loop.
-		}
-
+		// These rows were uploaded successfully; count them regardless of the
+		// delete outcome.
 		totalUploaded += len(logs)
 		u.stats.addUploaded(int64(len(logs)))
+
+		if err := auditStore.DeleteByIDs(ids); err != nil {
+			// CRITICAL: do NOT continue the loop on delete failure. The same rows
+			// are still pending, so the next GetPending would return them again and
+			// we would re-upload the identical batch in a tight loop for as long as
+			// the DB error persists. Stop the cycle; the next scheduled cycle retries.
+			lastErr = fmt.Errorf("delete uploaded logs from store: %w", err)
+			log.Printf("[uploader] %v — stopping cycle to avoid re-uploading the same rows", lastErr)
+			break
+		}
+
 		log.Printf("[uploader] uploaded and removed %d logs from store", len(logs))
 	}
 

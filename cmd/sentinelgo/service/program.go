@@ -49,13 +49,17 @@ func (p *Program) Start(_ AgentService) error {
 		version = "unknown"
 	}
 	sanitizedVersion := sanitize.ForLog(version)
-	lf := lockfile.NewLockFile(fmt.Sprintf("sentinelgo-%s", sanitizedVersion))
+
+	// Use a single, version-INDEPENDENT lock name. A version-suffixed name let
+	// two different versions run simultaneously (e.g. during/after an update),
+	// producing double heartbeats and double audit uploads.
+	lf := lockfile.NewLockFile("sentinelgo")
 
 	locked, err := lf.CheckExistingLock()
 	if err != nil {
 		log.Printf("Warning: Failed to check existing lock: %v", err)
 	} else if locked {
-		log.Printf("Another instance of SentinelGo v%s is already running", sanitizedVersion)
+		log.Printf("Another instance of SentinelGo is already running (this is v%s)", sanitizedVersion)
 		return fmt.Errorf("another instance is already running")
 	}
 
@@ -68,11 +72,23 @@ func (p *Program) Start(_ AgentService) error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.mainIntegration = internal.NewMainIntegration(p.Cfg)
 
-	go func() {
-		if err := p.mainIntegration.Start(p.ctx); err != nil {
-			log.Printf("Main integration stopped with error: %v", err)
+	// Run startup synchronously so an initialization failure (config validation,
+	// logging service init, scheduler start) propagates to the service manager,
+	// which then marks the service failed and applies its restart policy —
+	// instead of the previous behaviour where the service reported "running"
+	// while the agent was actually dead. Start kicks off the long-running loops
+	// in their own goroutines and returns promptly.
+	if err := p.mainIntegration.Start(p.ctx); err != nil {
+		log.Printf("FATAL: main integration failed to start: %v", err)
+		// Release the lock we just acquired so a restart isn't blocked by a
+		// stale lock held by this failed start.
+		if relErr := p.lockFile.Release(); relErr != nil {
+			log.Printf("Warning: failed to release lock after failed start: %v", relErr)
 		}
-	}()
+		p.lockFile = nil
+		p.cancel()
+		return fmt.Errorf("main integration failed to start: %w", err)
+	}
 
 	return nil
 }

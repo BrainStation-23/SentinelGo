@@ -118,7 +118,11 @@ func parseSyslogTimestamp(line string) time.Time {
 			if end > len(line) {
 				end = len(line)
 			}
-			if t, err := time.Parse(layout, line[:end]); err == nil {
+			// Parse in the local zone: syslog "Jan  2 15:04:05" timestamps carry
+			// no zone, and time.Parse would assume UTC — making every entry look
+			// hours off (and, combined with downstream time filters, risk being
+			// mis-ordered). ParseInLocation respects an explicit zone when present.
+			if t, err := time.ParseInLocation(layout, line[:end], time.Local); err == nil {
 				// Syslog doesn't include year -- use current year
 				if t.Year() == 0 {
 					t = t.AddDate(time.Now().Year(), 0, 0)
@@ -233,7 +237,9 @@ func parseMacFileTimestamp(line string) time.Time {
 		if end > len(line) {
 			continue
 		}
-		if t, err := time.Parse(layout, line[:end]); err == nil {
+		// Local zone: macOS system.log timestamps carry no zone (see the syslog
+		// note above). ParseInLocation respects an explicit zone when present.
+		if t, err := time.ParseInLocation(layout, line[:end], time.Local); err == nil {
 			if t.Year() == 0 {
 				t = t.AddDate(time.Now().Year(), 0, 0)
 				if t.After(time.Now()) {

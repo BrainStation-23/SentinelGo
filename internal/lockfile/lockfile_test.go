@@ -2,6 +2,7 @@ package lockfile_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -32,9 +33,6 @@ func TestTryAcquire_Basic(t *testing.T) {
 }
 
 func TestTryAcquire_AlreadyHeld(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("IsProcessRunning uses Signal(os.Kill) on Windows which would kill the test process")
-	}
 	path := lockPath(t)
 
 	lf1 := lockfile.NewLockFileWithPath(path)
@@ -55,9 +53,6 @@ func TestTryAcquire_AlreadyHeld(t *testing.T) {
 }
 
 func TestRelease_RemovesFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows cannot os.Remove an open file; Release() closes then removes, so file persists on error — Unix-only check")
-	}
 	path := lockPath(t)
 	lf := lockfile.NewLockFileWithPath(path)
 	if err := lf.TryAcquire(); err != nil {
@@ -74,9 +69,6 @@ func TestRelease_RemovesFile(t *testing.T) {
 }
 
 func TestRelease_AllowsReacquire(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Release leaves file on Windows (cannot remove open file); re-acquire then triggers Signal(os.Kill) on current PID")
-	}
 	path := lockPath(t)
 
 	lf1 := lockfile.NewLockFileWithPath(path)
@@ -127,9 +119,6 @@ func TestAcquireWithTimeout_Success(t *testing.T) {
 }
 
 func TestAcquireWithTimeout_Timeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("IsProcessRunning uses Signal(os.Kill) on Windows which would kill the test process")
-	}
 	path := lockPath(t)
 
 	lf1 := lockfile.NewLockFileWithPath(path)
@@ -183,9 +172,6 @@ func TestCheckExistingLock_StaleFile(t *testing.T) {
 }
 
 func TestCheckExistingLock_ActiveLock(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("IsProcessRunning uses Signal(os.Kill) on Windows which would kill the test process")
-	}
 	path := lockPath(t)
 
 	lf := lockfile.NewLockFileWithPath(path)
@@ -205,11 +191,28 @@ func TestCheckExistingLock_ActiveLock(t *testing.T) {
 }
 
 func TestIsProcessRunning_CurrentProcess(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Signal(os.Kill) on Windows terminates the target process — cannot safely probe current PID")
-	}
 	if !lockfile.IsProcessRunning(os.Getpid()) {
 		t.Errorf("IsProcessRunning(%d) = false, want true (current process)", os.Getpid())
+	}
+}
+
+func TestIsProcessRunning_ExitedProcess(t *testing.T) {
+	// Start a short-lived child, wait for it to exit, then confirm the probe
+	// reports it as not running — and critically, never terminates anything.
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", "exit", "0")
+	} else {
+		cmd = exec.Command("true")
+	}
+	if err := cmd.Start(); err != nil {
+		t.Skipf("could not start helper process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Wait() // ensure it has fully exited
+
+	if lockfile.IsProcessRunning(pid) {
+		t.Errorf("IsProcessRunning(%d) = true, want false (exited process)", pid)
 	}
 }
 

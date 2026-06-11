@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -138,17 +137,20 @@ func (lf *LockFile) Release() error {
 		return nil
 	}
 
+	// Close the file BEFORE removing it. On Windows an open file cannot be
+	// removed, so closing first ensures the lock file is actually deleted on
+	// all platforms.
+	if err := lf.file.Close(); err != nil {
+		// Log error but continue
+		_ = err
+	}
+
 	// Remove the lock file
 	if err := os.Remove(lf.path); err != nil {
 		// Log error but continue
 		_ = err
 	}
 
-	// Close the file
-	if err := lf.file.Close(); err != nil {
-		// Log error but continue
-		_ = err
-	}
 	lf.file = nil
 	lf.acquired = false
 
@@ -171,24 +173,14 @@ func (lf *LockFile) GetLockedPID() (int, error) {
 	return pid, nil
 }
 
-// IsProcessRunning checks if a process with the given PID is running
-func IsProcessRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	if runtime.GOOS == "windows" {
-		defer func() { _ = process.Release() }()
-		// On Windows, Signal(os.Kill) succeeds (nil error) when the process exists.
-		return process.Signal(os.Kill) == nil
-	}
-
-	// For Unix systems (Linux/macOS), use Signal(0) to check if process exists
-	// This is a non-lethal signal that just checks if the process is reachable
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
-}
+// IsProcessRunning checks if a process with the given PID is running.
+//
+// The implementation is platform-specific (see lockfile_windows.go and
+// lockfile_unix.go) and is guaranteed to be NON-DESTRUCTIVE: it never sends a
+// terminating signal to the inspected process. The previous Windows
+// implementation used Signal(os.Kill), which terminates the target rather than
+// probing it — a stale-lock check could kill the running agent or, on PID
+// reuse, an unrelated process.
 
 // isProcessRunning checks if the process in the lock file is still running
 func (lf *LockFile) isProcessRunning() bool {

@@ -141,6 +141,21 @@ func (s *Scheduler) Start(cfg *config.Config, authSvc *authsvc.Service) error {
 	return nil
 }
 
+// runTaskHandler invokes a task handler with panic recovery. A panic in a
+// collector or handler (e.g. a nil dereference or a type-assertion bug) would
+// otherwise unwind through the task goroutine and crash the entire agent. Here
+// it is logged and converted to an error so the one task fails while the rest of
+// the agent keeps running.
+func runTaskHandler(ctx context.Context, name string, h TaskHandler, cfg *config.Config, authSvc *authsvc.Service) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Task %s panicked (recovered): %v", sanitize.ForLog(name), r)
+			err = fmt.Errorf("task %s panicked: %v", name, r)
+		}
+	}()
+	return h(ctx, cfg, authSvc)
+}
+
 // runInitialTasks executes all enabled tasks once in dependency order using a
 // single background goroutine so the ordering is respected without blocking
 // Scheduler.Start. If a task fails its LastRun is still recorded so dependent
@@ -170,7 +185,7 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 			}
 
 			log.Printf("Running initial task: %s", taskName)
-			if err := task.Handler(s.ctx, cfg, authSvc); err != nil {
+			if err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc); err != nil {
 				log.Printf("Initial task %s failed: %v", taskName, err)
 			} else {
 				log.Printf("Initial task %s completed successfully", taskName)
@@ -236,7 +251,7 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 						defer t.Running.Store(false)
 
 						log.Printf("Running periodic task: %s", taskName)
-						if err := t.Handler(s.ctx, cfg, authSvc); err != nil {
+						if err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc); err != nil {
 							log.Printf("Periodic task %s failed: %v", taskName, err)
 						} else {
 							log.Printf("Periodic task %s completed successfully", taskName)
@@ -337,6 +352,16 @@ type TaskStatus struct {
 func CreateDefaultTasks() []*Task {
 	return []*Task{
 		{
+			// Proactively refresh the JWT well before it expires. Without this,
+			// the access token (typically ~1h) lapsed silently after startup and
+			// every reporting path stopped while the process still looked healthy.
+			Name:         "token-refresh",
+			Interval:     time.Minute,
+			Dependencies: []string{},
+			Handler:      handleTokenRefresh,
+			Enabled:      true,
+		},
+		{
 			Name:         "auto-update",
 			Interval:     24 * time.Hour, // overridden from config.AutoUpdateInterval
 			Dependencies: []string{},
@@ -361,15 +386,37 @@ func CreateDefaultTasks() []*Task {
 }
 
 // Task handlers
+
+// tokenRefreshSkew is how far before expiry the access token is proactively
+// refreshed. With a ~1h Supabase token this leaves comfortable margin.
+const tokenRefreshSkew = 5 * time.Minute
+
+func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+	if authSvc == nil {
+		return nil
+	}
+	if !authsvc.ShouldRefresh(cfg.AccessToken, tokenRefreshSkew) {
+		return nil
+	}
+	log.Printf("Scheduler: access token at/near expiry, refreshing proactively")
+	return authSvc.RefreshToken(ctx, cfg)
+}
+
 func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
 	log.Printf("Running auto-update check")
 	// Use retry wrapper for auto-update
 	return updater.CheckAndApplyWithRetry(ctx, cfg, "")
 }
 
-func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
 	log.Printf("Running agent info update")
 	sysInfo := osinfo.Collect()
+	if sysInfo == nil {
+		// osinfo.Collect returns nil when host.Info() fails. Skip this cycle
+		// rather than dereferencing nil downstream (which panicked the task
+		// goroutine and, with no recover, killed the whole agent).
+		return fmt.Errorf("system info collection returned no data; skipping this cycle")
+	}
 	agentSvc := agentsvc.NewAgentService()
 	return agentSvc.UpdateAgentInfo(ctx, cfg, sysInfo)
 }

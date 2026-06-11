@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -30,16 +31,35 @@ type Asset struct {
 	URL  string `json:"browser_download_url"`
 }
 
-// ProcessInfo contains information about a running SentinelGo process
-type ProcessInfo struct {
-	PID     int
-	Version string
-	CmdLine string
-}
-
 var updateMutex sync.Mutex
 
+// windowsServiceName is the SCM service name registered at install time
+// (see cmd/sentinelgo/main.go). The Windows update path restarts via SCM
+// because a running .exe cannot be replaced in place.
+const windowsServiceName = "SentinelGo"
+
+// HTTP clients with finite timeouts. http.DefaultClient has no timeout, so a
+// hung connection during a release check or download would block the update
+// path forever while holding updateMutex.
+var (
+	apiClient      = httpx.NewClient(30 * time.Second)
+	downloadClient = httpx.NewClient(10 * time.Minute)
+)
+
 // CheckAndApply checks for a newer release and applies the update if available.
+//
+// Order of operations is deliberate (see the audit fixes for C3/C4 and M2):
+//  1. Compare against the COMPILED-IN running version (config.Version), not the
+//     persisted cfg.CurrentVersion. The running binary's version is the source
+//     of truth, so a failed swap can never leave the agent reporting a version
+//     it isn't actually running.
+//  2. Only update on a strictly-newer semantic version (blocks downgrades).
+//  3. Require a SHA256 checksum and a trusted HTTPS GitHub URL.
+//  4. Download and verify BEFORE replacing anything; abort cleanly on any
+//     failure so monitoring capacity is never lost to a failed update.
+//  5. Replace + restart via the OS service manager. The version is NOT
+//     persisted here — the restarted new binary asserts its own version on
+//     startup (config.Load), so a failed update is retried on the next check.
 func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error {
 	updateMutex.Lock()
 	defer updateMutex.Unlock()
@@ -49,13 +69,17 @@ func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error 
 		return fmt.Errorf("fetch latest release: %w", err)
 	}
 
-	if latest.TagName == cfg.CurrentVersion {
-		fmt.Printf("Already up to date: %s\n", latest.TagName)
-		// Still update config to ensure it reflects current version
-		cfg.CurrentVersion = latest.TagName
-		if err := cfg.SaveAtomic(); err != nil {
-			return fmt.Errorf("save config: %w", err)
-		}
+	running := config.Version
+	newer, err := isNewerVersion(latest.TagName, running)
+	if err != nil {
+		// Cannot compare versions (e.g. a "dev" build). Skip rather than risk
+		// applying an unverifiable or wrong-direction change.
+		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
+		return nil
+	}
+	if !newer {
+		fmt.Printf("Already up to date (running %s, latest %s)\n",
+			sanitize.ForLog(running), sanitize.ForLog(latest.TagName))
 		return nil
 	}
 
@@ -64,94 +88,59 @@ func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error 
 		return fmt.Errorf("select asset: %w", err)
 	}
 
-	// NOTE: expectedChecksum may be empty if the release does not include a SHA256SUMS
-	// file or embed checksums in asset names. In that case, verification is skipped with
-	// a warning. Future work: require a checksum by publishing SHA256SUMS with each release.
+	// M2: only download from a trusted HTTPS GitHub host.
+	if err := validateGitHubURL(assetURL); err != nil {
+		return fmt.Errorf("refusing to download release asset: %w", err)
+	}
 
-	sanitizedCurrentVersion := sanitize.ForLog(cfg.CurrentVersion)
-	sanitizedTagName := sanitize.ForLog(latest.TagName)
-	fmt.Printf("Found update: %s -> %s\n", sanitizedCurrentVersion, sanitizedTagName)
+	// M2: a checksum is mandatory. This is a corruption guard, not authenticity
+	// (cryptographic signature verification is a deferred follow-up). Fail closed
+	// rather than installing an unverifiable binary.
+	if expectedChecksum == "" {
+		return fmt.Errorf("refusing to update to %s: no SHA256 checksum published with the release",
+			sanitize.ForLog(latest.TagName))
+	}
 
+	fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.TagName))
+
+	// A backup is mandatory so a failed in-place replace can always roll back.
 	backupPath, err := createBackup()
 	if err != nil {
-		fmt.Printf("Warning: Failed to create backup: %v\n", err)
-	} else {
-		fmt.Printf("Created backup: %s\n", backupPath)
+		return fmt.Errorf("refusing to update without a backup: %w", err)
 	}
+	fmt.Printf("Created backup: %s\n", backupPath)
 
-	fmt.Println("Stopping old SentinelGo processes before update...")
-	if err := stopOldProcesses(); err != nil {
-		fmt.Printf("Warning: Failed to stop some old processes: %v\n", err)
-	}
-
-	fmt.Println("Waiting for old processes to fully terminate...")
-	time.Sleep(5 * time.Second)
-
-	processes, _ := findOldProcesses()
-	if len(processes) > 0 {
-		fmt.Printf("Warning: %d old process(es) still running, force killing...\n", len(processes))
-		for _, proc := range processes {
-			fmt.Printf("  PID: %d, Version: %s\n", proc.PID, proc.Version)
-		}
-		forceKillProcesses(processes)
-		time.Sleep(2 * time.Second)
-	} else {
-		fmt.Println("All old processes stopped successfully")
-	}
-
+	// Download and verify BEFORE touching the running install. If anything fails
+	// here, the running agent is untouched.
 	newPath, actualChecksum, err := downloadAndVerify(ctx, assetURL, expectedChecksum, latest.TagName)
 	if err != nil {
-		if backupPath != "" {
-			fmt.Printf("Update failed, attempting rollback from backup: %s\n", backupPath)
-			if rollbackErr := rollbackFromBackup(backupPath); rollbackErr != nil {
-				return fmt.Errorf("update failed and rollback failed: %v, rollback error: %w", err, rollbackErr)
-			}
-			fmt.Println("Successfully rolled back to previous version")
-		}
+		_ = removeFile(backupPath)
 		return fmt.Errorf("download and verify failed: %w", err)
 	}
-
-	if expectedChecksum != "" && actualChecksum != expectedChecksum {
-		if backupPath != "" {
-			fmt.Printf("Checksum mismatch, attempting rollback from backup: %s\n", backupPath)
-			if rollbackErr := rollbackFromBackup(backupPath); rollbackErr != nil {
-				return fmt.Errorf("checksum mismatch and rollback failed; rollback error: %w", rollbackErr)
-			}
-			fmt.Println("Successfully rolled back to previous version due to checksum mismatch")
-		}
+	if actualChecksum != expectedChecksum {
+		_ = os.Remove(newPath)
+		_ = removeFile(backupPath)
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
 	}
 
-	if expectedChecksum == "" {
-		fmt.Printf("Warning: No checksum provided in release, skipping verification. Downloaded checksum: %s\n", actualChecksum)
-	}
-
+	// Replace the binary. On Unix this is an atomic in-place rename now; on
+	// Windows the running .exe cannot be replaced, so the swap is deferred to a
+	// post-exit script in restart().
 	if runtime.GOOS != "windows" {
 		if err := atomicReplace(newPath); err != nil {
-			if backupPath != "" {
-				fmt.Printf("Atomic replacement failed, attempting rollback from backup: %s\n", backupPath)
-				if rollbackErr := rollbackFromBackup(backupPath); rollbackErr != nil {
-					return fmt.Errorf("atomic replacement failed and rollback failed: %w, rollback error: %w", err, rollbackErr)
-				}
-				fmt.Println("Successfully rolled back to previous version")
+			if rbErr := rollbackFromBackup(backupPath); rbErr != nil {
+				return fmt.Errorf("atomic replace failed (%v) and rollback failed: %w", err, rbErr)
 			}
-			return fmt.Errorf("atomic replacement failed: %w", err)
+			_ = removeFile(backupPath)
+			return fmt.Errorf("atomic replace failed, rolled back to previous version: %w", err)
 		}
-	} else {
-		fmt.Println("Windows update will replace binary after restart")
 	}
 
-	fmt.Printf("Successfully updated to version %s\n", latest.TagName)
+	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.TagName)
+	_ = removeFile(backupPath)
 
-	cfg.CurrentVersion = latest.TagName
-	if err := cfg.SaveAtomic(); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
-
-	if backupPath != "" {
-		_ = removeFile(backupPath)
-	}
-
+	// Hand off to the service manager. Does not persist CurrentVersion — see the
+	// function doc; the restarted binary reconciles its own version on startup.
 	return restart(newPath)
 }
 
@@ -195,7 +184,7 @@ func fetchLatestRelease(ctx context.Context, cfg *config.Config, token string) (
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +259,7 @@ func downloadAndParseChecksumFile(url string) string {
 		return ""
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return ""
 	}

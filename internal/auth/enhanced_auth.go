@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	authsvc "sentinelgo/internal/service/auth"
 )
 
 // EnhancedAuth provides authentication with circuit breaker and exponential backoff
@@ -26,41 +27,39 @@ func NewEnhancedAuth() *EnhancedAuth {
 	}
 }
 
+// tokenRefreshSkew is how far before the JWT's expiry a preemptive refresh is
+// triggered.
+const tokenRefreshSkew = 5 * time.Minute
+
 // ValidateAndRefreshTokens validates current tokens and refreshes if needed
 func (ea *EnhancedAuth) ValidateAndRefreshTokens(ctx context.Context, cfg *config.Config, tokenRefreshFunc func(context.Context, *config.Config) error) error {
 	ea.mu.Lock()
 	defer ea.mu.Unlock()
 
-	// Check if we need to validate tokens (don't check too frequently)
-	if time.Since(ea.lastTokenCheck) < 30*time.Second {
+	// Check if we need to validate tokens (don't check too frequently). Read the
+	// previous check time BEFORE stamping the new one — the old code stamped it
+	// first, which made the expiry branch below permanently unreachable.
+	if !ea.lastTokenCheck.IsZero() && time.Since(ea.lastTokenCheck) < 30*time.Second {
 		return nil
 	}
 	ea.lastTokenCheck = time.Now()
 
 	log.Printf("Validating authentication tokens")
 
-	// Pre-emptive refresh if token is close to expiration
+	// Pre-emptive refresh if the token is at/near expiration.
 	if ea.shouldRefreshToken(cfg) {
-		log.Printf("Token close to expiration, attempting preemptive refresh")
+		log.Printf("Token at/near expiration, attempting preemptive refresh")
 		return ea.refreshWithRetry(ctx, cfg, tokenRefreshFunc)
 	}
 
 	return nil
 }
 
-// shouldRefreshToken determines if token should be refreshed preemptively
+// shouldRefreshToken determines if the token should be refreshed preemptively,
+// based on the JWT's actual `exp` claim rather than a time-since-last-check
+// guess.
 func (ea *EnhancedAuth) shouldRefreshToken(cfg *config.Config) bool {
-	// Simple heuristic: refresh if access token is empty or if it's been a while since last refresh
-	if cfg.AccessToken == "" {
-		return true
-	}
-
-	// If we haven't refreshed in 23 hours, do it preemptively (tokens typically last 24h)
-	if ea.lastTokenCheck.IsZero() || time.Since(ea.lastTokenCheck) > 23*time.Hour {
-		return true
-	}
-
-	return false
+	return authsvc.ShouldRefresh(cfg.AccessToken, tokenRefreshSkew)
 }
 
 // refreshWithRetry attempts to refresh token with exponential backoff

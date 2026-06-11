@@ -309,10 +309,11 @@ func (c *windowsCollector) queryChannel(ctx context.Context, ch eventChannel, ch
 	}
 
 	query := ch.query
-	if recordID, ok := checkpoint[ch.checkpointKey()]; ok {
-		if rid := int64(recordID.(float64)); rid > 0 { // JSON decode
-			query = buildXPathQuery(ch.query, rid)
-		}
+	// Tolerant accessor: the checkpoint value is an in-memory int64 between
+	// cycles and a float64 after JSON persistence. A bare .(float64) assertion
+	// panicked on the in-memory int64 path and crashed the agent.
+	if rid, ok := CheckpointInt64(checkpoint, ch.checkpointKey()); ok && rid > 0 {
+		query = buildXPathQuery(ch.query, rid)
 	}
 
 	channelPath, err := windows.UTF16PtrFromString(ch.name)

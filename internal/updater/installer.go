@@ -8,9 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
-	"time"
+
+	"sentinelgo/internal/winsec"
 )
 
 // atomicReplace replaces the running binary with newPath using an atomic rename.
@@ -133,175 +132,85 @@ func rollbackFromBackup(backupPath string) error {
 	return nil
 }
 
-// restart replaces the binary and starts the new version.
+// restart hands control to the OS service manager so the new binary runs.
+//
+// On Linux/macOS the binary has ALREADY been replaced in place by atomicReplace
+// before this is called, so we simply exit and let the service manager relaunch
+// the (now-new) binary:
+//   - macOS launchd has KeepAlive=true: it relaunches on any exit.
+//   - Linux systemd has Restart=on-failure: it relaunches on a non-zero exit.
+//
+// On Windows a running .exe cannot be replaced in place, so the swap is deferred
+// to a small script that waits for this process to exit, moves the new binary
+// into place, and starts the service again via the SCM.
+//
+// The version is intentionally NOT persisted before this point: if the swap or
+// relaunch fails, the old binary keeps running and its compiled-in version
+// (config.Version) ensures the update is retried on the next check, rather than
+// the agent silently reporting a version it isn't running.
 func restart(newPath string) error {
 	selfPath, err := os.Executable()
 	if err != nil {
 		return err
 	}
 
-	if runtime.GOOS == "darwin" {
-		return restartDarwin(newPath, selfPath)
+	if runtime.GOOS == "windows" {
+		return restartWindows(newPath, selfPath)
 	}
 
-	if runtime.GOOS != "windows" {
-		if err := os.Rename(newPath, selfPath); err != nil {
-			return err
-		}
-		time.Sleep(2 * time.Second)
-		// #nosec G204 - selfPath is a controlled path for self-update
-		cmd := exec.Command(selfPath)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
+	if runtime.GOOS == "darwin" {
+		log.Println("Updater: update applied; exiting for launchd (KeepAlive) to relaunch the new binary")
 		os.Exit(0)
 		return nil
 	}
 
-	// Windows: use batch script to replace after exit
-	bat := selfPath + ".bat"
-	script := fmt.Sprintf(`@echo off
+	// Linux and other systemd-managed platforms: a non-zero exit triggers
+	// Restart=on-failure, relaunching the replaced binary.
+	log.Println("Updater: update applied; exiting for systemd (Restart=on-failure) to relaunch the new binary")
+	os.Exit(1)
+	return nil
+}
 
-timeout /t 2 /nobreak >nul
-move /Y "%s" "%s"
-"%s"
-del "%s"`, newPath, selfPath, selfPath, bat)
-	// #nosec G306 - Windows batch scripts need to be readable by the system
+// restartWindows defers the binary swap to a script because the running .exe is
+// locked. The script waits for this process to exit, replaces the binary with a
+// retry loop (the file unlocks only once we exit), then restarts the service via
+// the SCM. `timeout` is avoided: it fails in non-interactive Session 0 with
+// "Input redirection is not supported"; `ping` provides the delay instead.
+func restartWindows(newPath, selfPath string) error {
+	dir := filepath.Dir(selfPath)
+	bat := filepath.Join(dir, "sentinelgo_update.bat")
+
+	script := fmt.Sprintf(`@echo off
+ping -n 3 127.0.0.1 >nul
+:retry
+move /Y "%s" "%s" >nul 2>&1
+if errorlevel 1 (
+  ping -n 2 127.0.0.1 >nul
+  goto retry
+)
+sc start "%s" >nul 2>&1
+del "%s" >nul 2>&1
+`, newPath, selfPath, windowsServiceName, bat)
+
+	// #nosec G306 - the update script must be executable/readable by the system
 	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
-		return err
+		return fmt.Errorf("write update script: %w", err)
 	}
-	// #nosec G204 - bat is a controlled path for self-update
-	cmd := exec.Command(bat)
+
+	// Lock the script down to SYSTEM/Administrators/owner so a standard user
+	// cannot tamper with it during the window before it runs (it executes with
+	// the service's privileges).
+	if err := winsec.SecurePath(bat); err != nil {
+		log.Printf("Updater: warning – failed to secure update script ACL: %v", err)
+	}
+
+	// #nosec G204 - bat is a controlled path generated above
+	cmd := exec.Command("cmd", "/c", "start", "/b", "", bat)
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("launch update script: %w", err)
 	}
+
+	log.Println("Updater: update staged; exiting so the SCM can restart the service with the new binary")
 	os.Exit(0)
 	return nil
-}
-
-func restartDarwin(newPath, selfPath string) error {
-	if err := stopLaunchdService(); err != nil {
-		fmt.Printf("Warning: Failed to stop launchd service: %v\n", err)
-	}
-
-	time.Sleep(3 * time.Second)
-
-	if err := os.Rename(newPath, selfPath); err != nil {
-		return fmt.Errorf("failed to replace binary: %w", err)
-	}
-
-	if _, err := os.Stat(selfPath); os.IsNotExist(err) {
-		return fmt.Errorf("new binary not found after replacement: %w", err)
-	}
-
-	fmt.Printf("Successfully updated to version %s\n", extractVersionFromPath(newPath))
-
-	time.Sleep(2 * time.Second)
-
-	if err := startLaunchdService(); err != nil {
-		fmt.Printf("Warning: Failed to start launchd service: %v\n", err)
-		fmt.Println("Falling back to direct execution...")
-		// #nosec G204 - selfPath is a controlled path for self-update
-		cmd := exec.Command(selfPath, "-run")
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start fallback execution: %w", err)
-		}
-		fmt.Println("Started SentinelGo in direct execution mode")
-		os.Exit(0)
-	}
-
-	time.Sleep(3 * time.Second)
-	fmt.Println("Verifying only new version is running...")
-
-	finalCheck, _ := findOldProcesses()
-	if len(finalCheck) > 0 {
-		fmt.Printf("Warning: Found %d old process(es) still running after update:\n", len(finalCheck))
-		for _, proc := range finalCheck {
-			fmt.Printf("  PID: %d, Version: %s\n", proc.PID, proc.Version)
-		}
-		fmt.Println("Force stopping remaining old processes...")
-		forceKillProcesses(finalCheck)
-		time.Sleep(1 * time.Second)
-	} else {
-		fmt.Println("Success: Only new version is running")
-	}
-
-	return nil
-}
-
-func stopLaunchdService() error {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-
-	cmd := exec.Command("launchctl", "list", "com.sentinelgo.agent")
-	if err := cmd.Run(); err != nil {
-		return nil // not running
-	}
-
-	fmt.Println("Stopping launchd service...")
-	cmd = exec.Command("launchctl", "unload", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist")
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("Warning: Failed to unload launchd service: %v\n", err)
-	}
-
-	return nil
-}
-
-func startLaunchdService() error {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-
-	fmt.Println("Starting launchd service...")
-
-	plistPath := "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
-	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
-		fmt.Printf("Launchd plist not found at %s\n", plistPath)
-		return fmt.Errorf("launchd plist file not found - service may not be installed")
-	}
-
-	cmd := exec.Command("launchctl", "load", "-w", plistPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("Failed to load launchd service: %v\nOutput: %s\n", err, string(output))
-		return fmt.Errorf("failed to load launchd service: %w", err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	cmd = exec.Command("launchctl", "start", "com.sentinelgo.agent")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("Failed to start launchd service: %v\nOutput: %s\n", err, string(output))
-		return fmt.Errorf("failed to start launchd service: %w", err)
-	}
-
-	time.Sleep(1 * time.Second)
-	cmd = exec.Command("launchctl", "list", "com.sentinelgo.agent")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		fmt.Printf("Warning: Could not verify launchd service status: %v\n", err)
-	} else if strings.Contains(string(output), "com.sentinelgo.agent") {
-		fmt.Println("Launchd service started successfully")
-	} else {
-		fmt.Printf("Warning: Launchd service may not be running properly. Output: %s\n", string(output))
-	}
-
-	return nil
-}
-
-// forceKillProcesses sends SIGKILL/taskkill to all listed processes.
-func forceKillProcesses(processes []ProcessInfo) {
-	for _, proc := range processes {
-		var cmd *exec.Cmd
-		switch runtime.GOOS {
-		case "windows":
-			// #nosec G204 - taskkill is a system command with controlled arguments
-			cmd = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(proc.PID))
-		case "linux", "darwin":
-			// #nosec G204 - kill is a system command with controlled arguments
-			cmd = exec.Command("kill", "-KILL", strconv.Itoa(proc.PID))
-		}
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Warning: failed to kill process %d: %v\n", proc.PID, err)
-		}
-	}
 }
