@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"runtime"
-	"time"
 
 	"sentinelgo/internal"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/lockfile"
 	"sentinelgo/internal/sanitize"
-	auditlogsvc "sentinelgo/internal/service/auditlog"
 )
 
 // Program implements the service start/stop lifecycle. It is constructed in
@@ -20,7 +17,6 @@ type Program struct {
 	Cfg             *config.Config
 	lockFile        *lockfile.LockFile
 	mainIntegration *internal.MainIntegration
-	auditService    *auditlogsvc.AuditLogService
 	ctx             context.Context
 	cancel          context.CancelFunc
 }
@@ -78,40 +74,7 @@ func (p *Program) Start(_ AgentService) error {
 		}
 	}()
 
-	if p.Cfg.AuditLogsEnabled {
-		p.auditService = auditlogsvc.NewAuditLogService(p.Cfg)
-		go p.runAuditLogsService()
-		log.Println("Audit logs service started")
-	}
-
 	return nil
-}
-
-func (p *Program) runAuditLogsService() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-p.ctx.Done():
-			log.Println("Audit logs service stopped")
-			return
-		case <-ticker.C:
-			appCfg := &auditlogsvc.AppConfig{
-				ConfigPath:    p.Cfg.Path,
-				EventType:     "system_check",
-				OSType:        runtime.GOOS,
-				UptimeSeconds: 0,
-			}
-
-			batchData := p.auditService.CreateBatchData(appCfg)
-			if err := p.auditService.SendBatchLogsWithContext(p.ctx, batchData); err != nil {
-				log.Printf("Failed to send audit logs: %v", err)
-			} else {
-				log.Println("Audit logs sent successfully")
-			}
-		}
-	}
 }
 
 // Stop is called by the platform service manager to shut the agent down.

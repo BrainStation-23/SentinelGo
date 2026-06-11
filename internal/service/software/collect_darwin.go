@@ -64,6 +64,7 @@ type systemProfilerOutput struct {
 		Version      string `json:"version"`
 		Path         string `json:"path"`
 		ObtainedFrom string `json:"obtained_from"`
+		LastModified string `json:"lastModified"`
 	} `json:"SPApplicationsDataType"`
 }
 
@@ -83,6 +84,10 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) {
 			appStoreApp = "true"
 		}
 		now := time.Now().Format(time.RFC3339)
+		firstSeen := now
+		if app.LastModified != "" {
+			firstSeen = app.LastModified
+		}
 		*applications = append(*applications, SoftwareInfo{
 			Name:             app.Name,
 			DisplayName:      app.Name,
@@ -92,7 +97,7 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) {
 			Source:           source,
 			Type:             source,
 			Status:           "installed",
-			FirstSeenAt:      now,
+			FirstSeenAt:      firstSeen,
 			LastSeenAt:       now,
 			IsActive:         true,
 		})

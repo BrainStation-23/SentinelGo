@@ -4,6 +4,7 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +36,7 @@ func (s *SoftwareService) getDebPackages() []SoftwareInfo {
 }
 
 func (s *SoftwareService) getRPMPackages() []SoftwareInfo {
-	cmd := exec.Command("rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE}")
+	cmd := exec.Command("rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: rpm -qa failed: %v", err)
@@ -106,6 +107,12 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 			continue
 		}
 		now := time.Now().Format(time.RFC3339)
+		firstSeen := now
+		if len(parts) >= 4 {
+			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
+				firstSeen = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+			}
+		}
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
@@ -113,7 +120,7 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 			Source:           "rpm_packages",
 			Type:             "rpm_packages",
 			Status:           "installed",
-			FirstSeenAt:      now,
+			FirstSeenAt:      firstSeen,
 			LastSeenAt:       now,
 			IsActive:         true,
 		})

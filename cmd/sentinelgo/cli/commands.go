@@ -14,50 +14,35 @@ import (
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/osinfo"
 	agentsvc "sentinelgo/internal/service/agent"
-	auditlogsvc "sentinelgo/internal/service/auditlog"
 	authsvc "sentinelgo/internal/service/auth"
 )
 
 func HandleAuditLogsStandalone(cfg *config.Config) {
 	fmt.Println("Starting audit logs service in standalone mode...")
 
-	auditService := auditlogsvc.NewAuditLogService(cfg)
+	li, err := logging.NewLoggingIntegration(cfg)
+	if err != nil {
+		fmt.Printf("Failed to create logging integration: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				appCfg := &auditlogsvc.AppConfig{
-					ConfigPath:    cfg.Path,
-					EventType:     "system_check",
-					OSType:        runtime.GOOS,
-					UptimeSeconds: 0,
-				}
-
-				batchData := auditService.CreateBatchData(appCfg)
-				if err := auditService.SendBatchLogsWithContext(ctx, batchData); err != nil {
-					log.Printf("Failed to send audit logs: %v", err)
-				} else {
-					log.Println("Audit logs sent successfully")
-				}
-			}
-		}
-	}()
+	if err := li.Start(ctx); err != nil {
+		fmt.Printf("Failed to start logging service: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Println("Audit logs service is running. Press Ctrl+C to stop.")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
-	fmt.Println("\nAudit logs service stopped")
+
+	fmt.Println("\nStopping audit logs service...")
+	if err := li.Stop(); err != nil {
+		fmt.Printf("Warning: failed to stop logging service: %v\n", err)
+	}
 }
 
 func HandleAuditLogsStatus(cfg *config.Config) {
