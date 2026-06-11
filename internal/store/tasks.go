@@ -193,6 +193,42 @@ func (s *TaskStore) GetAssignedTasks() ([]taskstore.Task, error) {
 	return s.scanTasks(rows)
 }
 
+// MarkTaskExecuting transitions a task from 'assigned' to 'executing' before
+// the script is invoked. This ensures that if the agent is killed mid-execution
+// (e.g. by the reboot script it is running), the task is NOT picked up again on
+// the next startup — GetAssignedTasks only returns WHERE status = 'assigned'.
+func (s *TaskStore) MarkTaskExecuting(taskID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		UPDATE tasks SET status = 'executing', updated_at = ? WHERE id = ?
+	`, now, taskID)
+	return err
+}
+
+// ResetInterruptedTasks marks any task stuck in 'executing' (agent was killed
+// mid-run) as 'failed' so it is reported to the server rather than silently
+// re-executed. attempt_count is set to maxRetryAttempts so ResetOldFailedTasks
+// never automatically recycles these back to 'assigned'.
+// Called once per startup, before polling or execution.
+func (s *TaskStore) ResetInterruptedTasks() (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.Exec(`
+		UPDATE tasks
+		SET status       = 'failed',
+		    note         = 'Agent restarted during task execution; task may have completed. Re-check manually.',
+		    completed_at = ?,
+		    updated_at   = ?,
+		    is_synced    = 0,
+		    attempt_count = ?
+		WHERE status = 'executing'
+	`, now, now, maxRetryAttempts)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
 // UpdateTaskStatus updates the status, note, and sync flag for a task.
 func (s *TaskStore) UpdateTaskStatus(taskID, status, note string, isSynced bool) error {
 	syncedValue := 0

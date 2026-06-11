@@ -83,19 +83,17 @@ func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error 
 		return nil
 	}
 
-	assetURL, expectedChecksum, err := selectAssetWithChecksum(latest, runtime.GOOS, runtime.GOARCH)
+	assetURL, expectedChecksum, sigURL, err := selectAssetWithChecksum(latest, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return fmt.Errorf("select asset: %w", err)
 	}
 
-	// M2: only download from a trusted HTTPS GitHub host.
+	// Only download from a trusted HTTPS GitHub host.
 	if err := validateGitHubURL(assetURL); err != nil {
 		return fmt.Errorf("refusing to download release asset: %w", err)
 	}
 
-	// M2: a checksum is mandatory. This is a corruption guard, not authenticity
-	// (cryptographic signature verification is a deferred follow-up). Fail closed
-	// rather than installing an unverifiable binary.
+	// A SHA256 checksum is mandatory as a corruption guard.
 	if expectedChecksum == "" {
 		return fmt.Errorf("refusing to update to %s: no SHA256 checksum published with the release",
 			sanitize.ForLog(latest.TagName))
@@ -111,8 +109,9 @@ func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error 
 	fmt.Printf("Created backup: %s\n", backupPath)
 
 	// Download and verify BEFORE touching the running install. If anything fails
-	// here, the running agent is untouched.
-	newPath, actualChecksum, err := downloadAndVerify(ctx, assetURL, expectedChecksum, latest.TagName)
+	// here, the running agent is untouched. downloadAndVerify verifies both the
+	// SHA256 checksum and the ed25519 signature; it fails closed on a missing sig.
+	newPath, actualChecksum, err := downloadAndVerify(ctx, assetURL, expectedChecksum, sigURL, latest.TagName)
 	if err != nil {
 		_ = removeFile(backupPath)
 		return fmt.Errorf("download and verify failed: %w", err)
@@ -203,7 +202,11 @@ func fetchLatestRelease(ctx context.Context, cfg *config.Config, token string) (
 	return &rel, nil
 }
 
-func selectAssetWithChecksum(rel *GitHubRelease, goos, goarch string) (string, string, error) {
+// selectAssetWithChecksum scans the release asset list for the platform binary,
+// its .sig file, and the SHA256SUMS file. Returns (assetURL, checksum, sigURL, err).
+// sigURL is "" when no matching .sig asset exists; the caller (CheckAndApply) passes
+// it to downloadAndVerify which fails closed on an empty sigURL.
+func selectAssetWithChecksum(rel *GitHubRelease, goos, goarch string) (assetURL, checksum, sigURL string, err error) {
 	var suffix string
 	switch goos {
 	case "windows":
@@ -211,10 +214,12 @@ func selectAssetWithChecksum(rel *GitHubRelease, goos, goarch string) (string, s
 	case "linux", "darwin":
 		suffix = ""
 	default:
-		return "", "", fmt.Errorf("unsupported OS %s", goos)
+		return "", "", "", fmt.Errorf("unsupported OS %s", goos)
 	}
 
 	pattern := fmt.Sprintf("sentinelgo-%s-%s%s", goos, goarch, suffix)
+	sigPattern := pattern + ".sig"
+
 	fmt.Printf("Looking for asset: %s\n", pattern)
 	fmt.Printf("Available assets: %v\n", func() (names []string) {
 		for _, asset := range rel.Assets {
@@ -224,28 +229,20 @@ func selectAssetWithChecksum(rel *GitHubRelease, goos, goarch string) (string, s
 	}())
 
 	for _, asset := range rel.Assets {
-		if asset.Name == pattern {
-			fmt.Printf("Found matching asset: %s\n", asset.Name)
-			return asset.URL, extractChecksumFromAsset(asset), nil
-		}
-	}
-	return "", "", fmt.Errorf("no matching asset for %s-%s", goos, goarch)
-}
-
-// extractChecksumFromAsset extracts SHA256 checksum from asset information.
-func extractChecksumFromAsset(asset Asset) string {
-	if strings.HasSuffix(asset.Name, "SHA256SUMS") || strings.HasSuffix(asset.Name, "sha256sums") {
-		return downloadAndParseChecksumFile(asset.URL)
-	}
-
-	if idx := strings.Index(asset.Name, "sha256:"); idx != -1 {
-		checksum := strings.TrimRight(asset.Name[idx+7:], " )\n\r")
-		if len(checksum) == 64 {
-			return checksum
+		switch asset.Name {
+		case pattern:
+			assetURL = asset.URL
+		case sigPattern:
+			sigURL = asset.URL
+		case "SHA256SUMS", "sha256sums":
+			checksum = downloadAndParseChecksumFile(asset.URL)
 		}
 	}
 
-	return ""
+	if assetURL == "" {
+		return "", "", "", fmt.Errorf("no matching asset for %s-%s", goos, goarch)
+	}
+	return assetURL, checksum, sigURL, nil
 }
 
 // downloadAndParseChecksumFile downloads a SHA256SUMS file and returns the checksum

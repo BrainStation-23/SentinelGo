@@ -11,6 +11,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo"
+	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/sanitize"
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
@@ -408,9 +409,30 @@ func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 	return updater.CheckAndApplyWithRetry(ctx, cfg, "")
 }
 
+// collectTimeout caps the entire agent-info-update cycle (osinfo + RPC).
+// osinfo.Collect is synchronous and has no context parameter; without this
+// bound, a hung gopsutil call would leave task.Running=true indefinitely and
+// silently block every subsequent periodic tick.
+const collectTimeout = 90 * time.Second
+
 func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
 	log.Printf("Running agent info update")
-	sysInfo := osinfo.Collect()
+
+	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
+	defer cancel()
+
+	type result struct{ info *shared.SystemInfo }
+	ch := make(chan result, 1)
+	go func() { ch <- result{osinfo.Collect()} }()
+
+	var sysInfo *shared.SystemInfo
+	select {
+	case <-tctx.Done():
+		return fmt.Errorf("osinfo.Collect timed out after %v", collectTimeout)
+	case r := <-ch:
+		sysInfo = r.info
+	}
+
 	if sysInfo == nil {
 		// osinfo.Collect returns nil when host.Info() fails. Skip this cycle
 		// rather than dereferencing nil downstream (which panicked the task
@@ -418,7 +440,7 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.S
 		return fmt.Errorf("system info collection returned no data; skipping this cycle")
 	}
 	agentSvc := agentsvc.NewAgentService()
-	return agentSvc.UpdateAgentInfo(ctx, cfg, sysInfo)
+	return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
 }
 
 func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {

@@ -164,7 +164,7 @@ func (c *Config) GetAutoUpdateInterval() time.Duration {
 // GetAgentInfoUpdateInterval returns how often to push inventory to Supabase.
 func (c *Config) GetAgentInfoUpdateInterval() time.Duration {
 	if time.Duration(c.AgentInfoUpdateInterval) == 0 {
-		return time.Hour
+		return 5 * time.Minute
 	}
 	return time.Duration(c.AgentInfoUpdateInterval)
 }
@@ -205,7 +205,7 @@ func Load(path string) (*Config, error) {
 		CurrentVersion:          Version, // Use injected version
 		AutoUpdate:              true,    // Enabled by default; updates require a published SHA256 checksum and a semver-newer release (see internal/updater)
 		AutoUpdateInterval:      Duration(24 * time.Hour),
-		AgentInfoUpdateInterval: Duration(time.Hour),
+		AgentInfoUpdateInterval: Duration(5 * time.Minute),
 		TaskPollingInterval:     Duration(5 * time.Minute),
 		EnableTaskPolling:       true, // Enabled by default; remote task execution is gated by backend RLS (and, as a follow-up, task-script signing)
 		// Supabase configuration — SupabaseURL has no default; it must be set in config.json.

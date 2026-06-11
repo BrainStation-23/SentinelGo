@@ -86,8 +86,24 @@ func (s *TaskPollingService) SetTokenRefresher(refresher TokenRefresher) {
 	s.tokenRefresher = refresher
 }
 
+// MarkTaskExecuting transitions a task to 'executing' before the script runs.
+// See store.TaskStore.MarkTaskExecuting for the safety rationale.
+func (s *TaskPollingService) MarkTaskExecuting(taskID string) error {
+	return s.store.MarkTaskExecuting(taskID)
+}
+
 // PollAndStoreTasks fetches tasks from RPC and stores them in SQLite.
 func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
+	// Clean up tasks that were mid-execution when the agent last died. They are
+	// marked 'failed (interrupted)' with is_synced=0 so SyncPendingTasks below
+	// will report them to the server. attempt_count is maxed so they are never
+	// automatically retried (re-running a reboot task would loop forever).
+	if n, err := s.store.ResetInterruptedTasks(); err != nil {
+		log.Printf("TaskPolling: failed to reset interrupted tasks: %v", err)
+	} else if n > 0 {
+		log.Printf("TaskPolling: marked %d interrupted task(s) as failed (were 'executing' at restart)", n)
+	}
+
 	if resetCount, err := s.store.ResetOldFailedTasks(5 * time.Minute); err != nil {
 		log.Printf("TaskPolling: Failed to reset old failed tasks: %v", err)
 	} else if resetCount > 0 {
