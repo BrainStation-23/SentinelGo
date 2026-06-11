@@ -17,25 +17,29 @@ func createLaunchdPlist() error {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>
-  <string>com.sentinelgo.agent</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/opt/sentinelgo/sentinelgo</string>
-    <string>-run</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/var/log/sentinelgo.log</string>
-  <key>StandardErrorPath</key>
-  <string>/var/log/sentinelgo.err</string>
-  <key>WorkingDirectory</key>
-  <string>/opt/sentinelgo</string>
-  <key>Comment</key>
-  <string>SentinelGo Agent v%s - Cross-platform system monitoring</string>
+    <key>Label</key>
+    <string>com.sentinelgo.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/sentinelgo/sentinelgo</string>
+        <string>-run</string>
+        <string>--config</string>
+        <string>/opt/sentinelgo/.sentinelgo/config.json</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/sentinelgo.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/sentinelgo.log</string>
+    <key>UserName</key>
+    <string>root</string>
+    <key>WorkingDirectory</key>
+    <string>/opt/sentinelgo</string>
+    <key>Comment</key>
+    <string>SentinelGo Agent v%s - Cross-platform system monitoring</string>
 </dict>
 </plist>`, version)
 
@@ -54,7 +58,8 @@ func createLaunchdPlist() error {
 }
 
 func loadLaunchdService() error {
-	if err := exec.Command("launchctl", "load", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
+	// launchctl bootstrap is the supported API on macOS 10.15+; launchctl load is deprecated.
+	if err := exec.Command("launchctl", "bootstrap", "system", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
 		return fmt.Errorf("load launchd service: %w", err)
 	}
 	fmt.Println("Loaded launchd service: com.sentinelgo.agent")
@@ -62,7 +67,8 @@ func loadLaunchdService() error {
 }
 
 func unloadLaunchdService() error {
-	if err := exec.Command("launchctl", "unload", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
+	// launchctl bootout is the supported API on macOS 10.15+; launchctl unload is deprecated.
+	if err := exec.Command("launchctl", "bootout", "system", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
 		return fmt.Errorf("unload launchd service: %w", err)
 	}
 	fmt.Println("Unloaded launchd service: com.sentinelgo.agent")
