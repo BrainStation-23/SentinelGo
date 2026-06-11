@@ -171,7 +171,7 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	}
 
 	req.Header.Set("apikey", s.cfg.SupabaseKey)
-	req.Header.Set("Authorization", "Bearer "+s.cfg.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+s.cfg.GetAccessToken())
 
 	resp, err := s.client.Do(req)
 	if err != nil {

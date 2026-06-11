@@ -13,10 +13,15 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/store"
 
 	postgrest "github.com/supabase-community/postgrest-go"
 )
+
+// rpcTimeout bounds a single Supabase RPC so a hung connection cannot wedge the
+// scheduled software-sync task.
+const rpcTimeout = 60 * time.Second
 
 // SendSoftwareData sends software data to the Edge Function, falling back to
 // the PostgREST RPC if the edge function is not deployed (404).
@@ -142,7 +147,7 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 	var accessToken string
 	var anonKey string
 	if cfg != nil {
-		accessToken = cfg.AccessToken
+		accessToken = cfg.GetAccessToken()
 		anonKey = cfg.SupabaseKey
 	}
 	if accessToken == "" {
@@ -160,11 +165,16 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 		},
 	)
 
-	rawResult := client.Rpc("agent_upsert_software", "", map[string]interface{}{
-		"payload": map[string]interface{}{
-			"software": items,
-		},
+	rawResult, err := rpcutil.CallWithTimeout(ctx, rpcTimeout, func() (string, error) {
+		return client.Rpc("agent_upsert_software", "", map[string]interface{}{
+			"payload": map[string]interface{}{
+				"software": items,
+			},
+		}), client.ClientError
 	})
+	if err != nil {
+		return fmt.Errorf("call agent_upsert_software RPC: %w", err)
+	}
 	if rawResult == "" {
 		return fmt.Errorf("call agent_upsert_software RPC: empty response")
 	}

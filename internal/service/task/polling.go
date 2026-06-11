@@ -41,7 +41,7 @@ type TaskPollingService struct {
 
 // NewTaskPollingService creates a new task polling service.
 func NewTaskPollingService(cfg *config.Config, dbPath string) (*TaskPollingService, error) {
-	client := taskstore.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.AccessToken)
+	client := taskstore.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
 
 	taskStore, err := store.NewTaskStore(dbPath)
 	if err != nil {

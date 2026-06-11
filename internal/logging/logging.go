@@ -260,68 +260,87 @@ func (li *LoggingIntegration) subscriptionLoop(ctx context.Context) {
 	}
 }
 
-// runCollection performs a single batch collection cycle with time-window bounding.
+// maxDrainIterations bounds how many collect batches a single cycle will pull.
+// It is a safety backstop against a collector that never reports "drained"
+// (e.g. a source on a very busy host, or one whose checkpoint fails to advance).
+// When the cap is hit, the persisted checkpoint guarantees the remaining backlog
+// is picked up on the next cycle — nothing is lost, it is only deferred.
+const maxDrainIterations = 100
+
+// runCollection performs a single collection cycle, draining ALL entries
+// available since the last checkpoint into the local SQLite queue.
 //
-// It records T = now and windowStart = T - flushInterval, collects raw entries from the
-// OS since the last checkpoint, then discards any entry with Timestamp before windowStart.
-// The checkpoint is advanced to the latest record position of ALL collected entries
-// (including those outside the window) so they are not re-fetched on the next cycle.
+// Correctness notes (audit fixes H1/H6 — this is a compliance agent, audit
+// events must not be silently dropped):
+//   - There is NO time-window filter. The previous implementation discarded any
+//     entry older than now-flushInterval AFTER advancing the checkpoint past it,
+//     so a downtime backlog (agent offline > flushInterval) was permanently lost.
+//     The checkpoint/cursor is the single source of "what is new".
+//   - The checkpoint is advanced ONLY after entries are durably stored, so a
+//     store failure re-collects rather than skips. The SQLite store is the
+//     at-least-once queue; the uploader drains it independently.
+//   - Bursts larger than one batch are drained in a loop instead of being
+//     truncated to a fixed cap, so high-volume periods are not silently dropped.
 func (li *LoggingIntegration) runCollection(ctx context.Context) error {
-	collectionTime := time.Now()
-	windowStart := collectionTime.Add(-li.cfg.GetLogFlushInterval())
+	totalCollected := 0
+	totalStored := 0
+	cappedOut := false
 
-	cp := li.checkpoint.Get()
-	collectorCP := make(collector.CheckpointData, len(cp))
-	for k, v := range cp {
-		collectorCP[k] = v
-	}
+	for iter := 0; iter < maxDrainIterations; iter++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 
-	entries, newCP, err := li.collector.Collect(ctx, collectorCP)
-	if err != nil {
-		return fmt.Errorf("collect: %w", err)
-	}
+		collectorCP := collector.CheckpointData(li.checkpoint.Get())
 
-	if len(entries) == 0 {
-		return nil
-	}
+		entries, newCP, err := li.collector.Collect(ctx, collectorCP)
+		if err != nil {
+			return fmt.Errorf("collect: %w", err)
+		}
+		if len(entries) == 0 {
+			break // drained: nothing new since the checkpoint
+		}
 
-	// Advance checkpoint over ALL fetched entries so we don't re-read them next cycle.
-	updatedCP := make(CheckpointData, len(newCP))
-	for k, v := range newCP {
-		updatedCP[k] = v
-	}
-	li.checkpoint.Update(updatedCP)
+		// Parse and persist BEFORE advancing the checkpoint. The store dedups by
+		// hash, so a re-collect after a crash between Insert and checkpoint Save
+		// produces no duplicates.
+		parsed := li.parser.Parse(entries, li.parserConfig())
+		if err := li.store.Insert(parsed); err != nil {
+			return fmt.Errorf("store insert: %w", err)
+		}
 
-	// Bound to the time window: discard entries older than windowStart.
-	filtered := entries[:0]
-	for _, e := range entries {
-		if !e.Timestamp.Before(windowStart) {
-			filtered = append(filtered, e)
+		// Advance the checkpoint past entries now durably stored. Update merges,
+		// so per-source keys absent from newCP are preserved.
+		li.checkpoint.Update(CheckpointData(newCP))
+
+		totalCollected += len(entries)
+		totalStored += len(parsed)
+
+		if iter == maxDrainIterations-1 {
+			cappedOut = true
 		}
 	}
 
-	if len(filtered) == 0 {
-		log.Printf("[logging] collected %d entries, all outside time window — skipping parse", len(entries))
+	if totalCollected == 0 {
 		return nil
 	}
 
-	// Cap to per-cycle limit after time-window filter.
-	if len(filtered) > defaultMaxEntriesPerCycle {
-		filtered = filtered[:defaultMaxEntriesPerCycle]
+	// Persist the checkpoint now that entries are in the durable store, decoupled
+	// from upload success — the uploader retries from the store independently.
+	if err := li.checkpoint.Save(); err != nil {
+		log.Printf("[logging] checkpoint save error after collection: %v", err)
 	}
 
-	parsed := li.parser.Parse(filtered, li.parserConfig())
-	if err := li.store.Insert(parsed); err != nil {
-		return fmt.Errorf("store insert: %w", err)
+	li.stats.addCollected(int64(totalCollected))
+	li.stats.addStored(int64(totalStored))
+
+	if cappedOut {
+		log.Printf("[logging] collected %d entries, %d stored (drain cap of %d batches hit; "+
+			"remaining backlog continues next cycle, checkpoint persisted — no loss)",
+			totalCollected, totalStored, maxDrainIterations)
+	} else {
+		log.Printf("[logging] collected %d entries, %d stored", totalCollected, totalStored)
 	}
-
-	li.stats.addCollected(int64(len(entries)))
-	li.stats.addStored(int64(len(parsed)))
-
-	log.Printf("[logging] collected %d entries, %d in window [%s, %s], %d stored",
-		len(entries), len(filtered),
-		windowStart.Format(time.RFC3339), collectionTime.Format(time.RFC3339),
-		len(parsed))
 
 	return nil
 }

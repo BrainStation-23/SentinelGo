@@ -206,7 +206,11 @@ func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchDat
 		return fmt.Errorf("marshal batch data: %w", err)
 	}
 
-	log.Printf("request data from Audit Service: %s", string(data))
+	// Log only the size, never the payload: a batch can contain up to 500 audit
+	// events including usernames, hostnames and process command lines. Dumping
+	// them into the agent's own log leaks sensitive data into logs of unknown
+	// retention/permissions and bloats them.
+	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 
 	req, err := s.newRequest(ctx, data)
 	if err != nil {

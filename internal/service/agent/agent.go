@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo/shared"
+	"sentinelgo/internal/service/rpcutil"
 
 	postgrest "github.com/supabase-community/postgrest-go"
 )
+
+// rpcTimeout bounds a single Supabase RPC so a hung connection cannot wedge the
+// scheduled task that calls it.
+const rpcTimeout = 60 * time.Second
 
 // AgentUpdatePayload represents data structure for updating agent information
 type AgentUpdatePayload struct {
@@ -97,10 +103,15 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		SecurityInfo:     sysInfo.SecurityInfo,
 	}
 
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.AccessToken)
-	rawResult := client.Rpc("agent_push_inventory", "", map[string]interface{}{
-		"payload": payload,
+	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
+	rawResult, err := rpcutil.CallWithTimeout(ctx, rpcTimeout, func() (string, error) {
+		return client.Rpc("agent_push_inventory", "", map[string]interface{}{
+			"payload": payload,
+		}), client.ClientError
 	})
+	if err != nil {
+		return fmt.Errorf("call agent_push_inventory RPC: %w", err)
+	}
 	if rawResult == "" {
 		return fmt.Errorf("call agent_push_inventory RPC: empty response")
 	}
@@ -120,7 +131,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 
 // SetAgentStatus updates only the agent status column via the PostgREST SDK.
 func (s *AgentService) SetAgentStatus(ctx context.Context, cfg *config.Config, status string) error {
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.AccessToken)
+	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
 	_, _, err := client.From("agents").
 		Update(map[string]string{"status": status}, "minimal", "").
 		ExecuteWithContext(ctx)
@@ -133,7 +144,7 @@ func (s *AgentService) SetAgentStatus(ctx context.Context, cfg *config.Config, s
 // GetAgentInfo retrieves agent information from the agents table via the
 // PostgREST SDK.
 func (s *AgentService) GetAgentInfo(ctx context.Context, cfg *config.Config) (map[string]interface{}, error) {
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.AccessToken)
+	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
 
 	var agents []map[string]interface{}
 	_, err := client.From("agents").

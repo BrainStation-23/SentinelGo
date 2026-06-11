@@ -27,6 +27,10 @@ type Service struct {
 	// refreshCh is non-nil while a refresh is in progress.
 	// Latecomers wait on this channel rather than starting a second refresh.
 	refreshCh chan struct{}
+	// refreshErr holds the outcome of the most recent refresh, published by the
+	// leader before it closes refreshCh so waiters return the real result rather
+	// than a false success.
+	refreshErr error
 }
 
 // NewService creates a new authentication service. apiKey is used for the
@@ -86,13 +90,19 @@ func (s *Service) RefreshToken(ctx context.Context, cfg *config.Config) error {
 	s.refreshMu.Lock()
 
 	if s.refreshCh != nil {
-		// A refresh is already running – wait for it to finish.
+		// A refresh is already running – wait for it to finish and return ITS
+		// outcome. Returning nil unconditionally (the previous behaviour) made
+		// waiters believe a failed refresh had succeeded, so they retried with
+		// the same expired token.
 		ch := s.refreshCh
 		s.refreshMu.Unlock()
 		log.Printf("Auth: waiting for in-progress token refresh")
 		select {
 		case <-ch:
-			return nil
+			s.refreshMu.Lock()
+			err := s.refreshErr
+			s.refreshMu.Unlock()
+			return err
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -102,14 +112,16 @@ func (s *Service) RefreshToken(ctx context.Context, cfg *config.Config) error {
 	s.refreshCh = make(chan struct{})
 	s.refreshMu.Unlock()
 
-	defer func() {
-		s.refreshMu.Lock()
-		close(s.refreshCh)
-		s.refreshCh = nil
-		s.refreshMu.Unlock()
-	}()
+	err := s.doRefresh(ctx, cfg)
 
-	return s.doRefresh(ctx, cfg)
+	// Publish the result, then release waiters.
+	s.refreshMu.Lock()
+	s.refreshErr = err
+	close(s.refreshCh)
+	s.refreshCh = nil
+	s.refreshMu.Unlock()
+
+	return err
 }
 
 // doRefresh performs the actual network token exchange. Must only be called by
@@ -152,15 +164,36 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 			log.Printf("Auth: warning – failed to update session after refresh: %v", err)
 		}
 
-		// Persist to disk atomically so the tokens survive a process restart.
-		if err := cfg.SaveAtomic(); err != nil {
-			log.Printf("Auth: warning – failed to persist refreshed tokens: %v", err)
-		} else {
-			log.Printf("Auth: token refresh successful (token length: %d)", len(session.AccessToken))
+		// Persist to disk so the rotated tokens survive a restart. Supabase
+		// rotates the refresh token on every refresh, so if we fail to persist
+		// the new pair and the process later restarts, disk holds a refresh token
+		// the backend has already revoked — leaving the agent permanently unable
+		// to authenticate. Treat a persistent save failure as a refresh failure
+		// (after retries) rather than silently swallowing it.
+		if err := saveTokensWithRetry(cfg); err != nil {
+			return fmt.Errorf("token refreshed but failed to persist rotated tokens: %w", err)
 		}
 
+		log.Printf("Auth: token refresh successful (token length: %d)", len(session.AccessToken))
 		return nil
 	}
 
 	return fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// saveTokensWithRetry persists the config with a few bounded retries to ride out
+// a transient disk/IO error. Returns the last error if all attempts fail.
+func saveTokensWithRetry(cfg *config.Config) error {
+	const saveAttempts = 3
+	var err error
+	for attempt := 0; attempt < saveAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		if err = cfg.SaveAtomic(); err == nil {
+			return nil
+		}
+		log.Printf("Auth: persist refreshed tokens attempt %d/%d failed: %v", attempt+1, saveAttempts, err)
+	}
+	return err
 }

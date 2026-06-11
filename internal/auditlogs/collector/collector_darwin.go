@@ -125,7 +125,7 @@ func (c *darwinCollector) Subscribe(_ context.Context, _ chan<- RawLogEntry) err
 // the saved timestamp checkpoint when present, otherwise from a one-hour lookback.
 func (c *darwinCollector) collectOSLog(ctx context.Context, checkpoint CheckpointData) ([]RawLogEntry, CheckpointData, error) {
 	start := time.Now().Add(-1 * time.Hour)
-	if ts, ok := checkpoint["oslog_timestamp"].(float64); ok && ts > 0 {
+	if ts, ok := CheckpointFloat64(checkpoint, "oslog_timestamp"); ok && ts > 0 {
 		// Resume just after the last entry we saw to avoid re-reading it.
 		start = time.Unix(int64(ts), 0).Add(1 * time.Second)
 	}
@@ -195,8 +195,12 @@ func (c *darwinCollector) collectFile(_ context.Context, path, source string, ch
 	cpKey := source + "_offset"
 	var offset int64
 
-	if saved, ok := checkpoint[cpKey].(float64); ok {
-		offset = int64(saved)
+	// Tolerant read: the offset is stored as an int64 in memory and as a
+	// float64 after JSON persistence. A bare .(float64) silently failed on the
+	// in-memory path, resetting the offset to 0 and re-reading the same lines
+	// every cycle.
+	if saved, ok := CheckpointInt64(checkpoint, cpKey); ok {
+		offset = saved
 	}
 
 	// Check for file truncation/rotation
@@ -253,7 +257,7 @@ func (c *darwinCollector) collectCrashReports(_ context.Context, checkpoint Chec
 	}
 
 	var lastProcessed float64
-	if ts, ok := checkpoint["crash_reports_timestamp"].(float64); ok {
+	if ts, ok := CheckpointFloat64(checkpoint, "crash_reports_timestamp"); ok {
 		lastProcessed = ts
 	}
 

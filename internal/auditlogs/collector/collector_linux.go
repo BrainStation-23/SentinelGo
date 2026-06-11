@@ -210,18 +210,23 @@ func (c *linuxCollector) collectFile(ctx context.Context, path, source string, c
 
 	var offset int64
 
-	// Check for log rotation (inode change)
-	if savedInode, ok := checkpoint[inodeKey]; ok {
-		savedInodeVal, _ := savedInode.(float64) // JSON numbers decode as float64
-		if uint64(savedInodeVal) != currentInode {
-			// Log rotated -- read from beginning
+	// Check for log rotation (inode change). Tolerant accessors are used because
+	// checkpoint values are float64 after JSON persistence but may be other
+	// numeric types in memory between cycles.
+	if savedInode, ok := CheckpointInt64(checkpoint, inodeKey); ok {
+		if uint64(savedInode) != currentInode {
+			// Log rotated (new inode) -- read from beginning
 			offset = 0
-		} else if savedOffset, ok := checkpoint[cpKey]; ok {
-			offsetFloat, ok := savedOffset.(float64)
-			if ok {
-				offset = int64(offsetFloat)
-			}
+		} else if savedOffset, ok := CheckpointInt64(checkpoint, cpKey); ok {
+			offset = savedOffset
 		}
+	}
+
+	// Check for in-place truncation (e.g. logrotate copytruncate): same inode
+	// but the file shrank below our saved offset. Reset to the start so we don't
+	// wait for the file to grow back past a stale offset (mirrors the darwin path).
+	if offset > info.Size() {
+		offset = 0
 	}
 
 	// Don't read past end of file
