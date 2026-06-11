@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Dhaka"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      gopsutil:
+        patterns:
+          - "github.com/shirou/gopsutil/*"
+          - "github.com/ebitengine/purego"
+          - "github.com/lufia/plan9stats"
+          - "github.com/power-devops/perfstat"
+          - "github.com/tklauser/*"
+          - "github.com/yusufpapurcu/wmi"
+      supabase:
+        patterns:
+          - "github.com/supabase-community/*"
+      sqlite:
+        patterns:
+          - "modernc.org/*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Dhaka"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
