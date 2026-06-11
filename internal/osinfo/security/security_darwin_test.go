@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+func TestParseAllowUSBRestrictedJSON(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"allowed true → enabled", `{"allowUSBRestricted":true}`, "enabled"},
+		{"allowed false → disabled", `{"allowUSBRestricted":false}`, "disabled"},
+		{"key absent → empty", `{"otherKey":true}`, ""},
+		{"empty object → empty", `{}`, ""},
+		{"invalid json → empty", `not json`, ""},
+		{"wrong value type → empty", `{"allowUSBRestricted":"yes"}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseAllowUSBRestrictedJSON(c.input)
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestKnownAVApps(t *testing.T) {
 	for _, app := range knownAVApps {
 		if app.path == "" {

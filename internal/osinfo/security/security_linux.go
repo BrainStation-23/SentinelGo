@@ -2,6 +2,7 @@ package security
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -34,13 +35,69 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 	return shared.SecurityInfo{
-		AntivirusProducts: collectAV(),
-		FirewallEnabled:   enabled,
-		FirewallProfiles:  profiles,
-		CoreIsolation:     collectCoreIsolation(),
-		SecureBootEnabled: collectSecureBoot(),
-		ListeningPorts:    collectListeningPorts(),
+		AntivirusProducts:    collectAV(),
+		FirewallEnabled:      enabled,
+		FirewallProfiles:     profiles,
+		CoreIsolation:        collectCoreIsolation(),
+		SecureBootEnabled:    collectSecureBoot(),
+		ListeningPorts:       collectListeningPorts(),
+		USBMassStorageEnabled: collectUSBMassStorage(),
 	}
+}
+
+// collectUSBMassStorage checks whether USB mass storage is active or explicitly
+// blocked on Linux.
+// If the usb_storage kernel module is loaded, a device is (or was recently)
+// connected and mass storage is enabled. If the module is not loaded but is
+// blacklisted in /etc/modprobe.d, it has been administratively disabled.
+// "unknown" is returned when the module is absent but not explicitly blocked —
+// this is normal when no USB drive is connected on an otherwise unrestricted system.
+func collectUSBMassStorage() string {
+	if _, err := os.Stat("/sys/module/usb_storage"); err == nil {
+		return "enabled"
+	}
+	if state := usbStorageStateFromModprobeDir("/etc/modprobe.d"); state != "" {
+		return state
+	}
+	return "unknown"
+}
+
+// usbStorageStateFromModprobeDir scans *.conf files in dir for a blacklist or
+// install-to-/bin/false directive that disables the usb_storage module.
+// Returns "disabled" when found, "" otherwise (including when dir is unreadable).
+func usbStorageStateFromModprobeDir(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		if state := usbStorageStateFromConfFile(filepath.Join(dir, e.Name())); state != "" {
+			return state
+		}
+	}
+	return ""
+}
+
+// usbStorageStateFromConfFile checks a single modprobe.d conf file for directives
+// that disable usb_storage. Returns "disabled" when found, "" otherwise.
+func usbStorageStateFromConfFile(path string) string {
+	data, err := os.ReadFile(path) // #nosec G304 — path comes from os.ReadDir, not user input
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.TrimSpace(strings.ToLower(line))
+		if strings.HasPrefix(l, "blacklist") && strings.Contains(l, "usb_storage") {
+			return "disabled"
+		}
+		if strings.HasPrefix(l, "install usb_storage") && strings.Contains(l, "/bin/false") {
+			return "disabled"
+		}
+	}
+	return ""
 }
 
 // collectAV probes systemctl for known AV daemons.
@@ -51,27 +108,33 @@ func collectAV() []shared.AntivirusProduct {
 		if seen[svc.name] {
 			continue
 		}
-		output, err := shared.RunCommand("systemctl", "is-active", svc.service)
-		if err != nil {
-			continue
+		if p, ok := probeAVService(svc.service, svc.name); ok {
+			seen[svc.name] = true
+			products = append(products, p)
 		}
-		state := strings.TrimSpace(output)
-		if state != "active" && state != "inactive" {
-			continue
-		}
-		seen[svc.name] = true
-		avEnabled := "disabled"
-		if state == "active" {
-			avEnabled = "enabled"
-		}
-		products = append(products, shared.AntivirusProduct{
-			Name:     svc.name,
-			Enabled:  avEnabled,
-			UpToDate: "unknown",
-			Source:   "service",
-		})
 	}
 	return products
+}
+
+func probeAVService(service, name string) (shared.AntivirusProduct, bool) {
+	output, err := shared.RunCommand("systemctl", "is-active", service)
+	if err != nil {
+		return shared.AntivirusProduct{}, false
+	}
+	state := strings.TrimSpace(output)
+	if state != "active" && state != "inactive" {
+		return shared.AntivirusProduct{}, false
+	}
+	avEnabled := "disabled"
+	if state == "active" {
+		avEnabled = "enabled"
+	}
+	return shared.AntivirusProduct{
+		Name:     name,
+		Enabled:  avEnabled,
+		UpToDate: "unknown",
+		Source:   "service",
+	}, true
 }
 
 // collectFirewallProfiles tries ufw, then firewalld, then iptables.
@@ -111,23 +174,31 @@ func collectSELinux() string {
 		}
 	}
 	if output, err := shared.RunCommand("sestatus"); err == nil {
-		for _, line := range strings.Split(output, "\n") {
-			lower := strings.ToLower(strings.TrimSpace(line))
-			if strings.HasPrefix(lower, "selinux status:") && strings.Contains(lower, "disabled") {
-				return "disabled"
-			}
-			if strings.HasPrefix(lower, "current mode:") {
-				parts := strings.Fields(line)
-				if len(parts) > 0 {
-					mode := strings.ToLower(parts[len(parts)-1])
-					if mode == "enforcing" || mode == "permissive" {
-						return mode
-					}
+		if mode := parseSEStatusOutput(output); mode != "" {
+			return mode
+		}
+	}
+	return "unknown"
+}
+
+// parseSEStatusOutput extracts the SELinux mode from sestatus output.
+func parseSEStatusOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lower, "selinux status:") && strings.Contains(lower, "disabled") {
+			return "disabled"
+		}
+		if strings.HasPrefix(lower, "current mode:") {
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				mode := strings.ToLower(parts[len(parts)-1])
+				if mode == "enforcing" || mode == "permissive" {
+					return mode
 				}
 			}
 		}
 	}
-	return "unknown"
+	return ""
 }
 
 // collectAppArmor returns true when AppArmor is loaded.
@@ -166,14 +237,19 @@ func collectSecureBoot() string {
 			return "disabled"
 		}
 	}
-	// Fallback: read SecureBoot EFI variable (4-byte attribute header + 1 value byte).
-	entries, err := os.ReadDir("/sys/firmware/efi/efivars")
+	return secureBootFromEFIVars("/sys/firmware/efi/efivars")
+}
+
+// secureBootFromEFIVars reads the SecureBoot EFI variable from efivarsDir.
+// The variable is 5 bytes: 4-byte attribute header + 1 value byte (1=enabled, 0=disabled).
+func secureBootFromEFIVars(efivarsDir string) string {
+	entries, err := os.ReadDir(efivarsDir)
 	if err != nil {
 		return "unknown"
 	}
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "SecureBoot-") {
-			data, rerr := os.ReadFile("/sys/firmware/efi/efivars/" + e.Name())
+			data, rerr := os.ReadFile(filepath.Join(efivarsDir, e.Name()))
 			if rerr == nil && len(data) >= 5 {
 				if data[4] == 1 {
 					return "enabled"

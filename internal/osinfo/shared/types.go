@@ -232,12 +232,13 @@ type UserWithGroup struct {
 
 // SecurityInfo aggregates all collected security telemetry.
 type SecurityInfo struct {
-	AntivirusProducts []AntivirusProduct `json:"antivirus_products"`
-	FirewallEnabled   bool               `json:"firewall_enabled"`
-	FirewallProfiles  []FirewallProfile  `json:"firewall_profiles"`
-	CoreIsolation     CoreIsolationInfo  `json:"core_isolation"`
-	SecureBootEnabled string             `json:"secure_boot_enabled"`
-	ListeningPorts    []ListeningPort    `json:"listening_ports"`
+	AntivirusProducts    []AntivirusProduct `json:"antivirus_products"`
+	FirewallEnabled      bool               `json:"firewall_enabled"`
+	FirewallProfiles     []FirewallProfile  `json:"firewall_profiles"`
+	CoreIsolation        CoreIsolationInfo  `json:"core_isolation"`
+	SecureBootEnabled    string             `json:"secure_boot_enabled"`
+	ListeningPorts       []ListeningPort    `json:"listening_ports"`
+	USBMassStorageEnabled string            `json:"usb_mass_storage_enabled"` // "enabled", "disabled", "unknown"
 }
 
 // AntivirusProduct describes a single detected endpoint-protection product.

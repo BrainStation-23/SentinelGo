@@ -1,11 +1,14 @@
 package security
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 
 	"sentinelgo/internal/osinfo/shared"
 )
+
+const avCrowdStrikeFalcon = "CrowdStrike Falcon"
 
 // knownAVApps maps known AV installation paths to product names.
 var knownAVApps = []struct {
@@ -13,9 +16,9 @@ var knownAVApps = []struct {
 	name string
 }{
 	{"/Applications/Malwarebytes.app", "Malwarebytes"},
-	{"/Applications/Falcon.app", "CrowdStrike Falcon"},
-	{"/Library/CS/falconctl", "CrowdStrike Falcon"},
-	{"/Library/Application Support/CrowdStrike/Falcon", "CrowdStrike Falcon"},
+	{"/Applications/Falcon.app", avCrowdStrikeFalcon},
+	{"/Library/CS/falconctl", avCrowdStrikeFalcon},
+	{"/Library/Application Support/CrowdStrike/Falcon", avCrowdStrikeFalcon},
 	{"/Applications/SentinelOne Extensions.app", "SentinelOne"},
 	{"/Applications/ESET Endpoint Security.app", "ESET Endpoint Security"},
 	{"/Applications/Sophos/Sophos Anti-Virus.app", "Sophos AV"},
@@ -32,12 +35,13 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 	return shared.SecurityInfo{
-		AntivirusProducts: collectAV(),
-		FirewallEnabled:   enabled,
-		FirewallProfiles:  profiles,
-		CoreIsolation:     collectCoreIsolation(),
-		SecureBootEnabled: collectSecureBoot(),
-		ListeningPorts:    collectListeningPorts(),
+		AntivirusProducts:    collectAV(),
+		FirewallEnabled:      enabled,
+		FirewallProfiles:     profiles,
+		CoreIsolation:        collectCoreIsolation(),
+		SecureBootEnabled:    collectSecureBoot(),
+		ListeningPorts:       collectListeningPorts(),
+		USBMassStorageEnabled: collectUSBMassStorage(),
 	}
 }
 
@@ -131,4 +135,55 @@ func collectSecureBoot() string {
 		return "enabled"
 	}
 	return "unknown"
+}
+
+// collectUSBMassStorage checks whether USB mass storage is permitted on macOS.
+// On MDM-managed devices, plutil can read the applicationaccess managed preference
+// plist and report the allowUSBRestricted policy directly. On unmanaged devices,
+// a loaded IOUSBMassStorageClass kext confirms mass storage is active; otherwise
+// the state cannot be determined without root or MDM access.
+func collectUSBMassStorage() string {
+	if state := usbStateFromMDM(); state != "" {
+		return state
+	}
+	if kstat, err := shared.RunCommand("kextstat"); err == nil {
+		if strings.Contains(kstat, "IOUSBMassStorageClass") {
+			return "enabled"
+		}
+	}
+	return "unknown"
+}
+
+// usbStateFromMDM reads the allowUSBRestricted key from the MDM-managed
+// applicationaccess preference plist. Returns "" when the plist is absent,
+// unreadable, or does not contain the key.
+func usbStateFromMDM() string {
+	out, err := shared.RunCommand("plutil", "-convert", "json", "-o", "-",
+		"/Library/Managed Preferences/com.apple.applicationaccess.plist")
+	if err != nil {
+		return ""
+	}
+	return parseAllowUSBRestrictedJSON(out)
+}
+
+// parseAllowUSBRestrictedJSON extracts the allowUSBRestricted bool from a JSON
+// string produced by plutil. Returns "enabled", "disabled", or "" if the key is
+// absent or the input is not valid JSON.
+func parseAllowUSBRestrictedJSON(jsonStr string) string {
+	var prefs map[string]interface{}
+	if json.Unmarshal([]byte(jsonStr), &prefs) != nil {
+		return ""
+	}
+	v, ok := prefs["allowUSBRestricted"]
+	if !ok {
+		return ""
+	}
+	allowed, ok := v.(bool)
+	if !ok {
+		return ""
+	}
+	if allowed {
+		return "enabled"
+	}
+	return "disabled"
 }
