@@ -37,7 +37,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format-check setup packages check-no-cgo verify-cross
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross
 
 all: windows linux macos
 
@@ -92,7 +92,7 @@ clean:
 	rm -rf build/
 
 # Development build (current platform only)
-build:
+build: format
 	go build $(LDFLAGS) -o $(DEV_BIN) ./cmd/sentinelgo
 	@echo "Built $(DEV_BIN) (version $(VERSION))"
 
@@ -165,6 +165,10 @@ quality-check:
 	@go vet ./...
 	@command -v golangci-lint >/dev/null 2>&1 || (echo "📦 Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 	@export PATH=$$PATH:$$(go env GOPATH)/bin && golangci-lint run
+
+# Auto-format all Go source files
+format:
+	gofmt -s -w .
 
 # Code format check
 format-check:
