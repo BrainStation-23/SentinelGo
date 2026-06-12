@@ -223,4 +223,3 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	_, err = io.Copy(out, io.LimitReader(resp.Body, maxScriptBytes))
 	return err
 }
-
