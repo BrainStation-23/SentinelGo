@@ -9,6 +9,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/network"
+	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/taskstore"
 )
@@ -92,8 +93,51 @@ func (s *TaskPollingService) MarkTaskExecuting(taskID string) error {
 	return s.store.MarkTaskExecuting(taskID)
 }
 
+// handleRestartContext reads pending_restart.json (if present) and marks the
+// triggering task as success before ResetInterruptedTasks can mark it failed.
+// The file is written by the agent-update and reboot-device handlers immediately
+// before os.Exit() / reboot, so its presence on startup means the operation
+// completed — the binary was replaced or the device came back up.
+func (s *TaskPollingService) handleRestartContext() {
+	if s.cfg == nil || s.cfg.Path == "" {
+		return
+	}
+
+	rc, err := restartctx.ReadAndClear(restartctx.PathFor(s.cfg.Path))
+	if err != nil {
+		log.Printf("TaskPolling: failed to read restart context: %v", err)
+		return
+	}
+	if rc == nil {
+		return
+	}
+
+	var msg string
+	switch rc.Reason {
+	case "agent-update":
+		msg = fmt.Sprintf("Agent updated from %s to %s and restarted successfully.",
+			rc.FromVersion, config.Version)
+	case "device-reboot":
+		msg = "Device rebooted successfully. Agent is back online."
+	default:
+		msg = fmt.Sprintf("Agent restarted (reason: %s).", rc.Reason)
+	}
+
+	// isSynced=false so SyncPendingTasks (called later in PollAndStoreTasks)
+	// will push the result to the server on the next poll.
+	if err := s.store.UpdateTaskStatus(rc.TaskID, "success", msg, false); err != nil {
+		log.Printf("TaskPolling: failed to mark restart-context task %s as success: %v", rc.TaskID, err)
+		return
+	}
+	log.Printf("TaskPolling: task %s marked success (restart reason: %s)", rc.TaskID, rc.Reason)
+}
+
 // PollAndStoreTasks fetches tasks from RPC and stores them in SQLite.
 func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
+	// Resolve any task that intentionally triggered this restart before the
+	// generic interrupted-task cleanup runs below.
+	s.handleRestartContext()
+
 	// Clean up tasks that were mid-execution when the agent last died. They are
 	// marked 'failed (interrupted)' with is_synced=0 so SyncPendingTasks below
 	// will report them to the server. attempt_count is maxed so they are never

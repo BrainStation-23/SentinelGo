@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // executeLocalScript runs the task script on Linux, optionally using sudo for
@@ -63,6 +64,11 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 			cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
 		}
 	}
+
+	// Give the subprocess 30 s to exit cleanly after context cancellation
+	// before escalating to SIGKILL, so processes that ignore SIGTERM don't
+	// block the goroutine indefinitely.
+	cmd.WaitDelay = 30 * time.Second
 
 	output, err := cmd.CombinedOutput()
 	return string(output), err

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // executeLocalScript runs the task script on macOS.
@@ -28,6 +29,8 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		// #nosec G204 - scriptPath is a controlled path from task store
 		cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
 	}
+
+	cmd.WaitDelay = 30 * time.Second
 
 	output, err := cmd.CombinedOutput()
 	return string(output), err
