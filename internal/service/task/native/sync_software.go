@@ -14,6 +14,16 @@ import (
 	"sentinelgo/internal/taskstore"
 )
 
+// sendSoftwareFn is the RPC send entry point. Replaced in tests.
+var sendSoftwareFn = func(ctx context.Context, svc *swsvc.SoftwareService, deviceID string, catalog []swsvc.SoftwareInfo, cfg *config.Config) error {
+	return svc.SendByRPC(ctx, deviceID, catalog, cfg)
+}
+
+// getSoftwareListFn returns the installed software list. Replaced in tests.
+var getSoftwareListFn = func(svc *swsvc.SoftwareService) []swsvc.SoftwareInfo {
+	return svc.GetSoftwareList()
+}
+
 type syncSoftwareHandler struct{}
 
 func init() { Register(&syncSoftwareHandler{}) }
@@ -38,7 +48,7 @@ func (h *syncSoftwareHandler) Run(ctx context.Context, cfg *config.Config, _ tas
 	svc.SetSupabaseURL(cfg.SupabaseURL)
 	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
-	freshList := svc.GetSoftwareList()
+	freshList := getSoftwareListFn(svc)
 
 	if err := swStore.SyncBatch(freshList, time.Now()); err != nil {
 		log.Printf("sync-software: store sync error: %v", err)
@@ -56,7 +66,7 @@ func (h *syncSoftwareHandler) Run(ctx context.Context, cfg *config.Config, _ tas
 		return "software catalog is empty, nothing to upload", nil
 	}
 
-	if err := svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg); err != nil {
+	if err := sendSoftwareFn(ctx, svc, cfg.DeviceID, catalog, cfg); err != nil {
 		return "", fmt.Errorf("sync-software: send data: %w", err)
 	}
 

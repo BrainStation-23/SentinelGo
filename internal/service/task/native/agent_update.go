@@ -15,6 +15,11 @@ import (
 	"sentinelgo/internal/updater"
 )
 
+// checkAndApplyFn is the updater entry point. Replaced in tests.
+var checkAndApplyFn = func(ctx context.Context, cfg *config.Config, token string) error {
+	return updater.CheckAndApplyWithRetry(ctx, cfg, token)
+}
+
 type agentUpdateHandler struct{}
 
 func init() { Register(&agentUpdateHandler{}) }
@@ -64,7 +69,7 @@ func (h *agentUpdateHandler) Run(ctx context.Context, cfg *config.Config, task t
 		log.Printf("Executor: Warning - failed to write restart context: %v", err)
 	}
 
-	if err := updater.CheckAndApplyWithRetry(ctx, cfg, ""); err != nil {
+	if err := checkAndApplyFn(ctx, cfg, ""); err != nil {
 		// Update failed or was not needed; remove the context so the next
 		// startup does not incorrectly mark this task as success.
 		_, _ = restartctx.ReadAndClear(ctxPath)

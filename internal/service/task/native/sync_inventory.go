@@ -14,6 +14,13 @@ import (
 
 const syncInventoryTimeout = 90 * time.Second
 
+// collectSysInfoFn and updateAgentInfoFn are the real production implementations;
+// replaced in tests to avoid network calls and OS-level collection.
+var collectSysInfoFn = func() *shared.SystemInfo { return osinfo.Collect() }
+var updateAgentInfoFn = func(ctx context.Context, cfg *config.Config, info *shared.SystemInfo) error {
+	return agentsvc.NewAgentService().UpdateAgentInfo(ctx, cfg, info)
+}
+
 type syncInventoryHandler struct{}
 
 func init() { Register(&syncInventoryHandler{}) }
@@ -28,7 +35,7 @@ func (h *syncInventoryHandler) Run(ctx context.Context, cfg *config.Config, _ ta
 
 	type collectResult struct{ info *shared.SystemInfo }
 	ch := make(chan collectResult, 1)
-	go func() { ch <- collectResult{osinfo.Collect()} }()
+	go func() { ch <- collectResult{collectSysInfoFn()} }()
 
 	var sysInfo *shared.SystemInfo
 	select {
@@ -42,8 +49,7 @@ func (h *syncInventoryHandler) Run(ctx context.Context, cfg *config.Config, _ ta
 		return "", fmt.Errorf("sync-inventory: system info collection returned no data")
 	}
 
-	agentSvc := agentsvc.NewAgentService()
-	if err := agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo); err != nil {
+	if err := updateAgentInfoFn(tctx, cfg, sysInfo); err != nil {
 		return "", fmt.Errorf("sync-inventory: %w", err)
 	}
 	return "inventory synced successfully", nil

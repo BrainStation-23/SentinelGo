@@ -148,6 +148,18 @@ func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
 		log.Printf("TaskPolling: marked %d interrupted task(s) as failed (were 'executing' at restart)", n)
 	}
 
+	if retryable, err := s.store.GetRetryableTasks(5 * time.Minute); err != nil {
+		log.Printf("TaskPolling: Failed to get retryable tasks: %v", err)
+	} else {
+		for _, t := range retryable {
+			note := fmt.Sprintf("Attempt %d of %d failed; retrying.",
+				t.AttemptCount+1, store.MaxRetryAttempts+1)
+			if err := s.client.UpdateTask(ctx, t.ID, "retrying", note); err != nil {
+				log.Printf("TaskPolling: Failed to report retrying status for task %s: %v", t.ID, err)
+			}
+		}
+	}
+
 	if resetCount, err := s.store.ResetOldFailedTasks(5 * time.Minute); err != nil {
 		log.Printf("TaskPolling: Failed to reset old failed tasks: %v", err)
 	} else if resetCount > 0 {

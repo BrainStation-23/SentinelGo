@@ -14,6 +14,9 @@ import (
 	"sentinelgo/internal/taskstore"
 )
 
+// rebootFn is the OS-reboot entry point. Replaced in tests.
+var rebootFn = triggerReboot
+
 type rebootDeviceHandler struct{}
 
 func init() { Register(&rebootDeviceHandler{}) }
@@ -38,7 +41,7 @@ func (h *rebootDeviceHandler) Run(ctx context.Context, cfg *config.Config, task 
 		log.Printf("Executor: Warning - failed to write restart context: %v", err)
 	}
 
-	if err := triggerReboot(); err != nil {
+	if err := rebootFn(); err != nil {
 		_, _ = restartctx.ReadAndClear(ctxPath)
 		return "", fmt.Errorf("reboot failed: %w", err)
 	}
