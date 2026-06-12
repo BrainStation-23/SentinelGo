@@ -9,7 +9,16 @@ A single, dependency-free binary that turns every Windows, macOS, and Linux devi
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-blue)](#runs-everywhere-your-fleet-does)
 [![Build](https://img.shields.io/badge/build-CGO__free%20static%20binary-success)](#why-teams-choose-sentinelgo)
 [![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8)](#build-from-source)
-[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](#license)
+
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=coverage)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=bugs)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
 
 </div>
 
@@ -193,4 +202,4 @@ All builds are `CGO_ENABLED=0` static binaries cross-compiled from a single host
 
 ## License
 
-MIT
+Apache 2.0
