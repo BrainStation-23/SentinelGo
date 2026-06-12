@@ -115,7 +115,7 @@ func TestParseMacDisplayType(t *testing.T) {
 func TestBuildMacDisplay_ModernFormat(t *testing.T) {
 	// Mirrors the real system_profiler output structure for an Apple M2 Pro built-in display
 	dm := map[string]any{
-		"_name":                            "Color LCD",
+		"_name":                             "Color LCD",
 		"_spdisplays_display-serial-number": "fd626d62",
 		"_spdisplays_display-year":          "0",
 		"_spdisplays_pixels":                "3024 x 1964",

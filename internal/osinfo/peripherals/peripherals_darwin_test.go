@@ -101,8 +101,8 @@ func TestParseBTDeviceList_OldFormat(t *testing.T) {
 	// Older macOS format used "device_name" and "device_majorType"/"device_minorType".
 	devices := []any{
 		map[string]any{
-			"device_name":    "Keyboard",
-			"device_address": "11-22-33-44-55-66",
+			"device_name":      "Keyboard",
+			"device_address":   "11-22-33-44-55-66",
 			"device_majorType": "HID",
 			"device_minorType": "Keyboard",
 		},
