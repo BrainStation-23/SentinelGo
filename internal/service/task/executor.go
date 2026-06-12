@@ -14,27 +14,28 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
-	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/taskstore"
-	"sentinelgo/internal/updater"
 )
 
 // TaskExecutorService handles the execution of tasks assigned to the agent.
 type TaskExecutorService struct {
-	cfg          *config.Config
-	pollingSvc   *TaskPollingService
-	client       *http.Client
-	runningTasks map[string]bool
+	cfg            *config.Config
+	pollingSvc     *TaskPollingService
+	client         *http.Client
+	runningTasks   map[string]bool
+	nativeHandlers map[string]NativeTaskHandler
 }
 
 // NewTaskExecutorService creates a new task execution service.
 func NewTaskExecutorService(cfg *config.Config, pollingSvc *TaskPollingService) *TaskExecutorService {
-	return &TaskExecutorService{
+	s := &TaskExecutorService{
 		cfg:          cfg,
 		pollingSvc:   pollingSvc,
 		client:       httpx.NewClient(2 * time.Minute),
 		runningTasks: make(map[string]bool),
 	}
+	s.registerNativeHandlers()
+	return s
 }
 
 // RunExecutionLoop starts a loop that checks for and executes assigned tasks.
@@ -106,8 +107,8 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 }
 
 func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
-	if task.Slug == "agent-update" || task.Slug == "update-agent" {
-		return s.executeAgentUpdate(ctx, task)
+	if handler, ok := s.nativeHandlers[task.Slug]; ok {
+		return handler(ctx, task)
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -223,39 +224,3 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	return err
 }
 
-// executeAgentUpdate handles the agent-update task by directly invoking the updater.
-func (s *TaskExecutorService) executeAgentUpdate(ctx context.Context, task taskstore.Task) (string, error) {
-	log.Printf("Executor: Executing agent-update task %s", task.ID)
-
-	if runtime.GOOS == "linux" && os.Getuid() != 0 {
-		log.Printf("Executor: Agent-update requires root privileges")
-		return "", fmt.Errorf("agent-update requires root privileges. Please restart the agent with sudo")
-	}
-
-	if !updater.CheckInternetConnectivity() {
-		log.Printf("Executor: Warning - TCP connectivity check failed, attempting update anyway")
-	}
-
-	if !updater.CheckInternetWithHTTP() {
-		log.Printf("Executor: Warning - HTTP connectivity check failed, attempting update anyway")
-	}
-
-	currentVersion := s.cfg.CurrentVersion
-	if currentVersion == "" {
-		currentVersion = config.Version
-	}
-
-	sanitizedCurrentVersion := sanitize.ForLog(currentVersion)
-	log.Printf("Executor: Current version: %s, checking for updates...", sanitizedCurrentVersion)
-
-	if err := updater.CheckAndApplyWithRetry(ctx, s.cfg, ""); err != nil {
-		log.Printf("Executor: Agent-update failed: %v", err)
-		return fmt.Sprintf("Update failed: %v (Current version: %s)", err, sanitizedCurrentVersion), err
-	}
-
-	newVersion := s.cfg.CurrentVersion
-	sanitizedNewVersion := sanitize.ForLog(newVersion)
-	log.Printf("Executor: Agent-update successful, updated from %s to %s", sanitizedCurrentVersion, sanitizedNewVersion)
-
-	return fmt.Sprintf("Successfully updated from %s to %s. Agent is restarting.", sanitizedCurrentVersion, sanitizedNewVersion), nil
-}
