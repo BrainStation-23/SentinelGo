@@ -38,22 +38,29 @@ func getDisplays() []shared.Display {
 		gpuVendorRaw, _ := gm["spdisplays_vendor"].(string)
 		gpuVendor := cleanMacVendorName(gpuVendorRaw)
 
-		items, hasItems := gm["_items"].([]any)
+		// macOS 13+: display items are nested under "spdisplays_ndrvs".
+		// Older format used "_items".
+		items, hasItems := gm["spdisplays_ndrvs"].([]any)
 		if !hasItems {
-			// Legacy format: entry itself is the display when it has resolution data.
-			if _, hasRes := gm["spdisplays_resolution"]; hasRes {
-				if d, ok := buildMacDisplay(gm, gpuVendor); ok {
+			items, hasItems = gm["_items"].([]any)
+		}
+		if hasItems {
+			for _, item := range items {
+				dm, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if d, ok := buildMacDisplay(dm, gpuVendor); ok {
 					displays = append(displays, d)
 				}
 			}
 			continue
 		}
-		for _, item := range items {
-			dm, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if d, ok := buildMacDisplay(dm, gpuVendor); ok {
+		// Legacy format: entry itself is the display when it has resolution data.
+		_, hasNewRes := gm["_spdisplays_resolution"]
+		_, hasOldRes := gm["spdisplays_resolution"]
+		if hasNewRes || hasOldRes {
+			if d, ok := buildMacDisplay(gm, gpuVendor); ok {
 				displays = append(displays, d)
 			}
 		}
@@ -79,10 +86,14 @@ func buildMacDisplay(dm map[string]any, gpuVendor string) (shared.Display, bool)
 		d.Manufacturer = gpuVendor
 	}
 
-	if v, ok := dm["spdisplays_serial_number"].(string); ok && v != "" {
+	// Serial number: modern key is "_spdisplays_display-serial-number"
+	if v, ok := dm["_spdisplays_display-serial-number"].(string); ok && v != "" {
+		d.SerialNumber = v
+	} else if v, ok := dm["spdisplays_serial_number"].(string); ok && v != "" {
 		d.SerialNumber = v
 	}
 
+	// Physical size in inches
 	if v, ok := dm["spdisplays_inches"].(string); ok && v != "" {
 		if sz, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && sz > 0 {
 			d.Size = sz
@@ -94,9 +105,26 @@ func buildMacDisplay(dm map[string]any, gpuVendor string) (shared.Display, bool)
 		}
 	}
 
-	if v, ok := dm["spdisplays_resolution"].(string); ok && v != "" {
+	// Native (physical) pixel resolution, e.g. "_spdisplays_pixels": "3024 x 1964"
+	if v, ok := dm["_spdisplays_pixels"].(string); ok && v != "" {
+		if res, _ := parseResolutionAndRefreshRate(v); res != "" {
+			d.Resolution = res
+		}
+	}
+
+	// Refresh rate from "_spdisplays_resolution"; also provides logical resolution
+	// as a fallback when native pixels were not available.
+	if v, ok := dm["_spdisplays_resolution"].(string); ok && v != "" {
+		logicalRes, hz := parseResolutionAndRefreshRate(v)
+		d.RefreshRate = hz
+		if d.Resolution == "" {
+			d.Resolution = logicalRes
+		}
+	} else if v, ok := dm["spdisplays_resolution"].(string); ok && v != "" {
 		res, hz := parseResolutionAndRefreshRate(v)
-		d.Resolution = res
+		if d.Resolution == "" {
+			d.Resolution = res
+		}
 		d.RefreshRate = hz
 	}
 
@@ -104,12 +132,28 @@ func buildMacDisplay(dm map[string]any, gpuVendor string) (shared.Display, bool)
 		d.ConnectionType = macDisplayConnectionType(v)
 	}
 
+	// Year: present for external displays; 0 for built-in panels (skip those)
+	if v, ok := dm["_spdisplays_display-year"].(string); ok && v != "" {
+		if yr, err := strconv.Atoi(v); err == nil && yr > 1990 {
+			d.Year = yr
+		}
+	}
+
+	// Monitor type tags derived from spdisplays_display_type
+	if v, ok := dm["spdisplays_display_type"].(string); ok && v != "" {
+		d.MonitorType = parseMacDisplayType(v)
+	}
+
 	return d, true
 }
 
-// cleanMacVendorName strips the PCI-ID suffix from strings like "Apple (0x106b)"
-// and returns the bare vendor name. Returns the input unchanged if no " (" is found.
+// cleanMacVendorName normalises vendor strings from system_profiler:
+//   - "sppci_vendor_Apple"  → "Apple"
+//   - "Apple (0x106b)"      → "Apple"
 func cleanMacVendorName(s string) string {
+	if strings.HasPrefix(s, "sppci_vendor_") {
+		return s[len("sppci_vendor_"):]
+	}
 	if idx := strings.Index(s, " ("); idx > 0 {
 		name := strings.TrimSpace(s[:idx])
 		if strings.EqualFold(name, "unknown") {
@@ -118,6 +162,40 @@ func cleanMacVendorName(s string) string {
 		return name
 	}
 	return s
+}
+
+// parseMacDisplayType converts a spdisplays_display_type token like
+// "spdisplays_built-in-liquid-retina-xdr" into human-readable tags.
+func parseMacDisplayType(s string) []string {
+	s = strings.TrimPrefix(strings.ToLower(s), "spdisplays_")
+	if s == "" {
+		return nil
+	}
+	var tags []string
+	if strings.Contains(s, "built-in") {
+		tags = append(tags, "Built-In")
+	} else if strings.Contains(s, "external") {
+		tags = append(tags, "External")
+	}
+	switch {
+	case strings.Contains(s, "liquid-retina-xdr"):
+		tags = append(tags, "Liquid Retina XDR")
+	case strings.Contains(s, "retina-xdr"):
+		tags = append(tags, "Retina XDR")
+	case strings.Contains(s, "retina"):
+		tags = append(tags, "Retina")
+	}
+	if len(tags) == 0 {
+		parts := strings.Split(s, "-")
+		var words []string
+		for _, p := range parts {
+			if p != "" {
+				words = append(words, strings.ToUpper(p[:1])+p[1:])
+			}
+		}
+		return []string{strings.Join(words, " ")}
+	}
+	return tags
 }
 
 // parseResolutionAndRefreshRate parses strings like "2560 x 1440 @ 60.00Hz" or

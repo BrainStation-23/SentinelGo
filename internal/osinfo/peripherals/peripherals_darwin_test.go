@@ -13,6 +13,7 @@ func TestDetermineBluetoothDeviceType(t *testing.T) {
 		minorType string
 		want      string
 	}{
+		// Older macOS format (exact type strings)
 		{"audio microphone", "Audio", "Microphone", "Microphone"},
 		{"audio speaker", "Audio", "Speaker", "Speaker"},
 		{"audio headphones", "Audio", "Headphones", "Headphones"},
@@ -24,6 +25,12 @@ func TestDetermineBluetoothDeviceType(t *testing.T) {
 		{"peripheral", "Peripheral", "", "Peripheral Device"},
 		{"unknown major type", "Phone", "Smartphone", "Bluetooth Device"},
 		{"empty major type", "", "", "Bluetooth Device"},
+		// macOS 13+ format ("Audio/Video" major, full minor strings)
+		{"modern audio/video headphones", "Audio/Video", "Headphones", "Headphones"},
+		{"modern audio/video microphone", "Audio/Video", "Microphone", "Microphone"},
+		{"modern audio/video speaker", "Audio/Video", "Loudspeaker", "Speaker"},
+		{"modern audio/video other", "Audio/Video", "VCR", "Audio Device"},
+		{"modern peripheral keyboard", "Peripheral", "Keyboard", "Keyboard"},
 	}
 
 	for _, tc := range tests {
@@ -34,6 +41,189 @@ func TestDetermineBluetoothDeviceType(t *testing.T) {
 					tc.majorType, tc.minorType, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseBTDeviceList_ModernFormat(t *testing.T) {
+	// Mirrors the real macOS 13+ SPBluetoothDataType device entry structure.
+	devices := []any{
+		map[string]any{
+			"_name":                            "AirPods Pro",
+			"device_address":                   "11-22-33-44-55-66",
+			"device_majorClassOfDevice_string": "Audio/Video",
+			"device_minorClassOfDevice_string": "Headphones",
+			"device_connected":                 "attrib_yes",
+			"device_vendorID":                  "0x004C",
+			"device_productID":                 "0x200F",
+		},
+		map[string]any{
+			"_name":                            "Magic Mouse",
+			"device_address":                   "AA-BB-CC-DD-EE-FF",
+			"device_majorClassOfDevice_string": "Peripheral",
+			"device_minorClassOfDevice_string": "Mouse",
+			"device_connected":                 "attrib_no", // paired but not connected
+		},
+	}
+	var peripherals []shared.PeripheralDevice
+	parseBTDeviceList(devices, &peripherals)
+
+	if len(peripherals) != 2 {
+		t.Fatalf("expected 2 BT devices, got %d", len(peripherals))
+	}
+
+	ap := peripherals[0]
+	if ap.Description != "AirPods Pro" {
+		t.Errorf("AirPods desc = %q", ap.Description)
+	}
+	if ap.Type != "Headphones" {
+		t.Errorf("AirPods type = %q, want Headphones", ap.Type)
+	}
+	if ap.Status != "Connected" {
+		t.Errorf("AirPods status = %q, want Connected", ap.Status)
+	}
+	if ap.SerialNumber != "11-22-33-44-55-66" {
+		t.Errorf("AirPods serial = %q", ap.SerialNumber)
+	}
+	if ap.ConnectionType != "Bluetooth" {
+		t.Errorf("AirPods connectionType = %q", ap.ConnectionType)
+	}
+
+	mouse := peripherals[1]
+	if mouse.Type != "Mouse or other pointing device" {
+		t.Errorf("Magic Mouse type = %q", mouse.Type)
+	}
+	if mouse.Status != "Paired" {
+		t.Errorf("Magic Mouse status = %q, want Paired (device_connected=attrib_no)", mouse.Status)
+	}
+}
+
+func TestParseBTDeviceList_OldFormat(t *testing.T) {
+	// Older macOS format used "device_name" and "device_majorType"/"device_minorType".
+	devices := []any{
+		map[string]any{
+			"device_name":    "Keyboard",
+			"device_address": "11-22-33-44-55-66",
+			"device_majorType": "HID",
+			"device_minorType": "Keyboard",
+		},
+	}
+	var peripherals []shared.PeripheralDevice
+	parseBTDeviceList(devices, &peripherals)
+
+	if len(peripherals) != 1 {
+		t.Fatalf("expected 1 BT device, got %d", len(peripherals))
+	}
+	if peripherals[0].Type != "Keyboard" {
+		t.Errorf("type = %q, want Keyboard", peripherals[0].Type)
+	}
+	if peripherals[0].Description != "Keyboard" {
+		t.Errorf("desc = %q", peripherals[0].Description)
+	}
+}
+
+func TestParseBTDeviceList_SectionHeaderNesting(t *testing.T) {
+	// Some macOS versions nest devices under a section header entry with _items.
+	devices := []any{
+		map[string]any{
+			"_name": "Input Devices",
+			"_items": []any{
+				map[string]any{
+					"_name":                            "Magic Keyboard",
+					"device_address":                   "AA-BB-CC-DD-EE-FF",
+					"device_majorClassOfDevice_string": "Peripheral",
+					"device_minorClassOfDevice_string": "Keyboard",
+					"device_connected":                 "attrib_yes",
+				},
+			},
+		},
+	}
+	var peripherals []shared.PeripheralDevice
+	parseBTDeviceList(devices, &peripherals)
+
+	if len(peripherals) != 1 {
+		t.Fatalf("expected 1 BT device (nested in section header), got %d", len(peripherals))
+	}
+	if peripherals[0].Description != "Magic Keyboard" {
+		t.Errorf("desc = %q, want Magic Keyboard", peripherals[0].Description)
+	}
+	if peripherals[0].Type != "Keyboard" {
+		t.Errorf("type = %q, want Keyboard", peripherals[0].Type)
+	}
+}
+
+func TestParseUSBItems_SkipsHostControllers(t *testing.T) {
+	// USB31Bus entries have a "host_controller" field — they are internal bus
+	// controllers and must not appear in the peripherals list.
+	items := []any{
+		map[string]any{
+			"_name":           "USB31Bus",
+			"host_controller": "AppleT8112USBXHCI",
+		},
+		map[string]any{
+			"_name":           "USB31Bus",
+			"host_controller": "AppleT8112USBXHCI",
+			// with a real device nested underneath
+			"_items": []any{
+				map[string]any{
+					"_name":        "Logitech USB Receiver",
+					"vendor_id":    "0x046d",
+					"product_id":   "0xc52b",
+					"manufacturer": "Logitech",
+				},
+			},
+		},
+	}
+	var peripherals []shared.PeripheralDevice
+	parseUSBItems(items, &peripherals, "USB")
+
+	// Only the nested Logitech device should appear, not the two USB31Bus controllers.
+	if len(peripherals) != 1 {
+		t.Fatalf("expected 1 peripheral (child of bus), got %d: %+v", len(peripherals), peripherals)
+	}
+	if peripherals[0].Description != "Logitech USB Receiver" {
+		t.Errorf("desc = %q, want Logitech USB Receiver", peripherals[0].Description)
+	}
+}
+
+func TestParseThunderboltItems_SkipsBusControllers(t *testing.T) {
+	// thunderboltusb4_bus_* entries are host port controllers — they carry a
+	// "domain_uuid_key" and should not be listed as peripheral devices.
+	items := []any{
+		map[string]any{
+			"_name":            "thunderboltusb4_bus_0",
+			"device_name_key":  "MacBook Pro",
+			"domain_uuid_key":  "9C7FA856-A18E-4A29-94F2-5BE2543CE06A",
+			"vendor_name_key":  "Apple Inc.",
+			"route_string_key": "0",
+		},
+		map[string]any{
+			"_name":            "thunderboltusb4_bus_0",
+			"device_name_key":  "MacBook Pro",
+			"domain_uuid_key":  "9C7FA856-A18E-4A29-94F2-5BE2543CE06A",
+			"vendor_name_key":  "Apple Inc.",
+			"route_string_key": "0",
+			// with a real external Thunderbolt device connected
+			"_items": []any{
+				map[string]any{
+					"_name":           "Thunderbolt Display",
+					"vendor_name_key": "Apple Inc.",
+					"serial_number":   "C02K1234F8J2",
+				},
+			},
+		},
+	}
+	var peripherals []shared.PeripheralDevice
+	parseThunderboltItems(items, &peripherals)
+
+	// Only the nested display should appear, not the bus controllers.
+	if len(peripherals) != 1 {
+		t.Fatalf("expected 1 Thunderbolt peripheral, got %d: %+v", len(peripherals), peripherals)
+	}
+	if peripherals[0].Description != "Thunderbolt Display" {
+		t.Errorf("desc = %q, want Thunderbolt Display", peripherals[0].Description)
+	}
+	if peripherals[0].Manufacturer != "Apple Inc." {
+		t.Errorf("mfr = %q, want Apple Inc.", peripherals[0].Manufacturer)
 	}
 }
 
