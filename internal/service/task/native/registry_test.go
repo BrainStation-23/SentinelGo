@@ -93,8 +93,6 @@ func TestRegistry_AllHandlersImplementInterface(t *testing.T) {
 		if len(h.Slugs()) == 0 {
 			t.Errorf("handler %T returned empty Slugs()", h)
 		}
-		// Verify Run signature is callable (compile-time check via interface, no network call).
-		var _ native.Handler = h
 	}
 }
 
