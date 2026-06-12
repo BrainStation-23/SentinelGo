@@ -36,10 +36,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned_at ON tasks(assigned_at);
 `
 
-// maxRetryAttempts is the maximum number of times a failed task is reset to
+// MaxRetryAttempts is the maximum number of times a failed task is reset to
 // 'assigned' before it is abandoned. Prevents permanently-failing tasks from
 // looping forever.
-const maxRetryAttempts = 3
+const MaxRetryAttempts = 3
+
+// RetryableTask holds the minimal fields needed to report a "retrying" status
+// before a task is reset to 'assigned'.
+type RetryableTask struct {
+	ID           string
+	AttemptCount int
+}
 
 var tasksMigrations = []Migration{
 	{Version: 1, SQL: tasksSchemaV1},
@@ -123,9 +130,43 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 	return tx.Commit()
 }
 
-// ResetOldFailedTasks resets failed tasks older than cooldown back to 'assigned'
-// for retry, up to maxRetryAttempts times. Tasks that have already been retried
-// the maximum number of times are left in 'failed' state permanently.
+// GetRetryableTasks returns tasks that are eligible to be retried: failed (or
+// retrying) long enough ago and below the attempt cap. The caller should report
+// "retrying" status to the server for each before calling ResetOldFailedTasks.
+func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, error) {
+	cutoff := time.Now().UTC().Add(-cooldown).Format(time.RFC3339)
+
+	rows, err := s.db.Query(`
+		SELECT id, attempt_count FROM tasks
+		WHERE status IN ('failed', 'retrying')
+		AND attempt_count < ?
+		AND completed_at IS NOT NULL
+		AND completed_at < ?
+	`, MaxRetryAttempts, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("TaskStore: close retryable rows: %v", err)
+		}
+	}()
+
+	var tasks []RetryableTask
+	for rows.Next() {
+		var t RetryableTask
+		if err := rows.Scan(&t.ID, &t.AttemptCount); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
+// ResetOldFailedTasks resets failed (or retrying) tasks older than cooldown
+// back to 'assigned' for retry, up to MaxRetryAttempts times. Tasks that have
+// already been retried the maximum number of times are left in 'failed' state
+// permanently.
 func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	cutoff := time.Now().UTC().Add(-cooldown).Format(time.RFC3339)
@@ -134,11 +175,11 @@ func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 		UPDATE tasks
 		SET status = 'assigned', note = '', completed_at = NULL, updated_at = ?,
 		    attempt_count = attempt_count + 1
-		WHERE status = 'failed'
+		WHERE status IN ('failed', 'retrying')
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
-	`, now, maxRetryAttempts, cutoff)
+	`, now, MaxRetryAttempts, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -221,7 +262,7 @@ func (s *TaskStore) ResetInterruptedTasks() (int, error) {
 		    is_synced    = 0,
 		    attempt_count = ?
 		WHERE status = 'executing'
-	`, now, now, maxRetryAttempts)
+	`, now, now, MaxRetryAttempts)
 	if err != nil {
 		return 0, err
 	}

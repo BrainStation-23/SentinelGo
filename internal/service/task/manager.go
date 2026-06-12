@@ -106,6 +106,8 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 	mainInterval := pollingInterval
 	log.Printf("TaskManager: Starting sequential task loop with interval: %v", mainInterval)
 
+	go tm.executorSvc.RunWatchdog(ctx)
+
 	log.Printf("TaskManager: Initial polling...")
 	tm.pollTasks(ctx)
 

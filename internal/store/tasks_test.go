@@ -87,7 +87,7 @@ func TestMarkTaskExecuting_NotPickedUpAgain(t *testing.T) {
 }
 
 // TestResetInterruptedTasks confirms 'executing' tasks are moved to 'failed'
-// with the correct note, is_synced=0, and attempt_count=maxRetryAttempts.
+// with the correct note, is_synced=0, and attempt_count=MaxRetryAttempts.
 func TestResetInterruptedTasks(t *testing.T) {
 	ts := newTaskStoreForTest(t)
 	seedTask(t, ts, "task-interrupted", "assigned")
@@ -109,8 +109,8 @@ func TestResetInterruptedTasks(t *testing.T) {
 	if got := queryIsSynced(t, ts, "task-interrupted"); got != 0 {
 		t.Errorf("is_synced = %d, want 0 (needs server sync)", got)
 	}
-	if got := queryAttemptCount(t, ts, "task-interrupted"); got != maxRetryAttempts {
-		t.Errorf("attempt_count = %d, want %d (max so it isn't auto-retried)", got, maxRetryAttempts)
+	if got := queryAttemptCount(t, ts, "task-interrupted"); got != MaxRetryAttempts {
+		t.Errorf("attempt_count = %d, want %d (max so it isn't auto-retried)", got, MaxRetryAttempts)
 	}
 }
 

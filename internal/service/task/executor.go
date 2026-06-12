@@ -10,12 +10,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/taskstore"
 )
+
+const (
+	defaultTaskTimeout = 30 * time.Minute
+	maxTaskTimeout     = 24 * time.Hour
+	watchdogInterval   = 2 * time.Minute
+	watchdogGrace      = 5 * time.Minute
+)
+
+// activeTask tracks an in-flight task for the watchdog.
+type activeTask struct {
+	cancel   context.CancelFunc
+	deadline time.Time
+}
 
 // TaskExecutorService handles the execution of tasks assigned to the agent.
 type TaskExecutorService struct {
@@ -24,15 +38,19 @@ type TaskExecutorService struct {
 	client         *http.Client
 	runningTasks   map[string]bool
 	nativeHandlers map[string]NativeTaskHandler
+
+	activeMu      sync.Mutex
+	activeRunning map[string]activeTask // task ID → {cancel, deadline}
 }
 
 // NewTaskExecutorService creates a new task execution service.
 func NewTaskExecutorService(cfg *config.Config, pollingSvc *TaskPollingService) *TaskExecutorService {
 	s := &TaskExecutorService{
-		cfg:          cfg,
-		pollingSvc:   pollingSvc,
-		client:       httpx.NewClient(2 * time.Minute),
-		runningTasks: make(map[string]bool),
+		cfg:           cfg,
+		pollingSvc:    pollingSvc,
+		client:        httpx.NewClient(2 * time.Minute),
+		runningTasks:  make(map[string]bool),
+		activeRunning: make(map[string]activeTask),
 	}
 	s.registerNativeHandlers()
 	return s
@@ -51,6 +69,53 @@ func (s *TaskExecutorService) RunExecutionLoop(ctx context.Context) {
 			s.ExecutePendingTasks(ctx)
 		}
 	}
+}
+
+// RunWatchdog polls activeRunning every watchdogInterval and cancels any task
+// that has been running past its deadline plus watchdogGrace. The cancelled
+// context fires taskCtx.Done() in runTask, which uses the existing timeout
+// machinery to mark the task failed and report it to the server.
+func (s *TaskExecutorService) RunWatchdog(ctx context.Context) {
+	log.Printf("Watchdog: started (interval=%v, grace=%v)", watchdogInterval, watchdogGrace)
+	ticker := time.NewTicker(watchdogInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Watchdog: stopped")
+			return
+		case <-ticker.C:
+			s.cancelOverdueTasks()
+		}
+	}
+}
+
+func (s *TaskExecutorService) cancelOverdueTasks() {
+	now := time.Now()
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+
+	for id, t := range s.activeRunning {
+		if now.After(t.deadline.Add(watchdogGrace)) {
+			log.Printf("Watchdog: cancelling stuck task %s (deadline was %v ago)",
+				id, now.Sub(t.deadline).Round(time.Second))
+			t.cancel()
+			// deregisterRunning will be called by the defer in runTask
+		}
+	}
+}
+
+func (s *TaskExecutorService) registerRunning(id string, cancel context.CancelFunc, deadline time.Time) {
+	s.activeMu.Lock()
+	s.activeRunning[id] = activeTask{cancel: cancel, deadline: deadline}
+	s.activeMu.Unlock()
+}
+
+func (s *TaskExecutorService) deregisterRunning(id string) {
+	s.activeMu.Lock()
+	delete(s.activeRunning, id)
+	s.activeMu.Unlock()
 }
 
 // ExecutePendingTasks finds locally stored 'assigned' tasks and runs them.
@@ -106,13 +171,36 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	}
 }
 
-func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
-	if handler, ok := s.nativeHandlers[task.Slug]; ok {
-		return handler(ctx, task)
+// resolveTaskTimeout returns the timeout for a task. If the task payload
+// contains a "timeout_minutes" key (float64 > 0), that value is used, capped
+// at maxTaskTimeout. Otherwise defaultTaskTimeout applies.
+func resolveTaskTimeout(task taskstore.Task) time.Duration {
+	if v, ok := task.Payload["timeout_minutes"]; ok {
+		if mins, ok := v.(float64); ok && mins > 0 {
+			d := time.Duration(mins * float64(time.Minute))
+			if d > maxTaskTimeout {
+				d = maxTaskTimeout
+			}
+			return d
+		}
 	}
+	return defaultTaskTimeout
+}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
+	timeout := resolveTaskTimeout(task)
+	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Register with the watchdog. If the task exceeds its deadline plus the
+	// grace period the watchdog will call cancel(), firing taskCtx.Done() and
+	// causing the select below (or the native handler) to return an error.
+	s.registerRunning(task.ID, cancel, time.Now().Add(timeout))
+	defer s.deregisterRunning(task.ID)
+
+	if handler, ok := s.nativeHandlers[task.Slug]; ok {
+		return handler(taskCtx, task)
+	}
 
 	scriptPath, scriptName, err := s.resolveScript(task)
 	if err != nil {
@@ -130,7 +218,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}()
 
 	localScriptPath := filepath.Join(tempDir, scriptName)
-	if err := s.downloadScript(timeoutCtx, scriptPath, localScriptPath); err != nil {
+	if err := s.downloadScript(taskCtx, scriptPath, localScriptPath); err != nil {
 		return "", fmt.Errorf("download script: %w", err)
 	}
 
@@ -147,7 +235,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}, 1)
 
 	go func() {
-		output, err := s.executeLocalScript(timeoutCtx, localScriptPath, payloadPath)
+		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath)
 		resultChan <- struct {
 			output string
 			err    error
@@ -155,8 +243,11 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}()
 
 	select {
-	case <-timeoutCtx.Done():
-		timeoutNote := fmt.Sprintf("Task execution timed out after 10 minutes. Task ID: %s, Slug: %s. The task was forcefully stopped.", task.ID, task.Slug)
+	case <-taskCtx.Done():
+		timeoutNote := fmt.Sprintf(
+			"Task exceeded timeout of %v. Task ID: %s, Slug: %s. Forcefully stopped.",
+			timeout.Round(time.Second), task.ID, task.Slug,
+		)
 		log.Printf("Executor: %s", timeoutNote)
 		return timeoutNote, fmt.Errorf("task execution timeout")
 	case result := <-resultChan:

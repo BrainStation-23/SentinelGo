@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // executeLocalScript runs the task script on Windows using PowerShell or cmd.
@@ -17,6 +18,8 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		// #nosec G204 - scriptPath is a controlled path from task store
 		cmd = exec.CommandContext(ctx, "cmd", "/C", scriptPath, payloadPath)
 	}
+
+	cmd.WaitDelay = 30 * time.Second
 
 	output, err := cmd.CombinedOutput()
 	return string(output), err

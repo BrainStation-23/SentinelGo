@@ -6,12 +6,19 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/taskstore"
 	"sentinelgo/internal/updater"
 )
+
+// checkAndApplyFn is the updater entry point. Replaced in tests.
+var checkAndApplyFn = func(ctx context.Context, cfg *config.Config, token string) error {
+	return updater.CheckAndApplyWithRetry(ctx, cfg, token)
+}
 
 type agentUpdateHandler struct{}
 
@@ -49,14 +56,31 @@ func (h *agentUpdateHandler) Run(ctx context.Context, cfg *config.Config, task t
 	sanitizedCurrentVersion := sanitize.ForLog(currentVersion)
 	log.Printf("Executor: Current version: %s, checking for updates...", sanitizedCurrentVersion)
 
-	if err := updater.CheckAndApplyWithRetry(ctx, cfg, ""); err != nil {
+	// Write the restart context before calling the updater. If CheckAndApply
+	// finds an update it calls os.Exit(), so this file is the only way the
+	// restarted binary knows which task to mark as success.
+	ctxPath := restartctx.PathFor(cfg.Path)
+	if err := restartctx.Write(ctxPath, restartctx.Context{
+		TaskID:      task.ID,
+		Reason:      "agent-update",
+		FromVersion: currentVersion,
+		InitiatedAt: time.Now().UTC(),
+	}); err != nil {
+		log.Printf("Executor: Warning - failed to write restart context: %v", err)
+	}
+
+	if err := checkAndApplyFn(ctx, cfg, ""); err != nil {
+		// Update failed or was not needed; remove the context so the next
+		// startup does not incorrectly mark this task as success.
+		_, _ = restartctx.ReadAndClear(ctxPath)
 		log.Printf("Executor: Agent-update failed: %v", err)
 		return fmt.Sprintf("Update failed: %v (Current version: %s)", err, sanitizedCurrentVersion), err
 	}
 
-	newVersion := cfg.CurrentVersion
-	sanitizedNewVersion := sanitize.ForLog(newVersion)
-	log.Printf("Executor: Agent-update successful, updated from %s to %s", sanitizedCurrentVersion, sanitizedNewVersion)
-
-	return fmt.Sprintf("Successfully updated from %s to %s. Agent is restarting.", sanitizedCurrentVersion, sanitizedNewVersion), nil
+	// Reached here only when no update was available (already up to date).
+	// CheckAndApplyWithRetry calls os.Exit() on a successful update, so this
+	// line is never reached in the update case.
+	_, _ = restartctx.ReadAndClear(ctxPath)
+	log.Printf("Executor: Agent is already up to date (version %s)", sanitizedCurrentVersion)
+	return fmt.Sprintf("Already up to date (version %s).", sanitizedCurrentVersion), nil
 }
