@@ -15,22 +15,28 @@ func getPrinters() []shared.Printer {
 	}
 
 	if output, err := shared.RunCommand("system_profiler", "SPPrintersDataType"); err == nil {
-		var currentPrinter string
-		for _, line := range strings.Split(output, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "Name:") {
-				currentPrinter = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-			} else if strings.HasPrefix(line, "Type:") && currentPrinter != "" && !seen[currentPrinter] {
-				printingType := strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
-				if printingType == "" {
-					printingType = "Colorful"
-				}
-				printers = append(printers, newPrinter(currentPrinter, printingType, 0, 0))
-				seen[currentPrinter] = true
-				currentPrinter = ""
-			}
-		}
+		printers = append(printers, parseSystemProfilerPrinters(output, seen)...)
 	}
 
+	return printers
+}
+
+func parseSystemProfilerPrinters(output string, seen map[string]bool) []shared.Printer {
+	var printers []shared.Printer
+	var currentPrinter string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Name:") {
+			currentPrinter = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		} else if strings.HasPrefix(line, "Type:") && currentPrinter != "" && !seen[currentPrinter] {
+			printingType := strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
+			if printingType == "" {
+				printingType = "Colorful"
+			}
+			printers = append(printers, newPrinter(currentPrinter, printingType, 0, 0))
+			seen[currentPrinter] = true
+			currentPrinter = ""
+		}
+	}
 	return printers
 }
