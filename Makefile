@@ -64,6 +64,8 @@ release: pre-release clean all
 	@cp installation-doc/INSTALLATION.md release/
 	@cp installation-doc/install.bat release/
 	@cp installation-doc/install.sh release/
+	@cp installation-doc/install.command release/
+	@cp installation-doc/sentinelgo-install.desktop release/
 	@cp build/windows/sentinelgo-windows-amd64.exe release/
 	@cp build/linux/sentinelgo-linux-amd64 release/
 	@cp build/linux/sentinelgo-linux-arm64 release/
@@ -193,10 +195,10 @@ packages: release
 	@echo "Creating distribution packages..."
 	@cd release && \
 		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe INSTALLATION.md install.bat && \
-		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md install.sh && \
-		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md install.sh && \
-		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md install.sh && \
-		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md install.sh
+		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md install.sh install.command && \
+		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md install.sh install.command
 	@echo "Packages created:"
 	@ls -la release/*.tar.gz
 

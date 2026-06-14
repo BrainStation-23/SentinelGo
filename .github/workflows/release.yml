@@ -42,7 +42,7 @@ jobs:
           cache: true
 
       - name: Ensure shell scripts are executable
-        run: chmod +x installation-doc/install.sh scripts/*.sh
+        run: chmod +x installation-doc/install.sh installation-doc/install.command scripts/*.sh
 
       - name: Build all platforms
         run: make all VERSION="${GITHUB_REF#refs/tags/}"
@@ -152,6 +152,8 @@ jobs:
             artifacts/sentinelgo-*
             artifacts/SHA256SUMS
             installation-doc/install.sh
+            installation-doc/install.command
+            installation-doc/sentinelgo-install.desktop
             installation-doc/install.bat
             installation-doc/INSTALLATION.md
         env:
