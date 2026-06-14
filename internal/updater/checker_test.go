@@ -109,7 +109,7 @@ func TestSelectAssetWithChecksum_WithChecksumFile(t *testing.T) {
 	// Serve a fake SHA256SUMS file
 	expectedChecksum := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s  %s\n", expectedChecksum, binaryName)
+		_, _ = fmt.Fprintf(w, "%s  %s\n", expectedChecksum, binaryName)
 	}))
 	defer srv.Close()
 
@@ -144,9 +144,9 @@ func TestDownloadAndParseChecksumFile_ValidEntry(t *testing.T) {
 	expected := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Lines with other platforms + the matching line
-		fmt.Fprintf(w, "deadbeef1234  sentinelgo-linux-arm64\n")
-		fmt.Fprintf(w, "%s  %s\n", expected, pattern)
-		fmt.Fprintf(w, "cafebabe5678  sentinelgo-darwin-amd64\n")
+		_, _ = fmt.Fprintf(w, "deadbeef1234  sentinelgo-linux-arm64\n")
+		_, _ = fmt.Fprintf(w, "%s  %s\n", expected, pattern)
+		_, _ = fmt.Fprintf(w, "cafebabe5678  sentinelgo-darwin-amd64\n")
 	}))
 	defer srv.Close()
 

@@ -53,7 +53,7 @@ func parseExclusions(path string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	set := make(map[string]bool)
 	inBlock := false
@@ -93,13 +93,13 @@ func writeFiltered(src, dst string, excludes map[string]bool) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w (run 'go test -coverprofile=%s ./...' first)", src, err, src)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.Create(dst)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	w := bufio.NewWriter(out)
 	scanner := bufio.NewScanner(in)
@@ -110,7 +110,7 @@ func writeFiltered(src, dst string, excludes map[string]bool) error {
 
 		if first {
 			// "mode: set" header — always keep
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 			first = false
 			continue
 		}
@@ -119,12 +119,12 @@ func writeFiltered(src, dst string, excludes map[string]bool) error {
 		// File path is everything before the first colon.
 		colon := strings.IndexByte(line, ':')
 		if colon < 0 {
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 			continue
 		}
 
 		if !excludes[line[:colon]] {
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 		}
 	}
 

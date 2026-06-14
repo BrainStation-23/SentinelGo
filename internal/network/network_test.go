@@ -135,7 +135,7 @@ func TestCheckInternetQuick_LocalListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	if err := network.CheckInternetQuick(context.Background(), "127.0.0.1", port); err != nil {
