@@ -307,7 +307,7 @@ func TestLshwClockSpeed(t *testing.T) {
 		want  int
 	}{
 		{"       clock:3200MHz\n", 3200},
-		{"   clock:4266MHz (DDR4)\n", 0}, // fmt.Sscanf "clock:%dMHz" won't match "4266MHz (DDR4)"
+		{"   clock:4266MHz (DDR4)\n", 4266}, // Sscanf "clock:%dMHz" matches and ignores trailing " (DDR4)"
 		{"no clock line\n", 0},
 		{"", 0},
 		{"       clock:0MHz\n", 0}, // speed > 0 required
