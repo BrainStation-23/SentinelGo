@@ -242,8 +242,8 @@ func TestSoftwareUpsertSetSupabaseURL(t *testing.T) {
 func TestStartSoftwareSync_CancelledContext(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
-		Path:      tmpDir + "/config.json",
-		DeviceID:  "test-device",
+		Path:        tmpDir + "/config.json",
+		DeviceID:    "test-device",
 		SupabaseURL: "https://example.supabase.co",
 		AccessToken: "test-token",
 	}

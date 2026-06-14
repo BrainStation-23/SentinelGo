@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	module   = "sentinelgo"
+	module    = "sentinelgo"
 	propsFile = "sonar-project.properties"
 	filtered  = "coverage-filtered.out"
 )

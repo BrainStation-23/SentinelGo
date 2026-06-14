@@ -119,4 +119,3 @@ func TestDownloadAndVerify_InvalidURL(t *testing.T) {
 		t.Error("expected error for unreachable URL, got nil")
 	}
 }
-

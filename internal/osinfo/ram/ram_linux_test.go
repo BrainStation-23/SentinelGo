@@ -286,11 +286,11 @@ func TestLshwManufacturer(t *testing.T) {
 	}{
 		{"       vendor: Samsung\n", "Samsung"},
 		{"       vendor: SK Hynix\n", "SK Hynix"},
-		{"vendor: 0x0000\n", ""},  // filtered out
-		{"vendor: 0x\n", ""},      // filtered out
+		{"vendor: 0x0000\n", ""}, // filtered out
+		{"vendor: 0x\n", ""},     // filtered out
 		{"no vendor line here\n", ""},
 		{"", ""},
-		{"vendor:\n", ""},         // empty value
+		{"vendor:\n", ""}, // empty value
 	}
 	for _, tc := range cases {
 		if got := lshwManufacturer(tc.input); got != tc.want {
