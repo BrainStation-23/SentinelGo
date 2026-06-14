@@ -158,7 +158,7 @@ func TestDownloadAndParseChecksumFile_ValidEntry(t *testing.T) {
 
 func TestDownloadAndParseChecksumFile_NoMatchingEntry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintln(w, "abcdef  sentinelgo-plan9-amd64")
+		_, _ = fmt.Fprintln(w, "abcdef  sentinelgo-plan9-amd64")
 	}))
 	defer srv.Close()
 
@@ -247,11 +247,11 @@ func TestDownloadAndParseChecksumFile_MalformedLines(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// mix of garbage lines and one valid matching entry
-		fmt.Fprintln(w, "")                              // blank line
-		fmt.Fprintln(w, "notahashline")                  // no spaces
-		fmt.Fprintln(w, "  ")                            // only whitespace
-		fmt.Fprintf(w, "%s  %s\n", expected, binaryName) // valid matching entry
-		fmt.Fprintln(w, "justonefield")                  // no separator
+		_, _ = fmt.Fprintln(w, "")                              // blank line
+		_, _ = fmt.Fprintln(w, "notahashline")                  // no spaces
+		_, _ = fmt.Fprintln(w, "  ")                            // only whitespace
+		_, _ = fmt.Fprintf(w, "%s  %s\n", expected, binaryName) // valid matching entry
+		_, _ = fmt.Fprintln(w, "justonefield")                  // no separator
 	}))
 	defer srv.Close()
 
