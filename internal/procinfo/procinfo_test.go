@@ -1,6 +1,7 @@
 package procinfo_test
 
 import (
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -205,4 +206,81 @@ func TestFindProcesses(t *testing.T) {
 	processes, err := procinfo.FindProcesses()
 	_ = processes
 	_ = err
+}
+
+// TestParseProcessOutput_WindowsFormat exercises the Windows CSV parsing branch
+// (fields[1]=PID, fields[8]=cmdline). The test skips on non-Windows because
+// ParseProcessOutput selects the branch based on runtime.GOOS.
+func TestParseProcessOutput_WindowsFormat(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows CSV format is only parsed on Windows")
+	}
+	// Simplified tasklist /fo csv /v output — no commas inside quoted fields so
+	// strings.Split(line, ",") yields exactly 9 columns.
+	output := "\"Image Name\",\"PID\",\"Session Name\",\"Session#\",\"Mem Usage\",\"Status\",\"User Name\",\"CPU Time\",\"Window Title\"\n" +
+		"\"sentinelgo.exe\",\"1234\",\"Services\",\"0\",\"12340 K\",\"Unknown\",\"N/A\",\"0:00:01\",\"/opt/sentinelgo/sentinelgo.exe\"\n"
+
+	result := procinfo.ParseProcessOutput(output)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 process, got %d", len(result))
+	}
+	if result[0].PID != 1234 {
+		t.Errorf("PID = %d, want 1234", result[0].PID)
+	}
+	if result[0].Status != "Running" {
+		t.Errorf("Status = %q, want Running", result[0].Status)
+	}
+}
+
+// TestParseProcessOutput_WindowsFormat_TooFewFields verifies that a Windows CSV
+// line containing "sentinelgo.exe" but fewer than 5 comma-separated fields is
+// silently skipped rather than panicking.
+func TestParseProcessOutput_WindowsFormat_TooFewFields(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows CSV format is only parsed on Windows")
+	}
+	output := "\"sentinelgo.exe\",\"1234\",\"Services\"\n"
+	result := procinfo.ParseProcessOutput(output)
+	if len(result) != 0 {
+		t.Errorf("expected 0 processes for short CSV line, got %d", len(result))
+	}
+}
+
+// TestExtractVersionFromCmd_EmptyEqualsValue verifies the edge case where the
+// -version= flag is present but its value is whitespace only.
+func TestExtractVersionFromCmd_EmptyEqualsValue(t *testing.T) {
+	// "-version= " → the value extracted after "=" is " ", which trims to "".
+	// The function returns "" (empty) in this case, not "unknown".
+	got := procinfo.ExtractVersionFromCmd("-version= ")
+	// Accept either "" or "unknown" — the important thing is no panic.
+	if got != "" && got != "unknown" {
+		t.Errorf("ExtractVersionFromCmd(\"-version= \") = %q; want \"\" or \"unknown\"", got)
+	}
+}
+
+// TestGetBinaryVersion_EmptyInput verifies that an empty command line returns "unknown".
+func TestGetBinaryVersion_EmptyInput(t *testing.T) {
+	t.Parallel()
+	got := procinfo.GetBinaryVersion("")
+	if got != "unknown" {
+		t.Errorf("GetBinaryVersion(\"\") = %q, want \"unknown\"", got)
+	}
+}
+
+// TestGetBinaryVersion_NonExistentBinary verifies a non-existent path returns "unknown".
+func TestGetBinaryVersion_NonExistentBinary(t *testing.T) {
+	t.Parallel()
+	got := procinfo.GetBinaryVersion("/nonexistent/binary/path/sentinelgo")
+	if got != "unknown" {
+		t.Errorf("GetBinaryVersion(non-existent) = %q, want \"unknown\"", got)
+	}
+}
+
+// TestGetCheckpointPath_IsAbsolute verifies that GetCheckpointPath returns an
+// absolute path on all platforms.
+func TestGetCheckpointPath_IsAbsolute(t *testing.T) {
+	p := procinfo.GetCheckpointPath()
+	if !filepath.IsAbs(p) {
+		t.Errorf("GetCheckpointPath() = %q is not absolute", p)
+	}
 }

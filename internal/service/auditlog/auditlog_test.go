@@ -175,6 +175,32 @@ func sampleBatchPayload(deviceID string) map[string]interface{} {
 	))
 }
 
+func TestSendBatchLogs_Success(t *testing.T) {
+	srv := newAuditLogServer(t, func(w http.ResponseWriter, _ map[string]interface{}) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	cfg := auditLogCfg(srv.URL, "dev-1", "tok")
+	svc := auditlog.NewAuditLogService(cfg)
+	if err := svc.SendBatchLogs(sampleBatchPayload("dev-1")); err != nil {
+		t.Fatalf("SendBatchLogs: %v", err)
+	}
+}
+
+func TestProcessBatchLogs_MissingAgentVersion(t *testing.T) {
+	svc := auditlog.NewAuditLogService(&config.Config{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := svc.ProcessBatchLogs(ctx, map[string]interface{}{
+		"agent_id": "a1", "os_type": "linux",
+		"source": "agent", "logs": []interface{}{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "agent_version") {
+		t.Fatalf("expected agent_version error, got: %v", err)
+	}
+}
+
 func TestSendBatchLogs_MissingURL(t *testing.T) {
 	svc := auditlog.NewAuditLogService(&config.Config{SupabaseURL: ""})
 	now := time.Now().UTC().Format(time.RFC3339)

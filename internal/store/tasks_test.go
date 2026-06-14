@@ -1,7 +1,11 @@
 package store
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sentinelgo/internal/taskstore"
@@ -134,6 +138,160 @@ func TestResetInterruptedTasks_NeverRetried(t *testing.T) {
 		if got := queryStatus(t, ts, "task-reboot"); got != "failed" {
 			t.Errorf("cycle %d: status = %q, want %q — interrupted task was recycled to re-execute", i, got, "failed")
 		}
+	}
+}
+
+// TestGetRetryableTasks verifies that failed tasks with old completed_at and
+// attempt_count < MaxRetryAttempts are returned.
+func TestGetRetryableTasks(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-retryable", "assigned")
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=0 WHERE id=?",
+		"task-retryable"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	tasks, err := ts.GetRetryableTasks(0)
+	if err != nil {
+		t.Fatalf("GetRetryableTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("got %d tasks, want 1", len(tasks))
+	}
+	if len(tasks) > 0 && tasks[0].ID != "task-retryable" {
+		t.Errorf("task ID = %q, want task-retryable", tasks[0].ID)
+	}
+}
+
+// TestGetRetryableTasks_AtMaxAttempts verifies that tasks at MaxRetryAttempts are excluded.
+func TestGetRetryableTasks_AtMaxAttempts(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-maxed", "assigned")
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=? WHERE id=?",
+		MaxRetryAttempts, "task-maxed"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	tasks, err := ts.GetRetryableTasks(0)
+	if err != nil {
+		t.Fatalf("GetRetryableTasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("got %d tasks, want 0 (task at max attempts should be excluded)", len(tasks))
+	}
+}
+
+// TestResetOldFailedTasks verifies that old failed tasks are reset to 'assigned'
+// while tasks at MaxRetryAttempts are left alone.
+func TestResetOldFailedTasks(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-old", "assigned")
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=0 WHERE id=?",
+		"task-old"); err != nil {
+		t.Fatalf("setup old task: %v", err)
+	}
+	seedTask(t, ts, "task-maxed", "assigned")
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=? WHERE id=?",
+		MaxRetryAttempts, "task-maxed"); err != nil {
+		t.Fatalf("setup maxed task: %v", err)
+	}
+
+	n, err := ts.ResetOldFailedTasks(0)
+	if err != nil {
+		t.Fatalf("ResetOldFailedTasks: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("affected %d rows, want 1", n)
+	}
+	if got := queryStatus(t, ts, "task-old"); got != "assigned" {
+		t.Errorf("task-old status = %q, want assigned", got)
+	}
+	if got := queryAttemptCount(t, ts, "task-old"); got != 1 {
+		t.Errorf("task-old attempt_count = %d, want 1", got)
+	}
+	if got := queryStatus(t, ts, "task-maxed"); got != "failed" {
+		t.Errorf("task-maxed status = %q, want failed (should not be reset)", got)
+	}
+}
+
+// TestGetUnsyncedTasks verifies only unsynced completed tasks are returned.
+func TestGetUnsyncedTasks(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-unsynced", "assigned")
+	seedTask(t, ts, "task-synced", "assigned")
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01', is_synced=0 WHERE id=?",
+		"task-unsynced"); err != nil {
+		t.Fatalf("setup unsynced: %v", err)
+	}
+	if _, err := ts.db.Exec(
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01', is_synced=1 WHERE id=?",
+		"task-synced"); err != nil {
+		t.Fatalf("setup synced: %v", err)
+	}
+
+	tasks, err := ts.GetUnsyncedTasks()
+	if err != nil {
+		t.Fatalf("GetUnsyncedTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("got %d unsynced tasks, want 1", len(tasks))
+	}
+	if len(tasks) > 0 && tasks[0].ID != "task-unsynced" {
+		t.Errorf("task ID = %q, want task-unsynced", tasks[0].ID)
+	}
+}
+
+// TestMarkTaskSynced verifies MarkTaskSynced sets is_synced=1.
+func TestMarkTaskSynced(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-1", "assigned")
+
+	if err := ts.MarkTaskSynced("task-1"); err != nil {
+		t.Fatalf("MarkTaskSynced: %v", err)
+	}
+	if got := queryIsSynced(t, ts, "task-1"); got != 1 {
+		t.Errorf("is_synced = %d, want 1", got)
+	}
+}
+
+// TestShowTasks verifies ShowTasks writes task rows to stdout.
+func TestShowTasks(t *testing.T) {
+	ts := newTaskStoreForTest(t)
+	seedTask(t, ts, "task-show-1", "assigned")
+	seedTask(t, ts, "task-show-2", "assigned")
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	showErr := ts.ShowTasks()
+
+	_ = w.Close()
+	os.Stdout = origStdout
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("io.Copy: %v", err)
+	}
+	_ = r.Close()
+
+	if showErr != nil {
+		t.Fatalf("ShowTasks: %v", showErr)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "task-show-1") {
+		t.Errorf("output missing task-show-1:\n%s", output)
+	}
+	if !strings.Contains(output, "task-show-2") {
+		t.Errorf("output missing task-show-2:\n%s", output)
 	}
 }
 

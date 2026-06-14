@@ -115,14 +115,17 @@ deps:
 test:
 	go test ./...
 
-# Run tests with coverage and show per-function report
+# Run tests with coverage and show per-function report filtered to match
+# sonar.coverage.exclusions (single source of truth in sonar-project.properties).
+# Writes coverage.out (full, for SonarQube) and coverage-filtered.out (display only).
 coverage:
 	go test -coverprofile=coverage.out -coverpkg=./... ./...
-	go tool cover -func=coverage.out
+	@go run ./scripts/filtercoverage coverage.out
 
-# Generate browsable HTML coverage report (run `make coverage` first)
+# Generate browsable HTML coverage report from the filtered profile.
+# Run `make coverage` first to produce coverage-filtered.out.
 coverage-html:
-	go tool cover -html=coverage.out -o coverage.html
+	go tool cover -html=coverage-filtered.out -o coverage.html
 	@echo "Coverage report written to coverage.html"
 
 # Pre-release quality checks

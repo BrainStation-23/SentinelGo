@@ -190,6 +190,33 @@ func TestCheckExistingLock_ActiveLock(t *testing.T) {
 	}
 }
 
+func TestNewLockFile(t *testing.T) {
+	lf := lockfile.NewLockFile("testservice")
+	if lf == nil {
+		t.Fatal("NewLockFile() returned nil")
+	}
+}
+
+func TestTryAcquire_StaleLock(t *testing.T) {
+	path := lockPath(t)
+	if err := os.WriteFile(path, []byte("99999999\n"), 0644); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	lf := lockfile.NewLockFileWithPath(path)
+	if err := lf.TryAcquire(); err != nil {
+		t.Fatalf("TryAcquire with stale lock should succeed, got: %v", err)
+	}
+	defer func() { _ = lf.Release() }()
+}
+
+func TestRelease_NotAcquired(t *testing.T) {
+	lf := lockfile.NewLockFileWithPath(lockPath(t))
+	if err := lf.Release(); err != nil {
+		t.Fatalf("Release() on non-acquired lock should not error: %v", err)
+	}
+}
+
 func TestIsProcessRunning_CurrentProcess(t *testing.T) {
 	if !lockfile.IsProcessRunning(os.Getpid()) {
 		t.Errorf("IsProcessRunning(%d) = false, want true (current process)", os.Getpid())

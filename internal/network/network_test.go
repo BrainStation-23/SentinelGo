@@ -2,6 +2,9 @@ package network_test
 
 import (
 	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -99,5 +102,43 @@ func TestConnectivityChecker_WithOptionsChain(t *testing.T) {
 	cc = cc.WithCheckURL("https://example.com").WithTimeout(5 * time.Second)
 	if cc == nil {
 		t.Fatal("Chained options returned nil")
+	}
+}
+
+func TestCheckInternet_LocalHTTPServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cc := network.NewConnectivityChecker().WithCheckURL(srv.URL).WithTimeout(5 * time.Second)
+	if err := cc.CheckInternet(context.Background()); err != nil {
+		t.Errorf("CheckInternet with local server: %v", err)
+	}
+}
+
+func TestCheckInternet_Server503StillSuccess(t *testing.T) {
+	// Any HTTP response (including 5xx) means the network path is open.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	cc := network.NewConnectivityChecker().WithCheckURL(srv.URL).WithTimeout(5 * time.Second)
+	if err := cc.CheckInternet(context.Background()); err != nil {
+		t.Errorf("CheckInternet with 503 response should succeed (any response = reachable): %v", err)
+	}
+}
+
+func TestCheckInternetQuick_LocalListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	if err := network.CheckInternetQuick(context.Background(), "127.0.0.1", port); err != nil {
+		t.Errorf("CheckInternetQuick with local listener: %v", err)
 	}
 }

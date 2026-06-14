@@ -200,6 +200,205 @@ func TestParseDmidecodeOutput(t *testing.T) {
 	})
 }
 
+// ── isMeaningless ─────────────────────────────────────────────────────────────
+
+func TestIsMeaningless(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"", true},
+		{"unknown", true},
+		{"Unknown", true},
+		{"UNKNOWN", true},
+		{"not provided", true},
+		{"Not Provided", true},
+		{"not specified", true},
+		{"Not Specified", true},
+		{"not applicable", true},
+		{"Samsung", false},
+		{"DDR4", false},
+		{"8 GB", false},
+	}
+	for _, tc := range cases {
+		if got := isMeaningless(tc.input); got != tc.want {
+			t.Errorf("isMeaningless(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+// ── fieldValue ────────────────────────────────────────────────────────────────
+
+func TestFieldValue(t *testing.T) {
+	cases := []struct {
+		line    string
+		wantVal string
+		wantOK  bool
+	}{
+		{"Size: 8 GB", "8 GB", true},
+		{"Manufacturer: Samsung", "Samsung", true},
+		{"Part Number:  M471A1K43DB1-CWE ", "M471A1K43DB1-CWE", true},
+		{"NoColon", "", false},
+		{"", "", false},
+		{"Key:", "", true}, // empty value is valid (ok=true, val="")
+	}
+	for _, tc := range cases {
+		val, ok := fieldValue(tc.line)
+		if ok != tc.wantOK {
+			t.Errorf("fieldValue(%q) ok=%v, want %v", tc.line, ok, tc.wantOK)
+			continue
+		}
+		if ok && val != tc.wantVal {
+			t.Errorf("fieldValue(%q) val=%q, want %q", tc.line, val, tc.wantVal)
+		}
+	}
+}
+
+// ── lshwRAMType ───────────────────────────────────────────────────────────────
+
+func TestLshwRAMType(t *testing.T) {
+	cases := []struct {
+		upper string
+		want  string
+	}{
+		{"LPDDR5", "LPDDR5"},
+		{"THIS IS LPDDR4 MEMORY", "LPDDR4"},
+		{"DDR5 MEMORY", "DDR5"},
+		{"DDR4", "DDR4"},
+		{"DDR3", "DDR3"},
+		{"DDR2 SODIMM", "DDR2"},
+		{"UNKNOWN TYPE", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := lshwRAMType(tc.upper); got != tc.want {
+			t.Errorf("lshwRAMType(%q) = %q, want %q", tc.upper, got, tc.want)
+		}
+	}
+}
+
+// ── lshwManufacturer ──────────────────────────────────────────────────────────
+
+func TestLshwManufacturer(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"       vendor: Samsung\n", "Samsung"},
+		{"       vendor: SK Hynix\n", "SK Hynix"},
+		{"vendor: 0x0000\n", ""},  // filtered out
+		{"vendor: 0x\n", ""},      // filtered out
+		{"no vendor line here\n", ""},
+		{"", ""},
+		{"vendor:\n", ""},         // empty value
+	}
+	for _, tc := range cases {
+		if got := lshwManufacturer(tc.input); got != tc.want {
+			t.Errorf("lshwManufacturer(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// ── lshwClockSpeed ────────────────────────────────────────────────────────────
+
+func TestLshwClockSpeed(t *testing.T) {
+	cases := []struct {
+		input string
+		want  int
+	}{
+		{"       clock:3200MHz\n", 3200},
+		{"   clock:4266MHz (DDR4)\n", 0}, // fmt.Sscanf "clock:%dMHz" won't match "4266MHz (DDR4)"
+		{"no clock line\n", 0},
+		{"", 0},
+		{"       clock:0MHz\n", 0}, // speed > 0 required
+	}
+	for _, tc := range cases {
+		if got := lshwClockSpeed(tc.input); got != tc.want {
+			t.Errorf("lshwClockSpeed(%q) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+// ── fieldValue edge cases ─────────────────────────────────────────────────────
+
+func TestFieldValue_NoColon(t *testing.T) {
+	v, ok := fieldValue("NoColonInThisLine")
+	if ok {
+		t.Error("fieldValue without colon: ok = true, want false")
+	}
+	if v != "" {
+		t.Errorf("fieldValue without colon: value = %q, want empty", v)
+	}
+}
+
+func TestFieldValue_MultipleColons(t *testing.T) {
+	v, ok := fieldValue("Key: Value: Extra")
+	if !ok {
+		t.Error("fieldValue with multiple colons: ok = false, want true")
+	}
+	if v != "Value: Extra" {
+		t.Errorf("fieldValue multiple colons: value = %q, want \"Value: Extra\"", v)
+	}
+}
+
+// ── isMeaningless edge cases ──────────────────────────────────────────────────
+
+func TestIsMeaningless_CaseInsensitive(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"UNKNOWN", true},
+		{"Unknown", true},
+		{"NOT PROVIDED", true},
+		{"Not Specified", true},
+		{"  Not Provided  ", true}, // leading/trailing whitespace
+		{"NOT APPLICABLE", true},
+		{"Samsung", false},
+		{"DDR4", false},
+		{"16 GB", false},
+	}
+	for _, tc := range cases {
+		if got := isMeaningless(tc.input); got != tc.want {
+			t.Errorf("isMeaningless(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+// ── parseDmidecodeOutput with unknown size ────────────────────────────────────
+
+const unknownSizeDevice = `
+Memory Device
+	Array Handle: 0x0001
+	Error Information Handle: 0x0002
+	Total Width: 64 bits
+	Data Width: 64 bits
+	Size: Unknown
+	Form Factor: DIMM
+	Set: None
+	Locator: DIMM_A1
+	Bank Locator: P0_Node0_Channel0_Dimm0
+	Type: DDR4
+	Type Detail: Synchronous Unbuffered (Unregistered)
+	Speed: 2133 MT/s
+	Manufacturer: Samsung
+	Serial Number: Not Provided
+	Asset Tag: Not Provided
+	Part Number: M378A2K43CB1-CTD
+	Rank: 2
+	Configured Memory Speed: 2133 MT/s
+`
+
+func TestParseDmidecodeOutput_UnknownSize(t *testing.T) {
+	// "Size: Unknown" means the slot is populated but capacity is unreadable.
+	// The function must not panic; behaviour (include or skip) is implementation-defined.
+	sticks, _ := parseDmidecodeOutput(unknownSizeDevice)
+	// No assertion on count — just verify no panic and sticks is a valid slice.
+	_ = sticks
+}
+
+// ── TestGetRAMs_Integration ───────────────────────────────────────────────────
+
 func TestGetRAMs_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
