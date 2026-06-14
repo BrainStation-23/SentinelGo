@@ -2,6 +2,7 @@ package internal_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -110,4 +111,78 @@ func TestMainIntegration_Start_CancelledContext(t *testing.T) {
 
 	_ = mi.Start(ctx)
 	_ = mi.Stop()
+}
+
+// TestMainIntegration_Start_WithAutoUpdate exercises maybeStartupUpdateCheck
+// (the AutoUpdate=true branch that spawns a background goroutine).
+func TestMainIntegration_Start_WithAutoUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in -short mode")
+	}
+	cfg := minimalTestConfig(t)
+	cfg.AutoUpdate = true
+
+	mi := internal.NewMainIntegration(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = mi.Start(ctx)
+	_ = mi.Stop()
+}
+
+// TestMainIntegration_Start_WithAuditLogs exercises startLoggingService
+// (the AuditLogsEnabled=true branch).
+func TestMainIntegration_Start_WithAuditLogs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in -short mode")
+	}
+	cfg := minimalTestConfig(t)
+	cfg.AuditLogsEnabled = true
+	cfg.Path = filepath.Join(t.TempDir(), "config.json")
+
+	mi := internal.NewMainIntegration(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = mi.Start(ctx)
+	_ = mi.Stop()
+}
+
+// TestMainIntegration_Start_WithTaskPolling exercises startTaskManager
+// (the EnableTaskPolling=true branch). TaskDBPath is set to a temp file so
+// SQLite can be created without needing the system config directory.
+func TestMainIntegration_Start_WithTaskPolling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in -short mode")
+	}
+	cfg := minimalTestConfig(t)
+	cfg.EnableTaskPolling = true
+	cfg.TaskDBPath = filepath.Join(t.TempDir(), "tasks.sqlite")
+
+	mi := internal.NewMainIntegration(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = mi.Start(ctx)
+	_ = mi.Stop()
+}
+
+// TestMainIntegration_Stop_WithAllComponents exercises the non-nil branches of
+// Stop (taskManager != nil, loggingService != nil).
+func TestMainIntegration_Stop_WithAllComponents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in -short mode")
+	}
+	tmpDir := t.TempDir()
+	cfg := minimalTestConfig(t)
+	cfg.AuditLogsEnabled = true
+	cfg.EnableTaskPolling = true
+	cfg.Path = filepath.Join(tmpDir, "config.json")
+	cfg.TaskDBPath = filepath.Join(tmpDir, "tasks.sqlite")
+
+	mi := internal.NewMainIntegration(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = mi.Start(ctx)
+
+	if err := mi.Stop(); err != nil {
+		t.Errorf("Stop() with all components: %v", err)
+	}
 }

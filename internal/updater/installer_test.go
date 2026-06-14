@@ -136,6 +136,32 @@ func TestCreateBackup_BackupHasContent(t *testing.T) {
 	}
 }
 
+// ── rollbackFromBackup ────────────────────────────────────────────────────────
+
+// TestRollbackFromBackup_Windows verifies that on Windows, rollback always returns
+// an error (in-process file replacement is not supported while the binary is running).
+func TestRollbackFromBackup_Windows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific path only")
+	}
+	err := rollbackFromBackup("any_backup.backup")
+	if err == nil {
+		t.Error("expected error from rollbackFromBackup on Windows, got nil")
+	}
+}
+
+// TestRollbackFromBackup_NonExistentBackup verifies that passing a nonexistent
+// backup path returns an error on non-Windows platforms.
+func TestRollbackFromBackup_NonExistentBackup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("rollbackFromBackup returns early on Windows before reading the backup")
+	}
+	err := rollbackFromBackup("/nonexistent/path/to/backup.backup")
+	if err == nil {
+		t.Error("expected error for nonexistent backup file, got nil")
+	}
+}
+
 // TestCreateBackup_ContentMatchesSource verifies that the backup file's bytes are
 // identical to the source binary, not merely the same size.
 func TestCreateBackup_ContentMatchesSource(t *testing.T) {

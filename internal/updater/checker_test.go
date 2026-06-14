@@ -1,12 +1,18 @@
 package updater
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
+
+	"sentinelgo/internal/config"
 )
 
 // ── selectAssetWithChecksum ────────────────────────────────────────────────────
@@ -252,6 +258,225 @@ func TestDownloadAndParseChecksumFile_MalformedLines(t *testing.T) {
 	got := downloadAndParseChecksumFile(srv.URL)
 	if got != expected {
 		t.Errorf("got %q, want %q", got, expected)
+	}
+}
+
+// ── fetchLatestRelease (apiClient injection) ──────────────────────────────────
+
+// roundTripFunc is a one-shot http.RoundTripper backed by a function.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestFetchLatestRelease_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","assets":[]}`))
+	}))
+	defer srv.Close()
+
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			// Forward to local server
+			newReq, _ := http.NewRequest(r.Method, srv.URL+r.URL.Path, r.Body)
+			newReq = newReq.WithContext(r.Context())
+			return http.DefaultTransport.RoundTrip(newReq)
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "test-owner", GitHubRepo: "test-repo"}
+	rel, err := fetchLatestRelease(t.Context(), cfg, "")
+	if err != nil {
+		t.Fatalf("fetchLatestRelease failed: %v", err)
+	}
+	if rel.TagName != "v9.9.9" {
+		t.Errorf("TagName = %q, want v9.9.9", rel.TagName)
+	}
+}
+
+func TestFetchLatestRelease_NotFound(t *testing.T) {
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "test-owner", GitHubRepo: "test-repo"}
+	_, err := fetchLatestRelease(t.Context(), cfg, "")
+	if err == nil {
+		t.Fatal("expected error for 404 response, got nil")
+	}
+}
+
+func TestFetchLatestRelease_InvalidJSON(t *testing.T) {
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{invalid-json`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "test-owner", GitHubRepo: "test-repo"}
+	_, err := fetchLatestRelease(t.Context(), cfg, "")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestFetchLatestRelease_WithToken(t *testing.T) {
+	var receivedAuth string
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			receivedAuth = r.Header.Get("Authorization")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v1.0.0","assets":[]}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "o", GitHubRepo: "r"}
+	_, err := fetchLatestRelease(t.Context(), cfg, "my-token")
+	if err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+	if receivedAuth != "Bearer my-token" {
+		t.Errorf("Authorization = %q, want Bearer my-token", receivedAuth)
+	}
+}
+
+// ── AutoUpdateChecker (cancelled context) ─────────────────────────────────────
+
+func TestAutoUpdateChecker_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // already cancelled
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		AutoUpdateChecker(ctx, &config.Config{})
+	}()
+
+	select {
+	case <-done:
+		// OK — returned promptly
+	case <-time.After(5 * time.Second):
+		t.Error("AutoUpdateChecker with cancelled context did not return within 5s")
+	}
+}
+
+// ── CheckAndApply ─────────────────────────────────────────────────────────────
+
+// TestCheckAndApply_DevBuild covers the "cannot compare versions" early-exit
+// path. In test binaries config.Version == "dev", so isNewerVersion("v99.9.9",
+// "dev") returns a parse error and CheckAndApply skips the update (returns nil).
+func TestCheckAndApply_DevBuild(t *testing.T) {
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v99.9.9","assets":[]}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "o", GitHubRepo: "r"}
+	err := CheckAndApply(t.Context(), cfg, "")
+	if err != nil {
+		t.Errorf("CheckAndApply on dev build: got error %v, want nil", err)
+	}
+}
+
+// TestCheckAndApply_FetchError verifies that a GitHub API failure is returned as
+// an error.
+func TestCheckAndApply_FetchError(t *testing.T) {
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "o", GitHubRepo: "r"}
+	if err := CheckAndApply(t.Context(), cfg, ""); err == nil {
+		t.Error("expected error for 500 fetch response, got nil")
+	}
+}
+
+// ── CheckAndApplyWithRetry ────────────────────────────────────────────────────
+
+// TestCheckAndApplyWithRetry_DevBuild verifies the retry wrapper returns nil
+// when the underlying update is a no-op (dev build).
+func TestCheckAndApplyWithRetry_DevBuild(t *testing.T) {
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v99.9.9","assets":[]}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	cfg := &config.Config{GitHubOwner: "o", GitHubRepo: "r"}
+	if err := CheckAndApplyWithRetry(t.Context(), cfg, ""); err != nil {
+		t.Errorf("CheckAndApplyWithRetry on dev build: got error %v, want nil", err)
+	}
+}
+
+// TestCheckAndApplyWithRetry_ContextCancelledDuringBackoff verifies that a
+// pre-cancelled context causes the retry loop to exit after the first attempt
+// rather than sleeping through the backoff.
+func TestCheckAndApplyWithRetry_ContextCancelledDuringBackoff(t *testing.T) {
+	callCount := 0
+	orig := apiClient
+	apiClient = &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			callCount++
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Body:       http.NoBody,
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { apiClient = orig }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // already cancelled — backoff select fires ctx.Done() immediately
+
+	cfg := &config.Config{GitHubOwner: "o", GitHubRepo: "r"}
+	_ = CheckAndApplyWithRetry(ctx, cfg, "")
+	// With a pre-cancelled context the loop exits after attempt 1 (the ctx.Done
+	// select in the backoff fires before a second attempt begins).
+	if callCount > 1 {
+		t.Errorf("expected at most 1 HTTP call with pre-cancelled context, got %d", callCount)
 	}
 }
 
