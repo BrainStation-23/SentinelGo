@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install SentinelGo
+Comment=Install the SentinelGo monitoring agent
+# %k resolves to this launcher's own path, so we cd into the extracted folder
+# before running install.sh (so its sibling binary + config.json are found).
+# install.sh honors its #!/bin/bash shebang; chmod restores the +x that browser
+# downloads strip, so install.sh's `exec sudo "$0"` re-exec works.
+# read (no -p) keeps it POSIX/dash-safe for the terminal that Terminal=true opens.
+Exec=sh -c 'cd "$(dirname "$(readlink -f "%k")")" && chmod +x ./install.sh 2>/dev/null; ./install.sh; echo; printf "Press Enter to close..."; read _'
+Terminal=true
+Icon=utilities-terminal
+Categories=System;Utility;

@@ -60,31 +60,32 @@ func HandleAuditLogsStatus(cfg *config.Config) {
 	}
 }
 
-func withLoggingIntegration(action func(*logging.LoggingIntegration, context.Context) error) {
-	cfg, err := config.Load("")
-	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		os.Exit(1)
-	}
-
+// withLoggingIntegrationForConfig is the testable core of withLoggingIntegration.
+// It accepts an already-loaded config and returns an error instead of calling os.Exit.
+func withLoggingIntegrationForConfig(cfg *config.Config, action func(*logging.LoggingIntegration, context.Context) error) error {
 	logIntegration, err := logging.NewLoggingIntegration(cfg)
 	if err != nil {
-		fmt.Printf("Failed to create logging integration: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create logging integration: %w", err)
 	}
-
 	ctx := context.Background()
 	if err := logIntegration.Start(ctx); err != nil {
-		fmt.Printf("Failed to start logging service: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to start logging service: %w", err)
 	}
 	defer func() {
 		if err := logIntegration.Stop(); err != nil {
 			fmt.Printf("Warning: failed to stop logging service: %v\n", err)
 		}
 	}()
+	return action(logIntegration, ctx)
+}
 
-	if err := action(logIntegration, ctx); err != nil {
+func withLoggingIntegration(action func(*logging.LoggingIntegration, context.Context) error) {
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Printf("Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	if err := withLoggingIntegrationForConfig(cfg, action); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}

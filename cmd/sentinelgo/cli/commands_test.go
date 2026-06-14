@@ -2,15 +2,20 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/logging"
 	swsvc "sentinelgo/internal/service/software"
 )
 
@@ -162,6 +167,106 @@ func TestOutputSoftwareJSON_empty(t *testing.T) {
 	trimmed := strings.TrimSpace(out)
 	if trimmed != "null" && trimmed != "[]" {
 		t.Errorf("empty list should produce null or []; got %q", out)
+	}
+}
+
+// ── withLoggingIntegrationForConfig ──────────────────────────────────────────
+
+func TestWithLoggingIntegrationForConfig_ActionCalled(t *testing.T) {
+	cfg := &config.Config{
+		DeviceID:         "test-device",
+		LogFlushInterval: config.Duration(5 * time.Minute),
+		Path:             filepath.Join(t.TempDir(), "config.json"),
+	}
+	var called bool
+	err := withLoggingIntegrationForConfig(cfg, func(_ *logging.LoggingIntegration, _ context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("action was not called")
+	}
+}
+
+func TestWithLoggingIntegrationForConfig_ActionError(t *testing.T) {
+	cfg := &config.Config{
+		DeviceID:         "test-device",
+		LogFlushInterval: config.Duration(5 * time.Minute),
+		Path:             filepath.Join(t.TempDir(), "config.json"),
+	}
+	boom := fmt.Errorf("boom")
+	err := withLoggingIntegrationForConfig(cfg, func(_ *logging.LoggingIntegration, _ context.Context) error {
+		return boom
+	})
+	if err == nil {
+		t.Error("expected error from action, got nil")
+	}
+}
+
+// ── HandleEnableAutoUpdate ────────────────────────────────────────────────────
+
+func TestHandleEnableAutoUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.json")
+	testCfg := `{
+		"supabase_url": "https://example.supabase.co",
+		"supabase_key": "test-anon-key",
+		"device_id":    "test-device-id",
+		"auto_update":  false
+	}`
+	if err := os.WriteFile(cfgPath, []byte(testCfg), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	HandleEnableAutoUpdate(cfgPath)
+
+	saved, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load after HandleEnableAutoUpdate: %v", err)
+	}
+	if !saved.AutoUpdate {
+		t.Error("expected AutoUpdate=true after HandleEnableAutoUpdate")
+	}
+}
+
+// ── HandleAgentInfoUpdate ─────────────────────────────────────────────────────
+
+func TestHandleAgentInfoUpdate_NoTokens(t *testing.T) {
+	cfg := &config.Config{
+		SupabaseURL:  "https://test.supabase.co",
+		DeviceID:     "test-device",
+		AccessToken:  "",
+		RefreshToken: "",
+	}
+	out := captureStdout(func() { HandleAgentInfoUpdate(cfg) })
+	if !strings.Contains(out, "No tokens") {
+		t.Errorf("expected No tokens message; got: %q", out)
+	}
+}
+
+// TestHandleAgentInfoUpdate_WithRefreshToken exercises the cfg.RefreshToken != ""
+// branch. A local httptest server handles auth and agent calls so nothing hangs.
+func TestHandleAgentInfoUpdate_WithRefreshToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Return 401 so the auth call fails fast and agent-info update also fails.
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		SupabaseURL:  srv.URL,
+		DeviceID:     "test-device",
+		AccessToken:  "stored-token",
+		RefreshToken: "test-refresh-token",
+		SupabaseKey:  "test-key",
+	}
+	out := captureStdout(func() { HandleAgentInfoUpdate(cfg) })
+	if !strings.Contains(out, "Refreshing") {
+		t.Errorf("expected 'Refreshing' in output; got: %q", out)
 	}
 }
 

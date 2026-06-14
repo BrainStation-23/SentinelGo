@@ -281,6 +281,44 @@ func TestTaskPollingServiceErrorHandling(t *testing.T) {
 	}
 }
 
+func TestPollingService_UpdateToken(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "polling-update-token-test")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	cfg := loadTestConfig(t)
+	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(tmpDir, "tasks.sqlite"), &mockTaskClient{})
+	if err != nil {
+		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	// UpdateToken must not panic or error. The mock client's UpdateToken is a no-op.
+	svc.UpdateToken("new-access-token")
+}
+
+func TestPollingService_CleanupCompletedTasks(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "polling-cleanup-test")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	cfg := loadTestConfig(t)
+	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(tmpDir, "tasks.sqlite"), &mockTaskClient{})
+	if err != nil {
+		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	// Empty store — cleanup should succeed with no tasks to remove.
+	if err := svc.CleanupCompletedTasks(time.Now()); err != nil {
+		t.Errorf("CleanupCompletedTasks on empty store: %v", err)
+	}
+}
+
 func TestTaskPollingServiceConcurrentAccess(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "task-polling-concurrent-test")
 	if err != nil {

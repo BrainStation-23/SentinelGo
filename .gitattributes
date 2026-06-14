@@ -1,0 +1,11 @@
+# Line-ending policy for installer assets.
+#
+# Shell scripts, the macOS .command wrapper, and the Linux .desktop launcher run
+# on macOS/Linux and MUST use LF: a CRLF shebang ("#!/bin/sh\r") fails with
+# "bad interpreter", and CRLF breaks .desktop Exec parsing. Without this, a
+# Windows checkout/build could ship CRLF copies that silently fail to launch.
+# The Windows .bat installer keeps CRLF.
+*.sh        text eol=lf
+*.command   text eol=lf
+*.desktop   text eol=lf
+*.bat       text eol=crlf

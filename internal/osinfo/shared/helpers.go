@@ -22,7 +22,7 @@ func ReadFileBytes(path string) ([]byte, error) {
 }
 
 func RunCommand(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// #nosec G204 - name and args are controlled internal parameters
 	cmd := exec.CommandContext(ctx, name, args...)

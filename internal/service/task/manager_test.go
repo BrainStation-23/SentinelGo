@@ -144,6 +144,28 @@ func TestTaskManagerDisabledPolling(t *testing.T) {
 	}
 }
 
+func TestTaskManager_SetTokenRefresher(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "task-manager-token-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	cfg := loadTestConfig(t)
+	cfg.TaskDBPath = filepath.Join(tempDir, "tasks.sqlite")
+
+	pollingSvc, err := task.NewTaskPollingServiceWithClient(cfg, cfg.TaskDBPath, &mockTaskClient{})
+	if err != nil {
+		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
+	}
+
+	tm := task.NewTaskManagerWithPollingService(cfg, pollingSvc)
+	defer func() { _ = tm.Close() }()
+
+	// SetTokenRefresher must not panic or error; no assertion on internals needed.
+	tm.SetTokenRefresher(&mockTokenRefresher{token: "new-token"})
+}
+
 func TestTaskManagerErrorHandling(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "task-manager-error-test")
 	if err != nil {

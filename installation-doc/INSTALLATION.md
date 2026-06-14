@@ -45,6 +45,31 @@ All installation scripts support automatic configuration handling:
 ---
 
 
+## 🖱️ Clickable Install (Double-Click)
+
+Prefer not to use a terminal? Each download includes a clickable installer next to `install.sh`. Double-clicking runs the same `install.sh`, so the `config.json` bundled with your download is picked up automatically.
+
+### macOS — `install.command`
+1. Unzip the download.
+2. Double-click **`install.command`** — a Terminal window opens and runs the installer.
+3. If macOS warns *"install.command cannot be opened because it is from an unidentified developer"*, **right-click (Control-click) the file → Open → Open** once to allow it.
+4. Enter your password when prompted (installation needs administrator rights).
+
+### Linux — `sentinelgo-install.desktop`
+1. Unzip the download.
+2. Right-click **`sentinelgo-install.desktop`** → **Allow Launching** (GNOME) or mark it trusted (your desktop's equivalent). Downloaded launchers stay blocked until trusted.
+3. Double-click it — a terminal opens and runs the installer; enter your password when prompted.
+
+> Desktop environments differ in how they handle `.desktop` launchers. If double-clicking does nothing, use the reliable terminal fallback:
+> ```bash
+> chmod +x install.sh && sudo ./install.sh
+> ```
+
+Windows users: keep using **`install.bat`** (double-click; it auto-elevates via UAC).
+
+---
+
+
 ## 🛠️ Installation Commands
 
 The `install.sh` script supports multiple commands:

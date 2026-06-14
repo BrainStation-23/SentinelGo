@@ -237,6 +237,37 @@ func TestSoftwareUpsertSetSupabaseURL(t *testing.T) {
 	}
 }
 
+// ── TestStartSoftwareSync_CancelledContext ────────────────────────────────────
+
+func TestStartSoftwareSync_CancelledContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Path:        tmpDir + "/config.json",
+		DeviceID:    "test-device",
+		SupabaseURL: "https://example.supabase.co",
+		AccessToken: "test-token",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	svc := software.NewSoftwareService()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.StartSoftwareSync(ctx, cfg, func() []software.SoftwareInfo { return nil })
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("StartSoftwareSync with cancelled context returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("StartSoftwareSync with cancelled context did not return within 5s")
+	}
+}
+
 // ── TestUpsertAPI ─────────────────────────────────────────────────────────────
 
 func TestUpsertAPI(t *testing.T) {

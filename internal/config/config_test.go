@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -391,5 +392,99 @@ func TestConfig_GetSoftwareInfoUpdateInterval_VeryLarge(t *testing.T) {
 	got := cfg.GetSoftwareInfoUpdateInterval()
 	if got != 24*time.Hour {
 		t.Errorf("Config.GetSoftwareInfoUpdateInterval() = %v, want 24h", got)
+	}
+}
+
+func TestConfig_GetRefreshToken(t *testing.T) {
+	cfg := &config.Config{RefreshToken: "my-refresh-token"}
+	if got := cfg.GetRefreshToken(); got != "my-refresh-token" {
+		t.Errorf("GetRefreshToken() = %q, want %q", got, "my-refresh-token")
+	}
+
+	cfg2 := &config.Config{}
+	if got := cfg2.GetRefreshToken(); got != "" {
+		t.Errorf("GetRefreshToken() on zero config = %q, want empty", got)
+	}
+}
+
+func TestConfig_GetAutoUpdateInterval(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "zero value returns 24h default",
+			cfg:  &config.Config{AutoUpdateInterval: config.Duration(0)},
+			want: 24 * time.Hour,
+		},
+		{
+			name: "non-zero value returned as-is",
+			cfg:  &config.Config{AutoUpdateInterval: config.Duration(48 * time.Hour)},
+			want: 48 * time.Hour,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.GetAutoUpdateInterval(); got != tt.want {
+				t.Errorf("GetAutoUpdateInterval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfig_GetAgentInfoUpdateInterval(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "zero value returns 5m default",
+			cfg:  &config.Config{AgentInfoUpdateInterval: config.Duration(0)},
+			want: 5 * time.Minute,
+		},
+		{
+			name: "non-zero value returned as-is",
+			cfg:  &config.Config{AgentInfoUpdateInterval: config.Duration(10 * time.Minute)},
+			want: 10 * time.Minute,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.GetAgentInfoUpdateInterval(); got != tt.want {
+				t.Errorf("GetAgentInfoUpdateInterval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestConfig_ValidateConfiguration_EmptyHost exercises the u.Host != "" branch
+// inside isValidURL that the existing "not-a-url" test cannot reach (wrong scheme
+// short-circuits before evaluating the host check).
+func TestGetDefaultConfigPath(t *testing.T) {
+	p := config.GetDefaultConfigPath()
+	if p == "" {
+		t.Error("GetDefaultConfigPath() returned empty string")
+	}
+	if !filepath.IsAbs(p) {
+		t.Errorf("GetDefaultConfigPath() = %q is not absolute", p)
+	}
+	if !strings.HasSuffix(p, "config.json") {
+		t.Errorf("GetDefaultConfigPath() = %q, want suffix config.json", p)
+	}
+	if !strings.Contains(strings.ToLower(p), "sentinelgo") {
+		t.Errorf("GetDefaultConfigPath() = %q, want to contain sentinelgo", p)
+	}
+}
+
+func TestConfig_ValidateConfiguration_EmptyHost(t *testing.T) {
+	cfg := &config.Config{
+		SupabaseURL: "https://", // valid scheme, empty host
+		DeviceID:    "test-id",
+		SupabaseKey: "test-key",
+	}
+	if err := cfg.ValidateConfiguration(); err == nil {
+		t.Error("expected error for URL with valid scheme but empty host, got nil")
 	}
 }

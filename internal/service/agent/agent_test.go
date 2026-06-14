@@ -126,3 +126,86 @@ func TestUpdateAgentInfo_CancelledContext(t *testing.T) {
 		t.Error("expected error with cancelled context, got nil")
 	}
 }
+
+func TestSetAgentStatus_Success(t *testing.T) {
+	var receivedMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		SupabaseURL: server.URL,
+		SupabaseKey: "test-key",
+		AccessToken: "test-token",
+		DeviceID:    "test-device",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	svc := agent.NewAgentService()
+	if err := svc.SetAgentStatus(ctx, cfg, "online"); err != nil {
+		t.Fatalf("SetAgentStatus failed: %v", err)
+	}
+	if receivedMethod != http.MethodPatch {
+		t.Errorf("expected PATCH request, got %s", receivedMethod)
+	}
+}
+
+func TestGetAgentInfo_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"device_id":"test-device","status":"online"}]`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		SupabaseURL: server.URL,
+		SupabaseKey: "test-key",
+		AccessToken: "test-token",
+		DeviceID:    "test-device",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := agent.NewAgentService().GetAgentInfo(ctx, cfg)
+	if err != nil {
+		t.Fatalf("GetAgentInfo failed: %v", err)
+	}
+	if info == nil {
+		t.Fatal("GetAgentInfo returned nil map")
+	}
+	if info["device_id"] != "test-device" {
+		t.Errorf("device_id = %v, want test-device", info["device_id"])
+	}
+}
+
+func TestGetAgentInfo_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		SupabaseURL: server.URL,
+		SupabaseKey: "test-key",
+		AccessToken: "test-token",
+		DeviceID:    "test-device",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := agent.NewAgentService().GetAgentInfo(ctx, cfg)
+	if err == nil {
+		t.Fatal("expected error for empty agent list, got nil")
+	}
+}

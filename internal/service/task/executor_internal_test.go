@@ -5,10 +5,15 @@ package task
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -188,4 +193,114 @@ func TestRegisterRunning_ConcurrentSafety(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// ── resolveScript ─────────────────────────────────────────────────────────────
+
+// TestResolveScript_AllFallback verifies the "all" key is used when there is no
+// platform-specific entry.
+func TestResolveScript_AllFallback(t *testing.T) {
+	task := taskstore.Task{
+		Scripts: map[string]interface{}{
+			"all": map[string]interface{}{"path": "/scripts/cross-platform.sh"},
+		},
+	}
+	s := &TaskExecutorService{}
+	path, name, err := s.resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript(all fallback): %v", err)
+	}
+	if path != "/scripts/cross-platform.sh" {
+		t.Errorf("path = %q, want /scripts/cross-platform.sh", path)
+	}
+	if name != "cross-platform.sh" {
+		t.Errorf("name = %q, want cross-platform.sh", name)
+	}
+}
+
+// TestResolveScript_NoMatch verifies an error is returned when no script key
+// matches the current platform and there is no "all" fallback.
+func TestResolveScript_NoMatch(t *testing.T) {
+	task := taskstore.Task{
+		Scripts: map[string]interface{}{
+			"plan9": map[string]interface{}{"path": "/scripts/plan9.sh"},
+		},
+	}
+	s := &TaskExecutorService{}
+	_, _, err := s.resolveScript(task)
+	if err == nil {
+		t.Error("expected error for no matching script platform, got nil")
+	}
+}
+
+// TestResolveScript_EmptyScripts verifies an error is returned for an empty
+// scripts map.
+func TestResolveScript_EmptyScripts(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{}}
+	s := &TaskExecutorService{}
+	_, _, err := s.resolveScript(task)
+	if err == nil {
+		t.Error("expected error for empty scripts map, got nil")
+	}
+}
+
+// ── downloadScript ────────────────────────────────────────────────────────────
+
+// TestDownloadScript_Success verifies that a 200 response body is written to
+// the local path.
+func TestDownloadScript_Success(t *testing.T) {
+	content := "#!/bin/bash\necho hello"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(content))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
+
+	localPath := filepath.Join(t.TempDir(), "script.sh")
+	if err := s.downloadScript(context.Background(), "path/to/script.sh", localPath); err != nil {
+		t.Fatalf("downloadScript: %v", err)
+	}
+	got, _ := os.ReadFile(localPath)
+	if string(got) != content {
+		t.Errorf("downloaded content = %q, want %q", got, content)
+	}
+}
+
+// TestDownloadScript_NotFound verifies that a 404 response returns an error.
+func TestDownloadScript_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL}
+	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
+
+	err := s.downloadScript(context.Background(), "missing.sh",
+		filepath.Join(t.TempDir(), "missing.sh"))
+	if err == nil {
+		t.Error("expected error for 404 response, got nil")
+	}
+}
+
+// TestDownloadScript_ServerError verifies that a 500 response returns an error.
+func TestDownloadScript_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL}
+	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
+
+	err := s.downloadScript(context.Background(), "script.sh",
+		filepath.Join(t.TempDir(), "script.sh"))
+	if err == nil {
+		t.Error("expected error for 500 response, got nil")
+	}
 }
