@@ -154,7 +154,7 @@ jobs:
       # specific implementations (every osinfo module has _linux/_darwin/_windows
       # files), so all 3 runs are needed for a meaningful merged coverage report.
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.os }}
           path: coverage.out
