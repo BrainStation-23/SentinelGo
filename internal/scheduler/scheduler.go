@@ -400,8 +400,17 @@ func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsv
 	if !authsvc.ShouldRefresh(cfg.AccessToken, tokenRefreshSkew) {
 		return nil
 	}
-	log.Printf("Scheduler: access token at/near expiry, refreshing proactively")
-	return authSvc.RefreshToken(ctx, cfg)
+	if authSvc.NeedsReprovision() {
+		// agent-login has rejected the stored credentials; there is nothing this
+		// task can do until an operator re-provisions the agent. Stay quiet rather
+		// than logging a guaranteed-to-fail attempt every minute.
+		return nil
+	}
+	log.Printf("Scheduler: access token at/near expiry, recovering session")
+	// Recover (refresh→agent-login) is breaker-gated: while the breaker is open it
+	// returns immediately without a network call, throttling repeated failures to
+	// the breaker's reset cadence instead of every tick.
+	return authSvc.Recover(ctx, cfg)
 }
 
 func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
@@ -423,7 +432,15 @@ func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 // silently block every subsequent periodic tick.
 const collectTimeout = 90 * time.Second
 
-func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+	if authSvc != nil && !authSvc.Healthy() {
+		// Session is unrecoverable right now (breaker open or credentials rejected).
+		// Skip the upload instead of firing a request that is guaranteed to 401 —
+		// the token-refresh task is what re-establishes auth.
+		log.Printf("Scheduler: auth degraded, skipping agent-info-update until session recovers")
+		return nil
+	}
+
 	log.Printf("Running agent info update")
 
 	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
@@ -448,12 +465,23 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.S
 		return fmt.Errorf("system info collection returned no data; skipping this cycle")
 	}
 	agentSvc := agentsvc.NewAgentService()
-	return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	if authSvc == nil {
+		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	}
+	// On a 401 mid-run, recover the session (refresh→login) and retry once.
+	return authSvc.DoWithAuthRetry(tctx, cfg, func() error {
+		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	})
 }
 
-func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
 	if !cfg.SoftwareSyncEnabled {
 		log.Printf("Software sync is disabled")
+		return nil
+	}
+
+	if authSvc != nil && !authSvc.Healthy() {
+		log.Printf("Scheduler: auth degraded, skipping software-sync until session recovers")
 		return nil
 	}
 
@@ -503,7 +531,16 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Serv
 	sanitizedFreshCount := sanitize.ForLog(fmt.Sprintf("%d", len(freshList)))
 	log.Printf("Software sync: %s catalog entries (%s fresh)", sanitizedCatalogCount, sanitizedFreshCount)
 
-	if err := svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg); err != nil {
+	sendSoftware := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg) }
+	if authSvc != nil {
+		// On a 401 mid-run, recover the session (refresh→login) and retry once.
+		sendSoftware = func() error {
+			return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+				return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg)
+			})
+		}
+	}
+	if err := sendSoftware(); err != nil {
 		// Leave the queue marker so the next tick retries the upload.
 		return fmt.Errorf("send software data: %w", err)
 	}

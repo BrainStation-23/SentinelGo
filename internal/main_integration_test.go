@@ -45,8 +45,10 @@ func TestMainIntegration_GetStatus_NilConfig(t *testing.T) {
 	if _, exists := status["scheduler"]; !exists {
 		t.Error("GetStatus() should include scheduler status")
 	}
-	if _, exists := status["authentication"]; !exists {
-		t.Error("GetStatus() should include authentication status")
+	// The auth service is created during Start (it depends on the validated
+	// config and run context), so before Start there is no authentication status.
+	if _, exists := status["authentication"]; exists {
+		t.Error("GetStatus() should not include authentication status before Start")
 	}
 }
 
@@ -67,6 +69,9 @@ func TestMainIntegration_GetStatus_AfterStart(t *testing.T) {
 	status := mi.GetStatus()
 	if status == nil {
 		t.Error("GetStatus() should not return nil after Start")
+	}
+	if _, exists := status["authentication"]; !exists {
+		t.Error("GetStatus() should include authentication status after Start")
 	}
 	_ = mi.Stop()
 }

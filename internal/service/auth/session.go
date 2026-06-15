@@ -30,9 +30,10 @@ func NewSessionManager(cfg *config.Config, client *Service) *SessionManager {
 }
 
 // InitializeSession sets up authentication using tokens already stored in cfg.
-// It NEVER calls the login API. Returns an error when cfg holds no access
-// token – in that case the agent must be registered via a separate CLI command
-// before the service can start.
+// It does NOT call agent-login itself — it is the "reuse a still-valid stored
+// token" fast path. When cfg holds no access token it returns an error; the
+// caller then bootstraps a fresh session via Service.Login (agent-login), which
+// is the agent's normal startup path.
 func (sm *SessionManager) InitializeSession() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

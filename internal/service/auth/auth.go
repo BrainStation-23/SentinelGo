@@ -2,25 +2,44 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/resilience"
 
 	supabase "github.com/supabase-community/supabase-go"
 )
 
-const maxRetries = 3
+// maxRetries bounds how many times a single refresh or agent-login attempt is
+// retried on a transient (network/5xx) failure. It is a var rather than a const
+// so tests can lower it to keep breaker/recovery tests fast and deterministic.
+var maxRetries = 3
 
-// Service manages Supabase authentication state.
+// authBreakerMaxFailures / authBreakerResetTimeout tune the circuit breaker that
+// gates session recovery. After this many consecutive recovery failures the
+// breaker opens and rejects further attempts for the reset window, throttling a
+// permanently-failing agent from hammering the auth endpoints every tick.
+const (
+	authBreakerMaxFailures  = 5
+	authBreakerResetTimeout = 5 * time.Minute
+)
+
+// Service manages Supabase authentication state and is the single authority for
+// keeping the session valid.
 //
 // Token refresh is serialised: only one refresh is in-flight at a time.
 // Additional goroutines that arrive while a refresh is running wait on an
 // internal channel and return without issuing a duplicate network request.
+// Recover (refresh-then-login) is serialised the same way via its own channel,
+// so concurrent callers reacting to a 401 cannot trigger a login storm.
 type Service struct {
 	baseURL string
+	apiKey  string // Supabase anon key, sent as the apikey header to public endpoints
 	client  *supabase.Client
 
 	refreshMu sync.Mutex
@@ -31,19 +50,34 @@ type Service struct {
 	// leader before it closes refreshCh so waiters return the real result rather
 	// than a false success.
 	refreshErr error
+
+	// recoverMu / recoverCh / recoverErr provide the same single-flight guard for
+	// Recover as refresh* does for RefreshToken.
+	recoverMu  sync.Mutex
+	recoverCh  chan struct{}
+	recoverErr error
+
+	// breaker gates Recover so repeated failures back off instead of hammering.
+	breaker *resilience.CircuitBreaker
+	// needsReprovision is set once agent-login rejects the stored credentials.
+	// While set, the session is unrecoverable without operator action and
+	// reporting tasks pause rather than spin on guaranteed-401 requests.
+	needsReprovision atomic.Bool
 }
 
-// NewService creates a new authentication service. apiKey is used for the
-// Supabase client initialisation; callers should pass cfg.AccessToken.
+// NewService creates a new authentication service. apiKey is the Supabase anon
+// key used to initialise the client and to gate calls to the public agent-login
+// endpoint.
 func NewService(baseURL, apiKey string) *Service {
-	client, err := supabase.NewClient(baseURL, apiKey, nil)
-	if err != nil {
-		return &Service{baseURL: baseURL}
-	}
-	return &Service{
-		client:  client,
+	s := &Service{
 		baseURL: baseURL,
+		apiKey:  apiKey,
+		breaker: resilience.NewCircuitBreaker("auth-service", authBreakerMaxFailures, authBreakerResetTimeout),
 	}
+	if client, err := supabase.NewClient(baseURL, apiKey, nil); err == nil {
+		s.client = client
+	}
+	return s
 }
 
 // InitSession configures the Supabase client using tokens already stored in
@@ -179,6 +213,121 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 	}
 
 	return fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// Recover restores a usable session: it first tries a token refresh, and if that
+// fails falls back to a full agent-login with the stored agent_secret. The whole
+// sequence is single-flight (so concurrent 401 reactions don't launch parallel
+// logins) and gated by a circuit breaker (so a permanently-failing recovery
+// backs off to the breaker's reset cadence instead of retrying every tick).
+//
+// On agent-login rejection it marks the agent as needing re-provisioning; on any
+// success it clears that flag.
+func (s *Service) Recover(ctx context.Context, cfg *config.Config) error {
+	s.recoverMu.Lock()
+	if s.recoverCh != nil {
+		ch := s.recoverCh
+		s.recoverMu.Unlock()
+		log.Printf("Auth: waiting for in-progress session recovery")
+		select {
+		case <-ch:
+			s.recoverMu.Lock()
+			err := s.recoverErr
+			s.recoverMu.Unlock()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.recoverCh = make(chan struct{})
+	s.recoverMu.Unlock()
+
+	err := s.breaker.Execute(ctx, func() error {
+		return s.doRecover(ctx, cfg)
+	})
+
+	s.recoverMu.Lock()
+	s.recoverErr = err
+	close(s.recoverCh)
+	s.recoverCh = nil
+	s.recoverMu.Unlock()
+	return err
+}
+
+// doRecover is the leader's recovery sequence: refresh, then agent-login. It is
+// only ever called by the single Recover leader, so calling the internal
+// doRefresh/Login directly here cannot race a second recovery.
+func (s *Service) doRecover(ctx context.Context, cfg *config.Config) error {
+	if cfg.RefreshToken != "" {
+		if err := s.doRefresh(ctx, cfg); err == nil {
+			s.needsReprovision.Store(false)
+			return nil
+		} else {
+			log.Printf("Auth: refresh failed during recovery (%v); falling back to agent-login", err)
+		}
+	}
+
+	if err := s.Login(ctx, cfg); err != nil {
+		if errors.Is(err, ErrLoginRejected) {
+			if s.needsReprovision.CompareAndSwap(false, true) {
+				log.Printf("Auth: CRITICAL — agent-login rejected the stored agent_secret. " +
+					"The agent cannot authenticate and needs re-provisioning; reporting is paused " +
+					"until valid credentials are restored.")
+			}
+		}
+		return err
+	}
+
+	s.needsReprovision.Store(false)
+	return nil
+}
+
+// DoWithAuthRetry runs fn; if fn fails with a 401-style error it recovers the
+// session (refresh→login) and retries fn exactly once. A 403 (authenticated but
+// forbidden) and all other errors are returned untouched — recovering the token
+// would not help. This is the single 401-handling pattern shared by every
+// reporting path.
+func (s *Service) DoWithAuthRetry(ctx context.Context, cfg *config.Config, fn func() error) error {
+	err := fn()
+	if err == nil || !IsUnauthorized(err) {
+		return err
+	}
+
+	log.Printf("Auth: request failed with 401; attempting session recovery before retry")
+	if rerr := s.Recover(ctx, cfg); rerr != nil {
+		log.Printf("Auth: recovery after 401 failed: %v", rerr)
+		return err // surface the original 401, not the recovery error
+	}
+	return fn()
+}
+
+// Healthy reports whether the agent currently holds (or can recover) a valid
+// session. It is false while the recovery breaker is open or the credentials
+// have been rejected — reporting tasks use this to pause instead of hammering.
+func (s *Service) Healthy() bool {
+	return !s.needsReprovision.Load() && s.breaker.GetState() != resilience.StateOpen
+}
+
+// NeedsReprovision reports whether agent-login has rejected the stored
+// credentials, meaning the agent requires operator re-provisioning.
+func (s *Service) NeedsReprovision() bool {
+	return s.needsReprovision.Load()
+}
+
+// AuthStatus is a point-in-time view of authentication health for status output.
+type AuthStatus struct {
+	Healthy          bool                           `json:"healthy"`
+	NeedsReprovision bool                           `json:"needs_reprovision"`
+	CircuitBreaker   resilience.CircuitBreakerStats `json:"circuit_breaker"`
+}
+
+// Status returns a snapshot of authentication health.
+func (s *Service) Status() AuthStatus {
+	return AuthStatus{
+		Healthy:          s.Healthy(),
+		NeedsReprovision: s.needsReprovision.Load(),
+		CircuitBreaker:   s.breaker.GetStats(),
+	}
 }
 
 // saveTokensWithRetry persists the config with a few bounded retries to ride out
