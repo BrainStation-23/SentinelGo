@@ -7,8 +7,8 @@ require (
 	github.com/supabase-community/postgrest-go v0.0.12
 	github.com/supabase-community/supabase-go v0.0.4
 	github.com/yusufpapurcu/wmi v1.2.4
-	golang.org/x/sys v0.42.0
-	modernc.org/sqlite v1.50.1
+	golang.org/x/sys v0.46.0
+	modernc.org/sqlite v1.52.0
 )
 
 require (

@@ -104,7 +104,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Gosec SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: gosec-results.sarif
@@ -154,7 +154,7 @@ jobs:
       # specific implementations (every osinfo module has _linux/_darwin/_windows
       # files), so all 3 runs are needed for a meaningful merged coverage report.
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.os }}
           path: coverage.out
@@ -207,7 +207,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all coverage artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-*
           merge-multiple: false
@@ -230,6 +230,6 @@ jobs:
             coverage-windows-latest/coverage.out > coverage.out
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

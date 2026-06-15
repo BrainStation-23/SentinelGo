@@ -68,7 +68,7 @@ jobs:
             dist/sentinelgo-windows-amd64.exe
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-binaries
           path: dist/
@@ -87,7 +87,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-binaries
           path: artifacts
@@ -144,7 +144,7 @@ jobs:
           fi
 
       - name: Create Release
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           body: ${{ steps.ai_notes.outputs.success == 'true' && steps.ai_notes.outputs.notes || '' }}
           generate_release_notes: ${{ steps.ai_notes.outputs.success != 'true' }}
