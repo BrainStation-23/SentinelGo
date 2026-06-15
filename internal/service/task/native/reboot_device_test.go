@@ -30,12 +30,12 @@ func TestRebootDeviceHandler_Slugs(t *testing.T) {
 	slugs := h.Slugs()
 	found := false
 	for _, s := range slugs {
-		if s == "reboot-device" {
+		if s == "device-reboot" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("Slugs() does not contain 'reboot-device': %v", slugs)
+		t.Errorf("Slugs() does not contain 'device-reboot': %v", slugs)
 	}
 }
 

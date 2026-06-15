@@ -22,7 +22,7 @@ type rebootDeviceHandler struct{}
 func init() { Register(&rebootDeviceHandler{}) }
 
 func (h *rebootDeviceHandler) Slugs() []string {
-	return []string{"reboot-device"}
+	return []string{"device-reboot"}
 }
 
 func (h *rebootDeviceHandler) Run(ctx context.Context, cfg *config.Config, task taskstore.Task) (string, error) {
