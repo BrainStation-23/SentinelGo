@@ -1,6 +1,7 @@
 package software
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os/exec"
@@ -10,6 +11,14 @@ import (
 )
 
 const mdlsBatchSize = 200
+
+// runCollectCmd runs an enumeration command under collectCmdTimeout so a hung tool
+// (e.g. a stalled system_profiler) errors out instead of blocking the sync goroutine.
+func runCollectCmd(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // batchMdlsLastOpened queries Spotlight metadata for the last-used date of a
 // set of app paths. Returns a map of path → RFC3339 timestamp. Paths that were
@@ -23,7 +32,7 @@ func batchMdlsLastOpened(paths []string) map[string]string {
 		}
 		batch := paths[i:end]
 		args := append([]string{"-name", "kMDItemLastUsedDate"}, batch...)
-		out, err := exec.Command("mdls", args...).Output()
+		out, err := runCollectCmd("mdls", args...)
 		if err != nil {
 			log.Printf("software: mdls batch failed: %v", err)
 			continue
@@ -108,8 +117,7 @@ func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
 }
 
 func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("system_profiler", "SPApplicationsDataType", "-json")
-	output, err := cmd.Output()
+	output, err := runCollectCmd("system_profiler", "SPApplicationsDataType", "-json")
 	if err != nil {
 		log.Printf("software: system_profiler SPApplicationsDataType failed: %v", err)
 		return nil, false
@@ -139,8 +147,7 @@ func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getHomebrewPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("brew", "list", "--versions")
-	output, err := cmd.Output()
+	output, err := runCollectCmd("brew", "list", "--versions")
 	if err != nil {
 		log.Printf("software: brew list --versions failed: %v", err)
 		return nil, false
@@ -151,8 +158,7 @@ func (s *SoftwareService) getHomebrewPackages() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getHomebrewCaskPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("brew", "list", "--cask", "--versions")
-	output, err := cmd.Output()
+	output, err := runCollectCmd("brew", "list", "--cask", "--versions")
 	if err != nil {
 		log.Printf("software: brew list --cask --versions failed: %v", err)
 		return nil, false
@@ -191,7 +197,7 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 			source = "app_store"
 			appStoreApp = "true"
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		firstSeen := now
 		if app.LastModified != "" {
 			firstSeen = app.LastModified
@@ -223,7 +229,7 @@ func parseHomebrewPackages(output []byte, packages *[]SoftwareInfo, source strin
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],

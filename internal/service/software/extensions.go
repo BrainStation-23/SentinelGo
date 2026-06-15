@@ -187,7 +187,7 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		m.Name = fallbackID
 	}
 
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 	firstSeen := now
 	if fi, err := os.Stat(path); err == nil {
 		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)

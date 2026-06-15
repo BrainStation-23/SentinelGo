@@ -550,8 +550,11 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 	}
 
 	if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
-		// Non-fatal: log the error but continue with whatever is in the catalog.
-		log.Printf("[software] store sync error: %v", err)
+		// SyncBatch is transactional and rolls back on error, so the catalog is
+		// unchanged. Bail rather than upload+clear: uploading now would report a
+		// stale catalog and clearing the queue would mask this failure. Any existing
+		// pending-sync marker is left intact so the next tick retries.
+		return fmt.Errorf("software store sync: %w", err)
 	}
 
 	// Always queue an upload: either the fresh scan succeeded or we need to
