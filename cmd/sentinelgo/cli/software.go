@@ -108,7 +108,7 @@ func HandleSoftwareListCommand(cfgPath string, asJSON, countOnly bool) {
 		sw.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
 	}
 
-	swList := sw.GetSoftwareList()
+	swList, _ := sw.GetSoftwareList()
 
 	switch {
 	case asJSON:

@@ -132,7 +132,7 @@ func TestGetFirefoxExtensions_WithExtension(t *testing.T) {
 	writeManifest(t, extDir, "Firefox Addon", "2.0.0")
 
 	s := &SoftwareService{}
-	exts := s.getFirefoxExtensions()
+	exts, _ := s.getFirefoxExtensions()
 
 	if len(exts) == 0 {
 		t.Fatal("expected at least one Firefox extension, got none")
@@ -159,7 +159,7 @@ func TestGetFirefoxExtensions_EmptyProfile(t *testing.T) {
 	}
 
 	s := &SoftwareService{}
-	exts := s.getFirefoxExtensions()
+	exts, _ := s.getFirefoxExtensions()
 	if len(exts) != 0 {
 		t.Errorf("expected 0 extensions for empty profile, got %d", len(exts))
 	}
@@ -171,7 +171,7 @@ func TestGetFirefoxExtensions_NoProfile(t *testing.T) {
 	// No Firefox profile directories created at all.
 
 	s := &SoftwareService{}
-	exts := s.getFirefoxExtensions()
+	exts, _ := s.getFirefoxExtensions()
 	if len(exts) != 0 {
 		t.Errorf("expected 0 extensions for missing profile dir, got %d", len(exts))
 	}
@@ -188,7 +188,7 @@ func TestGetBraveExtensions_WithExtension(t *testing.T) {
 	writeManifest(t, extDir, "Brave Extension", "1.0.0")
 
 	s := &SoftwareService{}
-	exts := s.getBraveExtensions()
+	exts, _ := s.getBraveExtensions()
 
 	if len(exts) == 0 {
 		t.Fatal("expected at least one Brave extension, got none")
@@ -210,7 +210,7 @@ func TestGetBraveExtensions_NoExtensions(t *testing.T) {
 	// Extensions directory not created.
 
 	s := &SoftwareService{}
-	exts := s.getBraveExtensions()
+	exts, _ := s.getBraveExtensions()
 	if len(exts) != 0 {
 		t.Errorf("expected 0 extensions for missing directory, got %d", len(exts))
 	}

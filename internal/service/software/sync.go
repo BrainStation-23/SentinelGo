@@ -192,8 +192,11 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 	return nil
 }
 
-// StartSoftwareSync runs the standalone software sync loop.
-func (s *SoftwareService) StartSoftwareSync(ctx context.Context, cfg *config.Config, softwareProvider func() []SoftwareInfo) error {
+// StartSoftwareSync runs the standalone software sync loop. softwareProvider
+// returns the fresh scan plus the set of source categories that were
+// authoritatively scanned, so the store only reconciles uninstalls for sources
+// that actually succeeded.
+func (s *SoftwareService) StartSoftwareSync(ctx context.Context, cfg *config.Config, softwareProvider func() ([]SoftwareInfo, map[string]bool)) error {
 	storePath := filepath.Join(filepath.Dir(cfg.Path), "software.sqlite")
 	swStore, err := store.NewSoftwareStore(storePath)
 	if err != nil {
@@ -217,9 +220,9 @@ func (s *SoftwareService) StartSoftwareSync(ctx context.Context, cfg *config.Con
 
 		case <-ticker.C:
 			syncTime := time.Now()
-			freshList := softwareProvider()
+			freshList, scannedSources := softwareProvider()
 
-			if err := swStore.SyncBatch(freshList, syncTime); err != nil {
+			if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
 				fmt.Printf("Software store sync error: %v\n", err)
 			} else {
 				_ = swStore.QueueSync()

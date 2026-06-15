@@ -80,28 +80,44 @@ func parseMdlsOutput(output string, paths []string, result map[string]string) {
 	}
 }
 
-// platformSoftware collects installed software on macOS.
-func (s *SoftwareService) platformSoftware() []SoftwareInfo {
+// platformSoftware collects installed software on macOS along with the set of
+// source categories that were authoritatively scanned this cycle. A source only
+// appears in the map when its scan succeeded, so a failed scan never demotes its
+// rows.
+func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
+	scanned := make(map[string]bool)
 	var sw []SoftwareInfo
-	sw = append(sw, s.getMacApplications()...)
-	sw = append(sw, s.getHomebrewPackages()...)
-	sw = append(sw, s.getHomebrewCaskPackages()...)
-	sw = append(sw, s.getChromeExtensions()...)
-	sw = append(sw, s.getFirefoxExtensions()...)
-	sw = append(sw, s.getEdgeExtensions()...)
-	sw = append(sw, s.getBraveExtensions()...)
-	return sw
+
+	if items, ok := s.getMacApplications(); ok {
+		sw = append(sw, items...)
+		// system_profiler authoritatively covers both App Store and other apps.
+		scanned["applications"] = true
+		scanned["app_store"] = true
+	}
+	if items, ok := s.getHomebrewPackages(); ok {
+		sw = append(sw, items...)
+		scanned["homebrew"] = true
+	}
+	if items, ok := s.getHomebrewCaskPackages(); ok {
+		sw = append(sw, items...)
+		scanned["homebrew_cask"] = true
+	}
+	s.appendExtensions(&sw, scanned)
+
+	return sw, scanned
 }
 
-func (s *SoftwareService) getMacApplications() []SoftwareInfo {
+func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("system_profiler", "SPApplicationsDataType", "-json")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: system_profiler SPApplicationsDataType failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var applications []SoftwareInfo
-	parseSystemProfilerApps(output, &applications)
+	if !parseSystemProfilerApps(output, &applications) {
+		return nil, false
+	}
 
 	// Collect paths to batch-query last-opened metadata.
 	paths := make([]string, 0, len(applications))
@@ -119,31 +135,31 @@ func (s *SoftwareService) getMacApplications() []SoftwareInfo {
 		}
 	}
 
-	return applications
+	return applications, true
 }
 
-func (s *SoftwareService) getHomebrewPackages() []SoftwareInfo {
+func (s *SoftwareService) getHomebrewPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("brew", "list", "--versions")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: brew list --versions failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseHomebrewPackages(output, &packages, "homebrew")
-	return packages
+	return packages, true
 }
 
-func (s *SoftwareService) getHomebrewCaskPackages() []SoftwareInfo {
+func (s *SoftwareService) getHomebrewCaskPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("brew", "list", "--cask", "--versions")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: brew list --cask --versions failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseHomebrewPackages(output, &packages, "homebrew_cask")
-	return packages
+	return packages, true
 }
 
 type systemProfilerOutput struct {
@@ -156,10 +172,14 @@ type systemProfilerOutput struct {
 	} `json:"SPApplicationsDataType"`
 }
 
-func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) {
+// parseSystemProfilerApps parses system_profiler JSON into applications. It
+// returns false when the output is not valid JSON (a failed query), which the
+// caller treats as "source not scanned" so the catalog is preserved rather than
+// reconciled against an empty result.
+func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 	var spOut systemProfilerOutput
 	if err := json.Unmarshal(output, &spOut); err != nil {
-		return
+		return false
 	}
 	for _, app := range spOut.SPApplicationsDataType {
 		if app.Name == "" {
@@ -190,6 +210,7 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) {
 			IsActive:         true,
 		})
 	}
+	return true
 }
 
 func parseHomebrewPackages(output []byte, packages *[]SoftwareInfo, source string) {

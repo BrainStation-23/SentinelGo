@@ -503,9 +503,15 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
 	syncTime := time.Now()
-	freshList := svc.GetSoftwareList()
+	freshList, scannedSources := svc.GetSoftwareList()
+	if len(scannedSources) == 0 {
+		// Every collector failed this cycle. SyncBatch will not reconcile any source
+		// (which would otherwise demote the entire catalog to "uninstalled"); the
+		// last-known catalog is preserved and re-uploaded below on the next retry.
+		log.Printf("[software] no software source scanned successfully; keeping last-known catalog")
+	}
 
-	if err := swStore.SyncBatch(freshList, syncTime); err != nil {
+	if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
 		// Non-fatal: log the error but continue with whatever is in the catalog.
 		log.Printf("[software] store sync error: %v", err)
 	}

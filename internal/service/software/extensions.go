@@ -8,12 +8,39 @@ import (
 	"time"
 )
 
+// appendExtensions runs every browser-extension collector, appending each one's
+// results to sw and recording each successfully-scanned source in scanned. A
+// collector reports failure (and is left out of scanned) only when the scan
+// could not run at all; an empty-but-successful scan is a legitimate "no
+// extensions" state and still reconciles. Note: LastOpened is not collected for
+// extensions on any platform (see readExtensionManifest) — tracked as a gap.
+func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo, scanned map[string]bool) {
+	if items, ok := s.getChromeExtensions(); ok {
+		*sw = append(*sw, items...)
+		scanned["chrome_extensions"] = true
+	}
+	if items, ok := s.getFirefoxExtensions(); ok {
+		*sw = append(*sw, items...)
+		scanned["firefox_extensions"] = true
+	}
+	if items, ok := s.getEdgeExtensions(); ok {
+		*sw = append(*sw, items...)
+		scanned["edge_extensions"] = true
+	}
+	if items, ok := s.getBraveExtensions(); ok {
+		*sw = append(*sw, items...)
+		scanned["brave_extensions"] = true
+	}
+}
+
 // getChromeExtensions returns installed Chrome extensions for the current user.
 // Path discovery is delegated to the platform-specific chromeExtDirGlobs function.
-func (s *SoftwareService) getChromeExtensions() []SoftwareInfo {
+// The bool is false only when the user's home directory cannot be resolved (the
+// scan could not run); an empty result with true means no extensions were found.
+func (s *SoftwareService) getChromeExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var extensions []SoftwareInfo
@@ -39,15 +66,15 @@ func (s *SoftwareService) getChromeExtensions() []SoftwareInfo {
 			}
 		}
 	}
-	return extensions
+	return extensions, true
 }
 
 // getFirefoxExtensions returns installed Firefox extensions for the current user.
 // Path discovery is delegated to the platform-specific firefoxProfileGlobs function.
-func (s *SoftwareService) getFirefoxExtensions() []SoftwareInfo {
+func (s *SoftwareService) getFirefoxExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var extensions []SoftwareInfo
@@ -71,14 +98,14 @@ func (s *SoftwareService) getFirefoxExtensions() []SoftwareInfo {
 			}
 		}
 	}
-	return extensions
+	return extensions, true
 }
 
 // getEdgeExtensions returns installed Edge extensions for the current user.
-func (s *SoftwareService) getEdgeExtensions() []SoftwareInfo {
+func (s *SoftwareService) getEdgeExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var extensions []SoftwareInfo
@@ -104,14 +131,14 @@ func (s *SoftwareService) getEdgeExtensions() []SoftwareInfo {
 			}
 		}
 	}
-	return extensions
+	return extensions, true
 }
 
 // getBraveExtensions returns installed Brave extensions for the current user.
-func (s *SoftwareService) getBraveExtensions() []SoftwareInfo {
+func (s *SoftwareService) getBraveExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var extensions []SoftwareInfo
@@ -137,7 +164,7 @@ func (s *SoftwareService) getBraveExtensions() []SoftwareInfo {
 			}
 		}
 	}
-	return extensions
+	return extensions, true
 }
 
 // readExtensionManifest reads a browser extension's manifest.json and returns

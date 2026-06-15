@@ -63,7 +63,7 @@ func TestSyncSoftwareHandler_EmptyCatalog_ReturnsSuccess(t *testing.T) {
 	}()
 
 	// Force an empty software list so the catalog path is empty.
-	getSoftwareListFn = func(_ *swsvc.SoftwareService) []swsvc.SoftwareInfo { return nil }
+	getSoftwareListFn = func(_ *swsvc.SoftwareService) ([]swsvc.SoftwareInfo, map[string]bool) { return nil, nil }
 	sendSoftwareFn = func(_ context.Context, _ *swsvc.SoftwareService, _ string, _ []swsvc.SoftwareInfo, _ *config.Config) error {
 		return errors.New("SendByRPC must not be called for empty catalog")
 	}
@@ -87,8 +87,8 @@ func TestSyncSoftwareHandler_SendFails_ReturnsError(t *testing.T) {
 	}()
 
 	// Return one fake package so the catalog is non-empty and SendByRPC is reached.
-	getSoftwareListFn = func(_ *swsvc.SoftwareService) []swsvc.SoftwareInfo {
-		return []swsvc.SoftwareInfo{{Name: "fake-pkg", InstalledVersion: "1.0"}}
+	getSoftwareListFn = func(_ *swsvc.SoftwareService) ([]swsvc.SoftwareInfo, map[string]bool) {
+		return []swsvc.SoftwareInfo{{Name: "fake-pkg", Source: "programs", InstalledVersion: "1.0"}}, map[string]bool{"programs": true}
 	}
 
 	sendErr := errors.New("RPC unavailable")
