@@ -28,9 +28,12 @@ func (h *agentUpdateHandler) Slugs() []string {
 	return []string{"agent-update"}
 }
 
-func (h *agentUpdateHandler) PostRun() []string {
-	return []string{"sync-inventory"}
-}
+// agent-update intentionally does NOT implement PostRunner. On a successful update
+// CheckAndApply calls os.Exit() before any post-hook could run, so a PostRun here
+// would only ever fire in the "already up to date" case — exactly when re-syncing
+// is pointless. After a real update the restarted binary's runInitialTasks re-runs
+// every enabled task once, including agent-info-update (reports the new version) and
+// software-sync, so inventory is refreshed on the next boot without a hook.
 
 func (h *agentUpdateHandler) Run(ctx context.Context, cfg *config.Config, task taskstore.Task) (string, error) {
 	log.Printf("Executor: Executing agent-update task %s", task.ID)

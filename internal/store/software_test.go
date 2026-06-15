@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -21,6 +22,20 @@ func newTestSoftwareStore(t *testing.T) *SoftwareStore {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+// catalogByName returns the full catalog keyed by software name, for assertions.
+func catalogByName(t *testing.T, s *SoftwareStore) map[string]models.SoftwareInfo {
+	t.Helper()
+	all, err := s.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll() error: %v", err)
+	}
+	byName := make(map[string]models.SoftwareInfo, len(all))
+	for _, it := range all {
+		byName[it.Name] = it
+	}
+	return byName
 }
 
 func TestNewSoftwareStore(t *testing.T) {
@@ -94,49 +109,53 @@ func TestSyncBatch_Insert(t *testing.T) {
 	}
 }
 
+// TestSyncBatch_MarkUninstalled verifies the debounced uninstall path: a row that
+// disappears survives every scan short of uninstallConfirmThreshold, then is demoted
+// on the scan that reaches it.
 func TestSyncBatch_MarkUninstalled(t *testing.T) {
 	s := newTestSoftwareStore(t)
-
-	t1 := time.Now().UTC().Truncate(time.Second)
-	t2 := t1.Add(time.Second)
+	base := time.Now().UTC().Truncate(time.Second)
+	scanned := map[string]bool{"registry": true}
 
 	initial := []models.SoftwareInfo{
 		{Name: "app-a", Source: "registry"},
 		{Name: "app-b", Source: "registry"},
 	}
-	if err := s.SyncBatch(initial, t1, map[string]bool{"registry": true}); err != nil {
+	if err := s.SyncBatch(initial, base, scanned); err != nil {
 		t.Fatalf("first SyncBatch() error: %v", err)
 	}
 
-	// Second sync sees only app-a; app-b should be marked uninstalled.
-	onlyA := []models.SoftwareInfo{
-		{Name: "app-a", Source: "registry"},
-	}
-	if err := s.SyncBatch(onlyA, t2, map[string]bool{"registry": true}); err != nil {
-		t.Fatalf("second SyncBatch() error: %v", err)
+	onlyA := []models.SoftwareInfo{{Name: "app-a", Source: "registry"}}
+
+	// Every missed scan short of the threshold must leave app-b installed (debounce).
+	for miss := 1; miss < uninstallConfirmThreshold; miss++ {
+		syncT := base.Add(time.Duration(miss) * time.Second)
+		if err := s.SyncBatch(onlyA, syncT, scanned); err != nil {
+			t.Fatalf("SyncBatch() miss %d error: %v", miss, err)
+		}
+		if got := catalogByName(t, s)["app-b"].Status; got != "installed" {
+			t.Fatalf("app-b.Status after %d missed scan(s) = %q, want installed (debounce)", miss, got)
+		}
 	}
 
-	all, err := s.GetAll()
-	if err != nil {
-		t.Fatalf("GetAll() error: %v", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("GetAll() = %d items, want 2 (both installed and uninstalled)", len(all))
+	// The scan that reaches the threshold demotes app-b.
+	finalT := base.Add(time.Duration(uninstallConfirmThreshold) * time.Second)
+	if err := s.SyncBatch(onlyA, finalT, scanned); err != nil {
+		t.Fatalf("final SyncBatch() error: %v", err)
 	}
 
-	byName := make(map[string]models.SoftwareInfo, 2)
-	for _, item := range all {
-		byName[item.Name] = item
+	byName := catalogByName(t, s)
+	if len(byName) != 2 {
+		t.Fatalf("catalog has %d items, want 2 (both installed and uninstalled)", len(byName))
 	}
-
 	if !byName["app-a"].IsActive {
-		t.Error("app-a should still be active after second sync")
+		t.Error("app-a should still be active")
 	}
 	if byName["app-b"].IsActive {
-		t.Error("app-b should be marked inactive (uninstalled)")
+		t.Error("app-b should be inactive (uninstalled) after reaching the threshold")
 	}
 	if byName["app-b"].Status != "uninstalled" {
-		t.Errorf("app-b.Status = %q, want %q", byName["app-b"].Status, "uninstalled")
+		t.Errorf("app-b.Status = %q, want uninstalled", byName["app-b"].Status)
 	}
 }
 
@@ -146,9 +165,7 @@ func TestSyncBatch_MarkUninstalled(t *testing.T) {
 // safety net against a transient enumeration failure wiping the catalog.
 func TestSyncBatch_FailedSourceNotDemoted(t *testing.T) {
 	s := newTestSoftwareStore(t)
-
-	t1 := time.Now().UTC().Truncate(time.Second)
-	t2 := t1.Add(time.Second)
+	base := time.Now().UTC().Truncate(time.Second)
 
 	// First cycle: both the "programs" and "microsoft_store" scans succeed.
 	initial := []models.SoftwareInfo{
@@ -156,37 +173,31 @@ func TestSyncBatch_FailedSourceNotDemoted(t *testing.T) {
 		{Name: "prog-b", Source: "programs"},
 		{Name: "store-x", Source: "microsoft_store"},
 	}
-	if err := s.SyncBatch(initial, t1, map[string]bool{"programs": true, "microsoft_store": true}); err != nil {
+	if err := s.SyncBatch(initial, base, map[string]bool{"programs": true, "microsoft_store": true}); err != nil {
 		t.Fatalf("first SyncBatch() error: %v", err)
 	}
 
-	// Second cycle: the microsoft_store scan FAILED (not in scannedSources) and the
-	// programs scan returned only prog-a. prog-b must be demoted; store-x must be
-	// preserved because its source was never scanned this cycle.
-	fresh := []models.SoftwareInfo{
-		{Name: "prog-a", Source: "programs"},
-	}
-	if err := s.SyncBatch(fresh, t2, map[string]bool{"programs": true}); err != nil {
-		t.Fatalf("second SyncBatch() error: %v", err)
-	}
-
-	byName := make(map[string]models.SoftwareInfo)
-	all, err := s.GetAll()
-	if err != nil {
-		t.Fatalf("GetAll() error: %v", err)
-	}
-	for _, item := range all {
-		byName[item.Name] = item
+	// Later cycles: the microsoft_store scan FAILS every time (absent from
+	// scannedSources) while programs returns only prog-a. Run past the threshold so
+	// prog-b is demoted; store-x must stay installed because its source is never
+	// scanned again (its miss counter is never even incremented).
+	fresh := []models.SoftwareInfo{{Name: "prog-a", Source: "programs"}}
+	for i := 1; i <= uninstallConfirmThreshold; i++ {
+		syncT := base.Add(time.Duration(i) * time.Second)
+		if err := s.SyncBatch(fresh, syncT, map[string]bool{"programs": true}); err != nil {
+			t.Fatalf("SyncBatch() cycle %d error: %v", i, err)
+		}
 	}
 
+	byName := catalogByName(t, s)
 	if byName["prog-a"].Status != "installed" {
 		t.Errorf("prog-a.Status = %q, want installed", byName["prog-a"].Status)
 	}
 	if byName["prog-b"].Status != "uninstalled" {
-		t.Errorf("prog-b.Status = %q, want uninstalled (scanned source, not seen)", byName["prog-b"].Status)
+		t.Errorf("prog-b.Status = %q, want uninstalled (scanned source, absent past threshold)", byName["prog-b"].Status)
 	}
 	if byName["store-x"].Status != "installed" {
-		t.Errorf("store-x.Status = %q, want installed (source not scanned this cycle)", byName["store-x"].Status)
+		t.Errorf("store-x.Status = %q, want installed (source never scanned again)", byName["store-x"].Status)
 	}
 }
 
@@ -220,6 +231,159 @@ func TestSyncBatch_EmptyScannedSourcesPreservesCatalog(t *testing.T) {
 		if item.Status != "installed" {
 			t.Errorf("%s.Status = %q, want installed (catalog must be preserved on total scan failure)", item.Name, item.Status)
 		}
+	}
+}
+
+// TestSyncBatch_SingleSpuriousEmptyScanDoesNotDemote is the core robustness guard:
+// a source that scans "successfully" (it IS in scannedSources) but returns zero items
+// on a single cycle — a transient empty/exit-0 glitch — must not wipe the source.
+// Debounce holds the rows installed until the absence is confirmed across more cycles.
+func TestSyncBatch_SingleSpuriousEmptyScanDoesNotDemote(t *testing.T) {
+	s := newTestSoftwareStore(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	scanned := map[string]bool{"programs": true}
+
+	initial := make([]models.SoftwareInfo, 0, 50)
+	for i := 0; i < 50; i++ {
+		initial = append(initial, models.SoftwareInfo{Name: fmt.Sprintf("app-%02d", i), Source: "programs"})
+	}
+	if err := s.SyncBatch(initial, base, scanned); err != nil {
+		t.Fatalf("seed SyncBatch() error: %v", err)
+	}
+
+	// The source scans successfully but returns nothing this one cycle.
+	if err := s.SyncBatch(nil, base.Add(time.Second), scanned); err != nil {
+		t.Fatalf("empty-scan SyncBatch() error: %v", err)
+	}
+
+	for _, it := range catalogByName(t, s) {
+		if it.Status != "installed" {
+			t.Fatalf("%s demoted after a single spurious empty scan; want every row preserved", it.Name)
+		}
+	}
+}
+
+// TestSyncBatch_ReappearanceResetsMissCounter verifies that software which flaps
+// (missing, then present again) never accumulates enough CONSECUTIVE misses to be
+// demoted: each reappearance resets the counter.
+func TestSyncBatch_ReappearanceResetsMissCounter(t *testing.T) {
+	s := newTestSoftwareStore(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	scanned := map[string]bool{"registry": true}
+
+	full := []models.SoftwareInfo{
+		{Name: "app-a", Source: "registry"},
+		{Name: "app-b", Source: "registry"},
+	}
+	onlyA := []models.SoftwareInfo{{Name: "app-a", Source: "registry"}}
+	if err := s.SyncBatch(full, base, scanned); err != nil {
+		t.Fatalf("seed SyncBatch() error: %v", err)
+	}
+
+	cycle := 0
+	next := func() time.Time {
+		cycle++
+		return base.Add(time.Duration(cycle) * time.Second)
+	}
+	// Drive app-b to one short of the threshold...
+	for miss := 1; miss < uninstallConfirmThreshold; miss++ {
+		if err := s.SyncBatch(onlyA, next(), scanned); err != nil {
+			t.Fatalf("pre-reset SyncBatch() error: %v", err)
+		}
+	}
+	// ...let it reappear (resets the counter)...
+	if err := s.SyncBatch(full, next(), scanned); err != nil {
+		t.Fatalf("reappearance SyncBatch() error: %v", err)
+	}
+	// ...then go missing again for another (threshold-1) cycles. Without the reset the
+	// total misses would reach/exceed the threshold; with it, app-b stays installed.
+	for miss := 1; miss < uninstallConfirmThreshold; miss++ {
+		if err := s.SyncBatch(onlyA, next(), scanned); err != nil {
+			t.Fatalf("post-reset SyncBatch() error: %v", err)
+		}
+	}
+
+	if got := catalogByName(t, s)["app-b"].Status; got != "installed" {
+		t.Errorf("app-b.Status = %q, want installed (reappearance must reset the miss counter)", got)
+	}
+}
+
+// TestSyncBatch_MultipleSourcesFailSimultaneously extends the single-source guard:
+// when two sources fail in the same cycle while a third succeeds, neither failed
+// source is demoted even after several cycles.
+func TestSyncBatch_MultipleSourcesFailSimultaneously(t *testing.T) {
+	s := newTestSoftwareStore(t)
+	base := time.Now().UTC().Truncate(time.Second)
+
+	initial := []models.SoftwareInfo{
+		{Name: "deb-1", Source: "deb_packages"},
+		{Name: "snap-1", Source: "snap_packages"},
+		{Name: "flat-1", Source: "flatpak_packages"},
+	}
+	allSources := map[string]bool{"deb_packages": true, "snap_packages": true, "flatpak_packages": true}
+	if err := s.SyncBatch(initial, base, allSources); err != nil {
+		t.Fatalf("seed SyncBatch() error: %v", err)
+	}
+
+	// deb keeps succeeding; snap and flatpak both fail every cycle.
+	debOnly := []models.SoftwareInfo{{Name: "deb-1", Source: "deb_packages"}}
+	for i := 1; i <= uninstallConfirmThreshold+1; i++ {
+		syncT := base.Add(time.Duration(i) * time.Second)
+		if err := s.SyncBatch(debOnly, syncT, map[string]bool{"deb_packages": true}); err != nil {
+			t.Fatalf("SyncBatch() cycle %d error: %v", i, err)
+		}
+	}
+
+	byName := catalogByName(t, s)
+	for _, name := range []string{"snap-1", "flat-1"} {
+		if byName[name].Status != "installed" {
+			t.Errorf("%s.Status = %q, want installed (its source failed every cycle)", name, byName[name].Status)
+		}
+	}
+	if byName["deb-1"].Status != "installed" {
+		t.Errorf("deb-1.Status = %q, want installed (seen every cycle)", byName["deb-1"].Status)
+	}
+}
+
+// TestSyncBatch_PreservesRealInstallDate verifies that the collector's real install
+// date is stored on first insert and never overwritten on a later re-upsert, while a
+// missing install date falls back to the sync time.
+func TestSyncBatch_PreservesRealInstallDate(t *testing.T) {
+	s := newTestSoftwareStore(t)
+	syncT := time.Now().UTC().Truncate(time.Second)
+	installDate := "2020-01-02T03:04:05Z"
+
+	items := []models.SoftwareInfo{
+		{Name: "old-app", Source: "rpm_packages", FirstSeenAt: installDate},
+		{Name: "no-date", Source: "rpm_packages"},
+	}
+	if err := s.SyncBatch(items, syncT, map[string]bool{"rpm_packages": true}); err != nil {
+		t.Fatalf("first SyncBatch() error: %v", err)
+	}
+
+	byName := catalogByName(t, s)
+	if byName["old-app"].FirstSeenAt != installDate {
+		t.Errorf("old-app.FirstSeenAt = %q, want preserved install date %q", byName["old-app"].FirstSeenAt, installDate)
+	}
+	wantFallback := syncT.Format(time.RFC3339)
+	if byName["no-date"].FirstSeenAt != wantFallback {
+		t.Errorf("no-date.FirstSeenAt = %q, want sync-time fallback %q", byName["no-date"].FirstSeenAt, wantFallback)
+	}
+
+	// A later cycle reporting a different first-seen must not overwrite the stored one.
+	later := syncT.Add(time.Hour)
+	update := []models.SoftwareInfo{
+		{Name: "old-app", Source: "rpm_packages", FirstSeenAt: "2099-12-31T00:00:00Z", InstalledVersion: "2.0"},
+	}
+	if err := s.SyncBatch(update, later, map[string]bool{"rpm_packages": true}); err != nil {
+		t.Fatalf("second SyncBatch() error: %v", err)
+	}
+	byName = catalogByName(t, s)
+	if byName["old-app"].FirstSeenAt != installDate {
+		t.Errorf("old-app.FirstSeenAt after re-upsert = %q, want original %q (must not change on update)", byName["old-app"].FirstSeenAt, installDate)
+	}
+	if byName["old-app"].InstalledVersion != "2.0" {
+		t.Errorf("old-app.InstalledVersion = %q, want updated 2.0", byName["old-app"].InstalledVersion)
 	}
 }
 

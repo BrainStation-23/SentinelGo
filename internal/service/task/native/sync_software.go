@@ -52,7 +52,10 @@ func (h *syncSoftwareHandler) Run(ctx context.Context, cfg *config.Config, _ tas
 	freshList, scannedSources := getSoftwareListFn(svc)
 
 	if err := swStore.SyncBatch(freshList, time.Now(), scannedSources); err != nil {
-		log.Printf("sync-software: store sync error: %v", err)
+		// Transactional: a failed SyncBatch rolled back, so the catalog is unchanged.
+		// Bail rather than upload a stale catalog and clear the queue (which would mask
+		// the failure). The pending-sync marker, if any, is left for the next run.
+		return "", fmt.Errorf("sync-software: store sync: %w", err)
 	}
 	if err := swStore.QueueSync(); err != nil {
 		log.Printf("sync-software: queue sync error: %v", err)

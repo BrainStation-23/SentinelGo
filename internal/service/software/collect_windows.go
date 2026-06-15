@@ -40,7 +40,7 @@ func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
 // true only when the query ran and its output parsed; last-opened is collected
 // separately (see getWindowsLastOpened).
 func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
 	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | ConvertTo-Json`
@@ -57,7 +57,7 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getWindowsStoreApps() ([]SoftwareInfo, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
 	query := `Get-AppxPackage | Where-Object {$_.SignatureKind -ne "System"} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}} | ConvertTo-Json`
@@ -94,7 +94,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 		version, _ := item["Version"].(string)
 		installLocation, _ := item["InstallLocation"].(string)
 
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		firstSeen := now
 		if installDate, _ := item["InstallDate"].(string); installDate != "" {
 			if t, err := time.Parse("20060102", installDate); err == nil {

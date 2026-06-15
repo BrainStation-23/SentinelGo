@@ -44,20 +44,13 @@ func TestAgentUpdateHandler_Slugs(t *testing.T) {
 	}
 }
 
-func TestAgentUpdateHandler_PostRun(t *testing.T) {
-	h := &agentUpdateHandler{}
-	postSlugs := h.PostRun()
-	if len(postSlugs) == 0 {
-		t.Fatal("PostRun() returned empty slice")
-	}
-	found := false
-	for _, s := range postSlugs {
-		if s == "sync-inventory" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("PostRun() does not contain 'sync-inventory': %v", postSlugs)
+// agent-update intentionally has no PostRun (it os.Exit()s on a real update; the
+// restarted binary's runInitialTasks handles the post-update re-sync). Asserting the
+// absence keeps that decision from being silently reverted.
+func TestAgentUpdateHandler_NotPostRunner(t *testing.T) {
+	var h any = &agentUpdateHandler{}
+	if _, ok := h.(interface{ PostRun() []string }); ok {
+		t.Error("agent-update must not implement PostRunner: it os.Exit()s before any post-hook can run")
 	}
 }
 

@@ -40,10 +40,28 @@ CREATE TABLE IF NOT EXISTS software_sync_queue (
 );
 `
 
+// missed_scans counts how many consecutive authoritative scans of a row's source
+// have not seen that row. It debounces uninstall detection: a row is demoted only
+// after uninstallConfirmThreshold consecutive misses, so a single spurious empty
+// or partial scan cannot wipe a source. See SyncBatch.
+const softwareMissedScansSchemaV3 = `
+ALTER TABLE software_catalog ADD COLUMN missed_scans INTEGER NOT NULL DEFAULT 0;
+`
+
 var softwareMigrations = []Migration{
 	{Version: 1, SQL: softwareCatalogSchemaV1},
 	{Version: 2, SQL: softwareSyncQueueSchemaV2},
+	{Version: 3, SQL: softwareMissedScansSchemaV3},
 }
+
+// uninstallConfirmThreshold is the number of consecutive authoritative scans a
+// previously-installed row must be absent from before it is marked uninstalled.
+// This mirrors the scheduler's consecutive-failure idiom (taskFailureThreshold):
+// a negative signal (absence) is confirmed across cycles rather than trusted on a
+// single scan, so a transient empty/partial enumeration that still exits 0 cannot
+// demote a whole source. A genuine uninstall is reflected after this many cycles
+// (~threshold x the software-sync interval).
+const uninstallConfirmThreshold = 2
 
 // SoftwareStore is a SQLite-backed catalog of installed (and previously installed) software.
 // It tracks install/uninstall status by comparing each fresh scan against stored records,
@@ -68,17 +86,25 @@ func NewSoftwareStore(path string) (*SoftwareStore, error) {
 }
 
 // SyncBatch reconciles the fresh scan result against the stored catalog in a single transaction:
-//  1. Upserts every item in items: status=installed, is_active=1, last_seen_at=syncTime.
-//     first_seen_at is set only on INSERT (preserved on UPDATE).
-//  2. For each source in scannedSources, marks any row of that source that is still
-//     status=installed but has last_seen_at < syncTime as uninstalled
-//     (status=uninstalled, is_active=0). These entries were not in the fresh scan.
+//  1. Upserts every item in items: status=installed, is_active=1, missed_scans=0,
+//     last_seen_at=syncTime. first_seen_at is set only on INSERT (preserved on UPDATE),
+//     using the item's own FirstSeenAt (the real install date when the collector knows it)
+//     and falling back to syncTime otherwise.
+//  2. For each source in scannedSources, increments missed_scans on every still-installed
+//     row of that source that was not seen this cycle (last_seen_at < syncTime), then marks
+//     as uninstalled (status=uninstalled, is_active=0) any row whose missed_scans has reached
+//     uninstallConfirmThreshold.
 //
 // Reconciliation is scoped per source so that a scan which failed (or never ran) for a
-// given source never demotes that source's rows. In particular, if scannedSources is
-// empty (every collector failed), nothing is marked uninstalled and the last-known
-// catalog is preserved for the next retry. This prevents a transient enumeration
-// failure from wiping the catalog to "uninstalled".
+// given source never touches that source's rows. In particular, if scannedSources is
+// empty (every collector failed), nothing is incremented or demoted and the last-known
+// catalog is preserved for the next retry.
+//
+// Uninstall is debounced via missed_scans: a single authoritative-but-spurious scan
+// (exit 0 yet empty or truncated) only bumps the miss counter; the counter resets to 0
+// the moment the software reappears (the upsert above), so only software genuinely absent
+// for uninstallConfirmThreshold consecutive scans is demoted. This is what makes a
+// transient enumeration glitch unable to wipe a source to "uninstalled".
 //
 // After a successful SyncBatch, call QueueSync to mark the catalog as needing upload.
 func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Time, scannedSources map[string]bool) error {
@@ -90,11 +116,27 @@ func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Tim
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := upsertSoftware(tx, items, syncTimeStr); err != nil {
+		return err
+	}
+	if err := reconcileScannedSources(tx, scannedSources, syncTimeStr); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// upsertSoftware inserts or refreshes every scanned item: status=installed,
+// is_active=1, missed_scans=0, last_seen_at=syncTime. first_seen_at is set only on
+// INSERT, preferring the collector's real install date (e.g. rpm INSTALLTIME,
+// Windows InstallDate) and falling back to syncTime; on conflict it is preserved.
+func upsertSoftware(tx *sql.Tx, items []models.SoftwareInfo, syncTimeStr string) error {
 	upsert, err := tx.Prepare(`
 		INSERT INTO software_catalog
 			(name, source, type, installed_version, display_name, software_package,
-			 app_store_app, last_opened, file_path, status, is_active, first_seen_at, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'installed', 1, ?, ?)
+			 app_store_app, last_opened, file_path, status, is_active, missed_scans,
+			 first_seen_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'installed', 1, 0, ?, ?)
 		ON CONFLICT(name, source) DO UPDATE SET
 			type              = excluded.type,
 			installed_version = excluded.installed_version,
@@ -105,6 +147,7 @@ func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Tim
 			file_path         = excluded.file_path,
 			status            = 'installed',
 			is_active         = 1,
+			missed_scans      = 0,
 			last_seen_at      = excluded.last_seen_at
 	`)
 	if err != nil {
@@ -117,21 +160,47 @@ func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Tim
 	}()
 
 	for _, sw := range items {
+		firstSeen := sw.FirstSeenAt
+		if firstSeen == "" {
+			firstSeen = syncTimeStr
+		}
 		if _, err := upsert.Exec(
 			sw.Name, sw.Source, sw.Type, sw.InstalledVersion,
 			sw.DisplayName, sw.SoftwarePackage, sw.AppStoreApp,
 			sw.LastOpened, sw.FilePath,
-			syncTimeStr,
+			firstSeen,
 			syncTimeStr,
 		); err != nil {
 			return fmt.Errorf("upsert software %q: %w", sw.Name, err)
 		}
 	}
+	return nil
+}
+
+// reconcileScannedSources debounces uninstall detection for each authoritatively
+// scanned source: it increments missed_scans on every still-installed row of that
+// source not seen this cycle (last_seen_at < syncTime), then demotes any row whose
+// missed_scans has reached uninstallConfirmThreshold. Sources absent from
+// scannedSources are never touched, so a failed (or never-run) scan preserves its rows.
+func reconcileScannedSources(tx *sql.Tx, scannedSources map[string]bool, syncTimeStr string) error {
+	miss, err := tx.Prepare(`
+		UPDATE software_catalog
+		   SET missed_scans = missed_scans + 1
+		 WHERE status = 'installed' AND source = ? AND last_seen_at < ?
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare miss-counter: %w", err)
+	}
+	defer func() {
+		if err := miss.Close(); err != nil {
+			log.Printf("SoftwareStore: close miss stmt: %v", err)
+		}
+	}()
 
 	demote, err := tx.Prepare(`
 		UPDATE software_catalog
 		   SET status = 'uninstalled', is_active = 0
-		 WHERE status = 'installed' AND source = ? AND last_seen_at < ?
+		 WHERE status = 'installed' AND source = ? AND missed_scans >= ?
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare demote: %w", err)
@@ -143,12 +212,14 @@ func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Tim
 	}()
 
 	for source := range scannedSources {
-		if _, err := demote.Exec(source, syncTimeStr); err != nil {
+		if _, err := miss.Exec(source, syncTimeStr); err != nil {
+			return fmt.Errorf("increment missed_scans (source %q): %w", source, err)
+		}
+		if _, err := demote.Exec(source, uninstallConfirmThreshold); err != nil {
 			return fmt.Errorf("mark uninstalled (source %q): %w", source, err)
 		}
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 // GetAll returns the full software catalog (installed and uninstalled entries).

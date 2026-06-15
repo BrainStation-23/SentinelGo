@@ -1,6 +1,7 @@
 package software
 
 import (
+	"context"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -41,7 +42,10 @@ func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
 }
 
 func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}")
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
@@ -53,7 +57,10 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: rpm -qa failed: %v", err)
@@ -65,7 +72,10 @@ func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("snap", "list", "--color=never")
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "snap", "list", "--color=never")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: snap list failed: %v", err)
@@ -77,7 +87,10 @@ func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
 }
 
 func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
-	cmd := exec.Command("flatpak", "list", "--columns=application,name,version,origin")
+	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "flatpak", "list", "--columns=application,name,version,origin")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: flatpak list failed: %v", err)
@@ -98,7 +111,7 @@ func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
@@ -123,7 +136,7 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		firstSeen := now
 		if len(parts) >= 4 {
 			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
@@ -154,7 +167,7 @@ func parseSnapPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
@@ -179,7 +192,7 @@ func parseFlatpakPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 3 {
 			continue
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[1],
 			InstalledVersion: parts[2],
