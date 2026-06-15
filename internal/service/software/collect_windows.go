@@ -24,7 +24,7 @@ func (s *SoftwareService) getWindowsSoftware() []SoftwareInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | ConvertTo-Json`
+	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='LastAccess';E={$loc=$_.InstallLocation;if($loc){$exe=Get-ChildItem $loc -Filter *.exe -ErrorAction SilentlyContinue|Sort-Object LastAccessTime -Descending|Select-Object -First 1;if($exe){$exe.LastAccessTime.ToUniversalTime().ToString('o')}}}} | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
@@ -78,6 +78,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 				firstSeen = t.UTC().Format(time.RFC3339)
 			}
 		}
+		lastAccess, _ := item["LastAccess"].(string)
 		*software = append(*software, SoftwareInfo{
 			Name:             name,
 			InstalledVersion: version,
@@ -87,6 +88,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			Status:           "installed",
 			FirstSeenAt:      firstSeen,
 			LastSeenAt:       now,
+			LastOpened:       lastAccess,
 			IsActive:         true,
 		})
 	}
