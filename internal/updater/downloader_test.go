@@ -15,32 +15,6 @@ import (
 	"sentinelgo/internal/config"
 )
 
-// newStorageServer returns a test server that serves a binary at
-// /storage/v1/object/agent-releases/{assetPath} and optionally a sig at
-// /storage/v1/object/agent-releases/{sigPath}.
-// Pass sigContent="" to have the sig endpoint return 404.
-func newStorageServer(t *testing.T, binaryContent []byte, assetPath, sigContent, sigPath string) *httptest.Server {
-	t.Helper()
-	binaryURL := "/storage/v1/object/agent-releases/" + assetPath
-	sigURL := "/storage/v1/object/agent-releases/" + sigPath
-
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case binaryURL:
-			w.Header().Set("Content-Type", "application/octet-stream")
-			_, _ = w.Write(binaryContent)
-		case sigURL:
-			if sigContent == "" {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			_, _ = w.Write([]byte(sigContent))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-}
-
 // cfgForServer returns a minimal config pointing at the given test server URL.
 func cfgForServer(srvURL string) *config.Config {
 	return &config.Config{
