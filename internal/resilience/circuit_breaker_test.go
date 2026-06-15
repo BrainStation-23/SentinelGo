@@ -1,4 +1,4 @@
-package auth_test
+package resilience_test
 
 import (
 	"context"
@@ -6,18 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"sentinelgo/internal/auth"
+	"sentinelgo/internal/resilience"
 )
 
 func TestCircuitBreaker_InitialState(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 3, time.Minute)
-	if cb.GetState() != auth.StateClosed {
+	cb := resilience.NewCircuitBreaker("test", 3, time.Minute)
+	if cb.GetState() != resilience.StateClosed {
 		t.Errorf("initial state = %v, want StateClosed", cb.GetState())
 	}
 }
 
 func TestCircuitBreaker_SuccessNeverOpens(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 3, time.Minute)
+	cb := resilience.NewCircuitBreaker("test", 3, time.Minute)
 	ctx := context.Background()
 
 	for i := 0; i < 10; i++ {
@@ -26,13 +26,13 @@ func TestCircuitBreaker_SuccessNeverOpens(t *testing.T) {
 		}
 	}
 
-	if cb.GetState() != auth.StateClosed {
+	if cb.GetState() != resilience.StateClosed {
 		t.Errorf("state after 10 successes = %v, want StateClosed", cb.GetState())
 	}
 }
 
 func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 3, time.Minute)
+	cb := resilience.NewCircuitBreaker("test", 3, time.Minute)
 	ctx := context.Background()
 	failFn := func() error { return errors.New("service error") }
 
@@ -40,17 +40,17 @@ func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
 		_ = cb.Execute(ctx, failFn)
 	}
 
-	if cb.GetState() != auth.StateOpen {
+	if cb.GetState() != resilience.StateOpen {
 		t.Errorf("state after %d failures = %v, want StateOpen", 3, cb.GetState())
 	}
 }
 
 func TestCircuitBreaker_OpenBlocksExecution(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 1, time.Minute)
+	cb := resilience.NewCircuitBreaker("test", 1, time.Minute)
 	ctx := context.Background()
 
 	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
-	if cb.GetState() != auth.StateOpen {
+	if cb.GetState() != resilience.StateOpen {
 		t.Fatal("circuit should be open after maxFailures=1 error")
 	}
 
@@ -68,12 +68,12 @@ func TestCircuitBreaker_OpenBlocksExecution(t *testing.T) {
 }
 
 func TestCircuitBreaker_SuccessResetsToClose(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 2, time.Millisecond)
+	cb := resilience.NewCircuitBreaker("test", 2, time.Millisecond)
 	ctx := context.Background()
 
 	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
 	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
-	if cb.GetState() != auth.StateOpen {
+	if cb.GetState() != resilience.StateOpen {
 		t.Fatal("circuit should be open")
 	}
 
@@ -84,13 +84,13 @@ func TestCircuitBreaker_SuccessResetsToClose(t *testing.T) {
 		t.Fatalf("Execute() after reset timeout = %v, want nil", err)
 	}
 
-	if cb.GetState() != auth.StateClosed {
+	if cb.GetState() != resilience.StateClosed {
 		t.Errorf("state after HalfOpen success = %v, want StateClosed", cb.GetState())
 	}
 }
 
 func TestCircuitBreaker_HalfOpen_FailureReopens(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 2, time.Millisecond)
+	cb := resilience.NewCircuitBreaker("test", 2, time.Millisecond)
 	ctx := context.Background()
 
 	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
@@ -101,19 +101,19 @@ func TestCircuitBreaker_HalfOpen_FailureReopens(t *testing.T) {
 	// Execute with failure: Open → HalfOpen (fn runs, fails) → Open
 	_ = cb.Execute(ctx, func() error { return errors.New("still failing") })
 
-	if cb.GetState() != auth.StateOpen {
+	if cb.GetState() != resilience.StateOpen {
 		t.Errorf("state after HalfOpen failure = %v, want StateOpen", cb.GetState())
 	}
 }
 
 func TestCircuitBreaker_GetStats_Initial(t *testing.T) {
-	cb := auth.NewCircuitBreaker("my-breaker", 5, time.Minute)
+	cb := resilience.NewCircuitBreaker("my-breaker", 5, time.Minute)
 
 	stats := cb.GetStats()
 	if stats.Name != "my-breaker" {
 		t.Errorf("GetStats().Name = %q, want %q", stats.Name, "my-breaker")
 	}
-	if stats.State != auth.StateClosed {
+	if stats.State != resilience.StateClosed {
 		t.Errorf("GetStats().State = %v, want StateClosed", stats.State)
 	}
 	if stats.Failures != 0 {
@@ -122,7 +122,7 @@ func TestCircuitBreaker_GetStats_Initial(t *testing.T) {
 }
 
 func TestCircuitBreaker_GetStats_AfterFailures(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 5, time.Minute)
+	cb := resilience.NewCircuitBreaker("test", 5, time.Minute)
 	ctx := context.Background()
 
 	_ = cb.Execute(ctx, func() error { return errors.New("err") })
@@ -132,13 +132,13 @@ func TestCircuitBreaker_GetStats_AfterFailures(t *testing.T) {
 	if stats.Failures != 2 {
 		t.Errorf("GetStats().Failures after 2 errors = %d, want 2", stats.Failures)
 	}
-	if stats.State != auth.StateClosed {
+	if stats.State != resilience.StateClosed {
 		t.Errorf("GetStats().State after 2 errors (max=5) = %v, want StateClosed", stats.State)
 	}
 }
 
 func TestCircuitBreaker_SuccessResetFailureCount(t *testing.T) {
-	cb := auth.NewCircuitBreaker("test", 3, time.Minute)
+	cb := resilience.NewCircuitBreaker("test", 3, time.Minute)
 	ctx := context.Background()
 
 	_ = cb.Execute(ctx, func() error { return errors.New("fail") })
@@ -151,7 +151,7 @@ func TestCircuitBreaker_SuccessResetFailureCount(t *testing.T) {
 	if stats.Failures != 0 {
 		t.Errorf("GetStats().Failures after success = %d, want 0", stats.Failures)
 	}
-	if stats.State != auth.StateClosed {
+	if stats.State != resilience.StateClosed {
 		t.Errorf("GetStats().State after success = %v, want StateClosed", stats.State)
 	}
 }

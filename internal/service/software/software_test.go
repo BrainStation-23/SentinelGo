@@ -255,7 +255,7 @@ func TestStartSoftwareSync_CancelledContext(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- svc.StartSoftwareSync(ctx, cfg, func() []software.SoftwareInfo { return nil })
+		done <- svc.StartSoftwareSync(ctx, cfg, func() ([]software.SoftwareInfo, map[string]bool) { return nil, nil })
 	}()
 
 	select {

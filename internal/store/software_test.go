@@ -48,7 +48,7 @@ func TestNewSoftwareStore_IdempotentMigration(t *testing.T) {
 
 func TestSyncBatch_Empty(t *testing.T) {
 	s := newTestSoftwareStore(t)
-	if err := s.SyncBatch(nil, time.Now()); err != nil {
+	if err := s.SyncBatch(nil, time.Now(), nil); err != nil {
 		t.Fatalf("SyncBatch(nil) error: %v", err)
 	}
 	items, err := s.GetAll()
@@ -68,7 +68,7 @@ func TestSyncBatch_Insert(t *testing.T) {
 		{Name: "app-a", Source: "registry", Type: "application", InstalledVersion: "1.0"},
 		{Name: "app-b", Source: "registry", Type: "application", InstalledVersion: "2.0"},
 	}
-	if err := s.SyncBatch(items, now); err != nil {
+	if err := s.SyncBatch(items, now, map[string]bool{"registry": true}); err != nil {
 		t.Fatalf("SyncBatch() error: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestSyncBatch_MarkUninstalled(t *testing.T) {
 		{Name: "app-a", Source: "registry"},
 		{Name: "app-b", Source: "registry"},
 	}
-	if err := s.SyncBatch(initial, t1); err != nil {
+	if err := s.SyncBatch(initial, t1, map[string]bool{"registry": true}); err != nil {
 		t.Fatalf("first SyncBatch() error: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestSyncBatch_MarkUninstalled(t *testing.T) {
 	onlyA := []models.SoftwareInfo{
 		{Name: "app-a", Source: "registry"},
 	}
-	if err := s.SyncBatch(onlyA, t2); err != nil {
+	if err := s.SyncBatch(onlyA, t2, map[string]bool{"registry": true}); err != nil {
 		t.Fatalf("second SyncBatch() error: %v", err)
 	}
 
@@ -137,6 +137,89 @@ func TestSyncBatch_MarkUninstalled(t *testing.T) {
 	}
 	if byName["app-b"].Status != "uninstalled" {
 		t.Errorf("app-b.Status = %q, want %q", byName["app-b"].Status, "uninstalled")
+	}
+}
+
+// TestSyncBatch_FailedSourceNotDemoted verifies that a source absent from
+// scannedSources (its scan failed this cycle) keeps its rows installed, while a
+// source that was scanned still demotes its own unseen rows. This is the core
+// safety net against a transient enumeration failure wiping the catalog.
+func TestSyncBatch_FailedSourceNotDemoted(t *testing.T) {
+	s := newTestSoftwareStore(t)
+
+	t1 := time.Now().UTC().Truncate(time.Second)
+	t2 := t1.Add(time.Second)
+
+	// First cycle: both the "programs" and "microsoft_store" scans succeed.
+	initial := []models.SoftwareInfo{
+		{Name: "prog-a", Source: "programs"},
+		{Name: "prog-b", Source: "programs"},
+		{Name: "store-x", Source: "microsoft_store"},
+	}
+	if err := s.SyncBatch(initial, t1, map[string]bool{"programs": true, "microsoft_store": true}); err != nil {
+		t.Fatalf("first SyncBatch() error: %v", err)
+	}
+
+	// Second cycle: the microsoft_store scan FAILED (not in scannedSources) and the
+	// programs scan returned only prog-a. prog-b must be demoted; store-x must be
+	// preserved because its source was never scanned this cycle.
+	fresh := []models.SoftwareInfo{
+		{Name: "prog-a", Source: "programs"},
+	}
+	if err := s.SyncBatch(fresh, t2, map[string]bool{"programs": true}); err != nil {
+		t.Fatalf("second SyncBatch() error: %v", err)
+	}
+
+	byName := make(map[string]models.SoftwareInfo)
+	all, err := s.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll() error: %v", err)
+	}
+	for _, item := range all {
+		byName[item.Name] = item
+	}
+
+	if byName["prog-a"].Status != "installed" {
+		t.Errorf("prog-a.Status = %q, want installed", byName["prog-a"].Status)
+	}
+	if byName["prog-b"].Status != "uninstalled" {
+		t.Errorf("prog-b.Status = %q, want uninstalled (scanned source, not seen)", byName["prog-b"].Status)
+	}
+	if byName["store-x"].Status != "installed" {
+		t.Errorf("store-x.Status = %q, want installed (source not scanned this cycle)", byName["store-x"].Status)
+	}
+}
+
+// TestSyncBatch_EmptyScannedSourcesPreservesCatalog verifies the regression guard:
+// a cycle where no source scanned successfully (empty scannedSources, empty items)
+// must not demote anything.
+func TestSyncBatch_EmptyScannedSourcesPreservesCatalog(t *testing.T) {
+	s := newTestSoftwareStore(t)
+
+	t1 := time.Now().UTC().Truncate(time.Second)
+	t2 := t1.Add(time.Second)
+
+	initial := []models.SoftwareInfo{
+		{Name: "prog-a", Source: "programs"},
+		{Name: "prog-b", Source: "programs"},
+	}
+	if err := s.SyncBatch(initial, t1, map[string]bool{"programs": true}); err != nil {
+		t.Fatalf("first SyncBatch() error: %v", err)
+	}
+
+	// Total scan failure: no items, no scanned sources.
+	if err := s.SyncBatch(nil, t2, nil); err != nil {
+		t.Fatalf("second SyncBatch() error: %v", err)
+	}
+
+	all, err := s.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll() error: %v", err)
+	}
+	for _, item := range all {
+		if item.Status != "installed" {
+			t.Errorf("%s.Status = %q, want installed (catalog must be preserved on total scan failure)", item.Name, item.Status)
+		}
 	}
 }
 

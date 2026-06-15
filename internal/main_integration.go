@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
+	"time"
 
-	"sentinelgo/internal/auth"
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
@@ -15,6 +17,10 @@ import (
 	"sentinelgo/internal/updater"
 )
 
+// startupTokenSkew is how much validity a stored access token must still have
+// for startup to reuse it instead of minting a fresh session via agent-login.
+const startupTokenSkew = 5 * time.Minute
+
 // MainIntegration orchestrates the agent's runtime components (auth, scheduler,
 // logging, task manager) according to EXECUTION_FLOW.md. It wires together
 // collaborators it is given and drives their startup/shutdown ordering; the
@@ -22,7 +28,6 @@ import (
 type MainIntegration struct {
 	cfg            *config.Config
 	scheduler      *scheduler.Scheduler
-	enhancedAuth   *auth.EnhancedAuth
 	authSvc        *authsvc.Service
 	loggingService *logging.LoggingIntegration
 	taskManager    *tasksvc.TaskManager
@@ -32,18 +37,17 @@ type MainIntegration struct {
 // MainIntegration. Use NewMainIntegrationWith to inject collaborators (e.g. in
 // tests).
 func NewMainIntegration(cfg *config.Config) *MainIntegration {
-	return NewMainIntegrationWith(cfg, scheduler.NewScheduler(), auth.NewEnhancedAuth())
+	return NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 }
 
 // NewMainIntegrationWith builds a MainIntegration from injected collaborators,
-// allowing callers (and tests) to supply their own scheduler and auth. The
-// auth service, logging service, and task manager are created during Start
-// because they depend on the validated config and the run context.
-func NewMainIntegrationWith(cfg *config.Config, sched *scheduler.Scheduler, enhancedAuth *auth.EnhancedAuth) *MainIntegration {
+// allowing callers (and tests) to supply their own scheduler. The auth service,
+// logging service, and task manager are created during Start because they
+// depend on the validated config and the run context.
+func NewMainIntegrationWith(cfg *config.Config, sched *scheduler.Scheduler) *MainIntegration {
 	return &MainIntegration{
-		cfg:          cfg,
-		scheduler:    sched,
-		enhancedAuth: enhancedAuth,
+		cfg:       cfg,
+		scheduler: sched,
 	}
 }
 
@@ -53,8 +57,16 @@ func NewMainIntegrationWith(cfg *config.Config, sched *scheduler.Scheduler, enha
 func (mi *MainIntegration) Start(ctx context.Context) error {
 	mi.logStartup()
 
+	// Point the emergency log at the runtime directory (sibling of config.json)
+	// before anything else, so even a config-validation failure is recordable.
+	// A failure here is non-fatal: Record degrades to echoing to the standard log.
+	if err := emergencylog.Init(filepath.Dir(mi.cfg.Path)); err != nil {
+		log.Printf("Warning: emergency log init failed (events echo to log only): %v", err)
+	}
+
 	// 1. Validate configuration before doing anything that depends on it.
 	if err := mi.cfg.ValidateConfiguration(); err != nil {
+		emergencylog.Record("startup", "config validation failed: %v", err)
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
@@ -79,6 +91,7 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 
 	// 7. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
+		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
 	}
 
@@ -108,18 +121,25 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 	}()
 }
 
-// initAuth creates the auth service, initializes the session from stored
-// tokens, and performs a preemptive token refresh. Failures are non-fatal:
-// individual tasks handle token refresh on their own.
+// initAuth creates the auth service and establishes a session. It mints a fresh
+// session via agent-login unless a stored access token is still comfortably
+// valid (a quick restart), in which case that token is reused. Failures are
+// non-fatal: the scheduler's recovery loop keeps retrying, gated by the auth
+// circuit breaker, so a transient outage at boot does not crash the service.
 func (mi *MainIntegration) initAuth(ctx context.Context) {
-	mi.authSvc = authsvc.NewService(mi.cfg.SupabaseURL, mi.cfg.AccessToken)
+	mi.authSvc = authsvc.NewService(mi.cfg.SupabaseURL, mi.cfg.SupabaseKey)
 
-	if err := mi.authSvc.InitSession(mi.cfg); err != nil {
-		log.Printf("Warning: Session init failed: %v", err)
+	if mi.cfg.AccessToken != "" && !authsvc.ShouldRefresh(mi.cfg.AccessToken, startupTokenSkew) {
+		if err := mi.authSvc.InitSession(mi.cfg); err == nil {
+			log.Printf("Auth: reusing stored access token (still valid)")
+			return
+		} else {
+			log.Printf("Warning: session init from stored token failed: %v", err)
+		}
 	}
 
-	if err := mi.validateAndRefreshTokens(ctx); err != nil {
-		log.Printf("Warning: Initial token validation failed: %v", err)
+	if err := mi.authSvc.Login(ctx, mi.cfg); err != nil {
+		log.Printf("Warning: startup agent-login failed (will retry in background): %v", err)
 	}
 }
 
@@ -167,6 +187,9 @@ func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create logging service: %w", err)
 	}
+	if mi.authSvc != nil {
+		svc.SetAuth(mi.authSvc)
+	}
 	if err := svc.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start logging service: %w", err)
 	}
@@ -209,18 +232,13 @@ type authTokenRefresher struct {
 }
 
 func (r *authTokenRefresher) RefreshToken(ctx context.Context) (string, error) {
-	if err := r.authSvc.RefreshToken(ctx, r.cfg); err != nil {
+	// Recover (refresh→agent-login, breaker-gated) rather than a bare refresh, so
+	// task-polling shares the same recovery path and degraded state as every other
+	// caller.
+	if err := r.authSvc.Recover(ctx, r.cfg); err != nil {
 		return "", err
 	}
-	return r.cfg.AccessToken, nil
-}
-
-// validateAndRefreshTokens performs preemptive token validation and refresh.
-func (mi *MainIntegration) validateAndRefreshTokens(ctx context.Context) error {
-	tokenRefreshFunc := func(ctx context.Context, cfg *config.Config) error {
-		return mi.authSvc.RefreshToken(ctx, cfg)
-	}
-	return mi.enhancedAuth.ValidateAndRefreshTokens(ctx, mi.cfg, tokenRefreshFunc)
+	return r.cfg.GetAccessToken(), nil
 }
 
 // Stop gracefully shuts down all services.
@@ -256,7 +274,9 @@ func (mi *MainIntegration) GetStatus() map[string]interface{} {
 	status["scheduler"] = mi.scheduler.GetTaskStatus()
 
 	// Authentication status
-	status["authentication"] = mi.enhancedAuth.GetStats()
+	if mi.authSvc != nil {
+		status["authentication"] = mi.authSvc.Status()
+	}
 
 	// Logging status
 	if mi.loggingService != nil {

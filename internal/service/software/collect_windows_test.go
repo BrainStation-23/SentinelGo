@@ -13,50 +13,67 @@ func TestParsePowerShellOutput(t *testing.T) {
 		input     string
 		source    string
 		wantNames []string
+		wantOK    bool
 	}{
-		{name: "empty/invalid JSON", input: "", source: "programs", wantNames: nil},
+		{name: "empty/invalid JSON", input: "", source: "programs", wantNames: nil, wantOK: false},
+		{name: "non-JSON garbage", input: "powershell error text", source: "programs", wantNames: nil, wantOK: false},
 		{
 			name:      "single item as object (not array)",
 			input:     `{"Name":"Git","Version":"2.43.0","InstallLocation":"C:\\Program Files\\Git","InstallDate":""}`,
 			source:    "programs",
 			wantNames: []string{"Git"},
+			wantOK:    true,
 		},
 		{
 			name:      "array of items",
 			input:     `[{"Name":"Git","Version":"2.43.0","InstallLocation":"C:\\Program Files\\Git","InstallDate":""},{"Name":"Notepad++","Version":"8.6.2","InstallLocation":"","InstallDate":""}]`,
 			source:    "programs",
 			wantNames: []string{"Git", "Notepad++"},
+			wantOK:    true,
+		},
+		{
+			name:      "empty array is a valid (successful) scan",
+			input:     `[]`,
+			source:    "programs",
+			wantNames: nil,
+			wantOK:    true,
 		},
 		{
 			name:      "item without Name field skipped",
 			input:     `[{"Version":"1.0","InstallLocation":"","InstallDate":""},{"Name":"Git","Version":"2.43.0","InstallLocation":"","InstallDate":""}]`,
 			source:    "programs",
 			wantNames: []string{"Git"},
+			wantOK:    true,
 		},
 		{
 			name:      "install date parsed from yyyyMMdd format",
 			input:     `[{"Name":"VSCode","Version":"1.85","InstallLocation":"","InstallDate":"20231201"}]`,
 			source:    "programs",
 			wantNames: []string{"VSCode"},
+			wantOK:    true,
 		},
 		{
 			name:      "invalid install date falls back to now",
 			input:     `[{"Name":"App","Version":"1.0","InstallLocation":"","InstallDate":"not-a-date"}]`,
 			source:    "programs",
 			wantNames: []string{"App"},
+			wantOK:    true,
 		},
 		{
 			name:      "windows store source",
 			input:     `[{"Name":"Microsoft.WindowsCalculator","Version":"11.2311.0.0","InstallLocation":"C:\\Program Files"}]`,
 			source:    "microsoft_store",
 			wantNames: []string{"Microsoft.WindowsCalculator"},
+			wantOK:    true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []SoftwareInfo
-			parsePowerShellOutput([]byte(tc.input), &got, tc.source)
+			if ok := parsePowerShellOutput([]byte(tc.input), &got, tc.source); ok != tc.wantOK {
+				t.Errorf("parsePowerShellOutput ok = %v, want %v", ok, tc.wantOK)
+			}
 			if len(got) != len(tc.wantNames) {
 				t.Fatalf("got %d packages, want %d", len(got), len(tc.wantNames))
 			}

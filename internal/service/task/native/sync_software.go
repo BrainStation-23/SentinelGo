@@ -19,8 +19,9 @@ var sendSoftwareFn = func(ctx context.Context, svc *swsvc.SoftwareService, devic
 	return svc.SendByRPC(ctx, deviceID, catalog, cfg)
 }
 
-// getSoftwareListFn returns the installed software list. Replaced in tests.
-var getSoftwareListFn = func(svc *swsvc.SoftwareService) []swsvc.SoftwareInfo {
+// getSoftwareListFn returns the installed software list plus the set of source
+// categories that were authoritatively scanned. Replaced in tests.
+var getSoftwareListFn = func(svc *swsvc.SoftwareService) ([]swsvc.SoftwareInfo, map[string]bool) {
 	return svc.GetSoftwareList()
 }
 
@@ -48,9 +49,9 @@ func (h *syncSoftwareHandler) Run(ctx context.Context, cfg *config.Config, _ tas
 	svc.SetSupabaseURL(cfg.SupabaseURL)
 	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
-	freshList := getSoftwareListFn(svc)
+	freshList, scannedSources := getSoftwareListFn(svc)
 
-	if err := swStore.SyncBatch(freshList, time.Now()); err != nil {
+	if err := swStore.SyncBatch(freshList, time.Now(), scannedSources); err != nil {
 		log.Printf("sync-software: store sync error: %v", err)
 	}
 	if err := swStore.QueueSync(); err != nil {

@@ -70,11 +70,18 @@ func NewSoftwareStore(path string) (*SoftwareStore, error) {
 // SyncBatch reconciles the fresh scan result against the stored catalog in a single transaction:
 //  1. Upserts every item in items: status=installed, is_active=1, last_seen_at=syncTime.
 //     first_seen_at is set only on INSERT (preserved on UPDATE).
-//  2. Marks any row that is still status=installed but has last_seen_at < syncTime as
-//     uninstalled (status=uninstalled, is_active=0). These entries were not in the scan.
+//  2. For each source in scannedSources, marks any row of that source that is still
+//     status=installed but has last_seen_at < syncTime as uninstalled
+//     (status=uninstalled, is_active=0). These entries were not in the fresh scan.
+//
+// Reconciliation is scoped per source so that a scan which failed (or never ran) for a
+// given source never demotes that source's rows. In particular, if scannedSources is
+// empty (every collector failed), nothing is marked uninstalled and the last-known
+// catalog is preserved for the next retry. This prevents a transient enumeration
+// failure from wiping the catalog to "uninstalled".
 //
 // After a successful SyncBatch, call QueueSync to mark the catalog as needing upload.
-func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Time) error {
+func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Time, scannedSources map[string]bool) error {
 	syncTimeStr := syncTime.UTC().Format(time.RFC3339)
 
 	tx, err := s.db.Begin()
@@ -121,12 +128,24 @@ func (s *SoftwareStore) SyncBatch(items []models.SoftwareInfo, syncTime time.Tim
 		}
 	}
 
-	if _, err := tx.Exec(`
+	demote, err := tx.Prepare(`
 		UPDATE software_catalog
 		   SET status = 'uninstalled', is_active = 0
-		 WHERE status = 'installed' AND last_seen_at < ?
-	`, syncTimeStr); err != nil {
-		return fmt.Errorf("mark uninstalled: %w", err)
+		 WHERE status = 'installed' AND source = ? AND last_seen_at < ?
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare demote: %w", err)
+	}
+	defer func() {
+		if err := demote.Close(); err != nil {
+			log.Printf("SoftwareStore: close demote stmt: %v", err)
+		}
+	}()
+
+	for source := range scannedSources {
+		if _, err := demote.Exec(source, syncTimeStr); err != nil {
+			return fmt.Errorf("mark uninstalled (source %q): %w", source, err)
+		}
 	}
 
 	return tx.Commit()

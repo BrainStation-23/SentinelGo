@@ -106,6 +106,12 @@ func NewLoggingIntegration(cfg *config.Config) (*LoggingIntegration, error) {
 	return li, nil
 }
 
+// SetAuth wires an auth recovery handle into the uploader so audit-log uploads
+// react to 401s (refresh→login) and pause while the session is unrecoverable.
+func (li *LoggingIntegration) SetAuth(auth authRetrier) {
+	li.uploader.SetAuth(auth)
+}
+
 // Start begins the background collection and upload loops.
 func (li *LoggingIntegration) Start(ctx context.Context) error {
 	li.mu.Lock()

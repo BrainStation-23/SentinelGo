@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/osinfo"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/sanitize"
@@ -30,6 +31,14 @@ type Task struct {
 	Running      atomic.Bool
 	LastRun      time.Time
 	Enabled      bool
+
+	// consecutiveFailures counts back-to-back handler failures; it resets to 0 on
+	// the first success. alerted gates emergency logging so a sustained outage
+	// emits exactly one alert (and one recovery line), not one per tick. Both are
+	// atomic because the counter carries across the initial-run goroutine and the
+	// per-tick goroutines (which never overlap for one task, see runTaskHandler).
+	consecutiveFailures atomic.Int32
+	alerted             atomic.Bool
 }
 
 // TaskHandler defines the interface for task execution
@@ -158,6 +167,31 @@ func runTaskHandler(ctx context.Context, name string, h TaskHandler, cfg *config
 	return h(ctx, cfg, authSvc)
 }
 
+// taskFailureThreshold is how many back-to-back failures a task must hit before
+// it is treated as an emergency. A single failure is routine (a network blip);
+// this many in a row across the task's interval signals a real, sustained outage
+// — e.g. updates that keep failing or a sync that can't reach the backend.
+const taskFailureThreshold = 3
+
+// observeTaskResult updates a task's consecutive-failure counter and records an
+// emergency the first time a task crosses the threshold, plus a single recovery
+// line the first time it succeeds again. Called from both the initial and the
+// periodic run paths; those never run a given task concurrently, so the atomic
+// counter simply carries across the boundary.
+func observeTaskResult(t *Task, err error) {
+	if err != nil {
+		n := t.consecutiveFailures.Add(1)
+		if n >= taskFailureThreshold && t.alerted.CompareAndSwap(false, true) {
+			emergencylog.Record("sync", "task %s failed %d consecutive times: %v", t.Name, n, err)
+		}
+		return
+	}
+	t.consecutiveFailures.Store(0)
+	if t.alerted.CompareAndSwap(true, false) {
+		emergencylog.Record("sync", "task %s recovered after repeated failures", t.Name)
+	}
+}
+
 // runInitialTasks executes all enabled tasks once in dependency order using a
 // single background goroutine so the ordering is respected without blocking
 // Scheduler.Start. If a task fails its LastRun is still recorded so dependent
@@ -187,11 +221,13 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 			}
 
 			log.Printf("Running initial task: %s", taskName)
-			if err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc); err != nil {
+			err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc)
+			if err != nil {
 				log.Printf("Initial task %s failed: %v", taskName, err)
 			} else {
 				log.Printf("Initial task %s completed successfully", taskName)
 			}
+			observeTaskResult(task, err)
 			// Always record LastRun so dependent tasks are not permanently
 			// blocked by a failure in this dependency.
 			task.LastRun = time.Now()
@@ -253,11 +289,13 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 						defer t.Running.Store(false)
 
 						log.Printf("Running periodic task: %s", taskName)
-						if err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc); err != nil {
+						err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc)
+						if err != nil {
 							log.Printf("Periodic task %s failed: %v", taskName, err)
 						} else {
 							log.Printf("Periodic task %s completed successfully", taskName)
 						}
+						observeTaskResult(t, err)
 						// Always update LastRun so dependent tasks are not
 						// permanently blocked by a one-off failure.
 						t.LastRun = time.Now()
@@ -400,8 +438,17 @@ func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsv
 	if !authsvc.ShouldRefresh(cfg.AccessToken, tokenRefreshSkew) {
 		return nil
 	}
-	log.Printf("Scheduler: access token at/near expiry, refreshing proactively")
-	return authSvc.RefreshToken(ctx, cfg)
+	if authSvc.NeedsReprovision() {
+		// agent-login has rejected the stored credentials; there is nothing this
+		// task can do until an operator re-provisions the agent. Stay quiet rather
+		// than logging a guaranteed-to-fail attempt every minute.
+		return nil
+	}
+	log.Printf("Scheduler: access token at/near expiry, recovering session")
+	// Recover (refresh→agent-login) is breaker-gated: while the breaker is open it
+	// returns immediately without a network call, throttling repeated failures to
+	// the breaker's reset cadence instead of every tick.
+	return authSvc.Recover(ctx, cfg)
 }
 
 func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
@@ -423,7 +470,15 @@ func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 // silently block every subsequent periodic tick.
 const collectTimeout = 90 * time.Second
 
-func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+	if authSvc != nil && !authSvc.Healthy() {
+		// Session is unrecoverable right now (breaker open or credentials rejected).
+		// Skip the upload instead of firing a request that is guaranteed to 401 —
+		// the token-refresh task is what re-establishes auth.
+		log.Printf("Scheduler: auth degraded, skipping agent-info-update until session recovers")
+		return nil
+	}
+
 	log.Printf("Running agent info update")
 
 	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
@@ -448,12 +503,23 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, _ *authsvc.S
 		return fmt.Errorf("system info collection returned no data; skipping this cycle")
 	}
 	agentSvc := agentsvc.NewAgentService()
-	return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	if authSvc == nil {
+		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	}
+	// On a 401 mid-run, recover the session (refresh→login) and retry once.
+	return authSvc.DoWithAuthRetry(tctx, cfg, func() error {
+		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	})
 }
 
-func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
 	if !cfg.SoftwareSyncEnabled {
 		log.Printf("Software sync is disabled")
+		return nil
+	}
+
+	if authSvc != nil && !authSvc.Healthy() {
+		log.Printf("Scheduler: auth degraded, skipping software-sync until session recovers")
 		return nil
 	}
 
@@ -475,9 +541,15 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Serv
 	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
 	syncTime := time.Now()
-	freshList := svc.GetSoftwareList()
+	freshList, scannedSources := svc.GetSoftwareList()
+	if len(scannedSources) == 0 {
+		// Every collector failed this cycle. SyncBatch will not reconcile any source
+		// (which would otherwise demote the entire catalog to "uninstalled"); the
+		// last-known catalog is preserved and re-uploaded below on the next retry.
+		log.Printf("[software] no software source scanned successfully; keeping last-known catalog")
+	}
 
-	if err := swStore.SyncBatch(freshList, syncTime); err != nil {
+	if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
 		// Non-fatal: log the error but continue with whatever is in the catalog.
 		log.Printf("[software] store sync error: %v", err)
 	}
@@ -503,7 +575,16 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, _ *authsvc.Serv
 	sanitizedFreshCount := sanitize.ForLog(fmt.Sprintf("%d", len(freshList)))
 	log.Printf("Software sync: %s catalog entries (%s fresh)", sanitizedCatalogCount, sanitizedFreshCount)
 
-	if err := svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg); err != nil {
+	sendSoftware := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg) }
+	if authSvc != nil {
+		// On a 401 mid-run, recover the session (refresh→login) and retry once.
+		sendSoftware = func() error {
+			return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+				return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg)
+			})
+		}
+	}
+	if err := sendSoftware(); err != nil {
 		// Leave the queue marker so the next tick retries the upload.
 		return fmt.Errorf("send software data: %w", err)
 	}

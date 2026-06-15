@@ -19,6 +19,14 @@ const (
 	initialBackoff = 1 * time.Second
 )
 
+// authRetrier recovers the session on a 401 and reports auth health. It is
+// satisfied by *authsvc.Service; kept as a local interface so the uploader stays
+// testable without importing the auth package.
+type authRetrier interface {
+	DoWithAuthRetry(ctx context.Context, cfg *config.Config, fn func() error) error
+	Healthy() bool
+}
+
 // Uploader sends batches of audit logs to the Supabase backend
 // via AuditLogService. It handles batch sizing and retry with
 // exponential backoff.
@@ -26,6 +34,7 @@ type Uploader struct {
 	svc   *auditlogsvc.AuditLogService
 	cfg   *config.Config
 	stats *statsCounter
+	auth  authRetrier // optional; when set, uploads recover the session on 401
 }
 
 // NewUploader creates an uploader wrapping the given audit log service.
@@ -37,11 +46,21 @@ func NewUploader(cfg *config.Config, stats *statsCounter) *Uploader {
 	}
 }
 
+// SetAuth wires an auth recovery handle so batch uploads react to 401s and pause
+// when the session is unrecoverable.
+func (u *Uploader) SetAuth(auth authRetrier) {
+	u.auth = auth
+}
+
 // Upload sends the given logs in batches to the backend
 // via the agent_insert_audit_logs_batch RPC function.
 // Returns the total number of logs successfully uploaded.
 func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, error) {
 	if len(logs) == 0 {
+		return 0, nil
+	}
+	if u.auth != nil && !u.auth.Healthy() {
+		log.Printf("[uploader] auth degraded, deferring upload of %d logs until session recovers", len(logs))
 		return 0, nil
 	}
 
@@ -80,12 +99,22 @@ func (u *Uploader) uploadBatchWithRetry(ctx context.Context, batch []models.Audi
 	backoff := initialBackoff
 	var lastErr error
 
+	send := func() error { return u.svc.SendBatchLogsWithContext(ctx, batchData) }
+	if u.auth != nil {
+		// On a 401 mid-upload, recover the session (refresh→login) and retry once.
+		send = func() error {
+			return u.auth.DoWithAuthRetry(ctx, u.cfg, func() error {
+				return u.svc.SendBatchLogsWithContext(ctx, batchData)
+			})
+		}
+	}
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		lastErr = u.svc.SendBatchLogsWithContext(ctx, batchData)
+		lastErr = send()
 		if lastErr == nil {
 			return nil
 		}
@@ -174,6 +203,11 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 // Returns the total number of logs successfully uploaded.
 func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditLogStore) (int, error) {
 	const chunkSize = 500
+
+	if u.auth != nil && !u.auth.Healthy() {
+		log.Printf("[uploader] auth degraded, deferring store upload until session recovers")
+		return 0, nil
+	}
 
 	totalUploaded := 0
 	var lastErr error

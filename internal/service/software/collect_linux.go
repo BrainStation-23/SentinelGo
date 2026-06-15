@@ -9,66 +9,83 @@ import (
 	"time"
 )
 
-// platformSoftware collects installed software on Linux.
-func (s *SoftwareService) platformSoftware() []SoftwareInfo {
+// platformSoftware collects installed software on Linux along with the set of
+// source categories that were authoritatively scanned this cycle. A package
+// manager that is not installed (e.g. rpm on Debian) reports failure and is left
+// out of scanned, so its absence never demotes another source's rows.
+//
+// LastOpened is not yet collected for Linux packages (gap; tracked for follow-up).
+func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
+	scanned := make(map[string]bool)
 	var sw []SoftwareInfo
-	sw = append(sw, s.getDebPackages()...)
-	sw = append(sw, s.getRPMPackages()...)
-	sw = append(sw, s.getSnapPackages()...)
-	sw = append(sw, s.getFlatpakPackages()...)
-	sw = append(sw, s.getChromeExtensions()...)
-	sw = append(sw, s.getFirefoxExtensions()...)
-	sw = append(sw, s.getEdgeExtensions()...)
-	sw = append(sw, s.getBraveExtensions()...)
-	return sw
+
+	if items, ok := s.getDebPackages(); ok {
+		sw = append(sw, items...)
+		scanned["deb_packages"] = true
+	}
+	if items, ok := s.getRPMPackages(); ok {
+		sw = append(sw, items...)
+		scanned["rpm_packages"] = true
+	}
+	if items, ok := s.getSnapPackages(); ok {
+		sw = append(sw, items...)
+		scanned["snap_packages"] = true
+	}
+	if items, ok := s.getFlatpakPackages(); ok {
+		sw = append(sw, items...)
+		scanned["flatpak_packages"] = true
+	}
+	s.appendExtensions(&sw, scanned)
+
+	return sw, scanned
 }
 
-func (s *SoftwareService) getDebPackages() []SoftwareInfo {
+func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseDebPackages(output, &packages)
-	return packages
+	return packages, true
 }
 
-func (s *SoftwareService) getRPMPackages() []SoftwareInfo {
+func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: rpm -qa failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseRPMPackages(output, &packages)
-	return packages
+	return packages, true
 }
 
-func (s *SoftwareService) getSnapPackages() []SoftwareInfo {
+func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("snap", "list", "--color=never")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: snap list failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseSnapPackages(output, &packages)
-	return packages
+	return packages, true
 }
 
-func (s *SoftwareService) getFlatpakPackages() []SoftwareInfo {
+func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
 	cmd := exec.Command("flatpak", "list", "--columns=application,name,version,origin")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: flatpak list failed: %v", err)
-		return nil
+		return nil, false
 	}
 	var packages []SoftwareInfo
 	parseFlatpakPackages(output, &packages)
-	return packages
+	return packages, true
 }
 
 func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
