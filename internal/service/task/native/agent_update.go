@@ -16,8 +16,8 @@ import (
 )
 
 // checkAndApplyFn is the updater entry point. Replaced in tests.
-var checkAndApplyFn = func(ctx context.Context, cfg *config.Config, token string) error {
-	return updater.CheckAndApplyWithRetry(ctx, cfg, token)
+var checkAndApplyFn = func(ctx context.Context, cfg *config.Config) error {
+	return updater.CheckAndApplyWithRetry(ctx, cfg)
 }
 
 type agentUpdateHandler struct{}
@@ -40,11 +40,11 @@ func (h *agentUpdateHandler) Run(ctx context.Context, cfg *config.Config, task t
 		return "", fmt.Errorf("agent-update requires root privileges. Please restart the agent with sudo")
 	}
 
-	if !updater.CheckInternetConnectivity() {
+	if !updater.CheckInternetConnectivity(cfg.SupabaseURL) {
 		log.Printf("Executor: Warning - TCP connectivity check failed, attempting update anyway")
 	}
 
-	if !updater.CheckInternetWithHTTP() {
+	if !updater.CheckInternetWithHTTP(cfg.SupabaseURL) {
 		log.Printf("Executor: Warning - HTTP connectivity check failed, attempting update anyway")
 	}
 
@@ -69,7 +69,7 @@ func (h *agentUpdateHandler) Run(ctx context.Context, cfg *config.Config, task t
 		log.Printf("Executor: Warning - failed to write restart context: %v", err)
 	}
 
-	if err := checkAndApplyFn(ctx, cfg, ""); err != nil {
+	if err := checkAndApplyFn(ctx, cfg); err != nil {
 		// Update failed or was not needed; remove the context so the next
 		// startup does not incorrectly mark this task as success.
 		_, _ = restartctx.ReadAndClear(ctxPath)

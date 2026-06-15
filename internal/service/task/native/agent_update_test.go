@@ -93,8 +93,8 @@ func TestAgentUpdateHandler_UpdaterFails_ClearsRestartContext(t *testing.T) {
 	orig := checkAndApplyFn
 	defer func() { checkAndApplyFn = orig }()
 
-	updateErr := errors.New("github rate limited")
-	checkAndApplyFn = func(_ context.Context, _ *config.Config, _ string) error {
+	updateErr := errors.New("supabase rpc failed")
+	checkAndApplyFn = func(_ context.Context, _ *config.Config) error {
 		return updateErr
 	}
 
@@ -128,7 +128,7 @@ func TestAgentUpdateHandler_AlreadyUpToDate_ClearsRestartContext(t *testing.T) {
 	orig := checkAndApplyFn
 	defer func() { checkAndApplyFn = orig }()
 
-	checkAndApplyFn = func(_ context.Context, _ *config.Config, _ string) error {
+	checkAndApplyFn = func(_ context.Context, _ *config.Config) error {
 		return nil // nil = no update available (already up to date)
 	}
 
@@ -160,7 +160,7 @@ func TestAgentUpdateHandler_RestartContextWrittenBeforeUpdater(t *testing.T) {
 	defer func() { checkAndApplyFn = orig }()
 
 	var contextPathAtCallTime string
-	checkAndApplyFn = func(_ context.Context, cfg *config.Config, _ string) error {
+	checkAndApplyFn = func(_ context.Context, cfg *config.Config) error {
 		// Capture whether the restart context file exists when the updater is called.
 		contextPathAtCallTime = restartctx.PathFor(cfg.Path)
 		return fmt.Errorf("simulated failure")

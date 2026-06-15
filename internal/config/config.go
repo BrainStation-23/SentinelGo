@@ -88,8 +88,6 @@ func init() {
 type Config struct {
 	Path                    string   `json:"-"`               // Path to the config file
 	UpdateInterval          Duration `json:"update_interval"` // Software sync interval (supports both "5m0s" and numeric formats)
-	GitHubOwner             string   `json:"github_owner"`
-	GitHubRepo              string   `json:"github_repo"`
 	CurrentVersion          string   `json:"current_version"`
 	DeviceID                string   `json:"device_id"`                  // persistent unique identifier
 	AutoUpdate              bool     `json:"auto_update"`                // Enable automatic updates
@@ -156,7 +154,7 @@ func (c *Config) GetSoftwareInfoUpdateInterval() time.Duration {
 // GetAutoUpdateInterval returns how often to check for a new release.
 func (c *Config) GetAutoUpdateInterval() time.Duration {
 	if time.Duration(c.AutoUpdateInterval) == 0 {
-		return 24 * time.Hour
+		return 1 * time.Hour
 	}
 	return time.Duration(c.AutoUpdateInterval)
 }
@@ -200,11 +198,9 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Path:                    path,
 		UpdateInterval:          Duration(5 * time.Minute), // Default software sync interval
-		GitHubOwner:             "BrainStation-23",
-		GitHubRepo:              "SentinelGo",
-		CurrentVersion:          Version, // Use injected version
-		AutoUpdate:              true,    // Enabled by default; updates require a published SHA256 checksum and a semver-newer release (see internal/updater)
-		AutoUpdateInterval:      Duration(24 * time.Hour),
+		CurrentVersion:          Version,                   // Use injected version
+		AutoUpdate:              true,                      // Enabled by default; updates fetched from Supabase Storage via get_latest_agent_release RPC
+		AutoUpdateInterval:      Duration(1 * time.Hour),
 		AgentInfoUpdateInterval: Duration(5 * time.Minute),
 		TaskPollingInterval:     Duration(5 * time.Minute),
 		EnableTaskPolling:       true, // Enabled by default; remote task execution is gated by backend RLS (and, as a follow-up, task-script signing)

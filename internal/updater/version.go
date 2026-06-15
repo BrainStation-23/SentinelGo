@@ -2,7 +2,6 @@ package updater
 
 import (
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -87,35 +86,4 @@ func isNewerVersion(candidate, current string) (bool, error) {
 		return false, fmt.Errorf("current version: %w", err)
 	}
 	return c.compare(cur) > 0, nil
-}
-
-// allowedDownloadHosts is the set of hosts the updater will download release
-// assets from. GitHub serves release binaries from github.com and redirects to
-// *.githubusercontent.com object storage.
-var allowedDownloadHosts = []string{
-	"github.com",
-	"api.github.com",
-	"objects.githubusercontent.com",
-	"release-assets.githubusercontent.com",
-}
-
-// validateGitHubURL ensures rawURL is an HTTPS URL pointing at a trusted GitHub
-// host before the updater downloads from it. This is a defense-in-depth check;
-// it is NOT a substitute for the (deferred) cryptographic signature verification
-// that establishes binary authenticity.
-func validateGitHubURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
-	}
-	if u.Scheme != "https" {
-		return fmt.Errorf("scheme %q is not https", u.Scheme)
-	}
-	host := u.Hostname()
-	for _, allowed := range allowedDownloadHosts {
-		if host == allowed || strings.HasSuffix(host, ".githubusercontent.com") {
-			return nil
-		}
-	}
-	return fmt.Errorf("host %q is not an allowed GitHub host", host)
 }

@@ -414,9 +414,9 @@ func TestConfig_GetAutoUpdateInterval(t *testing.T) {
 		want time.Duration
 	}{
 		{
-			name: "zero value returns 24h default",
+			name: "zero value returns 1h default",
 			cfg:  &config.Config{AutoUpdateInterval: config.Duration(0)},
-			want: 24 * time.Hour,
+			want: 1 * time.Hour,
 		},
 		{
 			name: "non-zero value returned as-is",
