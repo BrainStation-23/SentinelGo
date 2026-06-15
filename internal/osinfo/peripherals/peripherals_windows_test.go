@@ -1,6 +1,54 @@
 package peripherals
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestParsePnpDevices(t *testing.T) {
+	type tc struct {
+		description string
+		devType     string
+		wantKept    bool
+	}
+	cases := []tc{
+		{"USB Root Hub (USB 3.0)", "USB Device", false},
+		{"USB Root Hub (USB 3.1)", "USB Device", false},
+		{"Intel USB 3.1 xHC Host Controller", "USB Device", false},
+		{"USB Composite Device", "USB Device", false},
+		{"Generic USB Hub", "USB Device", false},
+		{"4-Port USB Hub", "USB Device", false},
+		{"HyperX Alloy Keyboard", "Keyboard", true},
+		{"Logitech M720 Mouse", "Mouse or other pointing device", true},
+		{"USB Audio Device", "HID Device", true},
+		{"SanDisk Cruzer Blade", "USB Device", true},
+	}
+
+	var items []map[string]any
+	for _, c := range cases {
+		items = append(items, map[string]any{
+			"Type":        c.devType,
+			"Description": c.description,
+		})
+	}
+
+	got := parsePnpDevices(items)
+
+	// Build a set of descriptions that were returned.
+	kept := make(map[string]bool, len(got))
+	for _, d := range got {
+		kept[d.Description] = true
+	}
+
+	for _, c := range cases {
+		if c.wantKept && !kept[c.description] {
+			t.Errorf("expected %q to be kept, but it was filtered out", c.description)
+		}
+		if !c.wantKept && kept[c.description] {
+			t.Errorf("expected %q to be filtered out as infrastructure, but it was kept", c.description)
+		}
+	}
+}
 
 func TestParseVendorProductFromHardwareID(t *testing.T) {
 	tests := []struct {
@@ -67,9 +115,20 @@ func TestGetPeripherals_Integration(t *testing.T) {
 		if d.Type == "" {
 			t.Errorf("peripheral[%d] %q has empty Type", i, d.Description)
 		}
-		// Manufacturer must not be the same as Description (was the inferManufacturer bug)
 		if d.Manufacturer != "" && d.Manufacturer == d.Description {
 			t.Errorf("peripheral[%d] %q: Manufacturer == Description (inferManufacturer bug)", i, d.Description)
+		}
+		// Infrastructure nodes must not appear — they are always "OK" in PnP even
+		// with no external device plugged in.
+		descLow := strings.ToLower(d.Description)
+		if strings.Contains(descLow, "root hub") {
+			t.Errorf("peripheral[%d] %q: USB Root Hub must be filtered out", i, d.Description)
+		}
+		if strings.Contains(descLow, "host controller") {
+			t.Errorf("peripheral[%d] %q: Host Controller must be filtered out", i, d.Description)
+		}
+		if strings.Contains(descLow, "composite device") {
+			t.Errorf("peripheral[%d] %q: USB Composite Device must be filtered out", i, d.Description)
 		}
 		t.Logf("peripheral[%d]: type=%q desc=%q mfr=%q conn=%q built-in=%v vid=%q pid=%q",
 			i, d.Type, d.Description, d.Manufacturer, d.ConnectionType, d.IsBuiltIn, d.VendorID, d.ProductID)

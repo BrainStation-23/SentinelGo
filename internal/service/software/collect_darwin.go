@@ -9,6 +9,77 @@ import (
 	"time"
 )
 
+const mdlsBatchSize = 200
+
+// batchMdlsLastOpened queries Spotlight metadata for the last-used date of a
+// set of app paths. Returns a map of path → RFC3339 timestamp. Paths that were
+// never opened or whose metadata is unavailable are omitted from the map.
+func batchMdlsLastOpened(paths []string) map[string]string {
+	result := make(map[string]string, len(paths))
+	for i := 0; i < len(paths); i += mdlsBatchSize {
+		end := i + mdlsBatchSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		batch := paths[i:end]
+		args := append([]string{"-name", "kMDItemLastUsedDate"}, batch...)
+		out, err := exec.Command("mdls", args...).Output()
+		if err != nil {
+			log.Printf("software: mdls batch failed: %v", err)
+			continue
+		}
+		parseMdlsOutput(string(out), batch, result)
+	}
+	return result
+}
+
+// parseMdlsOutput parses the output of `mdls -name kMDItemLastUsedDate path1 path2 ...`.
+// Each file block starts with the path followed by a colon, then the attribute line.
+func parseMdlsOutput(output string, paths []string, result map[string]string) {
+	// Build a quick lookup so we can match path headers back to original paths.
+	pathSet := make(map[string]string, len(paths))
+	for _, p := range paths {
+		pathSet[p+":"] = p
+	}
+
+	var currentPath string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Path header: "/Applications/Safari.app:"
+		if strings.HasSuffix(line, ":") {
+			if orig, ok := pathSet[line]; ok {
+				currentPath = orig
+			} else {
+				currentPath = ""
+			}
+			continue
+		}
+		if currentPath == "" {
+			continue
+		}
+		// Attribute line: "kMDItemLastUsedDate = 2025-06-10 08:42:11 +0000" or "(null)"
+		if !strings.HasPrefix(line, "kMDItemLastUsedDate") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		val := strings.TrimSpace(parts[1])
+		if val == "(null)" || val == "" {
+			continue
+		}
+		t, err := time.Parse("2006-01-02 15:04:05 +0000", val)
+		if err != nil {
+			continue
+		}
+		result[currentPath] = t.UTC().Format(time.RFC3339)
+	}
+}
+
 // platformSoftware collects installed software on macOS.
 func (s *SoftwareService) platformSoftware() []SoftwareInfo {
 	var sw []SoftwareInfo
@@ -31,6 +102,23 @@ func (s *SoftwareService) getMacApplications() []SoftwareInfo {
 	}
 	var applications []SoftwareInfo
 	parseSystemProfilerApps(output, &applications)
+
+	// Collect paths to batch-query last-opened metadata.
+	paths := make([]string, 0, len(applications))
+	for _, app := range applications {
+		if app.FilePath != "" {
+			paths = append(paths, app.FilePath)
+		}
+	}
+	if len(paths) > 0 {
+		lastOpened := batchMdlsLastOpened(paths)
+		for i := range applications {
+			if ts, ok := lastOpened[applications[i].FilePath]; ok {
+				applications[i].LastOpened = ts
+			}
+		}
+	}
+
 	return applications
 }
 

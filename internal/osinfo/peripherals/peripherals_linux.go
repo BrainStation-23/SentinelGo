@@ -149,7 +149,13 @@ func getPeripherals() []shared.PeripheralDevice {
 		}
 	}
 
-	if btOutput, err := shared.RunCommand("bluetoothctl", "devices"); err == nil {
+	// "Connected" subcommand requires bluez ≥ 5.56; fall back to all paired
+	// devices on older systems rather than silently returning nothing.
+	btOutput, btErr := shared.RunCommand("bluetoothctl", "devices", "Connected")
+	if btErr != nil {
+		btOutput, btErr = shared.RunCommand("bluetoothctl", "devices")
+	}
+	if btErr == nil {
 		for _, line := range strings.Split(btOutput, "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "Device") {
