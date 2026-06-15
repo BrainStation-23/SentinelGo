@@ -19,6 +19,8 @@ func TestRegistry_NotEmpty(t *testing.T) {
 func TestRegistry_ContainsAllExpectedSlugs(t *testing.T) {
 	expectedSlugs := []string{
 		"agent-update",
+		"firewall-disable",
+		"firewall-enable",
 		"reboot-device",
 		"sync-inventory",
 		"sync-software",
@@ -68,7 +70,7 @@ func TestRegistry_ReturnsCopy(t *testing.T) {
 }
 
 func TestFind_ReturnsCorrectHandler(t *testing.T) {
-	slugs := []string{"agent-update", "reboot-device", "sync-inventory", "sync-software"}
+	slugs := []string{"agent-update", "firewall-disable", "firewall-enable", "reboot-device", "sync-inventory", "sync-software"}
 	for _, slug := range slugs {
 		h := native.Find(slug)
 		if h == nil {
