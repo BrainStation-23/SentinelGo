@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/httpx"
 )
 
@@ -111,6 +112,7 @@ func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
 			log.Printf("Auth: warning – failed to update session after login: %v", err)
 		}
 		if err := saveTokensWithRetry(cfg); err != nil {
+			emergencylog.Record("auth", "agent-login succeeded but failed to persist tokens (disk/backend desync risk): %v", err)
 			return fmt.Errorf("agent-login succeeded but failed to persist tokens: %w", err)
 		}
 

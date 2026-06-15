@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/resilience"
 
 	supabase "github.com/supabase-community/supabase-go"
@@ -205,6 +206,7 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 		// to authenticate. Treat a persistent save failure as a refresh failure
 		// (after retries) rather than silently swallowing it.
 		if err := saveTokensWithRetry(cfg); err != nil {
+			emergencylog.Record("auth", "token refreshed but failed to persist rotated tokens (disk/backend desync risk): %v", err)
 			return fmt.Errorf("token refreshed but failed to persist rotated tokens: %w", err)
 		}
 
@@ -273,6 +275,7 @@ func (s *Service) doRecover(ctx context.Context, cfg *config.Config) error {
 				log.Printf("Auth: CRITICAL — agent-login rejected the stored agent_secret. " +
 					"The agent cannot authenticate and needs re-provisioning; reporting is paused " +
 					"until valid credentials are restored.")
+				emergencylog.Record("auth", "agent-login rejected stored credentials; agent needs re-provisioning, reporting paused")
 			}
 		}
 		return err

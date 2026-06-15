@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/osinfo"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/sanitize"
@@ -30,6 +31,14 @@ type Task struct {
 	Running      atomic.Bool
 	LastRun      time.Time
 	Enabled      bool
+
+	// consecutiveFailures counts back-to-back handler failures; it resets to 0 on
+	// the first success. alerted gates emergency logging so a sustained outage
+	// emits exactly one alert (and one recovery line), not one per tick. Both are
+	// atomic because the counter carries across the initial-run goroutine and the
+	// per-tick goroutines (which never overlap for one task, see runTaskHandler).
+	consecutiveFailures atomic.Int32
+	alerted             atomic.Bool
 }
 
 // TaskHandler defines the interface for task execution
@@ -158,6 +167,31 @@ func runTaskHandler(ctx context.Context, name string, h TaskHandler, cfg *config
 	return h(ctx, cfg, authSvc)
 }
 
+// taskFailureThreshold is how many back-to-back failures a task must hit before
+// it is treated as an emergency. A single failure is routine (a network blip);
+// this many in a row across the task's interval signals a real, sustained outage
+// — e.g. updates that keep failing or a sync that can't reach the backend.
+const taskFailureThreshold = 3
+
+// observeTaskResult updates a task's consecutive-failure counter and records an
+// emergency the first time a task crosses the threshold, plus a single recovery
+// line the first time it succeeds again. Called from both the initial and the
+// periodic run paths; those never run a given task concurrently, so the atomic
+// counter simply carries across the boundary.
+func observeTaskResult(t *Task, err error) {
+	if err != nil {
+		n := t.consecutiveFailures.Add(1)
+		if n >= taskFailureThreshold && t.alerted.CompareAndSwap(false, true) {
+			emergencylog.Record("sync", "task %s failed %d consecutive times: %v", t.Name, n, err)
+		}
+		return
+	}
+	t.consecutiveFailures.Store(0)
+	if t.alerted.CompareAndSwap(true, false) {
+		emergencylog.Record("sync", "task %s recovered after repeated failures", t.Name)
+	}
+}
+
 // runInitialTasks executes all enabled tasks once in dependency order using a
 // single background goroutine so the ordering is respected without blocking
 // Scheduler.Start. If a task fails its LastRun is still recorded so dependent
@@ -187,11 +221,13 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 			}
 
 			log.Printf("Running initial task: %s", taskName)
-			if err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc); err != nil {
+			err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc)
+			if err != nil {
 				log.Printf("Initial task %s failed: %v", taskName, err)
 			} else {
 				log.Printf("Initial task %s completed successfully", taskName)
 			}
+			observeTaskResult(task, err)
 			// Always record LastRun so dependent tasks are not permanently
 			// blocked by a failure in this dependency.
 			task.LastRun = time.Now()
@@ -253,11 +289,13 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 						defer t.Running.Store(false)
 
 						log.Printf("Running periodic task: %s", taskName)
-						if err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc); err != nil {
+						err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc)
+						if err != nil {
 							log.Printf("Periodic task %s failed: %v", taskName, err)
 						} else {
 							log.Printf("Periodic task %s completed successfully", taskName)
 						}
+						observeTaskResult(t, err)
 						// Always update LastRun so dependent tasks are not
 						// permanently blocked by a one-off failure.
 						t.LastRun = time.Now()

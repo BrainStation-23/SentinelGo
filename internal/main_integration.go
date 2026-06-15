@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
@@ -55,8 +57,16 @@ func NewMainIntegrationWith(cfg *config.Config, sched *scheduler.Scheduler) *Mai
 func (mi *MainIntegration) Start(ctx context.Context) error {
 	mi.logStartup()
 
+	// Point the emergency log at the runtime directory (sibling of config.json)
+	// before anything else, so even a config-validation failure is recordable.
+	// A failure here is non-fatal: Record degrades to echoing to the standard log.
+	if err := emergencylog.Init(filepath.Dir(mi.cfg.Path)); err != nil {
+		log.Printf("Warning: emergency log init failed (events echo to log only): %v", err)
+	}
+
 	// 1. Validate configuration before doing anything that depends on it.
 	if err := mi.cfg.ValidateConfiguration(); err != nil {
+		emergencylog.Record("startup", "config validation failed: %v", err)
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 
@@ -81,6 +91,7 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 
 	// 7. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
+		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
 	}
 
