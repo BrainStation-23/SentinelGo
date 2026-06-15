@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -364,7 +365,7 @@ func CreateDefaultTasks() []*Task {
 		},
 		{
 			Name:         "auto-update",
-			Interval:     24 * time.Hour, // overridden from config.AutoUpdateInterval
+			Interval:     1 * time.Hour, // overridden from config.AutoUpdateInterval
 			Dependencies: []string{},
 			Handler:      handleAutoUpdate,
 			Enabled:      true,
@@ -404,9 +405,16 @@ func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsv
 }
 
 func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+	// Jitter: spread checks across up to 5 minutes to avoid thundering herd
+	// when many agents start simultaneously.
+	jitter := time.Duration(rand.Intn(5*60)) * time.Second
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(jitter):
+	}
 	log.Printf("Running auto-update check")
-	// Use retry wrapper for auto-update
-	return updater.CheckAndApplyWithRetry(ctx, cfg, "")
+	return updater.CheckAndApplyWithRetry(ctx, cfg)
 }
 
 // collectTimeout caps the entire agent-info-update cycle (osinfo + RPC).

@@ -11,19 +11,38 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"sentinelgo/internal/config"
+	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/winsec"
 )
 
-// downloadAndVerify downloads the binary from url, writes it to a staged file,
-// verifies both the SHA256 checksum (corruption guard) and the ed25519 signature
-// (authenticity). sigURL must not be empty — the function fails closed when the
-// release contains no .sig asset so a release without a signature is rejected.
-func downloadAndVerify(ctx context.Context, url, expectedChecksum, sigURL, version string) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// downloadClient has a generous timeout for large binary downloads (~18 MB+).
+var downloadClient = httpx.NewClient(10 * time.Minute)
+
+// storageBase constructs the Supabase Storage authenticated download URL for a
+// given bucket and asset path.
+func storageURL(supabaseURL, bucket, assetPath string) string {
+	return supabaseURL + "/storage/v1/object/" + bucket + "/" + assetPath
+}
+
+// downloadAndVerify downloads the release binary and its detached ed25519
+// signature from Supabase Storage, verifies the SHA256 checksum (integrity)
+// and the ed25519 signature (authenticity), and returns the path of the staged
+// binary together with its computed checksum.
+//
+// Both requests are authenticated with the agent's JWT and the Supabase anon
+// key — the agent-releases bucket has RLS that allows any authenticated user
+// to download.
+func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string) (string, string, error) {
+	binaryURL := storageURL(cfg.SupabaseURL, "agent-releases", assetPath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binaryURL, nil)
 	if err != nil {
 		return "", "", err
 	}
+	addAuthHeaders(req, cfg)
 
 	resp, err := downloadClient.Do(req)
 	if err != nil {
@@ -32,7 +51,7 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, sigURL, versi
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("download failed status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("binary download status %d", resp.StatusCode)
 	}
 
 	selfPath, err := os.Executable()
@@ -48,7 +67,7 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, sigURL, versi
 	}
 	defer func() { _ = f.Close() }()
 
-	// Stream to disk and compute SHA256 simultaneously
+	// Stream to disk and compute SHA256 simultaneously.
 	hash := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(f, hash), resp.Body); err != nil {
 		_ = os.Remove(newPath)
@@ -57,16 +76,15 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, sigURL, versi
 
 	actualChecksum := hex.EncodeToString(hash.Sum(nil))
 
-	// Lock the staged binary down so a standard user cannot swap it for a
-	// malicious one between download and the privileged replace/restart.
+	// Lock the staged binary down so a standard user cannot swap it between
+	// download and the privileged replace/restart.
 	if err := winsec.SecurePath(newPath); err != nil {
 		fmt.Printf("Warning: failed to secure staged binary ACL: %v\n", err)
 	}
 
-	// Verify ed25519 signature. Fail closed: a release without a .sig asset is
-	// rejected. This is the authenticity check; the SHA256 above is only a
-	// corruption guard.
-	if err := verifySignature(ctx, newPath, sigURL, PublicKey); err != nil {
+	// Verify ed25519 signature. Fail closed: if there is no .sig asset the
+	// update is rejected.
+	if err := verifySignature(ctx, cfg, newPath, sigAssetPath, PublicKey); err != nil {
 		_ = os.Remove(newPath)
 		return "", "", err
 	}
@@ -74,22 +92,28 @@ func downloadAndVerify(ctx context.Context, url, expectedChecksum, sigURL, versi
 	return newPath, actualChecksum, nil
 }
 
-// verifySignature downloads the detached .sig file and verifies it against
-// pubKey. Returns an error if sigURL is empty (fail closed), the URL is
-// untrusted, the download fails, or the signature is invalid.
-func verifySignature(ctx context.Context, binaryPath, sigURL string, pubKey ed25519.PublicKey) error {
-	if sigURL == "" {
-		return fmt.Errorf("refusing to install update: no .sig asset in release (fail closed — sign releases with `go run ./scripts/sign`)")
+// addAuthHeaders sets the Authorization (Bearer JWT) and apikey headers on req.
+func addAuthHeaders(req *http.Request, cfg *config.Config) {
+	req.Header.Set("Authorization", "Bearer "+cfg.GetAccessToken())
+	req.Header.Set("apikey", cfg.SupabaseKey)
+}
+
+// verifySignature downloads the detached .sig file from Supabase Storage and
+// verifies it against pubKey. Returns an error if sigAssetPath is empty (fail
+// closed), the download fails, or the signature is invalid.
+func verifySignature(ctx context.Context, cfg *config.Config, binaryPath, sigAssetPath string, pubKey ed25519.PublicKey) error {
+	if sigAssetPath == "" {
+		return fmt.Errorf("refusing to install update: no .sig asset path (fail closed)")
 	}
 
-	if err := validateGitHubURL(sigURL); err != nil {
-		return fmt.Errorf("invalid signature URL: %w", err)
-	}
+	sigURL := storageURL(cfg.SupabaseURL, "agent-releases", sigAssetPath)
 
-	sigReq, err := http.NewRequestWithContext(ctx, "GET", sigURL, nil)
+	sigReq, err := http.NewRequestWithContext(ctx, http.MethodGet, sigURL, nil)
 	if err != nil {
 		return fmt.Errorf("build sig request: %w", err)
 	}
+	addAuthHeaders(sigReq, cfg)
+
 	sigResp, err := downloadClient.Do(sigReq)
 	if err != nil {
 		return fmt.Errorf("download signature: %w", err)
@@ -117,8 +141,8 @@ func verifySignature(ctx context.Context, binaryPath, sigURL string, pubKey ed25
 	return verifySignatureBytes(binaryBytes, sigBytes, pubKey)
 }
 
-// verifySignatureBytes checks an ed25519 signature against binaryBytes and pubKey.
-// It is separated from verifySignature so unit tests can exercise the crypto
+// verifySignatureBytes checks an ed25519 signature against binaryBytes and
+// pubKey. Separated from verifySignature so tests can exercise the crypto
 // path without spinning up an HTTP server.
 func verifySignatureBytes(binaryBytes, sigBytes []byte, pubKey ed25519.PublicKey) error {
 	if !ed25519.Verify(pubKey, binaryBytes, sigBytes) {

@@ -31,30 +31,3 @@ func TestIsNewerVersion(t *testing.T) {
 		}
 	}
 }
-
-func TestValidateGitHubURL(t *testing.T) {
-	valid := []string{
-		"https://github.com/BrainStation-23/SentinelGo/releases/download/v1/sentinelgo-linux-amd64",
-		"https://objects.githubusercontent.com/abc/sentinelgo-linux-amd64",
-		"https://release-assets.githubusercontent.com/x/y",
-		"https://api.github.com/repos/o/r/releases/assets/1",
-	}
-	for _, u := range valid {
-		if err := validateGitHubURL(u); err != nil {
-			t.Errorf("validateGitHubURL(%q) = %v, want nil", u, err)
-		}
-	}
-
-	invalid := []string{
-		"http://github.com/o/r/x",       // not https
-		"https://evil.com/sentinelgo",   // wrong host
-		"https://github.com.evil.com/x", // suffix trick
-		"ftp://github.com/x",            // wrong scheme
-		"not a url at all %%%",          // unparseable
-	}
-	for _, u := range invalid {
-		if err := validateGitHubURL(u); err == nil {
-			t.Errorf("validateGitHubURL(%q) = nil, want error", u)
-		}
-	}
-}

@@ -102,7 +102,7 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 	}
 	log.Println("Auto-update is enabled, performing startup update check...")
 	go func() {
-		if err := updater.StartupUpdateCheck(ctx, mi.cfg, ""); err != nil {
+		if err := updater.StartupUpdateCheck(ctx, mi.cfg); err != nil {
 			log.Printf("Startup update check failed: %v", err)
 		}
 	}()

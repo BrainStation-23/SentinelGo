@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"sentinelgo/internal/config"
 )
 
 // newTestKeypair generates a fresh ed25519 keypair for each test so tests never
@@ -86,15 +88,15 @@ func TestVerifySignatureBytes_TamperedBinary(t *testing.T) {
 	}
 }
 
-// TestVerifySignature_EmptySigURL confirms fail-closed: an empty sigURL is
-// rejected without making any network call.
-func TestVerifySignature_EmptySigURL(t *testing.T) {
+// TestVerifySignature_EmptySigAssetPath confirms fail-closed: an empty
+// sigAssetPath is rejected without making any network call.
+func TestVerifySignature_EmptySigAssetPath(t *testing.T) {
 	pub, _ := newTestKeypair(t)
 	binaryPath := writeTempBinary(t, []byte("binary"))
 
-	err := verifySignature(context.Background(), binaryPath, "", pub)
+	err := verifySignature(context.Background(), &config.Config{}, binaryPath, "", pub)
 	if err == nil {
-		t.Error("expected empty sigURL to return error (fail closed), got nil")
+		t.Error("expected empty sigAssetPath to return error (fail closed), got nil")
 	}
 }
 

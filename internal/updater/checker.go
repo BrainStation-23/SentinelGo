@@ -4,31 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
-	"os"
+	"net/url"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
+
+	postgrest "github.com/supabase-community/postgrest-go"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/service/rpcutil"
 )
 
-// GitHubRelease represents a GitHub release response
-type GitHubRelease struct {
-	TagName string  `json:"tag_name"`
-	Assets  []Asset `json:"assets"`
-}
-
-// Asset represents a GitHub release asset
-type Asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
+// LatestRelease is the row returned by the get_latest_agent_release RPC.
+type LatestRelease struct {
+	Version     string    `json:"version"`
+	PublishedAt time.Time `json:"published_at"`
+	AssetName   string    `json:"asset_name"`
+	AssetPath   string    `json:"asset_path"` // e.g. "v1.4.2/sentinelgo-linux-amd64"
+	SHA256      string    `json:"sha256"`
+	Size        int64     `json:"size"`
+	ContentType string    `json:"content_type"`
 }
 
 var updateMutex sync.Mutex
@@ -38,93 +39,75 @@ var updateMutex sync.Mutex
 // because a running .exe cannot be replaced in place.
 const windowsServiceName = "SentinelGo"
 
-// HTTP clients with finite timeouts. http.DefaultClient has no timeout, so a
-// hung connection during a release check or download would block the update
-// path forever while holding updateMutex.
-var (
-	apiClient      = httpx.NewClient(30 * time.Second)
-	downloadClient = httpx.NewClient(10 * time.Minute)
-)
+// rpcTimeout caps the release-discovery RPC so a hung connection cannot block
+// the update path indefinitely while holding updateMutex.
+const releaseRPCTimeout = 30 * time.Second
 
-// CheckAndApply checks for a newer release and applies the update if available.
+// connectivityClient is a short-timeout client used only for connectivity probes.
+var connectivityClient = httpx.NewClient(10 * time.Second)
+
+// CheckAndApply checks for a newer release via Supabase RPC and applies the
+// update if one is available.
 //
-// Order of operations is deliberate (see the audit fixes for C3/C4 and M2):
+// Order of operations is deliberate:
 //  1. Compare against the COMPILED-IN running version (config.Version), not the
-//     persisted cfg.CurrentVersion. The running binary's version is the source
-//     of truth, so a failed swap can never leave the agent reporting a version
-//     it isn't actually running.
+//     persisted cfg.CurrentVersion.
 //  2. Only update on a strictly-newer semantic version (blocks downgrades).
-//  3. Require a SHA256 checksum and a trusted HTTPS GitHub URL.
-//  4. Download and verify BEFORE replacing anything; abort cleanly on any
-//     failure so monitoring capacity is never lost to a failed update.
-//  5. Replace + restart via the OS service manager. The version is NOT
-//     persisted here — the restarted new binary asserts its own version on
-//     startup (config.Load), so a failed update is retried on the next check.
-func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error {
+//  3. Require a SHA256 checksum (from RPC) and an ed25519 signature (from Storage).
+//  4. Download and verify BEFORE replacing anything.
+//  5. Replace + restart via the OS service manager.
+func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	updateMutex.Lock()
 	defer updateMutex.Unlock()
 
-	latest, err := fetchLatestRelease(ctx, cfg, token)
+	latest, err := fetchLatestRelease(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("fetch latest release: %w", err)
 	}
+	if latest == nil {
+		log.Println("Updater: no release configured in Supabase yet, skipping")
+		return nil
+	}
 
 	running := config.Version
-	newer, err := isNewerVersion(latest.TagName, running)
+	newer, err := isNewerVersion(latest.Version, running)
 	if err != nil {
-		// Cannot compare versions (e.g. a "dev" build). Skip rather than risk
-		// applying an unverifiable or wrong-direction change.
+		// Cannot compare versions (e.g. a "dev" build). Skip.
 		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
 		return nil
 	}
 	if !newer {
 		fmt.Printf("Already up to date (running %s, latest %s)\n",
-			sanitize.ForLog(running), sanitize.ForLog(latest.TagName))
+			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
 		return nil
 	}
 
-	assetURL, expectedChecksum, sigURL, err := selectAssetWithChecksum(latest, runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		return fmt.Errorf("select asset: %w", err)
+	if latest.SHA256 == "" {
+		return fmt.Errorf("refusing to update to %s: no SHA256 in release manifest",
+			sanitize.ForLog(latest.Version))
 	}
 
-	// Only download from a trusted HTTPS GitHub host.
-	if err := validateGitHubURL(assetURL); err != nil {
-		return fmt.Errorf("refusing to download release asset: %w", err)
-	}
+	fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
 
-	// A SHA256 checksum is mandatory as a corruption guard.
-	if expectedChecksum == "" {
-		return fmt.Errorf("refusing to update to %s: no SHA256 checksum published with the release",
-			sanitize.ForLog(latest.TagName))
-	}
-
-	fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.TagName))
-
-	// A backup is mandatory so a failed in-place replace can always roll back.
 	backupPath, err := createBackup()
 	if err != nil {
 		return fmt.Errorf("refusing to update without a backup: %w", err)
 	}
 	fmt.Printf("Created backup: %s\n", backupPath)
 
-	// Download and verify BEFORE touching the running install. If anything fails
-	// here, the running agent is untouched. downloadAndVerify verifies both the
-	// SHA256 checksum and the ed25519 signature; it fails closed on a missing sig.
-	newPath, actualChecksum, err := downloadAndVerify(ctx, assetURL, expectedChecksum, sigURL, latest.TagName)
+	// sig is stored alongside the binary with a .sig suffix, mirroring GitHub releases.
+	sigAssetPath := latest.AssetPath + ".sig"
+
+	newPath, actualChecksum, err := downloadAndVerify(ctx, cfg, latest.AssetPath, latest.SHA256, sigAssetPath)
 	if err != nil {
 		_ = removeFile(backupPath)
 		return fmt.Errorf("download and verify failed: %w", err)
 	}
-	if actualChecksum != expectedChecksum {
-		_ = os.Remove(newPath)
+	if actualChecksum != latest.SHA256 {
 		_ = removeFile(backupPath)
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
 
-	// Replace the binary. On Unix this is an atomic in-place rename now; on
-	// Windows the running .exe cannot be replaced, so the swap is deferred to a
-	// post-exit script in restart().
 	if runtime.GOOS != "windows" {
 		if err := atomicReplace(newPath); err != nil {
 			if rbErr := rollbackFromBackup(backupPath); rbErr != nil {
@@ -135,30 +118,30 @@ func CheckAndApply(ctx context.Context, cfg *config.Config, token string) error 
 		}
 	}
 
-	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.TagName)
+	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
 	_ = removeFile(backupPath)
 
-	// Hand off to the service manager. Does not persist CurrentVersion — see the
-	// function doc; the restarted binary reconciles its own version on startup.
 	return restart(newPath)
 }
 
-// CheckAndApplyWithRetry performs an update check and apply with up to 3 retry attempts.
-func CheckAndApplyWithRetry(ctx context.Context, cfg *config.Config, token string) error {
+// CheckAndApplyWithRetry performs an update check and apply with exponential
+// backoff retry. Backoff starts at 5 s and caps at 5 min.
+func CheckAndApplyWithRetry(ctx context.Context, cfg *config.Config) error {
 	const maxAttempts = 3
 	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
+			wait := backoffDuration(attempt - 1)
+			log.Printf("Update attempt %d/%d after %s backoff", attempt+1, maxAttempts, wait)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
-				log.Printf("Update attempt %d/%d after backoff", attempt+1, maxAttempts)
+			case <-time.After(wait):
 			}
 		}
 
-		err := CheckAndApply(ctx, cfg, token)
+		err := CheckAndApply(ctx, cfg)
 		if err == nil {
 			return nil
 		}
@@ -170,127 +153,61 @@ func CheckAndApplyWithRetry(ctx context.Context, cfg *config.Config, token strin
 	return fmt.Errorf("update failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
-func fetchLatestRelease(ctx context.Context, cfg *config.Config, token string) (*GitHubRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", cfg.GitHubOwner, cfg.GitHubRepo)
-	sanitizedUrl := sanitize.ForLog(url)
-	fmt.Printf("Fetching release from: %s\n", sanitizedUrl)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
+// backoffDuration returns the wait duration for retry attempt n (0-indexed).
+// Doubles from 5 s, capped at 5 min.
+func backoffDuration(n int) time.Duration {
+	d := 5 * time.Second * (1 << uint(n))
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
 	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API status %d", resp.StatusCode)
-	}
-
-	var rel GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, err
-	}
-
-	fmt.Printf("Fetched release: %s with %d assets\n", rel.TagName, len(rel.Assets))
-	return &rel, nil
+	return d
 }
 
-// selectAssetWithChecksum scans the release asset list for the platform binary,
-// its .sig file, and the SHA256SUMS file. Returns (assetURL, checksum, sigURL, err).
-// sigURL is "" when no matching .sig asset exists; the caller (CheckAndApply) passes
-// it to downloadAndVerify which fails closed on an empty sigURL.
-func selectAssetWithChecksum(rel *GitHubRelease, goos, goarch string) (assetURL, checksum, sigURL string, err error) {
-	var suffix string
-	switch goos {
-	case "windows":
-		suffix = ".exe"
-	case "linux", "darwin":
-		suffix = ""
-	default:
-		return "", "", "", fmt.Errorf("unsupported OS %s", goos)
+// fetchLatestRelease calls the get_latest_agent_release RPC and returns the
+// result, or nil when no release is configured yet. The platform and arch are
+// derived from runtime.GOOS / runtime.GOARCH.
+func fetchLatestRelease(ctx context.Context, cfg *config.Config) (*LatestRelease, error) {
+	client := postgrest.NewClient(
+		cfg.SupabaseURL+"/rest/v1",
+		"public",
+		map[string]string{
+			"Authorization": "Bearer " + cfg.GetAccessToken(),
+			"apikey":        cfg.SupabaseKey,
+		},
+	)
+
+	rawResult, err := rpcutil.CallWithTimeout(ctx, releaseRPCTimeout, func() (string, error) {
+		return client.Rpc("get_latest_agent_release", "", map[string]interface{}{
+			"p_platform": runtime.GOOS,
+			"p_arch":     runtime.GOARCH,
+		}), client.ClientError
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get_latest_agent_release RPC: %w", err)
 	}
 
-	pattern := fmt.Sprintf("sentinelgo-%s-%s%s", goos, goarch, suffix)
-	sigPattern := pattern + ".sig"
-
-	fmt.Printf("Looking for asset: %s\n", pattern)
-	fmt.Printf("Available assets: %v\n", func() (names []string) {
-		for _, asset := range rel.Assets {
-			names = append(names, asset.Name)
-		}
-		return
-	}())
-
-	for _, asset := range rel.Assets {
-		switch asset.Name {
-		case pattern:
-			assetURL = asset.URL
-		case sigPattern:
-			sigURL = asset.URL
-		case "SHA256SUMS", "sha256sums":
-			checksum = downloadAndParseChecksumFile(asset.URL)
-		}
+	var rows []LatestRelease
+	if err := json.Unmarshal([]byte(rawResult), &rows); err != nil {
+		return nil, fmt.Errorf("parse RPC response: %w", err)
 	}
-
-	if assetURL == "" {
-		return "", "", "", fmt.Errorf("no matching asset for %s-%s", goos, goarch)
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	return assetURL, checksum, sigURL, nil
+	return &rows[0], nil
 }
 
-// downloadAndParseChecksumFile downloads a SHA256SUMS file and returns the checksum
-// for the current platform's binary.
-func downloadAndParseChecksumFile(url string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return ""
-	}
-
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-
-	pattern := fmt.Sprintf("sentinelgo-%s-%s", runtime.GOOS, runtime.GOARCH)
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, pattern) {
-			parts := strings.Fields(line)
-			if len(parts) >= 1 {
-				return parts[0]
-			}
-		}
-	}
-
-	return ""
-}
-
-// CheckInternetConnectivity checks if internet connection is available via TCP dial.
-func CheckInternetConnectivity() bool {
+// CheckInternetConnectivity checks if the network is up by TCP-dialing the
+// Supabase host first, then falling back to well-known public endpoints.
+func CheckInternetConnectivity(supabaseURL string) bool {
 	endpoints := []string{
-		"api.github.com:443",
 		"google.com:443",
 		"cloudflare.com:443",
+	}
+
+	// Prefer checking the Supabase host directly.
+	if u, err := url.Parse(supabaseURL); err == nil && u.Host != "" {
+		host := u.Hostname()
+		endpoints = append([]string{host + ":443"}, endpoints...)
 	}
 
 	for _, endpoint := range endpoints {
@@ -308,42 +225,41 @@ func CheckInternetConnectivity() bool {
 	return false
 }
 
-// CheckInternetWithHTTP checks internet connectivity via HTTP request to GitHub.
-func CheckInternetWithHTTP() bool {
-	client := httpx.NewClient(10 * time.Second)
-
-	resp, err := client.Get("https://api.github.com")
+// CheckInternetWithHTTP verifies connectivity by issuing a GET to the Supabase
+// REST endpoint.
+func CheckInternetWithHTTP(supabaseURL string) bool {
+	resp, err := connectivityClient.Get(supabaseURL + "/rest/v1/")
 	if err != nil {
 		log.Printf("HTTP connectivity check failed: %v", err)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusOK {
-		log.Printf("HTTP connectivity confirmed to GitHub API")
+	// Any HTTP response (even 401/404) means the host is reachable.
+	if resp.StatusCode >= http.StatusOK {
+		log.Printf("HTTP connectivity confirmed to Supabase (%d)", resp.StatusCode)
 		return true
 	}
-
 	return false
 }
 
-// StartupUpdateCheck checks internet connectivity then attempts an update if connected.
-func StartupUpdateCheck(ctx context.Context, cfg *config.Config, token string) error {
+// StartupUpdateCheck checks connectivity then attempts an update if connected.
+func StartupUpdateCheck(ctx context.Context, cfg *config.Config) error {
 	log.Println("Performing startup update check...")
 
-	if !CheckInternetConnectivity() {
+	if !CheckInternetConnectivity(cfg.SupabaseURL) {
 		log.Println("No internet connection on startup, skipping update check")
 		return nil
 	}
 
-	if !CheckInternetWithHTTP() {
+	if !CheckInternetWithHTTP(cfg.SupabaseURL) {
 		log.Println("HTTP connectivity check failed on startup, skipping update check")
 		return nil
 	}
 
 	log.Println("Internet connection confirmed, checking for updates...")
 
-	if err := CheckAndApplyWithRetry(ctx, cfg, token); err != nil {
+	if err := CheckAndApplyWithRetry(ctx, cfg); err != nil {
 		log.Printf("Startup update check failed: %v", err)
 		return fmt.Errorf("startup update check failed: %w", err)
 	}
@@ -362,9 +278,16 @@ func AutoUpdateChecker(ctx context.Context, cfg *config.Config) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			log.Println("Checking for updates...")
+			// Jitter: spread checks across up to 5 minutes.
+			jitter := time.Duration(rand.Intn(5*60)) * time.Second
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(jitter):
+			}
 
-			if err := CheckAndApplyWithRetry(ctx, cfg, ""); err != nil {
+			log.Println("Checking for updates...")
+			if err := CheckAndApplyWithRetry(ctx, cfg); err != nil {
 				log.Printf("Auto-update failed: %v\n", err)
 			} else {
 				log.Println("Auto-update completed successfully")
