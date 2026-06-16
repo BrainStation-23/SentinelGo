@@ -166,10 +166,8 @@ func (s *ServicesStore) DeleteNotIn(agentID string, activeKeys []string) error {
 		args = append(args, k)
 	}
 
-	query := fmt.Sprintf(
-		"DELETE FROM services WHERE agent_id = ? AND (name || char(0) || source) NOT IN (%s)",
-		strings.Join(placeholders, ","),
-	)
+	const base = "DELETE FROM services WHERE agent_id = ? AND (name || char(0) || source) NOT IN ("
+	query := base + strings.Join(placeholders, ",") + ")"
 	_, err := s.db.Exec(query, args...)
 	return err
 }
