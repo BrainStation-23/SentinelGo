@@ -47,9 +47,38 @@ func loadConfigBestEffort() *config.Config {
 	return cfg
 }
 
+// redactSensitiveDebugFields returns a copy of known debug payloads with
+// sensitive fields redacted before printing.
+func redactSensitiveDebugFields(v any) any {
+	const redacted = "[REDACTED]"
+
+	switch t := v.(type) {
+	case *shared.SystemInfo:
+		if t == nil {
+			return v
+		}
+		c := *t
+		c.SecurityInfo.IdentityAccessControl.SSHPasswordAuth = redacted
+		c.SecurityInfo.NetworkExposureAccess.SSHPasswordAuthStatus = redacted
+		return &c
+	case debugDump:
+		c := t
+		if c.OSInfo != nil {
+			osCopy := *c.OSInfo
+			osCopy.SecurityInfo.IdentityAccessControl.SSHPasswordAuth = redacted
+			osCopy.SecurityInfo.NetworkExposureAccess.SSHPasswordAuthStatus = redacted
+			c.OSInfo = &osCopy
+		}
+		return c
+	default:
+		return v
+	}
+}
+
 // printJSON marshals v as indented JSON to stdout.
 func printJSON(v any) {
-	data, err := json.MarshalIndent(v, "", "  ")
+	safe := redactSensitiveDebugFields(v)
+	data, err := json.MarshalIndent(safe, "", "  ")
 	if err != nil {
 		log.Printf("Error marshaling to JSON: %v", err)
 		return
