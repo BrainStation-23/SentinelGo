@@ -7,11 +7,11 @@ import (
 
 // nonUserProfiles are entries under C:\Users that are not real interactive users.
 var nonUserProfiles = map[string]bool{
-	"Public":       true,
-	"Default":      true,
-	"Default User": true,
-	"All Users":    true,
-	"defaultuser0": true,
+	"Public":             true,
+	"Default":            true,
+	"Default User":       true,
+	"All Users":          true,
+	"defaultuser0":       true,
 	"WDAGUtilityAccount": true,
 }
 
