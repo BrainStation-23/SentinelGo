@@ -289,7 +289,11 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	}
 
 	id.SecureTokenStatus = "Unknown"
-	if currentUser := os.Getenv("USER"); currentUser != "" {
+	currentUser := os.Getenv("USER")
+	if currentUser == "" {
+		currentUser = os.Getenv("LOGNAME") // fallback when running as a launchd service
+	}
+	if currentUser != "" {
 		if out, err := shared.RunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
 			if strings.Contains(strings.ToLower(out), "is enabled") {
 				id.SecureTokenStatus = "Enabled"
@@ -299,14 +303,20 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		}
 	}
 
-	// Query macOS Software Update status
+	// Query macOS Software Update status.
+	// Only mark Non-Compliant when a security-labelled update is listed.
+	// "Recommended" and "restart" appear in ordinary updates and must not
+	// trigger a false Non-Compliant result.
 	id.PatchComplianceStatus = "Compliant"
 	id.RapidSecurityResponses = "Up to Date"
 	if out, err := shared.RunCommand("softwareupdate", "-l"); err == nil {
 		lower := strings.ToLower(out)
-		if strings.Contains(lower, "security") || strings.Contains(lower, "recommended") || strings.Contains(lower, "restart") {
+		if strings.Contains(lower, "security") {
 			id.PatchComplianceStatus = "Non-Compliant"
-			id.RapidSecurityResponses = "Out of Date"
+			// Only flag RSR as out of date for actual Rapid Security Responses.
+			if strings.Contains(lower, "rapid security") || strings.Contains(lower, "security response") {
+				id.RapidSecurityResponses = "Out of Date"
+			}
 		}
 	}
 

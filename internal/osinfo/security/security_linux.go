@@ -275,6 +275,79 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	return hw
 }
 
+// parseSSHConfigData parses the contents of an sshd_config file and returns the
+// PermitRootLogin, PasswordAuthentication, and PubkeyAuthentication settings.
+// Commented-out lines are ignored; unknown values leave the field as "Unknown".
+func parseSSHConfigData(data string) (rootLogin, passwordAuth, pubkeyAuth string) {
+	rootLogin = "Unknown"
+	passwordAuth = "Unknown"
+	pubkeyAuth = "Unknown"
+	for _, line := range strings.Split(data, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "#") {
+			continue
+		}
+		fields := strings.Fields(l)
+		if len(fields) < 2 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		val := strings.ToLower(fields[1])
+		switch key {
+		case "permitrootlogin":
+			switch val {
+			case "yes":
+				rootLogin = "Enabled"
+			case "no", "prohibit-password":
+				rootLogin = "Disabled"
+			}
+		case "passwordauthentication":
+			switch val {
+			case "yes":
+				passwordAuth = "Enabled"
+			case "no":
+				passwordAuth = "Disabled"
+			}
+		case "pubkeyauthentication":
+			switch val {
+			case "yes":
+				pubkeyAuth = "Enabled"
+			case "no":
+				pubkeyAuth = "Disabled"
+			}
+		}
+	}
+	return
+}
+
+// countAptSecurityUpdates counts pending security updates from apt-get -s upgrade output.
+// Only lines from a *-security pocket are counted (identified by the "-security" suffix).
+func countAptSecurityUpdates(output string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "Inst ") && strings.Contains(strings.ToLower(line), "-security") {
+			count++
+		}
+	}
+	return count
+}
+
+// countYumSecurityUpdates counts pending security updates from yum check-update --security output.
+// Package lines contain a "." (name.arch) or "-" (version separator).
+func countYumSecurityUpdates(output string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		l := strings.ToLower(strings.TrimSpace(line))
+		if l == "" || strings.HasPrefix(l, "loaded") || strings.HasPrefix(l, "last") {
+			continue
+		}
+		if strings.Contains(l, "security") && (strings.Contains(line, ".") || strings.Contains(line, "-")) {
+			count++
+		}
+	}
+	return count
+}
+
 func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 	id.SSHRootLogin = "Unknown"
@@ -282,33 +355,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	id.SudoPrivilege = "Unknown"
 
 	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			l := strings.TrimSpace(line)
-			if strings.HasPrefix(l, "#") {
-				continue
-			}
-			fields := strings.Fields(l)
-			if len(fields) >= 2 {
-				key := strings.ToLower(fields[0])
-				val := strings.ToLower(fields[1])
-				if key == "permitrootlogin" {
-					switch val {
-					case "yes":
-						id.SSHRootLogin = "Enabled"
-					case "no", "prohibit-password":
-						id.SSHRootLogin = "Disabled"
-					}
-				}
-				if key == "passwordauthentication" {
-					switch val {
-					case "yes":
-						id.SSHPasswordAuth = "Enabled"
-					case "no":
-						id.SSHPasswordAuth = "Disabled"
-					}
-				}
-			}
-		}
+		id.SSHRootLogin, id.SSHPasswordAuth, _ = parseSSHConfigData(string(data))
 	}
 
 	if data, err := os.ReadFile("/etc/group"); err == nil {
@@ -344,23 +391,14 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		}
 	} else if _, errApt := os.Stat("/usr/bin/apt-get"); errApt == nil {
 		if out, errRun := shared.RunCommand("apt-get", "-s", "upgrade"); errRun == nil {
-			count := 0
-			for _, line := range strings.Split(out, "\n") {
-				if strings.HasPrefix(line, "Inst ") && (strings.Contains(strings.ToLower(line), "-security") || strings.Contains(strings.ToLower(line), "security")) {
-					count++
-				}
-			}
-			id.PendingSecurityPatches = count
+			id.PendingSecurityPatches = countAptSecurityUpdates(out)
 		}
 	} else if _, errYum := os.Stat("/usr/bin/yum"); errYum == nil {
-		if out, errRun := shared.RunCommand("yum", "check-update", "--security"); errRun == nil {
-			count := 0
-			for _, line := range strings.Split(out, "\n") {
-				if strings.Contains(strings.ToLower(line), "security") && (strings.Contains(line, ".") || strings.Contains(line, "-")) {
-					count++
-				}
-			}
-			id.PendingSecurityPatches = count
+		// yum check-update exits 100 when updates are available, 0 when none.
+		// RunCommandOutput captures output for both exit codes.
+		out, exitCode, errRun := shared.RunCommandOutput("yum", "check-update", "--security")
+		if errRun == nil && (exitCode == 0 || exitCode == 100) {
+			id.PendingSecurityPatches = countYumSecurityUpdates(out)
 		}
 	}
 
@@ -379,25 +417,7 @@ func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAcce
 
 	info.SSHKeyAuthStatus = "Unknown"
 	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			l := strings.TrimSpace(line)
-			if strings.HasPrefix(l, "#") {
-				continue
-			}
-			fields := strings.Fields(l)
-			if len(fields) >= 2 {
-				key := strings.ToLower(fields[0])
-				val := strings.ToLower(fields[1])
-				if key == "pubkeyauthentication" {
-					switch val {
-					case "yes":
-						info.SSHKeyAuthStatus = "Enabled"
-					case "no":
-						info.SSHKeyAuthStatus = "Disabled"
-					}
-				}
-			}
-		}
+		_, _, info.SSHKeyAuthStatus = parseSSHConfigData(string(data))
 	}
 	return info
 }
@@ -506,8 +526,12 @@ func collectFirewallProfiles() []shared.FirewallProfile {
 		running := strings.TrimSpace(strings.ToLower(output)) == "running"
 		return []shared.FirewallProfile{{Name: "firewalld", Enabled: running}}
 	}
-	if _, err := shared.RunCommand("iptables", "-L", "-n"); err == nil {
-		return []shared.FirewallProfile{{Name: "iptables", Enabled: true}}
+	// iptables is a last resort: report enabled only when DROP/REJECT rules exist.
+	// An empty ACCEPT-all ruleset is not a meaningful firewall.
+	if output, err := shared.RunCommand("iptables", "-L", "-n"); err == nil {
+		lower := strings.ToLower(output)
+		hasRules := strings.Contains(lower, "drop") || strings.Contains(lower, "reject")
+		return []shared.FirewallProfile{{Name: "iptables", Enabled: hasRules}}
 	}
 	return nil
 }

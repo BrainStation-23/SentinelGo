@@ -146,7 +146,7 @@ func generatePostureSummary(
 			if strings.EqualFold(p.RealTimeProtectionState, "Enabled") {
 				realTimeProtected = true
 			}
-			if !strings.EqualFold(p.UpdateStatus, "Up to Date") {
+			if strings.EqualFold(p.UpdateStatus, "Out of Date") {
 				avUpdated = false
 			}
 			if strings.EqualFold(p.ServiceStatus, "Stopped") || strings.EqualFold(p.RealTimeProtectionState, "Disabled") {
