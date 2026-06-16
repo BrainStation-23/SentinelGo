@@ -164,7 +164,9 @@ func TestUsbStorageStateFromConfFile(t *testing.T) {
 			if _, err := f.WriteString(c.content); err != nil {
 				t.Fatal(err)
 			}
-			f.Close()
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
 			got := usbStorageStateFromConfFile(f.Name())
 			if got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
