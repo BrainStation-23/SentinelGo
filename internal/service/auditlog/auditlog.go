@@ -207,7 +207,10 @@ func (s *AuditLogService) SendBatchLogs(batchData map[string]any) error {
 // SendBatchLogsWithContext sends a batch of audit logs using the provided context.
 // It applies the standard enqueue retry policy: 5xx and network errors are retried
 // with exponential backoff (1 s initial, 5 min cap); 401 is propagated for the
-// caller's DoWithAuthRetry to handle; other 4xx errors are logged and dropped.
+// caller's DoWithAuthRetry to handle. A non-401 4xx (the backend rejected the payload)
+// is surfaced as a *rpcutil.RejectedError so the caller can isolate the offending entry
+// — e.g. the store uploader bisects the batch and dead-letters a single bad row instead
+// of dropping the whole batch.
 func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchData map[string]any) error {
 	if s.config.SupabaseURL == "" {
 		return fmt.Errorf("supabase URL not configured")
@@ -222,7 +225,7 @@ func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchDat
 
 	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 
-	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
+	return rpcutil.WithEnqueueRetryClassified(ctx, func(ctx context.Context) (int, error) {
 		req, err := s.newRequest(ctx, data)
 		if err != nil {
 			return 0, fmt.Errorf("create batch request: %w", err)

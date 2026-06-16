@@ -107,6 +107,12 @@ type Config struct {
 	// Log collection configuration
 	LogStorageEnabled bool     `json:"log_storage_enabled"` // Enable/disable log storage
 	LogFlushInterval  Duration `json:"log_flush_interval"`  // Log collection/upload interval (supports both "5m0s" and numeric formats)
+	// Audit-log local-queue retention. The queue holds logs until they upload to
+	// Supabase; these caps bound disk use during a prolonged upload outage. Pruning a
+	// not-yet-uploaded log loses it, so defaults are generous and a value of 0 disables
+	// that limit. Whichever limit is hit first prunes the oldest rows.
+	AuditLogMaxAgeDays int `json:"audit_log_max_age_days"` // Drop queued audit logs older than this many days (0 = no age limit)
+	AuditLogMaxRows    int `json:"audit_log_max_rows"`     // Cap on queued audit-log rows (0 = no row limit)
 	// Service configuration
 	SoftwareSyncEnabled    bool     `json:"software_sync_enabled"`    // Enable software synchronization
 	AuditLogsEnabled       bool     `json:"audit_logs_enabled"`       // Enable audit logs service
@@ -187,6 +193,24 @@ func (c *Config) GetLogFlushInterval() time.Duration {
 	return time.Duration(c.LogFlushInterval)
 }
 
+// GetAuditLogMaxAge returns the age cutoff for the local audit-log queue.
+// A zero duration means no age-based retention.
+func (c *Config) GetAuditLogMaxAge() time.Duration {
+	if c.AuditLogMaxAgeDays <= 0 {
+		return 0
+	}
+	return time.Duration(c.AuditLogMaxAgeDays) * 24 * time.Hour
+}
+
+// GetAuditLogMaxRows returns the row cap for the local audit-log queue.
+// Zero (or negative) means no row-count retention.
+func (c *Config) GetAuditLogMaxRows() int {
+	if c.AuditLogMaxRows < 0 {
+		return 0
+	}
+	return c.AuditLogMaxRows
+}
+
 // GetServicesUpdateInterval returns how often OS services are collected.
 func (c *Config) GetServicesUpdateInterval() time.Duration {
 	if time.Duration(c.ServicesUpdateInterval) == 0 {
@@ -219,6 +243,8 @@ func Load(path string) (*Config, error) {
 		// Log collection configuration
 		LogStorageEnabled:      true,                      // Enable log storage by default
 		LogFlushInterval:       Duration(5 * time.Minute), // Default to 5 minute collection interval
+		AuditLogMaxAgeDays:     30,                        // Keep up to 30 days of un-uploaded audit logs
+		AuditLogMaxRows:        100000,                    // Cap the local audit-log queue at 100k rows
 		SoftwareSyncEnabled:    true,                      // Enable software sync by default
 		AuditLogsEnabled:       true,                      // Enable audit logs by default
 		ServicesSyncEnabled:    true,                      // Enable services collection by default

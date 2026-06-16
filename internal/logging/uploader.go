@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
 	auditlogsvc "sentinelgo/internal/service/auditlog"
+	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/store"
 )
 
@@ -185,9 +187,11 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 }
 
 // UploadFromStore reads pending logs from the local SQLite queue, uploads them to
-// Supabase in batches, and deletes each batch from the store on success.
-// Rows that fail to upload are left in the store and retried on the next cycle.
-// Returns the total number of logs successfully uploaded.
+// Supabase in batches of at most maxBatchSize, and deletes each batch from the store
+// once it is resolved. A row the backend permanently rejects (4xx) is isolated by
+// bisection and moved to the dead-letter table so it cannot drop the rest of its batch.
+// Rows that fail with a transient error are left in the store and retried next cycle.
+// Returns the total number of logs successfully uploaded (dead-lettered rows excluded).
 func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditLogStore) (int, error) {
 	const chunkSize = 500
 
@@ -212,38 +216,107 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 			break
 		}
 
-		logs := make([]models.AuditLog, len(rows))
-		ids := make([]int64, len(rows))
-		for i, r := range rows {
-			logs[i] = r.Log
-			ids[i] = r.ID
+		uploaded, stop, chunkErr := u.uploadChunk(ctx, auditStore, rows)
+		totalUploaded += uploaded
+		if chunkErr != nil {
+			lastErr = chunkErr
 		}
-
-		if err := u.safeUploadBatch(ctx, logs); err != nil {
-			lastErr = err
-			u.stats.addErrors(int64(len(logs)))
-			log.Printf("[uploader] store batch upload failed (%d logs): %v", len(logs), err)
-			// Leave rows in DB; they will be retried next cycle.
+		if stop {
 			break
 		}
-
-		// These rows were uploaded successfully; count them regardless of the
-		// delete outcome.
-		totalUploaded += len(logs)
-		u.stats.addUploaded(int64(len(logs)))
-
-		if err := auditStore.DeleteByIDs(ids); err != nil {
-			// CRITICAL: do NOT continue the loop on delete failure. The same rows
-			// are still pending, so the next GetPending would return them again and
-			// we would re-upload the identical batch in a tight loop for as long as
-			// the DB error persists. Stop the cycle; the next scheduled cycle retries.
-			lastErr = fmt.Errorf("delete uploaded logs from store: %w", err)
-			log.Printf("[uploader] %v — stopping cycle to avoid re-uploading the same rows", lastErr)
-			break
-		}
-
-		log.Printf("[uploader] uploaded and removed %d logs from store", len(logs))
 	}
 
 	return totalUploaded, lastErr
+}
+
+// uploadChunk sends one GetPending chunk in batches of at most maxBatchSize, deleting the
+// resolved rows of each batch as it goes. It returns the number of rows uploaded, whether
+// the cycle should stop (a transient upload error or a delete failure leaves rows queued
+// for the next cycle), and the error to surface.
+func (u *Uploader) uploadChunk(ctx context.Context, auditStore *store.AuditLogStore, rows []store.PendingRow) (uploaded int, stop bool, err error) {
+	for start := 0; start < len(rows); start += maxBatchSize {
+		end := start + maxBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+
+		n, resolved, upErr := u.uploadOrIsolate(ctx, auditStore, rows[start:end])
+		uploaded += n
+
+		// Remove resolved rows (uploaded or dead-lettered) first so a partial failure
+		// does not re-process what already succeeded.
+		if len(resolved) > 0 {
+			if delErr := auditStore.DeleteByIDs(resolved); delErr != nil {
+				// Do NOT continue on delete failure: the same rows are still pending and
+				// would be re-processed in a tight loop. Stop; the next cycle retries.
+				delErr = fmt.Errorf("delete resolved logs from store: %w", delErr)
+				log.Printf("[uploader] %v — stopping cycle to avoid re-processing the same rows", delErr)
+				return uploaded, true, delErr
+			}
+		}
+
+		if upErr != nil {
+			// Transient (5xx/network/ctx): leave the remaining rows queued.
+			log.Printf("[uploader] store batch upload failed: %v", upErr)
+			return uploaded, true, upErr
+		}
+	}
+	return uploaded, false, nil
+}
+
+// uploadOrIsolate uploads a batch of pending rows. It returns the number of rows that
+// uploaded successfully, the IDs of all rows that are now resolved (uploaded OR moved to
+// the dead-letter table) and should be removed from the pending queue, and a non-nil
+// error only for transient failures (the rows should stay queued for the next cycle).
+//
+// On a backend rejection (*rpcutil.RejectedError) the batch is bisected to isolate the
+// offending row(s): a single rejected row is dead-lettered, larger batches are split and
+// retried so good rows are not lost alongside it.
+func (u *Uploader) uploadOrIsolate(ctx context.Context, auditStore *store.AuditLogStore, rows []store.PendingRow) (uploaded int, resolved []int64, err error) {
+	if len(rows) == 0 {
+		return 0, nil, nil
+	}
+
+	logs := make([]models.AuditLog, len(rows))
+	for i, r := range rows {
+		logs[i] = r.Log
+	}
+
+	uploadErr := u.safeUploadBatch(ctx, logs)
+	if uploadErr == nil {
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r.ID
+		}
+		u.stats.addUploaded(int64(len(rows)))
+		return len(rows), ids, nil
+	}
+
+	var rej *rpcutil.RejectedError
+	if !errors.As(uploadErr, &rej) {
+		// Transient error: leave these rows queued and surface it to the caller.
+		u.stats.addErrors(int64(len(rows)))
+		return 0, nil, uploadErr
+	}
+
+	// A single rejected row is the poison — quarantine it so it stops blocking the queue.
+	if len(rows) == 1 {
+		log.Printf("[uploader] dead-lettering rejected audit log (HTTP %d): %v", rej.Status, rej.Err)
+		if dlErr := auditStore.DeadLetter(logs, rej.Error()); dlErr != nil {
+			// Could not quarantine it; leave it queued rather than silently lose it.
+			u.stats.addErrors(1)
+			return 0, nil, fmt.Errorf("dead-letter rejected log: %w", dlErr)
+		}
+		u.stats.addErrors(1)
+		return 0, []int64{rows[0].ID}, nil
+	}
+
+	// Bisect to isolate the offending row(s) within each half.
+	mid := len(rows) / 2
+	leftUp, leftIDs, leftErr := u.uploadOrIsolate(ctx, auditStore, rows[:mid])
+	if leftErr != nil {
+		return leftUp, leftIDs, leftErr
+	}
+	rightUp, rightIDs, rightErr := u.uploadOrIsolate(ctx, auditStore, rows[mid:])
+	return leftUp + rightUp, append(leftIDs, rightIDs...), rightErr
 }

@@ -20,6 +20,11 @@ import (
 const (
 	defaultMaxEntriesPerCycle = 1000
 	realtimeChanSize          = 256
+
+	// maintenanceInterval is how often the local audit-log queue is pruned to its
+	// retention limits and the SQLite file is compacted. Kept as a constant to avoid
+	// widening the config surface; the retention thresholds themselves are configurable.
+	maintenanceInterval = 1 * time.Hour
 )
 
 // LoggingIntegration orchestrates the full log collection pipeline:
@@ -135,6 +140,9 @@ func (li *LoggingIntegration) Start(ctx context.Context) error {
 	li.wg.Add(1)
 	go li.subscriptionLoop(ctx)
 
+	li.wg.Add(1)
+	go li.maintenanceLoop(ctx)
+
 	log.Printf("[logging] started (flush_interval=%s, sources=%v)",
 		li.cfg.GetLogFlushInterval(), li.collector.Sources())
 	return nil
@@ -219,7 +227,14 @@ func (li *LoggingIntegration) collectionLoop(ctx context.Context) {
 				log.Printf("[logging] collection cycle error: %v", err)
 			}
 
-			if n, err := li.uploader.UploadFromStore(ctx, li.store); err != nil {
+			// Bound the upload to one flush interval so a sustained 5xx/network outage
+			// (which retries with backoff until its context is cancelled) cannot
+			// monopolise this goroutine and starve collection. Remaining rows are
+			// retried next cycle and the retention cap holds the line meanwhile.
+			uploadCtx, cancel := context.WithTimeout(ctx, interval)
+			n, err := li.uploader.UploadFromStore(uploadCtx, li.store)
+			cancel()
+			if err != nil {
 				log.Printf("[logging] upload error (uploaded %d): %v", n, err)
 			} else if n > 0 {
 				if err := li.checkpoint.Save(); err != nil {
@@ -263,6 +278,54 @@ func (li *LoggingIntegration) subscriptionLoop(ctx context.Context) {
 				li.stats.addStored(int64(len(parsed)))
 			}
 		}
+	}
+}
+
+// maintenanceLoop periodically enforces audit-log retention and reclaims disk space.
+// It runs independently of the upload cycle so a stuck upload cannot block compaction.
+func (li *LoggingIntegration) maintenanceLoop(ctx context.Context) {
+	defer li.wg.Done()
+
+	ticker := time.NewTicker(maintenanceInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			li.runMaintenance()
+		}
+	}
+}
+
+// runMaintenance prunes the local queue to its retention limits, then compacts the
+// database. Pruning is a last-resort overflow valve — it drops un-uploaded audit events,
+// so dropped counts are logged at WARNING. It runs on its own (slower) schedule, after
+// logs have had upload cycles to drain, so a log is only dropped once it could not be sent.
+func (li *LoggingIntegration) runMaintenance() {
+	maxAge := li.cfg.GetAuditLogMaxAge()
+	maxRows := li.cfg.GetAuditLogMaxRows()
+
+	if dropped, err := li.store.PruneByAge(maxAge); err != nil {
+		log.Printf("[logging] WARNING: audit-log prune-by-age failed: %v", err)
+	} else if dropped > 0 {
+		log.Printf("[logging] WARNING: pruned %d un-uploaded audit logs older than %s (retention)", dropped, maxAge)
+	}
+
+	if dropped, err := li.store.PruneToMaxRows(maxRows); err != nil {
+		log.Printf("[logging] WARNING: audit-log prune-to-max-rows failed: %v", err)
+	} else if dropped > 0 {
+		log.Printf("[logging] WARNING: pruned %d un-uploaded audit logs over the %d-row cap (retention)", dropped, maxRows)
+	}
+
+	// Keep the dead-letter quarantine bounded by the same age limit.
+	if _, err := li.store.PruneDeadLetterByAge(maxAge); err != nil {
+		log.Printf("[logging] WARNING: dead-letter prune failed: %v", err)
+	}
+
+	if err := li.store.Maintain(); err != nil {
+		log.Printf("[logging] WARNING: audit-log store maintenance failed: %v", err)
 	}
 }
 

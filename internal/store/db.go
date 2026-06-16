@@ -11,8 +11,14 @@ import (
 // MaxOpenConns is set to 1 because SQLite only allows one concurrent writer; using a larger
 // pool causes spurious SQLITE_BUSY errors even within the same process.
 // All entity stores in this package should use this function instead of sql.Open directly.
+//
+// auto_vacuum=incremental lets freed pages be returned to the OS via PRAGMA
+// incremental_vacuum, so a store that spikes then drains (e.g. the audit-log queue
+// after an upload backlog) can shrink its file instead of holding the high-water mark
+// forever. The pragma only takes effect when a new database is created; existing files
+// keep auto_vacuum=NONE until a full VACUUM rewrites them (see AuditLogStore.Maintain).
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=auto_vacuum(incremental)")
 	if err != nil {
 		return nil, err
 	}

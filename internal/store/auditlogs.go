@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"sentinelgo/internal/models"
 )
@@ -31,8 +32,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_hash  ON audit_log_queue(log_has
 CREATE INDEX        IF NOT EXISTS idx_audit_log_stored ON audit_log_queue(stored_at);
 `
 
+// auditLogSchemaV2 adds a dead-letter table for rows the backend permanently rejects
+// (a 4xx on enqueue). Quarantining the single offending row keeps it from dropping the
+// rest of its upload batch, and keeps the rejected event inspectable instead of silently
+// vanishing. The same retention prune applies so it cannot grow unbounded either.
+const auditLogSchemaV2 = `
+CREATE TABLE IF NOT EXISTS audit_log_deadletter (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_hash      TEXT    NOT NULL,
+    device_id     TEXT    NOT NULL,
+    os_type       TEXT    NOT NULL,
+    agent_version TEXT    NOT NULL,
+    event_type    TEXT    NOT NULL,
+    log_category  TEXT    NOT NULL,
+    source        TEXT    NOT NULL,
+    severity      TEXT    NOT NULL,
+    timestamp     TEXT    NOT NULL,
+    event_data    TEXT    NOT NULL,
+    reason        TEXT    NOT NULL,
+    dropped_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_audit_deadletter_dropped ON audit_log_deadletter(dropped_at);
+`
+
 var auditLogMigrations = []Migration{
 	{Version: 1, SQL: auditLogSchemaV1},
+	{Version: 2, SQL: auditLogSchemaV2},
 }
 
 // AuditLogStore is a SQLite-backed queue for pending audit logs.
@@ -187,6 +212,161 @@ func (s *AuditLogStore) DeleteByIDs(ids []int64) error {
 		return fmt.Errorf("delete uploaded logs: %w", err)
 	}
 
+	return nil
+}
+
+// Count returns the number of rows currently in the pending queue.
+func (s *AuditLogStore) Count() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM audit_log_queue`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count pending logs: %w", err)
+	}
+	return n, nil
+}
+
+// DeadLetterCount returns the number of rows currently quarantined in the dead-letter table.
+func (s *AuditLogStore) DeadLetterCount() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM audit_log_deadletter`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count dead-letter logs: %w", err)
+	}
+	return n, nil
+}
+
+// PruneByAge deletes queued rows older than maxAge and returns the number removed.
+// A non-positive maxAge disables age-based pruning (no-op). Pruning a not-yet-uploaded
+// row loses that audit event, so callers should run this only after an upload attempt.
+func (s *AuditLogStore) PruneByAge(maxAge time.Duration) (int64, error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+	// stored_at and datetime('now', …) are both fixed-width UTC strings, so the textual
+	// comparison is chronologically correct. Use seconds to honour sub-day durations.
+	modifier := fmt.Sprintf("-%d seconds", int64(maxAge.Seconds()))
+	res, err := s.db.Exec(`DELETE FROM audit_log_queue WHERE stored_at < datetime('now', ?)`, modifier)
+	if err != nil {
+		return 0, fmt.Errorf("prune audit logs by age: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneToMaxRows keeps the newest max rows (by id, which is insertion order) and deletes
+// the rest, returning the number removed. A non-positive max disables the cap (no-op),
+// and it is a no-op when the queue is already at or under max.
+func (s *AuditLogStore) PruneToMaxRows(max int) (int64, error) {
+	if max <= 0 {
+		return 0, nil
+	}
+	// The subquery returns the id of the max-th newest row; everything older is deleted.
+	// With fewer than max rows it yields NULL, so `id < NULL` matches nothing.
+	res, err := s.db.Exec(`
+		DELETE FROM audit_log_queue
+		WHERE id < (SELECT id FROM audit_log_queue ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+		max-1)
+	if err != nil {
+		return 0, fmt.Errorf("prune audit logs to max rows: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// DeadLetter records logs the backend permanently rejected into the dead-letter table.
+// The caller is responsible for removing them from the pending queue (via DeleteByIDs).
+func (s *AuditLogStore) DeadLetter(logs []models.AuditLog, reason string) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin dead-letter tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO audit_log_deadletter
+			(log_hash, device_id, os_type, agent_version, event_type, log_category, source, severity, timestamp, event_data, reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare dead-letter insert: %w", err)
+	}
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			log.Printf("AuditLogStore: close dead-letter stmt: %v", err)
+		}
+	}()
+
+	for i := range logs {
+		edJSON, err := normalizeEventData(logs[i].EventData)
+		if err != nil {
+			continue
+		}
+		if _, err := stmt.Exec(
+			auditLogHash(&logs[i]),
+			logs[i].DeviceID,
+			logs[i].OSType,
+			logs[i].AgentVersion,
+			logs[i].EventType,
+			logs[i].LogCategory,
+			logs[i].Source,
+			logs[i].Severity,
+			logs[i].Timestamp,
+			edJSON,
+			reason,
+		); err != nil {
+			return fmt.Errorf("insert dead-letter row: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// PruneDeadLetterByAge deletes dead-lettered rows older than maxAge so the quarantine
+// table cannot grow unbounded either. Returns the number removed; non-positive maxAge
+// is a no-op.
+func (s *AuditLogStore) PruneDeadLetterByAge(maxAge time.Duration) (int64, error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+	modifier := fmt.Sprintf("-%d seconds", int64(maxAge.Seconds()))
+	res, err := s.db.Exec(`DELETE FROM audit_log_deadletter WHERE dropped_at < datetime('now', ?)`, modifier)
+	if err != nil {
+		return 0, fmt.Errorf("prune dead-letter by age: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// Maintain reclaims disk space: it truncates the WAL sidecar and returns free pages to
+// the OS. A legacy database created before auto_vacuum was enabled (auto_vacuum reported
+// as 0/NONE) is converted with a one-time full VACUUM — which also reclaims the existing
+// bloat; subsequent calls use the cheap incremental path. VACUUM takes an exclusive lock
+// and cannot run in a transaction, so this must be called off the hot path (it relies on
+// the store's single-connection pool — see Open).
+func (s *AuditLogStore) Maintain() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+
+	var autoVacuum int
+	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&autoVacuum); err != nil {
+		return fmt.Errorf("read auto_vacuum: %w", err)
+	}
+
+	if autoVacuum == 0 {
+		// Legacy file: VACUUM rewrites it in incremental-vacuum mode (the pragma set in
+		// the DSN takes effect on this rewrite) and reclaims accumulated free pages.
+		if _, err := s.db.Exec(`VACUUM`); err != nil {
+			return fmt.Errorf("vacuum: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := s.db.Exec(`PRAGMA incremental_vacuum`); err != nil {
+		return fmt.Errorf("incremental vacuum: %w", err)
+	}
 	return nil
 }
 
