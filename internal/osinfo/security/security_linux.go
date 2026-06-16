@@ -35,7 +35,7 @@ func collectSecurity() shared.SecurityInfo {
 			break
 		}
 	}
-	
+
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
 	secureBoot := collectSecureBoot()
@@ -43,7 +43,7 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
-	
+
 	var avProtection shared.AntivirusProtectionInfo
 	for _, av := range avProducts {
 		details := shared.AntivirusDetails{
@@ -61,13 +61,13 @@ func collectSecurity() shared.SecurityInfo {
 			details.RealTimeProtectionState = "Disabled"
 			details.ServiceStatus = "Stopped"
 		}
-		
+
 		if strings.Contains(strings.ToLower(av.Name), "clamav") {
 			var scan shared.SecurityScanInfo
 			scan.LastScanTime = "Unknown"
 			scan.ScanType = "Scheduled/On-Demand"
 			scan.ScanResult = "Clean"
-			
+
 			if logData, err := os.ReadFile("/var/log/clamav/clamav.log"); err == nil {
 				lines := strings.Split(string(logData), "\n")
 				for i := len(lines) - 1; i >= 0; i-- {
@@ -115,7 +115,7 @@ func collectSecurity() shared.SecurityInfo {
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
 	netExposure := collectNetworkExposure(ports)
-	
+
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
 	return shared.SecurityInfo{
@@ -127,15 +127,15 @@ func collectSecurity() shared.SecurityInfo {
 		ListeningPorts:        ports,
 		USBMassStorageEnabled: usb,
 
-		FirewallSecurity:       fwSec,
-		AntivirusProtection:    avProtection,
-		EDRXDRDetection:        edrXdr,
-		KernelHardening:        kernelHard,
-		DeviceEncryption:       devEnc,
-		HardwareSecurity:       hwSec,
-		IdentityAccessControl:  idAccess,
-		NetworkExposureAccess:  netExposure,
-		PostureSummary:         posture,
+		FirewallSecurity:      fwSec,
+		AntivirusProtection:   avProtection,
+		EDRXDRDetection:       edrXdr,
+		KernelHardening:       kernelHard,
+		DeviceEncryption:      devEnc,
+		HardwareSecurity:      hwSec,
+		IdentityAccessControl: idAccess,
+		NetworkExposureAccess: netExposure,
+		PostureSummary:        posture,
 	}
 }
 
@@ -208,17 +208,17 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 				startup = "Auto"
 			}
 		}
-		
+
 		if !installed && runningProcs[e.proc] {
 			installed = true
 			status = "Running"
 			startup = "Manual"
 		}
-		
+
 		if !installed {
 			continue
 		}
-		
+
 		agent := shared.EDRXDRAgentDetails{
 			AgentName:              e.name,
 			Vendor:                 e.vendor,
@@ -231,7 +231,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 			Stopped:                status == "Stopped",
 			Disabled:               startup == "Disabled",
 		}
-		
+
 		if status == "Running" {
 			agent.CloudConnected = true
 			agent.Healthy = true
@@ -241,7 +241,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 			agent.CloudDisconnected = true
 			agent.Offline = true
 		}
-		
+
 		info.Agents = append(info.Agents, agent)
 	}
 	return info
@@ -275,7 +275,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	if _, err := os.Stat("/dev/tpm0"); err == nil {
 		hw.TPMStatus = "Enabled"
 		hw.TPMVersion = "1.2"
-		
+
 		if data, err := os.ReadFile("/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
 			hw.TPMVersion = strings.TrimSpace(string(data)) + ".0"
 		} else if data, err = os.ReadFile("/sys/class/tpm/tpm0/device/description"); err == nil {
@@ -345,7 +345,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	// Query Linux Pending Security Updates
 	id.PatchComplianceStatus = "Compliant"
 	id.PendingSecurityPatches = 0
-	
+
 	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
 		if out, errRun := shared.RunCommand("/usr/lib/update-notifier/apt-check"); errRun == nil {
 			parts := strings.Split(strings.TrimSpace(out), ";")
@@ -377,7 +377,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			id.PendingSecurityPatches = count
 		}
 	}
-	
+
 	if id.PendingSecurityPatches > 0 {
 		id.PatchComplianceStatus = "Non-Compliant"
 	}
@@ -387,11 +387,11 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 
 func collectNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
 	info := analyzeNetworkExposure(ports)
-	
+
 	id := collectIdentityAccessControl()
 	info.SSHRootLoginStatus = id.SSHRootLogin
 	info.SSHPasswordAuthStatus = id.SSHPasswordAuth
-	
+
 	info.SSHKeyAuthStatus = "Unknown"
 	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {

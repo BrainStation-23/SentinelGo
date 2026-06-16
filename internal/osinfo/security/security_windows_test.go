@@ -278,7 +278,7 @@ func TestAnalyzeNetworkExposure(t *testing.T) {
 	if len(info.ActiveNetworkServices) != 4 {
 		t.Errorf("expected 4 active network services, got %d", len(info.ActiveNetworkServices))
 	}
-	
+
 	// Remote access detection: sshd (22), termservice (3389), vncserver (5900)
 	if len(info.RemoteAccessServices) != 3 {
 		t.Errorf("expected 3 remote access services, got %d", len(info.RemoteAccessServices))
@@ -336,7 +336,7 @@ func TestSimulateLinuxAndMacOS(t *testing.T) {
 		fw := collectFirewallSecurity([]shared.FirewallProfile{
 			{Name: "ufw", Enabled: true},
 		})
-		
+
 		av := shared.AntivirusProtectionInfo{
 			Products: []shared.AntivirusDetails{
 				{
@@ -399,7 +399,7 @@ func TestSimulateLinuxAndMacOS(t *testing.T) {
 		}
 
 		summary := generatePostureSummary(fw, av, edr, enc, hw, id, net)
-		
+
 		info := shared.SecurityInfo{
 			FirewallSecurity:      fw,
 			AntivirusProtection:   av,

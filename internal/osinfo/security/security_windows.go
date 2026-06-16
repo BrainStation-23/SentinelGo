@@ -17,7 +17,7 @@ func collectSecurity() shared.SecurityInfo {
 			break
 		}
 	}
-	
+
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
 	secureBoot := collectSecureBoot()
@@ -25,7 +25,7 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
-	
+
 	var avProtection shared.AntivirusProtectionInfo
 	for _, av := range avProducts {
 		details := shared.AntivirusDetails{
@@ -51,7 +51,7 @@ func collectSecurity() shared.SecurityInfo {
 		avProtection.Products = append(avProtection.Products, details)
 	}
 	avProtection.WindowsDefenderDetails = collectWindowsDefenderDetails()
-	
+
 	edrXdr := collectEDRInfo()
 	kernelHard := shared.KernelHardeningInfo{
 		MemoryIntegrityEnabled: coreIsolation.MemoryIntegrityEnabled,
@@ -62,7 +62,7 @@ func collectSecurity() shared.SecurityInfo {
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
 	netExposure := analyzeNetworkExposure(ports)
-	
+
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
 	return shared.SecurityInfo{
@@ -74,15 +74,15 @@ func collectSecurity() shared.SecurityInfo {
 		ListeningPorts:        ports,
 		USBMassStorageEnabled: usb,
 
-		FirewallSecurity:       fwSec,
-		AntivirusProtection:    avProtection,
-		EDRXDRDetection:        edrXdr,
-		KernelHardening:        kernelHard,
-		DeviceEncryption:       devEnc,
-		HardwareSecurity:       hwSec,
-		IdentityAccessControl:  idAccess,
-		NetworkExposureAccess:  netExposure,
-		PostureSummary:         posture,
+		FirewallSecurity:      fwSec,
+		AntivirusProtection:   avProtection,
+		EDRXDRDetection:       edrXdr,
+		KernelHardening:       kernelHard,
+		DeviceEncryption:      devEnc,
+		HardwareSecurity:      hwSec,
+		IdentityAccessControl: idAccess,
+		NetworkExposureAccess: netExposure,
+		PostureSummary:        posture,
 	}
 }
 
@@ -119,26 +119,26 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) == nil {
 		rtEnabled, _ := raw["RealTimeProtectionEnabled"].(bool)
 		tamper, _ := raw["IsTamperProtected"].(bool)
-		
+
 		cfaVal := raw["ControlledFolderAccessEnabled"]
 		if cfaBool, ok := cfaVal.(bool); ok {
 			details.ControlledFolderAccess = cfaBool
 		} else if cfaNum, ok := cfaVal.(float64); ok {
 			details.ControlledFolderAccess = cfaNum != 0
 		}
-		
+
 		details.RealTimeProtectionEnabled = rtEnabled
 		details.TamperProtectionEnabled = tamper
-		
+
 		sigTime, _ := raw["AntivirusSignatureLastUpdated"].(string)
 		details.SignatureLastUpdated = sigTime
-		
+
 		details.SmartScreenEnabled = queryRegistryBool(
 			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer`,
 			"SmartScreenEnabled") || queryRegistryBool(
 			`HKLM\SOFTWARE\Policies\Microsoft\Windows\System`,
 			"EnableSmartScreen")
-		
+
 		asrOutput, asrErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules`)
 		if asrErr == nil {
 			lines := strings.Split(asrOutput, "\n")
@@ -150,15 +150,15 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 			}
 			details.ASRRulesCount = count
 		}
-		
+
 		var scan shared.SecurityScanInfo
 		scan.LastScanTime = "Unknown"
 		scan.ScanType = "Unknown"
 		scan.ScanResult = "Clean"
-		
+
 		lastQuick, _ := raw["LastQuickScanTime"].(string)
 		lastFull, _ := raw["LastFullScanTime"].(string)
-		
+
 		if lastFull != "" && !strings.Contains(lastFull, "1601") {
 			scan.LastScanTime = lastFull
 			scan.ScanType = "Full Scan"
@@ -166,7 +166,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 			scan.LastScanTime = lastQuick
 			scan.ScanType = "Quick Scan"
 		}
-		
+
 		threatsOutput, threatsErr := shared.RunCommand("powershell", "-NoProfile", "-Command",
 			"Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreatDetection | Select-Object ThreatName,SeverityID,InitialDetectionTime,ActionID | ConvertTo-Json -Compress")
 		if threatsErr == nil && strings.TrimSpace(threatsOutput) != "" {
@@ -191,7 +191,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 					actionVal = act
 				}
 				detTime, _ := rt["InitialDetectionTime"].(string)
-				
+
 				severity := "Unknown"
 				switch int(severityVal) {
 				case 1:
@@ -203,7 +203,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 				case 5:
 					severity = "Critical"
 				}
-				
+
 				action := "Detected"
 				switch int(actionVal) {
 				case 1:
@@ -215,7 +215,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 				case 6:
 					action = "Allowed"
 				}
-				
+
 				scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
 					ThreatName:    name,
 					Severity:      severity,
@@ -243,7 +243,7 @@ func queryServiceStatus(svcName string) (exists bool, status string, startup str
 	} else if strings.Contains(out, "STOPPED") {
 		status = "Stopped"
 	}
-	
+
 	qcOut, qcErr := shared.RunCommand("sc.exe", "qc", svcName)
 	startup = "Auto"
 	if qcErr == nil {
@@ -286,7 +286,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		if !exists {
 			continue
 		}
-		
+
 		agent := shared.EDRXDRAgentDetails{
 			AgentName:              e.name,
 			Vendor:                 e.vendor,
@@ -299,7 +299,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 			Stopped:                status == "Stopped",
 			Disabled:               startup == "Disabled",
 		}
-		
+
 		if status != "Running" {
 			agent.HealthStatus = "Unhealthy"
 			agent.ConnectivityStatus = "Disconnected"
@@ -314,7 +314,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 			agent.Disabled = true
 			agent.HealthStatus = "Unhealthy"
 		}
-		
+
 		if e.svc == "CSFalconService" {
 			vOut, vErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\CrowdStrike\Falcon`, "/v", "version")
 			if vErr == nil {
@@ -324,7 +324,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		if agent.AgentVersion == "" {
 			agent.AgentVersion = "1.0.0"
 		}
-		
+
 		info.Agents = append(info.Agents, agent)
 	}
 	return info
@@ -372,7 +372,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 		} else if strings.Contains(lower, "protection off") {
 			enc.ProtectionStatus = "Disabled"
 		}
-		
+
 		fveOut, fveErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\FVE`)
 		if fveErr == nil {
 			if strings.Contains(fveOut, "RequireBackupToADDS") || strings.Contains(fveOut, "BackupToAAD") {
@@ -386,7 +386,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	var hw shared.HardwareSecurityInfo
 	hw.SecureBootStatus = collectSecureBoot()
-	
+
 	tpmOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
 		"Get-CimInstance -Namespace root/CIMV2/Security/MicrosoftTpm -ClassName Win32_Tpm | Select-Object IsEnabled_InitialValue,SpecVersion | ConvertTo-Json -Compress")
 	hw.TPMStatus = "Unsupported"
@@ -411,25 +411,25 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 
 func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
-	
+
 	helloEnabled := queryRegistryBool(`HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "Enabled") ||
 		queryRegistryBool(`HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "PassportForWork")
 	id.WindowsHelloStatus = "Disabled"
 	if helloEnabled {
 		id.WindowsHelloStatus = "Enabled"
 	}
-	
+
 	core := collectCoreIsolation()
 	id.CredentialGuardStatus = "Disabled"
 	if core.CredentialGuardEnabled {
 		id.CredentialGuardStatus = "Enabled"
 	}
-	
+
 	id.DeviceGuardStatus = "Disabled"
 	if core.VBSEnabled {
 		id.DeviceGuardStatus = "Enabled"
 	}
-	
+
 	uacVal := parseRegDWORD(
 		queryRegistry(`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`, "EnableLUA"),
 		"EnableLUA")
@@ -437,11 +437,11 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	if uacVal == 1 {
 		id.UACStatus = "Enabled"
 	}
-	
+
 	// Query Windows missing Security and Critical updates via COM
 	updOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
 		`$Session = New-Object -ComObject Microsoft.Update.Session; $Searcher = $Session.CreateUpdateSearcher(); $Searcher.Search("IsInstalled=0 and Type='Software'").Updates | Where-Object { $_.Categories | Where-Object { $_.Name -eq 'Security Updates' -or $_.Name -eq 'Critical Updates' } } | Measure-Object | Select-Object -ExpandProperty Count`)
-	
+
 	id.PatchComplianceStatus = "Compliant"
 	id.CriticalKBsMissing = 0
 	if err == nil {
@@ -453,7 +453,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			}
 		}
 	}
-	
+
 	return id
 }
 
