@@ -206,22 +206,54 @@ func (mi *MainIntegration) buildServicesTask() *scheduler.Task {
 		Name:     "services-collect",
 		Interval: mi.cfg.GetServicesUpdateInterval(),
 		Enabled:  mi.cfg.ServicesSyncEnabled,
-		Handler: func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
-			if !cfg.ServicesSyncEnabled {
-				return nil
-			}
-			svc := servicessvc.NewServicesService()
-			list := svc.GetServiceList()
-			if len(list) == 0 {
-				log.Printf("services-collect: no services found this cycle; skipping store")
-				return nil
-			}
-			log.Printf("services-collect: storing %s services", sanitize.ForLog(fmt.Sprintf("%d", len(list))))
-			if err := svcStore.Upsert(cfg.DeviceID, list); err != nil {
-				return fmt.Errorf("services-collect: store upsert: %w", err)
-			}
+		Handler:  mi.servicesCollectHandler(svcStore),
+	}
+}
+
+// servicesCollectHandler returns the TaskHandler for the services-collect task.
+// Extracted to keep buildServicesTask under the cognitive complexity limit.
+func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !cfg.ServicesSyncEnabled {
 			return nil
-		},
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping services-collect until session recovers")
+			return nil
+		}
+
+		svc := servicessvc.NewServicesService()
+		svc.SetSupabaseURL(cfg.SupabaseURL)
+		svc.SetAPIKey(cfg.GetAccessToken())
+
+		list := svc.GetServiceList()
+		if len(list) == 0 {
+			log.Printf("services-collect: no services found this cycle; skipping store")
+			return nil
+		}
+		log.Printf("services-collect: %s services collected", sanitize.ForLog(fmt.Sprintf("%d", len(list))))
+
+		if err := svcStore.Upsert(cfg.DeviceID, list); err != nil {
+			return fmt.Errorf("services-collect: store upsert: %w", err)
+		}
+
+		activeKeys := make([]string, len(list))
+		for i, s := range list {
+			activeKeys[i] = s.Name + "\x00" + s.Source
+		}
+		if err := svcStore.DeleteNotIn(cfg.DeviceID, activeKeys); err != nil {
+			log.Printf("services-collect: prune stale entries: %v", err)
+		}
+
+		send := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg) }
+		if authSvc != nil {
+			send = func() error {
+				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+					return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg)
+				})
+			}
+		}
+		return send()
 	}
 }
 
