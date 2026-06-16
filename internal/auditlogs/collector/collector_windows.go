@@ -12,6 +12,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"sentinelgo/internal/sanitize"
 )
 
 // Windows Event Log API constants
@@ -410,8 +412,10 @@ func (c *windowsCollector) renderEvent(evtHandle uintptr, buf []uint16, source s
 		return nil
 	}
 
-	// Convert UTF-16 to string
-	xmlStr := windows.UTF16ToString(buf[:bufUsed/2])
+	// Convert UTF-16 to string. UTF16ToString already terminates at the first NUL,
+	// so this is defensive: ensure no NUL survives into downstream payloads, which
+	// Postgres rejects in text/jsonb.
+	xmlStr := sanitize.StripNUL(windows.UTF16ToString(buf[:bufUsed/2]))
 
 	// Parse XML
 	var evt eventXML

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"sentinelgo/internal/sanitize"
 )
 
 func ReadFileContent(path string) (string, error) {
@@ -14,7 +16,8 @@ func ReadFileContent(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	// Strip NUL bytes so downstream payloads stay valid for Postgres text/jsonb.
+	return sanitize.StripNUL(string(data)), nil
 }
 
 func ReadFileBytes(path string) ([]byte, error) {
@@ -31,7 +34,8 @@ func RunCommand(name string, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(output), nil
+	// Strip NUL bytes so downstream payloads stay valid for Postgres text/jsonb.
+	return sanitize.StripNUL(string(output)), nil
 }
 
 // RunCommandOutput runs name with args and returns combined output plus exit code.
@@ -46,7 +50,8 @@ func RunCommandOutput(name string, args ...string) (output string, exitCode int,
 	// #nosec G204 - name and args are controlled internal parameters
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, runErr := cmd.CombinedOutput()
-	output = string(out)
+	// Strip NUL bytes so downstream payloads stay valid for Postgres text/jsonb.
+	output = sanitize.StripNUL(string(out))
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {

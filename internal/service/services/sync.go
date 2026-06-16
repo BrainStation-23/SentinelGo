@@ -70,6 +70,8 @@ func (s *ServicesService) SendByRPC(ctx context.Context, _ string, svcs []models
 	if err != nil {
 		return fmt.Errorf("marshal services payload: %w", err)
 	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	body = sanitize.StripJSONNUL(body)
 
 	url := s.supabaseURL + "/rest/v1/rpc/agent_enqueue_services"
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

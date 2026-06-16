@@ -28,6 +28,9 @@ type cliFlags struct {
 	agentTaskPolling   *bool
 	agentTaskExecution *bool
 	agentTaskManager   *bool
+	debugDump          *bool
+	osInfoJSON         *bool
+	auditLogsDump      *bool
 }
 
 func parseFlags() *cliFlags {
@@ -56,6 +59,9 @@ func parseFlags() *cliFlags {
 		agentTaskPolling:   flag.Bool("agent-task-polling", false, "Show agent task polling status"),
 		agentTaskExecution: flag.Bool("agent-task-execution", false, "Show agent task execution status"),
 		agentTaskManager:   flag.Bool("agent-task-manager", false, "Run integrated task polling and execution service"),
+		debugDump:          flag.Bool("debug-dump", false, "Run all collectors and print combined JSON (no upload)"),
+		osInfoJSON:         flag.Bool("osinfo-json", false, "Print collected OS info as JSON (no upload)"),
+		auditLogsDump:      flag.Bool("auditlogs-dump", false, "Collect and print audit logs as JSON (no upload, no persist)"),
 	}
 	flag.Parse()
 	return f

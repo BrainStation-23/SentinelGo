@@ -3,6 +3,7 @@ package auditlog_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,31 @@ import (
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/service/auditlog"
 )
+
+// assertNoNUL fails the test unless body is valid JSON with no encoded NUL escape.
+func assertNoNUL(t *testing.T, body []byte) {
+	t.Helper()
+	if len(body) == 0 {
+		t.Fatal("server captured no request body")
+	}
+	if !json.Valid(body) {
+		t.Fatalf("request body is not valid JSON: %q", body)
+	}
+	if strings.Contains(string(body), "\\u0000") {
+		t.Fatalf("request body still contains an encoded NUL escape: %q", body)
+	}
+}
+
+// rawBodyServer captures the raw request body bytes (unlike newAuditLogServer,
+// which decodes into a map) so tests can assert on the exact wire payload.
+func rawBodyServer(t *testing.T, captured *[]byte) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	}))
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -263,6 +289,30 @@ func TestAuditLogBatchRPC_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestSendBatchLogs_StripsNUL(t *testing.T) {
+	var body []byte
+	server := rawBodyServer(t, &body)
+	defer server.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	payload := wrapPayload(innerPayload("dev-1", "linux", "v2.1.5",
+		[]map[string]interface{}{
+			{"system": []map[string]interface{}{
+				batchLog("boot\x00evt", now, "low", "system",
+					map[string]interface{}{"path": "/var/log\x00x"}),
+			}},
+		},
+	))
+
+	svc := auditlog.NewAuditLogService(auditLogCfg(server.URL, "dev-1", "tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := svc.SendBatchLogsWithContext(ctx, payload); err != nil {
+		t.Fatalf("SendBatchLogsWithContext: %v", err)
+	}
+	assertNoNUL(t, body)
+}
+
 // ── sendToSupabase (via LogOSEvent) ───────────────────────────────────────────
 
 func TestSendToSupabase_Success(t *testing.T) {
@@ -316,6 +366,24 @@ func TestSendToSupabase_PayloadEnvelope(t *testing.T) {
 	if len(logsArr) == 0 {
 		t.Fatal("payload.logs must be a non-empty array")
 	}
+}
+
+func TestSendToSupabase_StripsNUL(t *testing.T) {
+	var body []byte
+	server := rawBodyServer(t, &body)
+	defer server.Close()
+
+	log := sampleAuditLog("dev-nul")
+	log.EventType = "local_login\x00success"
+	log.Source = "agent\x00"
+
+	svc := auditlog.NewAuditLogService(auditLogCfg(server.URL, "dev-nul", "tok"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := svc.LogOSEvent(ctx, log); err != nil {
+		t.Fatalf("LogOSEvent: %v", err)
+	}
+	assertNoNUL(t, body)
 }
 
 func TestSendToSupabase_400Error(t *testing.T) {

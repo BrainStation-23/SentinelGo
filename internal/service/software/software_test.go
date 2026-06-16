@@ -3,6 +3,7 @@ package software_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,20 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/service/software"
 )
+
+// assertNoNUL fails the test unless body is valid JSON with no encoded NUL escape.
+func assertNoNUL(t *testing.T, body []byte) {
+	t.Helper()
+	if len(body) == 0 {
+		t.Fatal("server captured no request body")
+	}
+	if !json.Valid(body) {
+		t.Fatalf("request body is not valid JSON: %q", body)
+	}
+	if strings.Contains(string(body), "\\u0000") {
+		t.Fatalf("request body still contains an encoded NUL escape: %q", body)
+	}
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -119,6 +134,33 @@ func TestSoftwareEnqueueRPC(t *testing.T) {
 	if !rpCalled {
 		t.Error("expected RPC endpoint to be called")
 	}
+}
+
+// ── TestSoftwareEnqueue_StripsNUL ────────────────────────────────────────────
+
+func TestSoftwareEnqueue_StripsNUL(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"msg_id":1}`))
+	}))
+	defer server.Close()
+
+	svc := software.NewSoftwareService()
+	svc.SetSupabaseURL(server.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// NUL bytes embedded in collected fields must not survive into the payload.
+	list := []software.SoftwareInfo{
+		{Name: "Bad\x00Name", Source: "deb_packages", Type: "deb_packages", InstalledVersion: "1.0\x000", FilePath: "/opt/x\x00y"},
+	}
+	if err := svc.SendByRPC(ctx, "dev-1", list, nil); err != nil {
+		t.Fatalf("SendByRPC: %v", err)
+	}
+	assertNoNUL(t, body)
 }
 
 // ── TestSoftwareEnqueuePayloadShape ──────────────────────────────────────────

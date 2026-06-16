@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/osinfo/shared"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
 
 	postgrest "github.com/supabase-community/postgrest-go"
@@ -115,6 +116,8 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 	if err != nil {
 		return fmt.Errorf("marshal inventory payload: %w", err)
 	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	body = sanitize.StripJSONNUL(body)
 
 	url := cfg.SupabaseURL + "/rest/v1/rpc/agent_enqueue_inventory"
 	accessToken := cfg.GetAccessToken()
