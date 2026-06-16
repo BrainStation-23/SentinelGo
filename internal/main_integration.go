@@ -13,7 +13,9 @@ import (
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
+	servicessvc "sentinelgo/internal/service/services"
 	tasksvc "sentinelgo/internal/service/task"
+	"sentinelgo/internal/store"
 	"sentinelgo/internal/updater"
 )
 
@@ -31,6 +33,7 @@ type MainIntegration struct {
 	authSvc        *authsvc.Service
 	loggingService *logging.LoggingIntegration
 	taskManager    *tasksvc.TaskManager
+	servicesStore  *store.ServicesStore
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -99,6 +102,12 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	return nil
 }
 
+// servicesDBPath returns the path for the services SQLite database, placed in
+// the same directory as config.json.
+func (mi *MainIntegration) servicesDBPath() string {
+	return filepath.Join(filepath.Dir(mi.cfg.Path), "sentinelgo_services.db")
+}
+
 // logStartup logs the startup banner and key config flags.
 func (mi *MainIntegration) logStartup() {
 	log.Printf("Starting SentinelGo main integration...")
@@ -160,18 +169,92 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 		}
 	}
 
+	// Append services-collect task with a closure that captures the store so the
+	// DB is opened once and stays open for the lifetime of the scheduler.
+	if servicesTask := mi.buildServicesTask(); servicesTask != nil {
+		tasks = append(tasks, servicesTask)
+	}
+
 	for _, task := range tasks {
 		if err := mi.scheduler.AddTask(task); err != nil {
 			return fmt.Errorf("failed to add task %s: %w", task.Name, err)
 		}
 	}
 
-	log.Printf("Scheduler intervals: agent-info=%v, software-sync=%v, auto-update=%v, token-refresh=1m",
+	log.Printf("Scheduler intervals: agent-info=%v, software-sync=%v, auto-update=%v, token-refresh=1m, services-collect=%v",
 		mi.cfg.GetAgentInfoUpdateInterval(),
 		mi.cfg.GetSoftwareInfoUpdateInterval(),
 		mi.cfg.GetAutoUpdateInterval(),
+		mi.cfg.GetServicesUpdateInterval(),
 	)
 	return nil
+}
+
+// buildServicesTask constructs the services-collect scheduler task. The store
+// is opened here and captured in the handler closure so it lives for the
+// duration of the scheduler. Returns nil if the store cannot be initialised
+// (logged as a warning; the rest of the agent continues normally).
+func (mi *MainIntegration) buildServicesTask() *scheduler.Task {
+	svcStore, err := store.NewServicesStore(mi.servicesDBPath())
+	if err != nil {
+		log.Printf("Warning: failed to open services store, services-collect disabled: %v", err)
+		return nil
+	}
+	mi.servicesStore = svcStore
+
+	return &scheduler.Task{
+		Name:     "services-collect",
+		Interval: mi.cfg.GetServicesUpdateInterval(),
+		Enabled:  mi.cfg.ServicesSyncEnabled,
+		Handler:  mi.servicesCollectHandler(svcStore),
+	}
+}
+
+// servicesCollectHandler returns the TaskHandler for the services-collect task.
+// Extracted to keep buildServicesTask under the cognitive complexity limit.
+func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !cfg.ServicesSyncEnabled {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping services-collect until session recovers")
+			return nil
+		}
+
+		svc := servicessvc.NewServicesService()
+		svc.SetSupabaseURL(cfg.SupabaseURL)
+		svc.SetAPIKey(cfg.GetAccessToken())
+
+		list := svc.GetServiceList()
+		if len(list) == 0 {
+			log.Printf("services-collect: no services found this cycle; skipping store")
+			return nil
+		}
+		log.Printf("services-collect: %s services collected", sanitize.ForLog(fmt.Sprintf("%d", len(list))))
+
+		if err := svcStore.Upsert(cfg.DeviceID, list); err != nil {
+			return fmt.Errorf("services-collect: store upsert: %w", err)
+		}
+
+		activeKeys := make([]string, len(list))
+		for i, s := range list {
+			activeKeys[i] = s.Name + "\x00" + s.Source
+		}
+		if err := svcStore.DeleteNotIn(cfg.DeviceID, activeKeys); err != nil {
+			log.Printf("services-collect: prune stale entries: %v", err)
+		}
+
+		send := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg) }
+		if authSvc != nil {
+			send = func() error {
+				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+					return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg)
+				})
+			}
+		}
+		return send()
+	}
 }
 
 // startLoggingService starts the audit log collection pipeline when enabled.
@@ -259,6 +342,13 @@ func (mi *MainIntegration) Stop() error {
 	if mi.loggingService != nil {
 		if err := mi.loggingService.Stop(); err != nil {
 			log.Printf("Warning: Failed to stop logging service: %v", err)
+		}
+	}
+
+	// Close services store
+	if mi.servicesStore != nil {
+		if err := mi.servicesStore.Close(); err != nil {
+			log.Printf("Warning: Failed to close services store: %v", err)
 		}
 	}
 

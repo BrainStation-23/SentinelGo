@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +17,6 @@ import (
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
 	swsvc "sentinelgo/internal/service/software"
-	"sentinelgo/internal/store"
 	"sentinelgo/internal/updater"
 )
 
@@ -525,76 +523,25 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 
 	log.Printf("Running software sync")
 
-	configDir := filepath.Dir(cfg.Path)
-	swStore, err := store.NewSoftwareStore(filepath.Join(configDir, "software.sqlite"))
-	if err != nil {
-		return fmt.Errorf("open software store: %w", err)
-	}
-	defer func() {
-		if err := swStore.Close(); err != nil {
-			log.Printf("Failed to close software store: %v", err)
-		}
-	}()
-
 	svc := swsvc.NewSoftwareService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
 	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
-	syncTime := time.Now()
-	freshList, scannedSources := svc.GetSoftwareList()
-	if len(scannedSources) == 0 {
-		// Every collector failed this cycle. SyncBatch will not reconcile any source
-		// (which would otherwise demote the entire catalog to "uninstalled"); the
-		// last-known catalog is preserved and re-uploaded below on the next retry.
-		log.Printf("[software] no software source scanned successfully; keeping last-known catalog")
-	}
-
-	if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
-		// SyncBatch is transactional and rolls back on error, so the catalog is
-		// unchanged. Bail rather than upload+clear: uploading now would report a
-		// stale catalog and clearing the queue would mask this failure. Any existing
-		// pending-sync marker is left intact so the next tick retries.
-		return fmt.Errorf("software store sync: %w", err)
-	}
-
-	// Always queue an upload: either the fresh scan succeeded or we need to
-	// retry the previous failed upload.
-	if err := swStore.QueueSync(); err != nil {
-		log.Printf("[software] queue sync error: %v", err)
-	}
-
-	catalog, err := swStore.GetAll()
-	if err != nil {
-		return fmt.Errorf("read software catalog: %w", err)
-	}
-	if len(catalog) == 0 {
-		// Nothing to upload; clear the queue marker so we don't retry an empty catalog.
-		_ = swStore.ClearSync()
-		log.Printf("Software catalog is empty, skipping upload")
+	freshList := svc.GetSoftwareList()
+	if len(freshList) == 0 {
+		log.Printf("[software] no software found this cycle; skipping upload")
 		return nil
 	}
 
-	sanitizedCatalogCount := sanitize.ForLog(fmt.Sprintf("%d", len(catalog)))
-	sanitizedFreshCount := sanitize.ForLog(fmt.Sprintf("%d", len(freshList)))
-	log.Printf("Software sync: %s catalog entries (%s fresh)", sanitizedCatalogCount, sanitizedFreshCount)
+	log.Printf("Software sync: %s items collected", sanitize.ForLog(fmt.Sprintf("%d", len(freshList))))
 
-	sendSoftware := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg) }
+	sendSoftware := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, freshList, cfg) }
 	if authSvc != nil {
-		// On a 401 mid-run, recover the session (refresh→login) and retry once.
 		sendSoftware = func() error {
 			return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
-				return svc.SendByRPC(ctx, cfg.DeviceID, catalog, cfg)
+				return svc.SendByRPC(ctx, cfg.DeviceID, freshList, cfg)
 			})
 		}
 	}
-	if err := sendSoftware(); err != nil {
-		// Leave the queue marker so the next tick retries the upload.
-		return fmt.Errorf("send software data: %w", err)
-	}
-
-	// Upload succeeded: clear the pending marker.
-	if err := swStore.ClearSync(); err != nil {
-		log.Printf("[software] clear sync error: %v", err)
-	}
-	return nil
+	return sendSoftware()
 }

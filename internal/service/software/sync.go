@@ -7,14 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
-	"sentinelgo/internal/store"
 
 	postgrest "github.com/supabase-community/postgrest-go"
 )
@@ -119,10 +117,7 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 		AppStoreApp      string `json:"app_store_app,omitempty"`
 		LastOpened       string `json:"last_opened,omitempty"`
 		FilePath         string `json:"file_path,omitempty"`
-		Status           string `json:"status,omitempty"`
-		IsActive         bool   `json:"is_active"`
 		FirstSeenAt      string `json:"first_seen_at,omitempty"`
-		LastSeenAt       string `json:"last_seen_at,omitempty"`
 	}
 
 	items := make([]softwareItem, 0, len(software))
@@ -137,10 +132,7 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 			AppStoreApp:      sw.AppStoreApp,
 			LastOpened:       sw.LastOpened,
 			FilePath:         sw.FilePath,
-			Status:           sw.Status,
-			IsActive:         sw.IsActive,
 			FirstSeenAt:      sw.FirstSeenAt,
-			LastSeenAt:       sw.LastSeenAt,
 		})
 	}
 
@@ -188,70 +180,7 @@ func (s *SoftwareService) sendByRestAPI(ctx context.Context, _ string, software 
 		}
 	}
 
-	fmt.Printf("RPC agent_upsert_software completed: %d software items\n", len(items))
+	sanitizedCount := sanitize.ForLog(fmt.Sprintf("%d", len(items)))
+	fmt.Printf("RPC agent_upsert_software completed: %s software items\n", sanitizedCount)
 	return nil
-}
-
-// StartSoftwareSync runs the standalone software sync loop. softwareProvider
-// returns the fresh scan plus the set of source categories that were
-// authoritatively scanned, so the store only reconciles uninstalls for sources
-// that actually succeeded.
-func (s *SoftwareService) StartSoftwareSync(ctx context.Context, cfg *config.Config, softwareProvider func() ([]SoftwareInfo, map[string]bool)) error {
-	storePath := filepath.Join(filepath.Dir(cfg.Path), "software.sqlite")
-	swStore, err := store.NewSoftwareStore(storePath)
-	if err != nil {
-		return fmt.Errorf("open software store: %w", err)
-	}
-	defer func() {
-		if err := swStore.Close(); err != nil {
-			fmt.Printf("Failed to close software store: %v\n", err)
-		}
-	}()
-
-	interval := cfg.GetSoftwareInfoUpdateInterval()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("Software sync service stopped")
-			return nil
-
-		case <-ticker.C:
-			syncTime := time.Now()
-			freshList, scannedSources := softwareProvider()
-
-			if err := swStore.SyncBatch(freshList, syncTime, scannedSources); err != nil {
-				fmt.Printf("Software store sync error: %v\n", err)
-			} else {
-				_ = swStore.QueueSync()
-			}
-
-			pending, err := swStore.HasPendingSync()
-			if err != nil || !pending {
-				continue
-			}
-
-			catalog, err := swStore.GetAll()
-			if err != nil {
-				fmt.Printf("Failed to read software catalog: %v\n", err)
-				continue
-			}
-			if len(catalog) == 0 {
-				continue
-			}
-
-			if err := s.SendByRPC(ctx, cfg.DeviceID, catalog, cfg); err != nil {
-				fmt.Printf("Failed to send software data: %v\n", err)
-				continue
-			}
-
-			_ = swStore.ClearSync()
-
-			sanitizedInterval := sanitize.ForLog(fmt.Sprintf("%v", interval))
-			fmt.Printf("Software sync completed: %d catalog entries (%d fresh), interval: %s\n",
-				len(catalog), len(freshList), sanitizedInterval)
-		}
-	}
 }

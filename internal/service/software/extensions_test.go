@@ -234,12 +234,6 @@ func TestReadExtensionManifest_SetsMetadata(t *testing.T) {
 	if info.Type != "chrome_extensions" {
 		t.Errorf("Type = %q, want chrome_extensions", info.Type)
 	}
-	if info.Status != "installed" {
-		t.Errorf("Status = %q, want installed", info.Status)
-	}
-	if !info.IsActive {
-		t.Error("IsActive = false, want true")
-	}
 	if info.FilePath == "" {
 		t.Error("FilePath is empty, expected the path to manifest.json")
 	}

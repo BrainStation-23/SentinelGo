@@ -128,7 +128,7 @@ func TestSoftwareService(t *testing.T) {
 	softwareService := swsvc.NewSoftwareService()
 
 	// Test getting software list
-	softwareList, _ := softwareService.GetSoftwareList()
+	softwareList := softwareService.GetSoftwareList()
 	if softwareList == nil {
 		t.Fatal("Software list should not be nil")
 	}

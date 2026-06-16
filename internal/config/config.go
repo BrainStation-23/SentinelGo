@@ -108,9 +108,11 @@ type Config struct {
 	LogStorageEnabled bool     `json:"log_storage_enabled"` // Enable/disable log storage
 	LogFlushInterval  Duration `json:"log_flush_interval"`  // Log collection/upload interval (supports both "5m0s" and numeric formats)
 	// Service configuration
-	SoftwareSyncEnabled bool   `json:"software_sync_enabled"` // Enable software synchronization
-	AuditLogsEnabled    bool   `json:"audit_logs_enabled"`    // Enable audit logs service
-	EdgeFunctionURL     string `json:"edge_function_url"`     // Edge Function URL for software data
+	SoftwareSyncEnabled    bool     `json:"software_sync_enabled"`    // Enable software synchronization
+	AuditLogsEnabled       bool     `json:"audit_logs_enabled"`       // Enable audit logs service
+	EdgeFunctionURL        string   `json:"edge_function_url"`        // Edge Function URL for software data
+	ServicesSyncEnabled    bool     `json:"services_sync_enabled"`    // Enable OS services collection
+	ServicesUpdateInterval Duration `json:"services_update_interval"` // How often to collect OS services (default 5m)
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
@@ -185,6 +187,14 @@ func (c *Config) GetLogFlushInterval() time.Duration {
 	return time.Duration(c.LogFlushInterval)
 }
 
+// GetServicesUpdateInterval returns how often OS services are collected.
+func (c *Config) GetServicesUpdateInterval() time.Duration {
+	if time.Duration(c.ServicesUpdateInterval) == 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(c.ServicesUpdateInterval)
+}
+
 // GetTaskPollingInterval returns task polling interval as time.Duration
 func (c *Config) GetTaskPollingInterval() time.Duration {
 	if time.Duration(c.TaskPollingInterval) == 0 {
@@ -207,10 +217,12 @@ func Load(path string) (*Config, error) {
 		// Supabase configuration — SupabaseURL has no default; it must be set in config.json.
 		AgentSecret: "",
 		// Log collection configuration
-		LogStorageEnabled:   true,                      // Enable log storage by default
-		LogFlushInterval:    Duration(5 * time.Minute), // Default to 5 minute collection interval
-		SoftwareSyncEnabled: true,                      // Enable software sync by default
-		AuditLogsEnabled:    true,                      // Enable audit logs by default
+		LogStorageEnabled:      true,                      // Enable log storage by default
+		LogFlushInterval:       Duration(5 * time.Minute), // Default to 5 minute collection interval
+		SoftwareSyncEnabled:    true,                      // Enable software sync by default
+		AuditLogsEnabled:       true,                      // Enable audit logs by default
+		ServicesSyncEnabled:    true,                      // Enable services collection by default
+		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
 	}
 
 	if path == "" {

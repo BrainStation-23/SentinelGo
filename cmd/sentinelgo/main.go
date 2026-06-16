@@ -37,41 +37,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// CLI subcommands that operate on the config and then exit.
-	if *f.agentTaskPolling {
-		cli.HandleAgentTaskPolling(cfg)
-		return
-	}
-	if *f.agentTaskExecution {
-		cli.HandleAgentTaskExecution(cfg)
-		return
-	}
-	if *f.agentTaskManager {
-		cli.HandleAgentTaskManager(cfg)
-		return
-	}
-	if *f.softwareSync {
-		cli.HandleSoftwareSync(cfg)
-		return
-	}
-	if *f.agentInfoUpdate {
-		cli.HandleAgentInfoUpdate(cfg)
-		return
-	}
-	if *f.runAuditLogs {
-		cli.HandleAuditLogsStandalone(cfg)
-		return
-	}
-	if *f.auditLogsStatus {
-		cli.HandleAuditLogsStatus(cfg)
-		return
-	}
-	if *f.softwareList || *f.softwareListJSON || *f.softwareListCount {
-		cli.HandleSoftwareListCommand(*f.cfgPath, *f.softwareListJSON, *f.softwareListCount)
-		return
-	}
-	if *f.stop {
-		cli.HandleStop()
+	if handled := dispatchConfigFlags(f, cfg); handled {
 		return
 	}
 
@@ -87,7 +53,41 @@ func main() {
 		return
 	}
 
-	// Service lifecycle (install / uninstall / foreground run / run-as-service).
+	runServiceLifecycle(f, cfg)
+}
+
+// dispatchConfigFlags handles CLI subcommands that need an already-loaded config.
+// Returns true if a subcommand was dispatched (caller should return after).
+func dispatchConfigFlags(f *cliFlags, cfg *config.Config) bool {
+	switch {
+	case *f.agentTaskPolling:
+		cli.HandleAgentTaskPolling(cfg)
+	case *f.agentTaskExecution:
+		cli.HandleAgentTaskExecution(cfg)
+	case *f.agentTaskManager:
+		cli.HandleAgentTaskManager(cfg)
+	case *f.softwareSync:
+		cli.HandleSoftwareSync(cfg)
+	case *f.agentInfoUpdate:
+		cli.HandleAgentInfoUpdate(cfg)
+	case *f.runAuditLogs:
+		cli.HandleAuditLogsStandalone(cfg)
+	case *f.auditLogsStatus:
+		cli.HandleAuditLogsStatus(cfg)
+	case *f.softwareList || *f.softwareListJSON || *f.softwareListCount:
+		cli.HandleSoftwareListCommand(cfg.Path, *f.softwareListJSON, *f.softwareListCount)
+	case *f.servicesList || *f.servicesListJSON || *f.servicesListCount:
+		cli.HandleServicesListCommand(cfg.Path, *f.servicesListJSON, *f.servicesListCount)
+	case *f.stop:
+		cli.HandleStop()
+	default:
+		return false
+	}
+	return true
+}
+
+// runServiceLifecycle handles install / uninstall / foreground / service modes.
+func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 	prg := svcsub.NewProgram(cfg)
 
 	svcCfg := svcsub.ServiceConfig{
@@ -104,18 +104,14 @@ func main() {
 	svcsub.SetLogger(lgr)
 	svcsub.SetVersion(GetVersion())
 
-	if *f.install {
+	switch {
+	case *f.install:
 		svcsub.HandleInstall(svc)
-		return
-	}
-	if *f.uninstall {
+	case *f.uninstall:
 		svcsub.HandleUninstall(svc)
-		return
-	}
-	if *f.run {
+	case *f.run:
 		svcsub.RunForeground(cfg)
-		return
+	default:
+		svcsub.RunAsService(svc)
 	}
-
-	svcsub.RunAsService(svc)
 }

@@ -8,37 +8,26 @@ import (
 	"time"
 )
 
-// platformSoftware collects installed software on Windows along with the set of
-// source categories that were authoritatively scanned this cycle. A source only
-// appears in the returned map when its scan actually succeeded, so that a failed
-// enumeration never causes its software to be reconciled as uninstalled.
-func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
-	scanned := make(map[string]bool)
+// platformSoftware collects currently installed software on Windows.
+func (s *SoftwareService) platformSoftware() []SoftwareInfo {
 	var sw []SoftwareInfo
 
 	if items, ok := s.getWindowsSoftware(); ok {
 		sw = append(sw, items...)
-		scanned["programs"] = true
 	}
 	if items, ok := s.getWindowsStoreApps(); ok {
 		sw = append(sw, items...)
-		scanned["microsoft_store"] = true
 	}
-	s.appendExtensions(&sw, scanned)
+	s.appendExtensions(&sw)
 
-	// Enrich with last-opened times from UserAssist. This is best-effort and runs
-	// outside the enumeration path: any failure leaves LastOpened empty and never
-	// affects which software is considered installed.
+	// Enrich with last-opened times from UserAssist. Best-effort; failures leave
+	// LastOpened empty and never affect which software is reported installed.
 	applyLastOpened(sw, getWindowsLastOpened())
 
-	return sw, scanned
+	return sw
 }
 
-// getWindowsSoftware enumerates installed programs from the registry uninstall
-// keys. The query is intentionally limited to fast, authoritative fields — no
-// per-program filesystem walks — so it stays well within its timeout. The bool is
-// true only when the query ran and its output parsed; last-opened is collected
-// separately (see getWindowsLastOpened).
+// getWindowsSoftware enumerates installed programs from the registry uninstall keys.
 func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
@@ -72,10 +61,8 @@ func (s *SoftwareService) getWindowsStoreApps() ([]SoftwareInfo, bool) {
 	return result, ok
 }
 
-// parsePowerShellOutput parses a ConvertTo-Json software list into software.
-// It returns false when the output could not be parsed as JSON (a failed or
-// empty query), which the caller treats as "source not scanned" so the catalog
-// is preserved rather than reconciled against an empty result.
+// parsePowerShellOutput parses a ConvertTo-Json software list into SoftwareInfo entries.
+// Returns false when the output could not be parsed as JSON.
 func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source string) bool {
 	var psOutput []map[string]any
 	if err := json.Unmarshal(output, &psOutput); err != nil {
@@ -107,10 +94,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			FilePath:         installLocation,
 			Source:           source,
 			Type:             source,
-			Status:           "installed",
 			FirstSeenAt:      firstSeen,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 	return true

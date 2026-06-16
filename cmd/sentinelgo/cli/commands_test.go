@@ -85,12 +85,7 @@ func TestShowSoftwareList_items(t *testing.T) {
 			Type:             "deb_packages",
 			Source:           "deb_packages",
 			InstalledVersion: "7.88.1",
-			DisplayName:      "",
-			FilePath:         "",
-			Status:           "installed",
 			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		},
 		{
 			Name:             "chrome-ext",
@@ -99,10 +94,7 @@ func TestShowSoftwareList_items(t *testing.T) {
 			InstalledVersion: "1.0",
 			DisplayName:      "Chrome Extension",
 			FilePath:         "/path/to/ext",
-			Status:           "installed",
 			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		},
 	}
 
@@ -126,10 +118,7 @@ func TestShowSoftwareList_displayNameAndPath(t *testing.T) {
 			InstalledVersion: "3.0",
 			DisplayName:      "My Application",
 			FilePath:         "/Applications/MyApp.app",
-			Status:           "installed",
 			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		},
 	}
 
@@ -148,7 +137,7 @@ func TestShowSoftwareList_displayNameAndPath(t *testing.T) {
 func TestOutputSoftwareJSON(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	list := []swsvc.SoftwareInfo{
-		{Name: "curl", Source: "deb_packages", FirstSeenAt: now, LastSeenAt: now, IsActive: true},
+		{Name: "curl", Source: "deb_packages", FirstSeenAt: now},
 	}
 
 	out := captureStdout(func() { outputSoftwareJSON(list) })

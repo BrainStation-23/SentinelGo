@@ -10,35 +10,26 @@ import (
 	"time"
 )
 
-// platformSoftware collects installed software on Linux along with the set of
-// source categories that were authoritatively scanned this cycle. A package
-// manager that is not installed (e.g. rpm on Debian) reports failure and is left
-// out of scanned, so its absence never demotes another source's rows.
-//
-// LastOpened is not yet collected for Linux packages (gap; tracked for follow-up).
-func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
-	scanned := make(map[string]bool)
+// platformSoftware collects currently installed software on Linux.
+// LastOpened is not collected for Linux packages.
+func (s *SoftwareService) platformSoftware() []SoftwareInfo {
 	var sw []SoftwareInfo
 
 	if items, ok := s.getDebPackages(); ok {
 		sw = append(sw, items...)
-		scanned["deb_packages"] = true
 	}
 	if items, ok := s.getRPMPackages(); ok {
 		sw = append(sw, items...)
-		scanned["rpm_packages"] = true
 	}
 	if items, ok := s.getSnapPackages(); ok {
 		sw = append(sw, items...)
-		scanned["snap_packages"] = true
 	}
 	if items, ok := s.getFlatpakPackages(); ok {
 		sw = append(sw, items...)
-		scanned["flatpak_packages"] = true
 	}
-	s.appendExtensions(&sw, scanned)
+	s.appendExtensions(&sw)
 
-	return sw, scanned
+	return sw
 }
 
 func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
@@ -111,17 +102,12 @@ func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
 			Source:           "deb_packages",
 			Type:             "deb_packages",
-			Status:           "installed",
-			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 }
@@ -136,8 +122,7 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
-		firstSeen := now
+		firstSeen := ""
 		if len(parts) >= 4 {
 			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
 				firstSeen = time.Unix(ts, 0).UTC().Format(time.RFC3339)
@@ -149,10 +134,7 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 			SoftwarePackage:  parts[0],
 			Source:           "rpm_packages",
 			Type:             "rpm_packages",
-			Status:           "installed",
 			FirstSeenAt:      firstSeen,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 }
@@ -167,17 +149,12 @@ func parseSnapPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
 			Source:           "snap_packages",
 			Type:             "snap_packages",
-			Status:           "installed",
-			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 }
@@ -192,17 +169,12 @@ func parseFlatpakPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 3 {
 			continue
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[1],
 			InstalledVersion: parts[2],
 			SoftwarePackage:  parts[0],
 			Source:           "flatpak_packages",
 			Type:             "flatpak_packages",
-			Status:           "installed",
-			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 }

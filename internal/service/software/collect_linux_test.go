@@ -54,9 +54,6 @@ func TestParseDebPackages(t *testing.T) {
 				if s.InstalledVersion != strings.Split(tc.input, "\n")[i] && s.InstalledVersion == "" {
 					t.Errorf("[%d] InstalledVersion is empty", i)
 				}
-				if !s.IsActive {
-					t.Errorf("[%d] IsActive = false, want true", i)
-				}
 			}
 		})
 	}
