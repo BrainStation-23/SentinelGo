@@ -9,11 +9,16 @@ import (
 )
 
 // setFakeHome points HOME (Unix) and USERPROFILE (Windows) at tmpDir so that
-// os.UserHomeDir() returns tmpDir for the duration of the test.
+// os.UserHomeDir() returns tmpDir, and pins userHomeDirs() to exactly tmpDir so
+// the extension collectors scan only the test fixture, not the real machine's
+// user profiles. Both are restored at test end.
 func setFakeHome(t *testing.T, tmpDir string) {
 	t.Helper()
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("USERPROFILE", tmpDir)
+	orig := userHomeDirs
+	userHomeDirs = func() []string { return []string{tmpDir} }
+	t.Cleanup(func() { userHomeDirs = orig })
 }
 
 // firefoxProfileBase returns the profile directory that getFirefoxExtensions

@@ -14,6 +14,7 @@ import (
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
 	servicessvc "sentinelgo/internal/service/services"
+	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/updater"
@@ -34,6 +35,7 @@ type MainIntegration struct {
 	loggingService *logging.LoggingIntegration
 	taskManager    *tasksvc.TaskManager
 	servicesStore  *store.ServicesStore
+	softwareStore  *store.SoftwareStore
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -166,6 +168,9 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 			tasks[i].Interval = mi.cfg.GetAgentInfoUpdateInterval()
 		case "software-sync":
 			tasks[i].Interval = mi.cfg.GetSoftwareInfoUpdateInterval()
+			if h := mi.softwareSyncHandler(); h != nil {
+				tasks[i].Handler = h
+			}
 		}
 	}
 
@@ -253,6 +258,62 @@ func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore)
 			send = func() error {
 				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
 					_, err := svc.SendByRPCIfChanged(ctx, cfg.DeviceID, list, cfg)
+					return err
+				})
+			}
+		}
+		return send()
+	}
+}
+
+// softwareDBPath returns the path for the software SQLite catalog, placed in the
+// same directory as config.json.
+func (mi *MainIntegration) softwareDBPath() string {
+	return filepath.Join(filepath.Dir(mi.cfg.Path), store.SoftwareDBName)
+}
+
+// softwareSyncHandler opens the local software catalog and returns a store-backed
+// software-sync handler (collect → upsert → guarded prune → send). It returns nil
+// when the store cannot be opened, in which case the default direct-send handler
+// from CreateDefaultTasks is kept (logged; the agent continues normally).
+func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
+	if !mi.cfg.SoftwareSyncEnabled {
+		// Keep the default no-op handler; don't create an unused catalog file.
+		return nil
+	}
+	swStore, err := store.NewSoftwareStore(mi.softwareDBPath())
+	if err != nil {
+		log.Printf("Warning: failed to open software store, falling back to direct send: %v", err)
+		return nil
+	}
+	mi.softwareStore = swStore
+
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !cfg.SoftwareSyncEnabled {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping software-sync until session recovers")
+			return nil
+		}
+
+		svc := swsvc.NewSoftwareService()
+		svc.SetSupabaseURL(cfg.SupabaseURL)
+
+		list, complete := svc.GetSoftwareListWithStatus()
+		if len(list) == 0 {
+			log.Printf("[software] no software found this cycle; skipping store and upload")
+			return nil
+		}
+
+		send := func() error {
+			_, err := svc.SyncCatalog(ctx, swStore, cfg.DeviceID, list, complete, cfg)
+			return err
+		}
+		if authSvc != nil {
+			send = func() error {
+				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+					_, err := svc.SyncCatalog(ctx, swStore, cfg.DeviceID, list, complete, cfg)
 					return err
 				})
 			}
@@ -353,6 +414,13 @@ func (mi *MainIntegration) Stop() error {
 	if mi.servicesStore != nil {
 		if err := mi.servicesStore.Close(); err != nil {
 			log.Printf("Warning: Failed to close services store: %v", err)
+		}
+	}
+
+	// Close software store
+	if mi.softwareStore != nil {
+		if err := mi.softwareStore.Close(); err != nil {
+			log.Printf("Warning: Failed to close software store: %v", err)
 		}
 	}
 
