@@ -1,29 +1,39 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"io"
+	"log"
+	"net/http"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
-
-	postgrest "github.com/supabase-community/postgrest-go"
 )
 
 const rpcTimeout = 60 * time.Second
 
-// SendByRPC sends the full services snapshot to the agent_upsert_services RPC.
+// SendByRPC sends the full services snapshot to the agent_enqueue_services RPC.
 func (s *ServicesService) SendByRPC(ctx context.Context, _ string, svcs []models.ServiceInfo, cfg *config.Config) error {
 	if s.supabaseURL == "" {
 		return fmt.Errorf("supabase base URL not configured for RPC call")
 	}
-	if s.apiKey == "" {
-		return fmt.Errorf("access token not configured for RPC call")
+
+	var accessToken, anonKey string
+	if cfg != nil {
+		accessToken = cfg.GetAccessToken()
+		anonKey = cfg.SupabaseKey
+	}
+	if accessToken == "" {
+		accessToken = s.apiKey
+	}
+	if anonKey == "" {
+		anonKey = s.apiKey
 	}
 
 	type servicesItem struct {
@@ -51,53 +61,53 @@ func (s *ServicesService) SendByRPC(ctx context.Context, _ string, svcs []models
 		})
 	}
 
-	var accessToken, anonKey string
-	if cfg != nil {
-		accessToken = cfg.GetAccessToken()
-		anonKey = cfg.SupabaseKey
-	}
-	if accessToken == "" {
-		accessToken = s.apiKey
-	}
-	if anonKey == "" {
-		anonKey = s.apiKey
-	}
-
-	client := postgrest.NewClient(
-		s.supabaseURL+"/rest/v1",
-		"public",
-		map[string]string{
-			"Authorization": "Bearer " + accessToken,
-			"apikey":        anonKey,
+	body, err := json.Marshal(map[string]interface{}{
+		"payload": map[string]interface{}{
+			"snapshot": "full",
+			"services": items,
 		},
-	)
-
-	rawResult, err := rpcutil.CallWithTimeout(ctx, rpcTimeout, func() (string, error) {
-		return client.Rpc("agent_upsert_services", "", map[string]interface{}{
-			"payload": map[string]interface{}{
-				"snapshot": "full",
-				"services": items,
-			},
-		}), client.ClientError
 	})
 	if err != nil {
-		return fmt.Errorf("call agent_upsert_services RPC: %w", err)
-	}
-	if rawResult == "" {
-		return fmt.Errorf("call agent_upsert_services RPC: empty response")
+		return fmt.Errorf("marshal services payload: %w", err)
 	}
 
-	if len(strings.TrimSpace(rawResult)) > 0 {
-		var result map[string]interface{}
-		if json.Unmarshal([]byte(rawResult), &result) == nil {
-			if msg, ok := result["message"]; ok {
-				return fmt.Errorf("agent_upsert_services error: %v", msg)
-			}
+	url := s.supabaseURL + "/rest/v1/rpc/agent_enqueue_services"
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
+	err = rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return 0, fmt.Errorf("create request: %w", err)
 		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("apikey", anonKey)
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		respBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= 400 {
+			return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var enqResp rpcutil.EnqueueResponse
+		if err := json.Unmarshal(respBody, &enqResp); err != nil {
+			log.Printf("[services] enqueue accepted but response parse failed: %v", err)
+		} else {
+			log.Printf("[services] enqueued: msg_id=%d queue=%s", enqResp.MsgID, enqResp.Queue)
+		}
+		return resp.StatusCode, nil
+	})
+	if err != nil {
+		return fmt.Errorf("agent_enqueue_services: %w", err)
 	}
 
-	sanitizedCount := sanitize.ForLog(fmt.Sprintf("%d", len(items)))
-	fmt.Printf("RPC agent_upsert_services completed: %s service items\n", sanitizedCount)
+	log.Printf("agent_enqueue_services completed: %s items", sanitize.ForLog(fmt.Sprintf("%d", len(items))))
 	return nil
 }
 

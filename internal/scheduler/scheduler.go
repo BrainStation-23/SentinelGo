@@ -2,6 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -19,6 +22,74 @@ import (
 	swsvc "sentinelgo/internal/service/software"
 	"sentinelgo/internal/updater"
 )
+
+// agentInfoForceResend is the maximum time between agent-info uploads even
+// when the system fingerprint has not changed.
+const agentInfoForceResend = 1 * time.Hour
+
+var (
+	agentInfoMu    sync.Mutex
+	agentLastHash  string
+	agentLastForce time.Time
+)
+
+// sysInfoFingerprint hashes the stable (non-volatile) fields of SystemInfo.
+// Volatile fields (CPU/memory/disk usage, uptime, timestamp) are excluded so
+// that normal telemetry churn does not trigger a redundant upload every cycle.
+func sysInfoFingerprint(s *shared.SystemInfo) string {
+	fp := struct {
+		Hostname        string
+		SerialNumber    string
+		HardwareModel   string
+		MACAddress      string
+		FQDN            string
+		ChassisType     string
+		KernelVersion   string
+		FirmwareType    string
+		FirmwareVendor  string
+		FirmwareVersion string
+		TPMVersion      string
+		OSInformation   interface{}
+		CPUInfoDetailed interface{}
+		RAMs            interface{}
+		Disks           interface{}
+		NetworkAdapters interface{}
+		LocalUsers      interface{}
+		SecurityInfo    interface{}
+		GPUs            interface{}
+		Displays        interface{}
+		AudioDevices    interface{}
+		Printers        interface{}
+		Peripherals     interface{}
+	}{
+		Hostname:        s.Hostname,
+		SerialNumber:    s.SerialNumber,
+		HardwareModel:   s.HardwareModel,
+		MACAddress:      s.MACAddress,
+		FQDN:            s.FQDN,
+		ChassisType:     s.ChassisType,
+		KernelVersion:   s.KernelVersion,
+		FirmwareType:    s.FirmwareType,
+		FirmwareVendor:  s.FirmwareVendor,
+		FirmwareVersion: s.FirmwareVersion,
+		TPMVersion:      s.TPMVersion,
+		OSInformation:   s.OSInformation,
+		CPUInfoDetailed: s.CPUInfoDetailed,
+		RAMs:            s.RAMs,
+		Disks:           s.Disks,
+		NetworkAdapters: s.NetworkAdapters,
+		LocalUsers:      s.LocalUsers,
+		SecurityInfo:    s.SecurityInfo,
+		GPUs:            s.GPUs,
+		Displays:        s.Displays,
+		AudioDevices:    s.AudioDevices,
+		Printers:        s.Printers,
+		Peripherals:     s.Peripherals,
+	}
+	data, _ := json.Marshal(fp)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
 
 // Task represents a scheduled task with dependencies
 type Task struct {
@@ -247,10 +318,21 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 		}
 	}()
 
+	// startAfter holds the earliest time each task's periodic tick should fire.
+	// A random jitter of [0, interval) is added so that agents restarted at the
+	// same moment (e.g. a fleet-wide deploy) don't all fire in lockstep forever.
+	// token-refresh is excluded: it must stay eager and fire on every tick.
+	startAfter := make(map[string]time.Time)
+	now := time.Now()
 	for name, task := range s.tasks {
 		if task.Enabled && task.Interval > 0 {
 			tickers[name] = time.NewTicker(task.Interval)
 			log.Printf("Started ticker for task %s with interval %v", name, task.Interval)
+			if name != "token-refresh" {
+				jitter := time.Duration(rand.Int63n(int64(task.Interval)))
+				startAfter[name] = now.Add(jitter)
+				log.Printf("Task %s first periodic tick delayed by %v", name, jitter.Round(time.Second))
+			}
 		}
 	}
 
@@ -266,6 +348,10 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 			for name, ticker := range tickers {
 				select {
 				case <-ticker.C:
+					// Suppress this tick until the per-task startup jitter has elapsed.
+					if sa, ok := startAfter[name]; ok && time.Now().Before(sa) {
+						continue
+					}
 					task := s.tasks[name]
 					if !task.Enabled {
 						continue
@@ -500,14 +586,35 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 		// goroutine and, with no recover, killed the whole agent).
 		return fmt.Errorf("system info collection returned no data; skipping this cycle")
 	}
-	agentSvc := agentsvc.NewAgentService()
-	if authSvc == nil {
-		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+
+	hash := sysInfoFingerprint(sysInfo)
+	agentInfoMu.Lock()
+	skipSend := hash == agentLastHash && time.Now().Before(agentLastForce.Add(agentInfoForceResend))
+	agentInfoMu.Unlock()
+	if skipSend {
+		log.Printf("Scheduler: agent info unchanged, skipping upload this cycle")
+		return nil
 	}
-	// On a 401 mid-run, recover the session (refresh→login) and retry once.
-	return authSvc.DoWithAuthRetry(tctx, cfg, func() error {
-		return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
-	})
+
+	agentSvc := agentsvc.NewAgentService()
+	var sendErr error
+	if authSvc == nil {
+		sendErr = agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+	} else {
+		// On a 401 mid-run, recover the session (refresh→login) and retry once.
+		sendErr = authSvc.DoWithAuthRetry(tctx, cfg, func() error {
+			return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+		})
+	}
+	if sendErr != nil {
+		return sendErr
+	}
+
+	agentInfoMu.Lock()
+	agentLastHash = hash
+	agentLastForce = time.Now()
+	agentInfoMu.Unlock()
+	return nil
 }
 
 func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
@@ -525,7 +632,6 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 
 	svc := swsvc.NewSoftwareService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
-	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
 	freshList := svc.GetSoftwareList()
 	if len(freshList) == 0 {
@@ -535,11 +641,15 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 
 	log.Printf("Software sync: %s items collected", sanitize.ForLog(fmt.Sprintf("%d", len(freshList))))
 
-	sendSoftware := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, freshList, cfg) }
+	sendSoftware := func() error {
+		_, err := svc.SendByRPCIfChanged(ctx, cfg.DeviceID, freshList, cfg)
+		return err
+	}
 	if authSvc != nil {
 		sendSoftware = func() error {
 			return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
-				return svc.SendByRPC(ctx, cfg.DeviceID, freshList, cfg)
+				_, err := svc.SendByRPCIfChanged(ctx, cfg.DeviceID, freshList, cfg)
+				return err
 			})
 		}
 	}

@@ -2,6 +2,8 @@ package security
 
 import (
 	"testing"
+
+	"sentinelgo/internal/osinfo/shared"
 )
 
 func TestParseNetshFirewall(t *testing.T) {
@@ -176,4 +178,83 @@ func TestParseAVProductsJSON(t *testing.T) {
 			t.Errorf("expected nil for empty string, got %v", products)
 		}
 	})
+}
+
+func TestCollectFirewallSecurity(t *testing.T) {
+	cases := []struct {
+		name     string
+		profiles []shared.FirewallProfile
+		want     string
+	}{
+		{
+			name: "all enabled",
+			profiles: []shared.FirewallProfile{
+				{Name: "Domain", Enabled: true},
+				{Name: "Private", Enabled: true},
+			},
+			want: "Enabled",
+		},
+		{
+			name: "partially enabled",
+			profiles: []shared.FirewallProfile{
+				{Name: "Domain", Enabled: true},
+				{Name: "Private", Enabled: false},
+			},
+			want: "Partially Enabled",
+		},
+		{
+			name: "all disabled",
+			profiles: []shared.FirewallProfile{
+				{Name: "Domain", Enabled: false},
+				{Name: "Private", Enabled: false},
+			},
+			want: "Disabled",
+		},
+		{
+			name:     "empty profiles",
+			profiles: []shared.FirewallProfile{},
+			want:     "Disabled",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := collectFirewallSecurity(c.profiles)
+			if got.FirewallState != c.want {
+				t.Errorf("got %q, want %q", got.FirewallState, c.want)
+			}
+		})
+	}
+}
+
+func TestParseRegSZ(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		valueName string
+		want      string
+	}{
+		{
+			name: "standard string value",
+			input: `
+HKEY_LOCAL_MACHINE\SOFTWARE\CrowdStrike\Falcon
+    version    REG_SZ    6.40.12345.0
+`,
+			valueName: "version",
+			want:      "6.40.12345.0",
+		},
+		{
+			name:      "value not found",
+			input:     "ERROR: The system was unable to find the specified registry key or value.",
+			valueName: "version",
+			want:      "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseRegSZ(c.input, c.valueName)
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
 }

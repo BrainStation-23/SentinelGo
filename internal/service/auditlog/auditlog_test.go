@@ -42,7 +42,7 @@ func sampleAuditLog(deviceID string) models.AuditLog {
 func newAuditLogServer(t *testing.T, handler func(w http.ResponseWriter, body map[string]interface{})) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/rpc/agent_insert_audit_logs_batch") {
+		if !strings.Contains(r.URL.Path, "/rpc/agent_enqueue_audit_logs") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}

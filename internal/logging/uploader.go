@@ -2,10 +2,10 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"runtime"
-	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	maxBatchSize   = 100
-	maxRetries     = 3
-	initialBackoff = 1 * time.Second
+	maxBatchSize    = 100
+	maxPayloadBytes = 900_000 // 900 KB — headroom under the 1 MB enqueue limit
 )
 
 // authRetrier recovers the session on a 401 and reports auth health. It is
@@ -28,8 +27,7 @@ type authRetrier interface {
 }
 
 // Uploader sends batches of audit logs to the Supabase backend
-// via AuditLogService. It handles batch sizing and retry with
-// exponential backoff.
+// via AuditLogService. It handles batch sizing and size-based splitting.
 type Uploader struct {
 	svc   *auditlogsvc.AuditLogService
 	cfg   *config.Config
@@ -53,7 +51,7 @@ func (u *Uploader) SetAuth(auth authRetrier) {
 }
 
 // Upload sends the given logs in batches to the backend
-// via the agent_insert_audit_logs_batch RPC function.
+// via the agent_enqueue_audit_logs RPC function.
 // Returns the total number of logs successfully uploaded.
 func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, error) {
 	if len(logs) == 0 {
@@ -74,7 +72,7 @@ func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, err
 		}
 		batch := logs[i:end]
 
-		if err := u.uploadBatchWithRetry(ctx, batch); err != nil {
+		if err := u.safeUploadBatch(ctx, batch); err != nil {
 			lastErr = err
 			u.stats.addErrors(int64(len(batch)))
 			log.Printf("[uploader] batch upload failed (%d logs): %v", len(batch), err)
@@ -92,49 +90,39 @@ func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, err
 	return totalUploaded, lastErr
 }
 
-// uploadBatchWithRetry attempts to upload a single batch with exponential backoff.
-func (u *Uploader) uploadBatchWithRetry(ctx context.Context, batch []models.AuditLog) error {
-	batchData := u.buildBatchPayload(batch)
-
-	backoff := initialBackoff
-	var lastErr error
-
-	send := func() error { return u.svc.SendBatchLogsWithContext(ctx, batchData) }
-	if u.auth != nil {
-		// On a 401 mid-upload, recover the session (refresh→login) and retry once.
-		send = func() error {
-			return u.auth.DoWithAuthRetry(ctx, u.cfg, func() error {
-				return u.svc.SendBatchLogsWithContext(ctx, batchData)
-			})
-		}
+// safeUploadBatch checks the marshalled payload size. If it exceeds maxPayloadBytes
+// and the batch has more than one entry, it splits in half and uploads each half
+// separately (recursively). This keeps every call under the 1 MB enqueue limit.
+func (u *Uploader) safeUploadBatch(ctx context.Context, logs []models.AuditLog) error {
+	if len(logs) <= 1 {
+		return u.uploadBatch(ctx, logs)
 	}
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if err := ctx.Err(); err != nil {
+	data, err := json.Marshal(u.buildBatchPayload(logs))
+	if err == nil && len(data) > maxPayloadBytes {
+		mid := len(logs) / 2
+		if err := u.safeUploadBatch(ctx, logs[:mid]); err != nil {
 			return err
 		}
-
-		lastErr = send()
-		if lastErr == nil {
-			return nil
-		}
-
-		if attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-		}
+		return u.safeUploadBatch(ctx, logs[mid:])
 	}
-
-	return fmt.Errorf("upload failed after %d retries: %w", maxRetries, lastErr)
+	return u.uploadBatch(ctx, logs)
 }
 
-// buildBatchPayload constructs the map structure expected by SendBatchLogs.
+// uploadBatch sends one batch. Retry is handled inside SendBatchLogsWithContext
+// via WithEnqueueRetry; DoWithAuthRetry wraps it for 401 recovery.
+func (u *Uploader) uploadBatch(ctx context.Context, batch []models.AuditLog) error {
+	batchData := u.buildBatchPayload(batch)
+
+	if u.auth != nil {
+		return u.auth.DoWithAuthRetry(ctx, u.cfg, func() error {
+			return u.svc.SendBatchLogsWithContext(ctx, batchData)
+		})
+	}
+	return u.svc.SendBatchLogsWithContext(ctx, batchData)
+}
+
+// buildBatchPayload constructs the map structure expected by SendBatchLogsWithContext.
 func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interface{} {
-	// Group logs by category
 	systemLogs := make([]map[string]interface{}, 0)
 	securityLogs := make([]map[string]interface{}, 0)
 	networkLogs := make([]map[string]interface{}, 0)
@@ -191,7 +179,6 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 		"logs":          logGroups,
 	}
 
-	// Wrap in {"payload": {...}} as required by the RPC function
 	return map[string]interface{}{
 		"payload": inner,
 	}
@@ -232,7 +219,7 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 			ids[i] = r.ID
 		}
 
-		if err := u.uploadBatchWithRetry(ctx, logs); err != nil {
+		if err := u.safeUploadBatch(ctx, logs); err != nil {
 			lastErr = err
 			u.stats.addErrors(int64(len(logs)))
 			log.Printf("[uploader] store batch upload failed (%d logs): %v", len(logs), err)
