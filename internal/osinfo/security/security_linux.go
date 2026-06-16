@@ -340,6 +340,46 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		}
 	}
 
+	// Query Linux Pending Security Updates
+	id.PatchComplianceStatus = "Compliant"
+	id.PendingSecurityPatches = 0
+	
+	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
+		if out, errRun := shared.RunCommand("/usr/lib/update-notifier/apt-check"); errRun == nil {
+			parts := strings.Split(strings.TrimSpace(out), ";")
+			if len(parts) >= 2 {
+				var sec int
+				if _, errSc := fmt.Sscanf(parts[1], "%d", &sec); errSc == nil {
+					id.PendingSecurityPatches = sec
+				}
+			}
+		}
+	} else if _, errApt := os.Stat("/usr/bin/apt-get"); errApt == nil {
+		if out, errRun := shared.RunCommand("apt-get", "-s", "upgrade"); errRun == nil {
+			count := 0
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(strings.ToLower(line), "-security") || strings.Contains(strings.ToLower(line), "security") {
+					count++
+				}
+			}
+			id.PendingSecurityPatches = count
+		}
+	} else if _, errYum := os.Stat("/usr/bin/yum"); errYum == nil {
+		if out, errRun := shared.RunCommand("yum", "check-update", "--security"); errRun == nil {
+			count := 0
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(strings.ToLower(line), "security") && (strings.Contains(line, ".") || strings.Contains(line, "-")) {
+					count++
+				}
+			}
+			id.PendingSecurityPatches = count
+		}
+	}
+	
+	if id.PendingSecurityPatches > 0 {
+		id.PatchComplianceStatus = "Non-Compliant"
+	}
+
 	return id
 }
 

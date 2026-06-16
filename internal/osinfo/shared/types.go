@@ -384,6 +384,12 @@ type IdentityAccessControlInfo struct {
 	SSHRootLogin    string `json:"ssh_root_login,omitempty"`    // "Enabled", "Disabled", "Unknown"
 	SSHPasswordAuth string `json:"ssh_password_auth,omitempty"` // "Enabled", "Disabled", "Unknown"
 	SudoPrivilege   string `json:"sudo_privilege,omitempty"`    // "Configured", "Misconfigured", "Disabled", "Unknown"
+
+	// Patch & Update Compliance (New)
+	PatchComplianceStatus  string `json:"patch_compliance_status"`                 // "Compliant", "Non-Compliant", "Unknown"
+	CriticalKBsMissing     int    `json:"critical_kbs_missing,omitempty"`          // Windows specific
+	RapidSecurityResponses string `json:"rapid_security_responses_status,omitempty"` // macOS specific ("Up to Date", "Out of Date", "Unknown")
+	PendingSecurityPatches int    `json:"pending_security_patches,omitempty"`      // Linux specific
 }
 
 // 8. Network Exposure & Access

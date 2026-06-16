@@ -438,6 +438,22 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		id.UACStatus = "Enabled"
 	}
 	
+	// Query Windows missing Security and Critical updates via COM
+	updOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+		`$Session = New-Object -ComObject Microsoft.Update.Session; $Searcher = $Session.CreateUpdateSearcher(); $Searcher.Search("IsInstalled=0 and Type='Software'").Updates | Where-Object { $_.Categories | Where-Object { $_.Name -eq 'Security Updates' -or $_.Name -eq 'Critical Updates' } } | Measure-Object | Select-Object -ExpandProperty Count`)
+	
+	id.PatchComplianceStatus = "Compliant"
+	id.CriticalKBsMissing = 0
+	if err == nil {
+		var count int
+		if _, errSc := fmt.Sscanf(strings.TrimSpace(updOut), "%d", &count); errSc == nil {
+			id.CriticalKBsMissing = count
+			if count > 0 {
+				id.PatchComplianceStatus = "Non-Compliant"
+			}
+		}
+	}
+	
 	return id
 }
 

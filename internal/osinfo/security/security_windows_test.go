@@ -304,7 +304,7 @@ func TestGeneratePostureSummary(t *testing.T) {
 	}
 	enc := shared.DeviceEncryptionInfo{EncryptionStatus: "Encrypted"}
 	hw := shared.HardwareSecurityInfo{SecureBootStatus: "Enabled", TPMStatus: "Enabled"}
-	id := shared.IdentityAccessControlInfo{UACStatus: "Enabled"}
+	id := shared.IdentityAccessControlInfo{UACStatus: "Enabled", PatchComplianceStatus: "Compliant"}
 	net := shared.NetworkExposureAccessInfo{PubliclyBoundPorts: 0}
 
 	summary := generatePostureSummary(fw, av, edr, enc, hw, id, net)
@@ -385,9 +385,11 @@ func TestSimulateLinuxAndMacOS(t *testing.T) {
 		}
 
 		id := shared.IdentityAccessControlInfo{
-			SSHRootLogin:    "Disabled",
-			SSHPasswordAuth: "Disabled",
-			SudoPrivilege:   "Configured",
+			SSHRootLogin:           "Disabled",
+			SSHPasswordAuth:        "Disabled",
+			SudoPrivilege:          "Configured",
+			PatchComplianceStatus:  "Compliant",
+			PendingSecurityPatches: 0,
 		}
 
 		net := shared.NetworkExposureAccessInfo{
@@ -480,9 +482,11 @@ func TestSimulateLinuxAndMacOS(t *testing.T) {
 		}
 
 		id := shared.IdentityAccessControlInfo{
-			SecureTokenStatus:    "Enabled",
-			BootstrapTokenStatus: "Enabled",
-			TouchIDStatus:        "Enabled",
+			SecureTokenStatus:      "Enabled",
+			BootstrapTokenStatus:   "Enabled",
+			TouchIDStatus:          "Enabled",
+			PatchComplianceStatus:  "Compliant",
+			RapidSecurityResponses: "Up to Date",
 		}
 
 		net := shared.NetworkExposureAccessInfo{

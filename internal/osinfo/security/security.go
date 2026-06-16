@@ -169,6 +169,9 @@ func generatePostureSummary(
 	if strings.EqualFold(id.SSHPasswordAuth, "Enabled") {
 		recommendations = append(recommendations, "Disable SSH password authentication and use SSH keys instead.")
 	}
+	if strings.EqualFold(id.PatchComplianceStatus, "Non-Compliant") {
+		recommendations = append(recommendations, "Install pending security updates to maintain system compliance.")
+	}
 	if isAtRisk {
 		idControls = "At Risk"
 	}
@@ -233,13 +236,16 @@ func generatePostureSummary(
 	if exposure == "Low" {
 		scoreCount++
 	}
+	if strings.EqualFold(id.PatchComplianceStatus, "Compliant") {
+		scoreCount++
+	}
 
 	summary.OverallScore = "Poor"
-	if scoreCount >= 6 {
+	if scoreCount >= 7 {
 		summary.OverallScore = "Excellent"
-	} else if scoreCount >= 4 {
+	} else if scoreCount >= 5 {
 		summary.OverallScore = "Good"
-	} else if scoreCount >= 2 {
+	} else if scoreCount >= 3 {
 		summary.OverallScore = "Fair"
 	}
 

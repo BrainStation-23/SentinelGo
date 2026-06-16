@@ -322,6 +322,17 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		}
 	}
 	
+	// Query macOS Software Update status
+	id.PatchComplianceStatus = "Compliant"
+	id.RapidSecurityResponses = "Up to Date"
+	if out, err := shared.RunCommand("softwareupdate", "-l"); err == nil {
+		lower := strings.ToLower(out)
+		if strings.Contains(lower, "security") || strings.Contains(lower, "recommended") || strings.Contains(lower, "restart") {
+			id.PatchComplianceStatus = "Non-Compliant"
+			id.RapidSecurityResponses = "Out of Date"
+		}
+	}
+	
 	return id
 }
 
