@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// manifestFile is the per-extension metadata file name shared by every browser.
+const manifestFile = "manifest.json"
+
 // appendExtensions runs every browser-extension collector, appending results to sw.
 // Note: LastOpened is not collected for extensions on any platform.
 func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo) {
@@ -25,134 +28,105 @@ func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo) {
 	}
 }
 
-// getChromeExtensions returns installed Chrome extensions for the current user.
+// getChromeExtensions returns installed Chrome extensions across all users.
 func (s *SoftwareService) getChromeExtensions() ([]SoftwareInfo, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, false
-	}
-
 	var extensions []SoftwareInfo
-	for _, pattern := range chromeExtDirGlobs(home) {
-		matches, _ := filepath.Glob(pattern)
-		for _, extBase := range matches {
-			entries, err := os.ReadDir(extBase)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				extID := entry.Name()
-				manifests, _ := filepath.Glob(filepath.Join(extBase, extID, "*", "manifest.json"))
-				for _, mPath := range manifests {
-					if info := readExtensionManifest(mPath, "chrome_extensions", "chrome_extensions", extID); info != nil {
-						extensions = append(extensions, *info)
-						break
-					}
-				}
-			}
-		}
+	for _, home := range userHomeDirs() {
+		extensions = append(extensions, scanChromiumExtensions(chromeExtDirGlobs(home), "chrome_extensions")...)
 	}
 	return extensions, true
 }
 
-// getFirefoxExtensions returns installed Firefox extensions for the current user.
+// getFirefoxExtensions returns installed Firefox extensions across all users.
 func (s *SoftwareService) getFirefoxExtensions() ([]SoftwareInfo, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, false
-	}
-
 	var extensions []SoftwareInfo
-	for _, pattern := range firefoxProfileGlobs(home) {
-		profiles, _ := filepath.Glob(pattern)
-		for _, profile := range profiles {
-			extBase := filepath.Join(profile, "extensions")
-			entries, err := os.ReadDir(extBase)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				extID := entry.Name()
-				mPath := filepath.Join(extBase, extID, "manifest.json")
-				if info := readExtensionManifest(mPath, "firefox_extensions", "firefox_extensions", extID); info != nil {
-					extensions = append(extensions, *info)
-				}
+	for _, home := range userHomeDirs() {
+		for _, pattern := range firefoxProfileGlobs(home) {
+			profiles, _ := filepath.Glob(pattern)
+			for _, profile := range profiles {
+				extensions = append(extensions, scanFirefoxProfile(profile)...)
 			}
 		}
 	}
 	return extensions, true
 }
 
-// getEdgeExtensions returns installed Edge extensions for the current user.
+// scanFirefoxProfile scans one Firefox profile's extensions directory, whose
+// layout is <profile>/extensions/<extID>/manifest.json (flat, no version dir).
+func scanFirefoxProfile(profile string) []SoftwareInfo {
+	extBase := filepath.Join(profile, "extensions")
+	entries, err := os.ReadDir(extBase)
+	if err != nil {
+		return nil
+	}
+	var extensions []SoftwareInfo
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		extID := entry.Name()
+		mPath := filepath.Join(extBase, extID, manifestFile)
+		if info := readExtensionManifest(mPath, "firefox_extensions", "firefox_extensions", extID); info != nil {
+			extensions = append(extensions, *info)
+		}
+	}
+	return extensions
+}
+
+// getEdgeExtensions returns installed Edge extensions across all users.
 func (s *SoftwareService) getEdgeExtensions() ([]SoftwareInfo, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, false
-	}
-
 	var extensions []SoftwareInfo
-	for _, pattern := range edgeExtDirGlobs(home) {
-		matches, _ := filepath.Glob(pattern)
-		for _, extBase := range matches {
-			entries, err := os.ReadDir(extBase)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				extID := entry.Name()
-				manifests, _ := filepath.Glob(filepath.Join(extBase, extID, "*", "manifest.json"))
-				for _, mPath := range manifests {
-					if info := readExtensionManifest(mPath, "edge_extensions", "edge_extensions", extID); info != nil {
-						extensions = append(extensions, *info)
-						break
-					}
-				}
-			}
-		}
+	for _, home := range userHomeDirs() {
+		extensions = append(extensions, scanChromiumExtensions(edgeExtDirGlobs(home), "edge_extensions")...)
 	}
 	return extensions, true
 }
 
-// getBraveExtensions returns installed Brave extensions for the current user.
+// getBraveExtensions returns installed Brave extensions across all users.
 func (s *SoftwareService) getBraveExtensions() ([]SoftwareInfo, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, false
-	}
-
 	var extensions []SoftwareInfo
-	for _, pattern := range braveExtDirGlobs(home) {
+	for _, home := range userHomeDirs() {
+		extensions = append(extensions, scanChromiumExtensions(braveExtDirGlobs(home), "brave_extensions")...)
+	}
+	return extensions, true
+}
+
+// scanChromiumExtensions walks Chromium-family extension directories (Chrome,
+// Edge, Brave share the layout: <ExtDir>/<extID>/<version>/manifest.json) and
+// returns one SoftwareInfo per extension, tagged with source/type.
+func scanChromiumExtensions(globs []string, source string) []SoftwareInfo {
+	var extensions []SoftwareInfo
+	for _, pattern := range globs {
 		matches, _ := filepath.Glob(pattern)
 		for _, extBase := range matches {
-			entries, err := os.ReadDir(extBase)
-			if err != nil {
-				continue
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				extID := entry.Name()
-				manifests, _ := filepath.Glob(filepath.Join(extBase, extID, "*", "manifest.json"))
-				for _, mPath := range manifests {
-					if info := readExtensionManifest(mPath, "brave_extensions", "brave_extensions", extID); info != nil {
-						extensions = append(extensions, *info)
-						break
-					}
-				}
+			extensions = append(extensions, scanChromiumExtBase(extBase, source)...)
+		}
+	}
+	return extensions
+}
+
+// scanChromiumExtBase scans one Chromium "Extensions" directory, whose layout is
+// <extBase>/<extID>/<version>/manifest.json.
+func scanChromiumExtBase(extBase, source string) []SoftwareInfo {
+	entries, err := os.ReadDir(extBase)
+	if err != nil {
+		return nil
+	}
+	var extensions []SoftwareInfo
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		extID := entry.Name()
+		manifests, _ := filepath.Glob(filepath.Join(extBase, extID, "*", manifestFile))
+		for _, mPath := range manifests {
+			if info := readExtensionManifest(mPath, source, source, extID); info != nil {
+				extensions = append(extensions, *info)
+				break
 			}
 		}
 	}
-	return extensions, true
+	return extensions
 }
 
 // readExtensionManifest reads a browser extension's manifest.json and returns

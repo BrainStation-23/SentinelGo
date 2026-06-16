@@ -89,22 +89,27 @@ func parseMdlsOutput(output string, paths []string, result map[string]string) {
 	}
 }
 
-// platformSoftware collects currently installed software on macOS.
-func (s *SoftwareService) platformSoftware() []SoftwareInfo {
+// platformSoftware collects currently installed software on macOS. It returns
+// the aggregated list and whether the scan was complete (system_profiler — the
+// bulk source — succeeded). brew is per-user and not fully captured when running
+// as root (known limitation).
+func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, bool) {
 	var sw []SoftwareInfo
 
-	if items, ok := s.getMacApplications(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getHomebrewPackages(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getHomebrewCaskPackages(); ok {
-		sw = append(sw, items...)
-	}
-	s.appendExtensions(&sw)
+	apps, appsOK := s.getMacApplications()
+	sw = append(sw, apps...)
+	brew, _ := s.getHomebrewPackages()
+	sw = append(sw, brew...)
+	cask, _ := s.getHomebrewCaskPackages()
+	sw = append(sw, cask...)
 
-	return sw
+	extStart := len(sw)
+	s.appendExtensions(&sw)
+	extCount := len(sw) - extStart
+
+	log.Printf("[software] collected: apps=%d brew=%d cask=%d extensions=%d total=%d (complete=%v)",
+		len(apps), len(brew), len(cask), extCount, len(sw), appsOK)
+	return sw, appsOK
 }
 
 func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {

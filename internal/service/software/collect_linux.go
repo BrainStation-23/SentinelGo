@@ -10,26 +10,31 @@ import (
 	"time"
 )
 
-// platformSoftware collects currently installed software on Linux.
-// LastOpened is not collected for Linux packages.
-func (s *SoftwareService) platformSoftware() []SoftwareInfo {
+// platformSoftware collects currently installed software on Linux. It returns
+// the aggregated list and whether the scan was complete (a system package
+// manager — dpkg or rpm — succeeded). snap/flatpak are supplementary, and
+// per-user flatpaks are not fully captured when running as root (known
+// limitation). LastOpened is not collected for Linux packages.
+func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, bool) {
 	var sw []SoftwareInfo
 
-	if items, ok := s.getDebPackages(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getRPMPackages(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getSnapPackages(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getFlatpakPackages(); ok {
-		sw = append(sw, items...)
-	}
-	s.appendExtensions(&sw)
+	deb, debOK := s.getDebPackages()
+	sw = append(sw, deb...)
+	rpm, rpmOK := s.getRPMPackages()
+	sw = append(sw, rpm...)
+	snap, _ := s.getSnapPackages()
+	sw = append(sw, snap...)
+	flatpak, _ := s.getFlatpakPackages()
+	sw = append(sw, flatpak...)
 
-	return sw
+	extStart := len(sw)
+	s.appendExtensions(&sw)
+	extCount := len(sw) - extStart
+
+	complete := debOK || rpmOK
+	log.Printf("[software] collected: deb=%d rpm=%d snap=%d flatpak=%d extensions=%d total=%d (complete=%v)",
+		len(deb), len(rpm), len(snap), len(flatpak), extCount, len(sw), complete)
+	return sw, complete
 }
 
 func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {

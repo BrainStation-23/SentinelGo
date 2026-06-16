@@ -49,4 +49,9 @@ sentinelgo-auditlogs
 /release
 coverage.html
 audit-config-sample.json
+
+# Local agent SQLite stores (created at runtime / by tests; never commit)
+sentinelgo_*.db
+sentinelgo_*.db-wal
+sentinelgo_*.db-shm
 /.puku

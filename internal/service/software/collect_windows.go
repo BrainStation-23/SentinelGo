@@ -8,31 +8,47 @@ import (
 	"time"
 )
 
-// platformSoftware collects currently installed software on Windows.
-func (s *SoftwareService) platformSoftware() []SoftwareInfo {
+// platformSoftware collects currently installed software on Windows. It returns
+// the aggregated list and whether the scan was complete (the registry uninstall
+// query — the bulk source — succeeded). An incomplete scan must not be used to
+// prune the stored catalog, or a transient PowerShell failure would drop entries.
+func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, bool) {
 	var sw []SoftwareInfo
 
-	if items, ok := s.getWindowsSoftware(); ok {
-		sw = append(sw, items...)
-	}
-	if items, ok := s.getWindowsStoreApps(); ok {
-		sw = append(sw, items...)
-	}
+	registry, registryOK := s.getWindowsSoftware()
+	sw = append(sw, registry...)
+
+	storeApps, _ := s.getWindowsStoreApps()
+	sw = append(sw, storeApps...)
+
+	extStart := len(sw)
 	s.appendExtensions(&sw)
+	extCount := len(sw) - extStart
 
 	// Enrich with last-opened times from UserAssist. Best-effort; failures leave
 	// LastOpened empty and never affect which software is reported installed.
 	applyLastOpened(sw, getWindowsLastOpened())
 
-	return sw
+	log.Printf("[software] collected: registry=%d store=%d extensions=%d total=%d (complete=%v)",
+		len(registry), len(storeApps), extCount, len(sw), registryOK)
+	return sw, registryOK
 }
 
-// getWindowsSoftware enumerates installed programs from the registry uninstall keys.
+// getWindowsSoftware enumerates installed programs from the registry uninstall
+// keys: the machine-wide HKLM hives plus every loaded per-user hive under
+// HKEY_USERS. As the SYSTEM service, reading per-user hives directly is the only
+// way to see per-user installs (Chrome, VS Code, Slack, …) — the service
+// account's own HKCU is empty.
 func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	registryQuery := `$paths = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Get-ItemProperty $paths | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | ConvertTo-Json`
+	// Single quotes only (no embedded double quotes / $()-in-string) so the script
+	// survives argument escaping intact. Per-user paths are built by concatenating
+	// each loaded hive's PSPath with a single-quoted suffix.
+	const registryQuery = `$paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+$paths += Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $_.PSPath + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; $_.PSPath + '\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
+Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | Sort-Object Name -Unique | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
@@ -45,15 +61,34 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	return result, ok
 }
 
+// getWindowsStoreApps enumerates non-system Microsoft Store (Appx) packages.
+// It prefers -AllUsers (so the SYSTEM service sees every user's apps), falling
+// back to the current user's packages when not elevated (e.g. the CLI path).
 func (s *SoftwareService) getWindowsStoreApps() ([]SoftwareInfo, bool) {
+	if items, ok := s.queryAppxPackages(true); ok {
+		return items, true
+	}
+	return s.queryAppxPackages(false)
+}
+
+// queryAppxPackages runs Get-AppxPackage with or without -AllUsers and parses
+// the result. A failed -AllUsers attempt (insufficient privilege) returns
+// ok=false so the caller can retry without it.
+func (s *SoftwareService) queryAppxPackages(allUsers bool) ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	query := `Get-AppxPackage | Where-Object {$_.SignatureKind -ne "System"} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}} | ConvertTo-Json`
+	enumerator := "Get-AppxPackage"
+	if allUsers {
+		enumerator += " -AllUsers"
+	}
+	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}} | Sort-Object Name -Unique | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("software: Get-AppxPackage failed: %v", err)
+		if !allUsers {
+			log.Printf("software: Get-AppxPackage failed: %v", err)
+		}
 		return nil, false
 	}
 	var result []SoftwareInfo
