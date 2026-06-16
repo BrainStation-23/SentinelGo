@@ -14,7 +14,8 @@ import (
 
 // sendServicesFn is the RPC send entry point. Replaced in tests.
 var sendServicesFn = func(ctx context.Context, svc *servicessvc.ServicesService, deviceID string, list []models.ServiceInfo, cfg *config.Config) error {
-	return svc.SendByRPC(ctx, deviceID, list, cfg)
+	_, err := svc.SendByRPCIfChanged(ctx, deviceID, list, cfg)
+	return err
 }
 
 // getServicesListFn returns the running services list. Replaced in tests.

@@ -14,10 +14,11 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/models"
+	"sentinelgo/internal/service/rpcutil"
 )
 
 const (
-	rpcInsertBatch      = "/rest/v1/rpc/agent_insert_audit_logs_batch"
+	rpcEnqueueBatch     = "/rest/v1/rpc/agent_enqueue_audit_logs"
 	headerContentType   = "Content-Type"
 	headerAuthorization = "Authorization"
 	headerXDeviceID     = "X-Device-ID"
@@ -64,9 +65,9 @@ func auditLogCategoryKey(category string) string {
 	}
 }
 
-// newRequest builds a POST request to the batch RPC endpoint with all required headers set.
+// newRequest builds a POST request to the enqueue RPC endpoint with all required headers set.
 func (s *AuditLogService) newRequest(ctx context.Context, body []byte) (*http.Request, error) {
-	url := s.config.SupabaseURL + rpcInsertBatch
+	url := s.config.SupabaseURL + rpcEnqueueBatch
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -78,11 +79,11 @@ func (s *AuditLogService) newRequest(ctx context.Context, body []byte) (*http.Re
 	return req, nil
 }
 
-// doRequest executes the request and returns an error for non-2xx responses.
-func (s *AuditLogService) doRequest(req *http.Request) error {
+// doRequest executes the request and returns the HTTP status code and any error for non-2xx responses.
+func (s *AuditLogService) doRequest(req *http.Request) (int, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -92,12 +93,13 @@ func (s *AuditLogService) doRequest(req *http.Request) error {
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
-	return nil
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
 }
 
-// sendToSupabase sends an audit log to the agent_insert_audit_logs_batch RPC.
+// sendToSupabase sends an audit log to the agent_enqueue_audit_logs RPC.
 func (s *AuditLogService) sendToSupabase(ctx context.Context, auditLog models.AuditLog) error {
 	entry := map[string]any{
 		"event_type":   auditLog.EventType,
@@ -128,7 +130,7 @@ func (s *AuditLogService) sendToSupabase(ctx context.Context, auditLog models.Au
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	if err := s.doRequest(req); err != nil {
+	if _, err := s.doRequest(req); err != nil {
 		return fmt.Errorf("audit log upload failed: %w", err)
 	}
 	return nil
@@ -200,25 +202,30 @@ func (s *AuditLogService) SendBatchLogs(batchData map[string]any) error {
 }
 
 // SendBatchLogsWithContext sends a batch of audit logs using the provided context.
+// It applies the standard enqueue retry policy: 5xx and network errors are retried
+// with exponential backoff (1 s initial, 5 min cap); 401 is propagated for the
+// caller's DoWithAuthRetry to handle; other 4xx errors are logged and dropped.
 func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchData map[string]any) error {
+	if s.config.SupabaseURL == "" {
+		return fmt.Errorf("supabase URL not configured")
+	}
+
 	data, err := json.Marshal(batchData)
 	if err != nil {
 		return fmt.Errorf("marshal batch data: %w", err)
 	}
 
-	// Log only the size, never the payload: a batch can contain up to 500 audit
-	// events including usernames, hostnames and process command lines. Dumping
-	// them into the agent's own log leaks sensitive data into logs of unknown
-	// retention/permissions and bloats them.
 	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 
-	req, err := s.newRequest(ctx, data)
-	if err != nil {
-		return fmt.Errorf("create batch request: %w", err)
-	}
-
-	if err := s.doRequest(req); err != nil {
-		return fmt.Errorf("batch logs upload failed: %w", err)
-	}
-	return nil
+	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
+		req, err := s.newRequest(ctx, data)
+		if err != nil {
+			return 0, fmt.Errorf("create batch request: %w", err)
+		}
+		status, err := s.doRequest(req)
+		if err != nil {
+			return status, fmt.Errorf("batch logs upload failed: %w", err)
+		}
+		return status, nil
+	})
 }

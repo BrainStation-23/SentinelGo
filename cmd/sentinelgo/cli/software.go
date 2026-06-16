@@ -74,11 +74,6 @@ func HandleSoftwareSync(cfg *config.Config) {
 
 	svc := swsvc.NewSoftwareService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
-	if cfg.EdgeFunctionURL != "" {
-		svc.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
-	} else {
-		svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
-	}
 
 	list := svc.GetSoftwareList()
 	if len(list) == 0 {
@@ -95,19 +90,8 @@ func HandleSoftwareSync(cfg *config.Config) {
 
 // HandleSoftwareListCommand collects installed software and prints it as a list,
 // JSON, or count depending on the flags.
-func HandleSoftwareListCommand(cfgPath string, asJSON, countOnly bool) {
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		log.Printf("Warning: Could not load config: %v", err)
-		cfg = &config.Config{}
-	}
-
+func HandleSoftwareListCommand(_ string, asJSON, countOnly bool) {
 	sw := swsvc.NewSoftwareService()
-
-	if cfg.SoftwareSyncEnabled && cfg.EdgeFunctionURL != "" && cfg.AccessToken != "" {
-		sw.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
-	}
-
 	swList := sw.GetSoftwareList()
 
 	switch {

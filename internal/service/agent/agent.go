@@ -1,20 +1,23 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/rpcutil"
 
 	postgrest "github.com/supabase-community/postgrest-go"
 )
 
-// rpcTimeout bounds a single Supabase RPC so a hung connection cannot wedge the
-// scheduled task that calls it.
 const rpcTimeout = 60 * time.Second
 
 // AgentUpdatePayload represents data structure for updating agent information
@@ -45,12 +48,16 @@ type AgentUpdatePayload struct {
 	SecurityInfo     interface{} `json:"security_info,omitempty"`
 }
 
-// AgentService handles agent-related database operations via the PostgREST SDK.
-type AgentService struct{}
+// AgentService handles agent-related database operations.
+type AgentService struct {
+	client *http.Client
+}
 
 // NewAgentService creates a new instance of AgentService.
 func NewAgentService() *AgentService {
-	return &AgentService{}
+	return &AgentService{
+		client: httpx.NewClient(30 * time.Second),
+	}
 }
 
 // newPostgrestClient builds a postgrest-go client authenticated with the
@@ -67,8 +74,7 @@ func newPostgrestClient(supabaseURL, anonKey, accessToken string) *postgrest.Cli
 	)
 }
 
-// UpdateAgentInfo updates agent information in the agents table via the
-// PostgREST SDK.
+// UpdateAgentInfo updates agent information via the agent_enqueue_inventory RPC.
 func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *shared.SystemInfo) error {
 	hardwareModel := getHardwareModel()
 	firmware := map[string]interface{}{
@@ -103,30 +109,48 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		SecurityInfo:     sysInfo.SecurityInfo,
 	}
 
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
-	rawResult, err := rpcutil.CallWithTimeout(ctx, rpcTimeout, func() (string, error) {
-		return client.Rpc("agent_push_inventory", "", map[string]interface{}{
-			"payload": payload,
-		}), client.ClientError
+	body, err := json.Marshal(map[string]interface{}{
+		"payload": payload,
 	})
 	if err != nil {
-		return fmt.Errorf("call agent_push_inventory RPC: %w", err)
-	}
-	if rawResult == "" {
-		return fmt.Errorf("call agent_push_inventory RPC: empty response")
+		return fmt.Errorf("marshal inventory payload: %w", err)
 	}
 
-	var raw interface{}
-	if err := json.Unmarshal([]byte(rawResult), &raw); err != nil {
-		return fmt.Errorf("agent_push_inventory: unexpected response: %w", err)
-	}
-	if obj, ok := raw.(map[string]interface{}); ok {
-		if msg, ok := obj["message"]; ok {
-			return fmt.Errorf("agent_push_inventory error: %v", msg)
+	url := cfg.SupabaseURL + "/rest/v1/rpc/agent_enqueue_inventory"
+	accessToken := cfg.GetAccessToken()
+	anonKey := cfg.SupabaseKey
+
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
+	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return 0, fmt.Errorf("create request: %w", err)
 		}
-	}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("apikey", anonKey)
 
-	return nil
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		respBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= 400 {
+			return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		var enqResp rpcutil.EnqueueResponse
+		if err := json.Unmarshal(respBody, &enqResp); err != nil {
+			log.Printf("[inventory] enqueue accepted but response parse failed: %v", err)
+		} else {
+			log.Printf("[inventory] enqueued: msg_id=%d queue=%s", enqResp.MsgID, enqResp.Queue)
+		}
+		return resp.StatusCode, nil
+	})
 }
 
 // SetAgentStatus updates only the agent status column via the PostgREST SDK.

@@ -42,13 +42,6 @@ func mockSoftware() []software.SoftwareInfo {
 	}
 }
 
-func newConfiguredService(supabaseURL, accessToken string) *software.SoftwareService {
-	svc := &software.SoftwareService{}
-	svc.SetSupabaseURL(supabaseURL)
-	svc.SetEdgeFunctionConfig(supabaseURL+"/functions/v1/sync-software", accessToken)
-	return svc
-}
-
 // ── NewSoftwareService ────────────────────────────────────────────────────────
 
 func TestNewSoftwareService(t *testing.T) {
@@ -64,7 +57,7 @@ func TestSendByRPC_MissingSupabaseURL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	svc := &software.SoftwareService{}
+	svc := software.NewSoftwareService()
 
 	err := svc.SendByRPC(ctx, "some-agent-id", mockSoftware(), nil)
 	if err == nil {
@@ -83,7 +76,8 @@ func TestSendByRPC_Unauthorized(t *testing.T) {
 	defer server.Close()
 
 	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "expired-token", DeviceID: "dev-1"}
-	svc := newConfiguredService(server.URL, "expired-token")
+	svc := software.NewSoftwareService()
+	svc.SetSupabaseURL(server.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -93,177 +87,78 @@ func TestSendByRPC_Unauthorized(t *testing.T) {
 	}
 }
 
-// ── TestSoftwareUpsertBasic ───────────────────────────────────────────────────
+// ── TestSoftwareEnqueueRPC ────────────────────────────────────────────────────
 
-func TestSoftwareUpsertBasic(t *testing.T) {
+func TestSoftwareEnqueueRPC(t *testing.T) {
+	var rpCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST request, got %s", r.Method)
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/rest/v1/rpc/agent_enqueue_software") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("expected Content-Type 'application/json', got '%s'", r.Header.Get("Content-Type"))
+			t.Errorf("unexpected Content-Type: %s", r.Header.Get("Content-Type"))
 		}
-
-		var payload map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("failed to decode request body: %v", err)
-		}
-
-		inner, _ := payload["payload"].(map[string]interface{})
-		if inner == nil {
-			t.Error("request body should contain top-level 'payload' key")
-		} else if inner["software"] == nil {
-			t.Error("payload.software should be present")
-		}
-
+		rpCalled = true
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"processed":1}`))
+		_, _ = w.Write([]byte(`{"success":true,"enqueued":true,"agent_id":"dev-1","queue":"agent_ingest_software","msg_id":1}`))
 	}))
 	defer server.Close()
 
-	svc := &software.SoftwareService{}
-	svc.SetEdgeFunctionConfig(server.URL, "test-api-key")
+	svc := software.NewSoftwareService()
 	svc.SetSupabaseURL(server.URL)
-
-	testSoftware := []software.SoftwareInfo{
-		{
-			Name:             "Test Software",
-			Source:           "test-source",
-			InstalledVersion: "1.0.0",
-			Type:             "test-type",
-			FirstSeenAt:      time.Now().Format(time.RFC3339),
-		},
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := svc.SendByRPC(ctx, "test-agent-id", testSoftware, nil); err != nil {
+
+	if err := svc.SendByRPC(ctx, "dev-1", mockSoftware(), nil); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
-}
-
-// ── TestSoftwareUpsertFallbackToRestAPI ───────────────────────────────────────
-
-func TestSoftwareUpsertFallbackToRestAPI(t *testing.T) {
-	restAPICalled := false
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/functions/v1/") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if strings.Contains(r.URL.Path, "/rest/v1/rpc/") {
-			restAPICalled = true
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"processed":1}`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	svc := &software.SoftwareService{}
-	svc.SetEdgeFunctionConfig(server.URL+"/functions/v1/upsert-agent-software", "test-api-key")
-
-	testSoftware := []software.SoftwareInfo{
-		{
-			Name:             "Fallback Test Software",
-			Source:           "deb_packages",
-			InstalledVersion: "1.0.0",
-			Type:             "deb_packages",
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := svc.SendSoftwareData(ctx, "test-agent-id", testSoftware); err != nil {
-		t.Errorf("expected fallback to RPC to succeed, got: %v", err)
-	}
-	if !restAPICalled {
-		t.Error("expected RPC fallback to be called after edge function 404")
+	if !rpCalled {
+		t.Error("expected RPC endpoint to be called")
 	}
 }
 
-// ── TestSoftwareUpsertSetSupabaseURL ─────────────────────────────────────────
+// ── TestSoftwareEnqueuePayloadShape ──────────────────────────────────────────
 
-func TestSoftwareUpsertSetSupabaseURL(t *testing.T) {
-	restAPICalled := false
-
+func TestSoftwareEnqueuePayloadShape(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/rest/v1/rpc/") {
-			restAPICalled = true
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"processed":1}`))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	svc := &software.SoftwareService{}
-	svc.SetEdgeFunctionConfig(server.URL, "test-api-key")
-	svc.SetSupabaseURL(server.URL)
-
-	testSoftware := []software.SoftwareInfo{
-		{Name: "SetSupabaseURL Test", Source: "homebrew", Type: "homebrew"},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := svc.SendByRPC(ctx, "test-agent-id", testSoftware, nil); err != nil {
-		t.Errorf("expected REST API fallback via SetSupabaseURL to succeed, got: %v", err)
-	}
-	if !restAPICalled {
-		t.Error("expected REST API fallback to be called")
-	}
-}
-
-// ── TestUpsertAPI ─────────────────────────────────────────────────────────────
-
-func TestUpsertAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST request, got %s", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("expected Content-Type 'application/json', got '%s'", r.Header.Get("Content-Type"))
-		}
-		if !strings.Contains(r.Header.Get("Authorization"), "Bearer test-api-key") {
-			t.Errorf("expected Authorization header with Bearer test-api-key, got '%s'", r.Header.Get("Authorization"))
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer test-api-key") {
+			t.Errorf("unexpected Authorization header: %s", r.Header.Get("Authorization"))
 		}
 
 		var payload map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
-
 		inner, _ := payload["payload"].(map[string]interface{})
 		if inner == nil {
-			t.Error("request body should contain top-level 'payload' key")
+			t.Error("expected top-level 'payload' key")
 		} else if inner["software"] == nil {
-			t.Error("payload.software should be present")
+			t.Error("expected payload.software to be present")
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"processed":2}`))
+		_, _ = w.Write([]byte(`{"success":true,"enqueued":true,"msg_id":2}`))
 	}))
 	defer server.Close()
 
-	svc := &software.SoftwareService{}
-	svc.SetEdgeFunctionConfig(server.URL, "test-api-key")
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-api-key"}
+	svc := software.NewSoftwareService()
 	svc.SetSupabaseURL(server.URL)
-
-	now := time.Now().Format(time.RFC3339)
-	testSoftware := []software.SoftwareInfo{
-		{Name: "Integration Test Software 1", Source: "deb_packages", InstalledVersion: "1.0.0", Type: "deb_packages", FirstSeenAt: now},
-		{Name: "Integration Test Software 2", Source: "snap_packages", InstalledVersion: "2.0.0", Type: "snap_packages", FirstSeenAt: now},
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := svc.SendByRPC(ctx, "test-agent-id", testSoftware, nil); err != nil {
+
+	now := time.Now().Format(time.RFC3339)
+	list := []software.SoftwareInfo{
+		{Name: "Pkg 1", Source: "deb_packages", InstalledVersion: "1.0.0", Type: "deb_packages", FirstSeenAt: now},
+		{Name: "Pkg 2", Source: "snap_packages", InstalledVersion: "2.0.0", Type: "snap_packages", FirstSeenAt: now},
+	}
+
+	if err := svc.SendByRPC(ctx, "dev-1", list, cfg); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }

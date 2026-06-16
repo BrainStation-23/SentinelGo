@@ -13,7 +13,8 @@ import (
 
 // sendSoftwareFn is the RPC send entry point. Replaced in tests.
 var sendSoftwareFn = func(ctx context.Context, svc *swsvc.SoftwareService, deviceID string, list []swsvc.SoftwareInfo, cfg *config.Config) error {
-	return svc.SendByRPC(ctx, deviceID, list, cfg)
+	_, err := svc.SendByRPCIfChanged(ctx, deviceID, list, cfg)
+	return err
 }
 
 // getSoftwareListFn returns the installed software list. Replaced in tests.
@@ -32,7 +33,6 @@ func (h *syncSoftwareHandler) Slugs() []string {
 func (h *syncSoftwareHandler) Run(ctx context.Context, cfg *config.Config, _ taskstore.Task) (string, error) {
 	svc := swsvc.NewSoftwareService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
-	svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
 
 	freshList := getSoftwareListFn(svc)
 	if len(freshList) == 0 {

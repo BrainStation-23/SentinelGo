@@ -245,11 +245,15 @@ func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore)
 			log.Printf("services-collect: prune stale entries: %v", err)
 		}
 
-		send := func() error { return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg) }
+		send := func() error {
+			_, err := svc.SendByRPCIfChanged(ctx, cfg.DeviceID, list, cfg)
+			return err
+		}
 		if authSvc != nil {
 			send = func() error {
 				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
-					return svc.SendByRPC(ctx, cfg.DeviceID, list, cfg)
+					_, err := svc.SendByRPCIfChanged(ctx, cfg.DeviceID, list, cfg)
+					return err
 				})
 			}
 		}
