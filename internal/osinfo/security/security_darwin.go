@@ -27,22 +27,302 @@ var knownAVApps = []struct {
 
 func collectSecurity() shared.SecurityInfo {
 	profiles := collectFirewallProfiles()
-	enabled := false
+	fwEnabled := false
 	for _, p := range profiles {
 		if p.Enabled {
-			enabled = true
+			fwEnabled = true
 			break
 		}
 	}
-	return shared.SecurityInfo{
-		AntivirusProducts:     collectAV(),
-		FirewallEnabled:       enabled,
-		FirewallProfiles:      profiles,
-		CoreIsolation:         collectCoreIsolation(),
-		SecureBootEnabled:     collectSecureBoot(),
-		ListeningPorts:        collectListeningPorts(),
-		USBMassStorageEnabled: collectUSBMassStorage(),
+	
+	avProducts := collectAV()
+	coreIsolation := collectCoreIsolation()
+	secureBoot := collectSecureBoot()
+	ports := collectListeningPorts()
+	usb := collectUSBMassStorage()
+
+	fwSec := collectFirewallSecurity(profiles)
+	
+	var avProtection shared.AntivirusProtectionInfo
+	for _, av := range avProducts {
+		details := shared.AntivirusDetails{
+			ProductName:             av.Name,
+			Vendor:                  "Unknown",
+			Version:                 "Unknown",
+			RealTimeProtectionState: "Unknown",
+			ServiceStatus:           "Unknown",
+			UpdateStatus:            "Unknown",
+		}
+		if strings.EqualFold(av.Enabled, "enabled") {
+			details.RealTimeProtectionState = "Enabled"
+			details.ServiceStatus = "Running"
+		} else if strings.EqualFold(av.Enabled, "disabled") {
+			details.RealTimeProtectionState = "Disabled"
+			details.ServiceStatus = "Stopped"
+		}
+		avProtection.Products = append(avProtection.Products, details)
 	}
+	
+	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+		avProtection.XProtectVersion = strings.TrimSpace(out)
+	} else if out, err = shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+		avProtection.XProtectVersion = strings.TrimSpace(out)
+	}
+	
+	if _, err := os.Stat("/System/Library/CoreServices/MRT.app"); err == nil {
+		avProtection.MRTInstalled = true
+	} else if _, err = os.Stat("/Library/Apple/System/Library/CoreServices/MRT.app"); err == nil {
+		avProtection.MRTInstalled = true
+	}
+	
+	if avProtection.MRTInstalled {
+		var scan shared.SecurityScanInfo
+		scan.LastScanTime = "Unknown"
+		scan.ScanType = "On-Access"
+		scan.ScanResult = "Clean"
+		
+		if mlog, err := os.ReadFile("/var/log/MRT.log"); err == nil {
+			lines := strings.Split(string(mlog), "\n")
+			for i := len(lines) - 1; i >= 0; i-- {
+				line := strings.TrimSpace(lines[i])
+				if line == "" {
+					continue
+				}
+				parts := strings.SplitN(line, " ", 3)
+				if len(parts) >= 2 {
+					scan.LastScanTime = parts[0] + " " + parts[1]
+				}
+				if strings.Contains(strings.ToLower(line), "removing") || strings.Contains(strings.ToLower(line), "removed") {
+					scan.ScanResult = "Threats Detected"
+					scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
+						ThreatName:    "Malware",
+						Severity:      "High",
+						FilePath:      "Check /var/log/MRT.log",
+						ActionTaken:   "Removed",
+						DetectionTime: scan.LastScanTime,
+					})
+				}
+				break
+			}
+		}
+		avProtection.Products = append(avProtection.Products, shared.AntivirusDetails{
+			ProductName:             "Malware Removal Tool",
+			Vendor:                  "Apple",
+			Version:                 "Unknown",
+			RealTimeProtectionState: "Enabled",
+			ServiceStatus:           "Running",
+			UpdateStatus:            "Unknown",
+			ScanInfo:                &scan,
+		})
+	}
+
+	edrXdr := collectEDRInfo()
+	kernelHard := shared.KernelHardeningInfo{
+		MemoryIntegrityEnabled: false,
+		VBSEnabled:             false,
+		SIPEnabled:             coreIsolation.SIPEnabled,
+		USBMassStorageEnabled:  usb,
+	}
+	devEnc := collectDeviceEncryption()
+	hwSec := collectHardwareSecurity()
+	idAccess := collectIdentityAccessControl()
+	netExposure := analyzeNetworkExposure(ports)
+	
+	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
+
+	return shared.SecurityInfo{
+		AntivirusProducts:     avProducts,
+		FirewallEnabled:       fwEnabled,
+		FirewallProfiles:      profiles,
+		CoreIsolation:         coreIsolation,
+		SecureBootEnabled:     secureBoot,
+		ListeningPorts:        ports,
+		USBMassStorageEnabled: usb,
+
+		FirewallSecurity:       fwSec,
+		AntivirusProtection:    avProtection,
+		EDRXDRDetection:        edrXdr,
+		KernelHardening:        kernelHard,
+		DeviceEncryption:       devEnc,
+		HardwareSecurity:       hwSec,
+		IdentityAccessControl:  idAccess,
+		NetworkExposureAccess:  netExposure,
+		PostureSummary:         posture,
+	}
+}
+
+func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {
+	var f shared.FirewallSecurityInfo
+	f.Profiles = profiles
+	allEnabled := true
+	anyEnabled := false
+	for _, p := range profiles {
+		f.ActiveProfiles = append(f.ActiveProfiles, p.Name)
+		if p.Enabled {
+			anyEnabled = true
+		} else {
+			allEnabled = false
+		}
+	}
+	f.FirewallState = "Disabled"
+	if allEnabled && len(profiles) > 0 {
+		f.FirewallState = "Enabled"
+	} else if anyEnabled {
+		f.FirewallState = "Partially Enabled"
+	}
+	return f
+}
+
+func collectEDRInfo() shared.EDRXDRDetectionInfo {
+	var info shared.EDRXDRDetectionInfo
+	knownEDR := []struct {
+		path   string
+		proc   string
+		name   string
+		vendor string
+	}{
+		{"/Library/CS/falconctl", "falcon-sensor", "CrowdStrike Falcon", "CrowdStrike"},
+		{"/Applications/SentinelOne Extensions.app", "sentineld", "SentinelOne Singularity", "SentinelOne"},
+		{"/Library/LaunchDaemons/com.wazuh.agent.plist", "wazuh-agent", "Wazuh Agent", "Wazuh"},
+		{"/var/ossec", "wazuh-agent", "Wazuh Agent", "Wazuh"},
+		{"/usr/local/bin/velociraptor", "velociraptor", "Velociraptor", "Velociraptor"},
+		{"/var/db/osquery", "osqueryd", "Osquery", "Osquery"},
+		{"/opt/osquery", "osqueryd", "Osquery", "Osquery"},
+	}
+
+	runningProcs := make(map[string]bool)
+	if psOut, err := shared.RunCommand("ps", "-axco", "comm"); err == nil {
+		for _, line := range strings.Split(psOut, "\n") {
+			runningProcs[strings.TrimSpace(line)] = true
+		}
+	}
+
+	for _, e := range knownEDR {
+		installed := false
+		if _, err := os.Stat(e.path); err == nil {
+			installed = true
+		} else if runningProcs[e.proc] {
+			installed = true
+		}
+		
+		if !installed {
+			continue
+		}
+		
+		isRunning := runningProcs[e.proc]
+		status := "Stopped"
+		if isRunning {
+			status = "Running"
+		}
+		
+		agent := shared.EDRXDRAgentDetails{
+			AgentName:              e.name,
+			Vendor:                 e.vendor,
+			ServiceStatus:          status,
+			HealthStatus:           "Healthy",
+			ConnectivityStatus:     "Connected",
+			TamperProtectionStatus: "Enabled",
+			Installed:              true,
+			Running:                isRunning,
+			Stopped:                !isRunning,
+		}
+		
+		if isRunning {
+			agent.CloudConnected = true
+			agent.Healthy = true
+		} else {
+			agent.HealthStatus = "Unhealthy"
+			agent.ConnectivityStatus = "Disconnected"
+			agent.CloudDisconnected = true
+			agent.Offline = true
+		}
+		
+		info.Agents = append(info.Agents, agent)
+	}
+	return info
+}
+
+func collectDeviceEncryption() shared.DeviceEncryptionInfo {
+	var enc shared.DeviceEncryptionInfo
+	enc.EncryptionProvider = "None"
+	enc.EncryptionStatus = "Unencrypted"
+	enc.ProtectionStatus = "Disabled"
+	enc.RecoveryKeyBackupStatus = "Unknown"
+
+	output, err := shared.RunCommand("fdesetup", "status")
+	if err == nil {
+		lower := strings.ToLower(output)
+		if strings.Contains(lower, "filevault is on") {
+			enc.EncryptionProvider = "FileVault"
+			enc.EncryptionStatus = "Encrypted"
+			enc.ProtectionStatus = "Enabled"
+		}
+		
+		keyOut, keyErr := shared.RunCommand("fdesetup", "haspersonalrecoverykey")
+		if keyErr == nil && strings.Contains(strings.ToLower(keyOut), "true") {
+			enc.RecoveryKeyBackupStatus = "Backed Up"
+		}
+	}
+	return enc
+}
+
+func collectHardwareSecurity() shared.HardwareSecurityInfo {
+	var hw shared.HardwareSecurityInfo
+	hw.TPMStatus = "Unsupported"
+	hw.TPMVersion = "None"
+	hw.SecureBootStatus = collectSecureBoot()
+	
+	hw.SecureEnclaveStatus = "Unsupported"
+	hw.ActivationLockStatus = "Unknown"
+	
+	hwOut, err := shared.RunCommand("system_profiler", "SPHardwareDataType")
+	if err == nil {
+		lower := strings.ToLower(hwOut)
+		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") || strings.Contains(lower, "t2") {
+			hw.SecureEnclaveStatus = "Enabled"
+		}
+		
+		for _, line := range strings.Split(hwOut, "\n") {
+			if strings.Contains(line, "Activation Lock Status:") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 2 {
+					hw.ActivationLockStatus = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+	return hw
+}
+
+func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
+	var id shared.IdentityAccessControlInfo
+	
+	id.TouchIDStatus = "Disabled"
+	if out, err := shared.RunCommand("bioutil", "-read", "-system"); err == nil {
+		if strings.Contains(strings.ToLower(out), "enabled") {
+			id.TouchIDStatus = "Enabled"
+		}
+	}
+	
+	id.BootstrapTokenStatus = "Disabled"
+	if out, err := shared.RunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
+		if strings.Contains(strings.ToLower(out), "supported: yes") || strings.Contains(strings.ToLower(out), "escrowed: yes") {
+			id.BootstrapTokenStatus = "Enabled"
+		}
+	}
+	
+	id.SecureTokenStatus = "Unknown"
+	if currentUser := os.Getenv("USER"); currentUser != "" {
+		if out, err := shared.RunCommand("sysadminctl", "-adminUser", "", "-adminPassword", "", "-secureTokenStatus", currentUser); err == nil {
+			if strings.Contains(strings.ToLower(out), "is enabled") {
+				id.SecureTokenStatus = "Enabled"
+			} else if strings.Contains(strings.ToLower(out), "is disabled") {
+				id.SecureTokenStatus = "Disabled"
+			}
+		}
+	}
+	
+	return id
 }
 
 // collectAV checks for known AV app bundles and reports Gatekeeper status.

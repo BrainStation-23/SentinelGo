@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,22 +28,350 @@ var knownAVServices = []struct {
 
 func collectSecurity() shared.SecurityInfo {
 	profiles := collectFirewallProfiles()
-	enabled := false
+	fwEnabled := false
 	for _, p := range profiles {
 		if p.Enabled {
-			enabled = true
+			fwEnabled = true
 			break
 		}
 	}
-	return shared.SecurityInfo{
-		AntivirusProducts:     collectAV(),
-		FirewallEnabled:       enabled,
-		FirewallProfiles:      profiles,
-		CoreIsolation:         collectCoreIsolation(),
-		SecureBootEnabled:     collectSecureBoot(),
-		ListeningPorts:        collectListeningPorts(),
-		USBMassStorageEnabled: collectUSBMassStorage(),
+	
+	avProducts := collectAV()
+	coreIsolation := collectCoreIsolation()
+	secureBoot := collectSecureBoot()
+	ports := collectListeningPorts()
+	usb := collectUSBMassStorage()
+
+	fwSec := collectFirewallSecurity(profiles)
+	
+	var avProtection shared.AntivirusProtectionInfo
+	for _, av := range avProducts {
+		details := shared.AntivirusDetails{
+			ProductName:             av.Name,
+			Vendor:                  "Unknown",
+			Version:                 "Unknown",
+			RealTimeProtectionState: "Unknown",
+			ServiceStatus:           "Unknown",
+			UpdateStatus:            "Unknown",
+		}
+		if strings.EqualFold(av.Enabled, "enabled") {
+			details.RealTimeProtectionState = "Enabled"
+			details.ServiceStatus = "Running"
+		} else if strings.EqualFold(av.Enabled, "disabled") {
+			details.RealTimeProtectionState = "Disabled"
+			details.ServiceStatus = "Stopped"
+		}
+		
+		if strings.Contains(strings.ToLower(av.Name), "clamav") {
+			var scan shared.SecurityScanInfo
+			scan.LastScanTime = "Unknown"
+			scan.ScanType = "Scheduled/On-Demand"
+			scan.ScanResult = "Clean"
+			
+			if logData, err := os.ReadFile("/var/log/clamav/clamav.log"); err == nil {
+				lines := strings.Split(string(logData), "\n")
+				for i := len(lines) - 1; i >= 0; i-- {
+					line := strings.TrimSpace(lines[i])
+					if strings.Contains(line, "SCAN SUMMARY") {
+						if len(line) > 24 {
+							scan.LastScanTime = line[:20]
+						}
+					}
+					if strings.Contains(line, "Infected files:") {
+						parts := strings.Split(line, ":")
+						if len(parts) >= 2 {
+							var infectedCount int
+							fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &infectedCount)
+							scan.ScannedFilesCount = int64(infectedCount)
+							if infectedCount > 0 {
+								scan.ScanResult = "Threats Detected"
+								scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
+									ThreatName:    "Infected File",
+									Severity:      "High",
+									FilePath:      "Check /var/log/clamav/clamav.log",
+									ActionTaken:   "Detected",
+									DetectionTime: scan.LastScanTime,
+								})
+							}
+						}
+					}
+				}
+			}
+			details.ScanInfo = &scan
+		}
+		avProtection.Products = append(avProtection.Products, details)
 	}
+
+	edrXdr := collectEDRInfo()
+	kernelHard := shared.KernelHardeningInfo{
+		MemoryIntegrityEnabled: false,
+		VBSEnabled:             false,
+		SELinuxMode:            coreIsolation.SELinuxMode,
+		AppArmorEnabled:        coreIsolation.AppArmorEnabled,
+		KernelLockdown:         coreIsolation.KernelLockdown,
+		USBMassStorageEnabled:  usb,
+	}
+	devEnc := collectDeviceEncryption()
+	hwSec := collectHardwareSecurity()
+	idAccess := collectIdentityAccessControl()
+	netExposure := collectNetworkExposure(ports)
+	
+	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
+
+	return shared.SecurityInfo{
+		AntivirusProducts:     avProducts,
+		FirewallEnabled:       fwEnabled,
+		FirewallProfiles:      profiles,
+		CoreIsolation:         coreIsolation,
+		SecureBootEnabled:     secureBoot,
+		ListeningPorts:        ports,
+		USBMassStorageEnabled: usb,
+
+		FirewallSecurity:       fwSec,
+		AntivirusProtection:    avProtection,
+		EDRXDRDetection:        edrXdr,
+		KernelHardening:        kernelHard,
+		DeviceEncryption:       devEnc,
+		HardwareSecurity:       hwSec,
+		IdentityAccessControl:  idAccess,
+		NetworkExposureAccess:  netExposure,
+		PostureSummary:         posture,
+	}
+}
+
+func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {
+	var f shared.FirewallSecurityInfo
+	f.Profiles = profiles
+	allEnabled := true
+	anyEnabled := false
+	for _, p := range profiles {
+		f.ActiveProfiles = append(f.ActiveProfiles, p.Name)
+		if p.Enabled {
+			anyEnabled = true
+		} else {
+			allEnabled = false
+		}
+	}
+	f.FirewallState = "Disabled"
+	if allEnabled && len(profiles) > 0 {
+		f.FirewallState = "Enabled"
+	} else if anyEnabled {
+		f.FirewallState = "Partially Enabled"
+	}
+	return f
+}
+
+func collectEDRInfo() shared.EDRXDRDetectionInfo {
+	var info shared.EDRXDRDetectionInfo
+	knownEDR := []struct {
+		svc    string
+		name   string
+		vendor string
+		proc   string
+	}{
+		{"falcon-sensor", "CrowdStrike Falcon", "CrowdStrike", "falcon-sensor"},
+		{"sentinelone", "SentinelOne Singularity", "SentinelOne", "sentineld"},
+		{"wazuh-agent", "Wazuh Agent", "Wazuh", "wazuh-agentd"},
+		{"velociraptor", "Velociraptor", "Velociraptor", "velociraptor"},
+		{"osqueryd", "Osquery", "Osquery", "osqueryd"},
+	}
+
+	runningProcs := make(map[string]bool)
+	if entries, err := os.ReadDir("/proc"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			var pid int
+			if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err == nil {
+				if comm, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil {
+					runningProcs[strings.TrimSpace(string(comm))] = true
+				}
+			}
+		}
+	}
+
+	for _, e := range knownEDR {
+		installed := false
+		status := "Stopped"
+		startup := "Disabled"
+
+		if activeOut, err := shared.RunCommand("systemctl", "is-active", e.svc); err == nil {
+			installed = true
+			if strings.TrimSpace(activeOut) == "active" {
+				status = "Running"
+			}
+		}
+		if enabledOut, err := shared.RunCommand("systemctl", "is-enabled", e.svc); err == nil {
+			installed = true
+			if strings.TrimSpace(enabledOut) == "enabled" {
+				startup = "Auto"
+			}
+		}
+		
+		if !installed && runningProcs[e.proc] {
+			installed = true
+			status = "Running"
+			startup = "Manual"
+		}
+		
+		if !installed {
+			continue
+		}
+		
+		agent := shared.EDRXDRAgentDetails{
+			AgentName:              e.name,
+			Vendor:                 e.vendor,
+			ServiceStatus:          status,
+			HealthStatus:           "Healthy",
+			ConnectivityStatus:     "Connected",
+			TamperProtectionStatus: "Enabled",
+			Installed:              true,
+			Running:                status == "Running",
+			Stopped:                status == "Stopped",
+			Disabled:               startup == "Disabled",
+		}
+		
+		if status == "Running" {
+			agent.CloudConnected = true
+			agent.Healthy = true
+		} else {
+			agent.HealthStatus = "Unhealthy"
+			agent.ConnectivityStatus = "Disconnected"
+			agent.CloudDisconnected = true
+			agent.Offline = true
+		}
+		
+		info.Agents = append(info.Agents, agent)
+	}
+	return info
+}
+
+func collectDeviceEncryption() shared.DeviceEncryptionInfo {
+	var enc shared.DeviceEncryptionInfo
+	enc.EncryptionProvider = "None"
+	enc.EncryptionStatus = "Unencrypted"
+	enc.ProtectionStatus = "Disabled"
+	enc.RecoveryKeyBackupStatus = "Unknown"
+
+	if output, err := shared.RunCommand("lsblk", "-o", "NAME,FSTYPE"); err == nil {
+		if strings.Contains(output, "crypto_LUKS") {
+			enc.EncryptionProvider = "LUKS"
+			enc.EncryptionStatus = "Encrypted"
+			enc.ProtectionStatus = "Enabled"
+		}
+	}
+	return enc
+}
+
+func collectHardwareSecurity() shared.HardwareSecurityInfo {
+	var hw shared.HardwareSecurityInfo
+	hw.SecureBootStatus = collectSecureBoot()
+	hw.TPMStatus = "Unsupported"
+	hw.TPMVersion = "None"
+	hw.SecureEnclaveStatus = "Unsupported"
+	hw.ActivationLockStatus = "Unsupported"
+
+	if _, err := os.Stat("/dev/tpm0"); err == nil {
+		hw.TPMStatus = "Enabled"
+		hw.TPMVersion = "1.2"
+		
+		if data, err := os.ReadFile("/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
+			hw.TPMVersion = strings.TrimSpace(string(data)) + ".0"
+		} else if data, err = os.ReadFile("/sys/class/tpm/tpm0/device/description"); err == nil {
+			if strings.Contains(string(data), "2.0") {
+				hw.TPMVersion = "2.0"
+			}
+		}
+	} else if _, err := os.Stat("/sys/class/tpm"); err == nil {
+		hw.TPMStatus = "Disabled"
+	}
+	return hw
+}
+
+func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
+	var id shared.IdentityAccessControlInfo
+	id.SSHRootLogin = "Unknown"
+	id.SSHPasswordAuth = "Unknown"
+	id.SudoPrivilege = "Unknown"
+
+	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			l := strings.TrimSpace(line)
+			if strings.HasPrefix(l, "#") {
+				continue
+			}
+			fields := strings.Fields(l)
+			if len(fields) >= 2 {
+				key := strings.ToLower(fields[0])
+				val := strings.ToLower(fields[1])
+				if key == "permitrootlogin" {
+					if val == "yes" {
+						id.SSHRootLogin = "Enabled"
+					} else if val == "no" || val == "prohibit-password" {
+						id.SSHRootLogin = "Disabled"
+					}
+				}
+				if key == "passwordauthentication" {
+					if val == "yes" {
+						id.SSHPasswordAuth = "Enabled"
+					} else if val == "no" {
+						id.SSHPasswordAuth = "Disabled"
+					}
+				}
+			}
+		}
+	}
+
+	if data, err := os.ReadFile("/etc/group"); err == nil {
+		id.SudoPrivilege = "Configured"
+		hasSudoGroup := false
+		for _, line := range strings.Split(string(data), "\n") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 4 {
+				gname := parts[0]
+				if gname == "sudo" || gname == "wheel" {
+					hasSudoGroup = true
+				}
+			}
+		}
+		if !hasSudoGroup {
+			id.SudoPrivilege = "Misconfigured"
+		}
+	}
+
+	return id
+}
+
+func collectNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
+	info := analyzeNetworkExposure(ports)
+	
+	id := collectIdentityAccessControl()
+	info.SSHRootLoginStatus = id.SSHRootLogin
+	info.SSHPasswordAuthStatus = id.SSHPasswordAuth
+	
+	info.SSHKeyAuthStatus = "Unknown"
+	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			l := strings.TrimSpace(line)
+			if strings.HasPrefix(l, "#") {
+				continue
+			}
+			fields := strings.Fields(l)
+			if len(fields) >= 2 {
+				key := strings.ToLower(fields[0])
+				val := strings.ToLower(fields[1])
+				if key == "pubkeyauthentication" {
+					if val == "yes" {
+						info.SSHKeyAuthStatus = "Enabled"
+					} else if val == "no" {
+						info.SSHKeyAuthStatus = "Disabled"
+					}
+				}
+			}
+		}
+	}
+	return info
 }
 
 // collectUSBMassStorage checks whether USB mass storage is active or explicitly
