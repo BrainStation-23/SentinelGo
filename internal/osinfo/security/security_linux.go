@@ -306,16 +306,18 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 				key := strings.ToLower(fields[0])
 				val := strings.ToLower(fields[1])
 				if key == "permitrootlogin" {
-					if val == "yes" {
+					switch val {
+					case "yes":
 						id.SSHRootLogin = "Enabled"
-					} else if val == "no" || val == "prohibit-password" {
+					case "no", "prohibit-password":
 						id.SSHRootLogin = "Disabled"
 					}
 				}
 				if key == "passwordauthentication" {
-					if val == "yes" {
+					switch val {
+					case "yes":
 						id.SSHPasswordAuth = "Enabled"
-					} else if val == "no" {
+					case "no":
 						id.SSHPasswordAuth = "Disabled"
 					}
 				}
@@ -402,9 +404,10 @@ func collectNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposure
 				key := strings.ToLower(fields[0])
 				val := strings.ToLower(fields[1])
 				if key == "pubkeyauthentication" {
-					if val == "yes" {
+					switch val {
+					case "yes":
 						info.SSHKeyAuthStatus = "Enabled"
-					} else if val == "no" {
+					case "no":
 						info.SSHKeyAuthStatus = "Disabled"
 					}
 				}
