@@ -2,6 +2,7 @@ package shared
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"time"
@@ -31,4 +32,27 @@ func RunCommand(name string, args ...string) (string, error) {
 		return "", err
 	}
 	return string(output), nil
+}
+
+// RunCommandOutput runs name with args and returns combined output plus exit code.
+// Unlike RunCommand, a non-zero exit code is not treated as an error — only execution
+// failures (command not found, timeout) return a non-nil error. Exit code -1 is
+// returned when the process could not be started or timed out.
+// This is needed for tools like yum check-update that signal "updates available"
+// via exit code 100 rather than exit 0.
+func RunCommandOutput(name string, args ...string) (output string, exitCode int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// #nosec G204 - name and args are controlled internal parameters
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, runErr := cmd.CombinedOutput()
+	output = string(out)
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return output, exitErr.ExitCode(), nil
+		}
+		return output, -1, runErr
+	}
+	return output, 0, nil
 }
