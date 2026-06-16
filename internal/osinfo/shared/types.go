@@ -241,15 +241,15 @@ type SecurityInfo struct {
 	USBMassStorageEnabled string             `json:"usb_mass_storage_enabled"` // "enabled", "disabled", "unknown"
 
 	// Category-Wise Security Modules (New)
-	FirewallSecurity       FirewallSecurityInfo       `json:"firewall_security"`
-	AntivirusProtection    AntivirusProtectionInfo    `json:"antivirus_protection"`
-	EDRXDRDetection        EDRXDRDetectionInfo        `json:"edr_xdr_detection"`
-	KernelHardening        KernelHardeningInfo        `json:"kernel_hardening"`
-	DeviceEncryption       DeviceEncryptionInfo       `json:"device_encryption"`
-	HardwareSecurity       HardwareSecurityInfo       `json:"hardware_security"`
-	IdentityAccessControl  IdentityAccessControlInfo  `json:"identity_access_control"`
-	NetworkExposureAccess  NetworkExposureAccessInfo  `json:"network_exposure_access"`
-	PostureSummary         SecurityPostureSummary     `json:"posture_summary"`
+	FirewallSecurity      FirewallSecurityInfo      `json:"firewall_security"`
+	AntivirusProtection   AntivirusProtectionInfo   `json:"antivirus_protection"`
+	EDRXDRDetection       EDRXDRDetectionInfo       `json:"edr_xdr_detection"`
+	KernelHardening       KernelHardeningInfo       `json:"kernel_hardening"`
+	DeviceEncryption      DeviceEncryptionInfo      `json:"device_encryption"`
+	HardwareSecurity      HardwareSecurityInfo      `json:"hardware_security"`
+	IdentityAccessControl IdentityAccessControlInfo `json:"identity_access_control"`
+	NetworkExposureAccess NetworkExposureAccessInfo `json:"network_exposure_access"`
+	PostureSummary        SecurityPostureSummary    `json:"posture_summary"`
 }
 
 // 1. Firewall Security
@@ -262,10 +262,10 @@ type FirewallSecurityInfo struct {
 // 2. Antivirus Protection
 type AntivirusProtectionInfo struct {
 	Products []AntivirusDetails `json:"products"`
-	
+
 	// Windows Specific Windows Defender / Endpoint Protection controls
 	WindowsDefenderDetails *WindowsDefenderDetails `json:"windows_defender_details,omitempty"`
-	
+
 	// macOS Specific Built-in
 	XProtectVersion string `json:"xprotect_version,omitempty"`
 	MRTInstalled    bool   `json:"mrt_installed,omitempty"`
@@ -304,9 +304,9 @@ type SecurityScanInfo struct {
 
 type ThreatDetails struct {
 	ThreatName    string `json:"threat_name"`
-	Severity      string `json:"severity"`       // "Low", "Medium", "High", "Critical", "Unknown"
+	Severity      string `json:"severity"` // "Low", "Medium", "High", "Critical", "Unknown"
 	FilePath      string `json:"file_path"`
-	ActionTaken   string `json:"action_taken"`   // "Quarantined", "Removed", "Allowed", "Blocked", "Pending"
+	ActionTaken   string `json:"action_taken"` // "Quarantined", "Removed", "Allowed", "Blocked", "Pending"
 	DetectionTime string `json:"detection_time"`
 }
 
@@ -320,8 +320,8 @@ type EDRXDRAgentDetails struct {
 	Vendor                 string `json:"vendor"`
 	AgentVersion           string `json:"agent_version"`
 	SensorVersion          string `json:"sensor_version,omitempty"`
-	ServiceStatus          string `json:"service_status"`           // "Running", "Stopped", "Disabled", "Unknown"
-	HealthStatus           string `json:"health_status"`            // "Healthy", "Unhealthy", "Unknown"
+	ServiceStatus          string `json:"service_status"` // "Running", "Stopped", "Disabled", "Unknown"
+	HealthStatus           string `json:"health_status"`  // "Healthy", "Unhealthy", "Unknown"
 	LastCheckIn            string `json:"last_check_in,omitempty"`
 	ConnectivityStatus     string `json:"connectivity_status"`      // "Connected", "Disconnected", "Unknown"
 	TamperProtectionStatus string `json:"tamper_protection_status"` // "Enabled", "Disabled", "Unknown"
@@ -386,10 +386,10 @@ type IdentityAccessControlInfo struct {
 	SudoPrivilege   string `json:"sudo_privilege,omitempty"`    // "Configured", "Misconfigured", "Disabled", "Unknown"
 
 	// Patch & Update Compliance (New)
-	PatchComplianceStatus  string `json:"patch_compliance_status"`                 // "Compliant", "Non-Compliant", "Unknown"
-	CriticalKBsMissing     int    `json:"critical_kbs_missing,omitempty"`          // Windows specific
+	PatchComplianceStatus  string `json:"patch_compliance_status"`                   // "Compliant", "Non-Compliant", "Unknown"
+	CriticalKBsMissing     int    `json:"critical_kbs_missing,omitempty"`            // Windows specific
 	RapidSecurityResponses string `json:"rapid_security_responses_status,omitempty"` // macOS specific ("Up to Date", "Out of Date", "Unknown")
-	PendingSecurityPatches int    `json:"pending_security_patches,omitempty"`      // Linux specific
+	PendingSecurityPatches int    `json:"pending_security_patches,omitempty"`        // Linux specific
 }
 
 // 8. Network Exposure & Access
@@ -411,7 +411,7 @@ type SecurityPostureSummary struct {
 	OverallScore             string   `json:"overall_score"`              // "Excellent", "Good", "Fair", "Poor"
 	EndpointProtectionStatus string   `json:"endpoint_protection_status"` // "Protected", "At Risk", "Unknown"
 	AntivirusHealth          string   `json:"antivirus_health"`           // "Healthy", "Unhealthy", "None"
-	EDRXDRHealth             string   `json:"edr_xdr_health"`            // "Healthy", "Unhealthy", "None"
+	EDRXDRHealth             string   `json:"edr_xdr_health"`             // "Healthy", "Unhealthy", "None"
 	FirewallStatus           string   `json:"firewall_status"`            // "Enabled", "Disabled", "Partially Enabled"
 	EncryptionStatus         string   `json:"encryption_status"`          // "Encrypted", "Unencrypted", "Partially Encrypted"
 	HardwareSecurityControls string   `json:"hardware_security_controls"` // "Strong", "Weak", "Unsupported"

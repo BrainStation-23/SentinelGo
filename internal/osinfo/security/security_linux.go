@@ -35,7 +35,7 @@ func collectSecurity() shared.SecurityInfo {
 			break
 		}
 	}
-	
+
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
 	secureBoot := collectSecureBoot()
@@ -43,7 +43,7 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
-	
+
 	var avProtection shared.AntivirusProtectionInfo
 	for _, av := range avProducts {
 		details := shared.AntivirusDetails{
@@ -61,13 +61,13 @@ func collectSecurity() shared.SecurityInfo {
 			details.RealTimeProtectionState = "Disabled"
 			details.ServiceStatus = "Stopped"
 		}
-		
+
 		if strings.Contains(strings.ToLower(av.Name), "clamav") {
 			var scan shared.SecurityScanInfo
 			scan.LastScanTime = "Unknown"
 			scan.ScanType = "Scheduled/On-Demand"
 			scan.ScanResult = "Clean"
-			
+
 			if logData, err := os.ReadFile("/var/log/clamav/clamav.log"); err == nil {
 				lines := strings.Split(string(logData), "\n")
 				for i := len(lines) - 1; i >= 0; i-- {
@@ -77,21 +77,30 @@ func collectSecurity() shared.SecurityInfo {
 							scan.LastScanTime = line[:20]
 						}
 					}
+					if strings.Contains(line, "Scanned files:") {
+						parts := strings.Split(line, ":")
+						if len(parts) >= 2 {
+							var scannedCount int
+							if _, errSc := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &scannedCount); errSc == nil {
+								scan.ScannedFilesCount = int64(scannedCount)
+							}
+						}
+					}
 					if strings.Contains(line, "Infected files:") {
 						parts := strings.Split(line, ":")
 						if len(parts) >= 2 {
 							var infectedCount int
-							fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &infectedCount)
-							scan.ScannedFilesCount = int64(infectedCount)
-							if infectedCount > 0 {
-								scan.ScanResult = "Threats Detected"
-								scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
-									ThreatName:    "Infected File",
-									Severity:      "High",
-									FilePath:      "Check /var/log/clamav/clamav.log",
-									ActionTaken:   "Detected",
-									DetectionTime: scan.LastScanTime,
-								})
+							if _, errSc := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &infectedCount); errSc == nil {
+								if infectedCount > 0 {
+									scan.ScanResult = "Threats Detected"
+									scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
+										ThreatName:    "Infected File",
+										Severity:      "High",
+										FilePath:      "Check /var/log/clamav/clamav.log",
+										ActionTaken:   "Detected",
+										DetectionTime: scan.LastScanTime,
+									})
+								}
 							}
 						}
 					}
@@ -114,8 +123,8 @@ func collectSecurity() shared.SecurityInfo {
 	devEnc := collectDeviceEncryption()
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
-	netExposure := collectNetworkExposure(ports)
-	
+	netExposure := collectNetworkExposure(ports, idAccess)
+
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
 	return shared.SecurityInfo{
@@ -127,38 +136,16 @@ func collectSecurity() shared.SecurityInfo {
 		ListeningPorts:        ports,
 		USBMassStorageEnabled: usb,
 
-		FirewallSecurity:       fwSec,
-		AntivirusProtection:    avProtection,
-		EDRXDRDetection:        edrXdr,
-		KernelHardening:        kernelHard,
-		DeviceEncryption:       devEnc,
-		HardwareSecurity:       hwSec,
-		IdentityAccessControl:  idAccess,
-		NetworkExposureAccess:  netExposure,
-		PostureSummary:         posture,
+		FirewallSecurity:      fwSec,
+		AntivirusProtection:   avProtection,
+		EDRXDRDetection:       edrXdr,
+		KernelHardening:       kernelHard,
+		DeviceEncryption:      devEnc,
+		HardwareSecurity:      hwSec,
+		IdentityAccessControl: idAccess,
+		NetworkExposureAccess: netExposure,
+		PostureSummary:        posture,
 	}
-}
-
-func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {
-	var f shared.FirewallSecurityInfo
-	f.Profiles = profiles
-	allEnabled := true
-	anyEnabled := false
-	for _, p := range profiles {
-		f.ActiveProfiles = append(f.ActiveProfiles, p.Name)
-		if p.Enabled {
-			anyEnabled = true
-		} else {
-			allEnabled = false
-		}
-	}
-	f.FirewallState = "Disabled"
-	if allEnabled && len(profiles) > 0 {
-		f.FirewallState = "Enabled"
-	} else if anyEnabled {
-		f.FirewallState = "Partially Enabled"
-	}
-	return f
 }
 
 func collectEDRInfo() shared.EDRXDRDetectionInfo {
@@ -208,40 +195,39 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 				startup = "Auto"
 			}
 		}
-		
+
 		if !installed && runningProcs[e.proc] {
 			installed = true
 			status = "Running"
 			startup = "Manual"
 		}
-		
+
 		if !installed {
 			continue
 		}
-		
+
 		agent := shared.EDRXDRAgentDetails{
 			AgentName:              e.name,
 			Vendor:                 e.vendor,
+			AgentVersion:           "Unknown",
 			ServiceStatus:          status,
 			HealthStatus:           "Healthy",
-			ConnectivityStatus:     "Connected",
-			TamperProtectionStatus: "Enabled",
+			ConnectivityStatus:     "Unknown",
+			TamperProtectionStatus: "Unknown",
 			Installed:              true,
 			Running:                status == "Running",
 			Stopped:                status == "Stopped",
 			Disabled:               startup == "Disabled",
 		}
-		
+
 		if status == "Running" {
-			agent.CloudConnected = true
 			agent.Healthy = true
 		} else {
 			agent.HealthStatus = "Unhealthy"
-			agent.ConnectivityStatus = "Disconnected"
-			agent.CloudDisconnected = true
+			agent.Unhealthy = true
 			agent.Offline = true
 		}
-		
+
 		info.Agents = append(info.Agents, agent)
 	}
 	return info
@@ -275,7 +261,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	if _, err := os.Stat("/dev/tpm0"); err == nil {
 		hw.TPMStatus = "Enabled"
 		hw.TPMVersion = "1.2"
-		
+
 		if data, err := os.ReadFile("/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
 			hw.TPMVersion = strings.TrimSpace(string(data)) + ".0"
 		} else if data, err = os.ReadFile("/sys/class/tpm/tpm0/device/description"); err == nil {
@@ -345,7 +331,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	// Query Linux Pending Security Updates
 	id.PatchComplianceStatus = "Compliant"
 	id.PendingSecurityPatches = 0
-	
+
 	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
 		if out, errRun := shared.RunCommand("/usr/lib/update-notifier/apt-check"); errRun == nil {
 			parts := strings.Split(strings.TrimSpace(out), ";")
@@ -360,7 +346,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		if out, errRun := shared.RunCommand("apt-get", "-s", "upgrade"); errRun == nil {
 			count := 0
 			for _, line := range strings.Split(out, "\n") {
-				if strings.Contains(strings.ToLower(line), "-security") || strings.Contains(strings.ToLower(line), "security") {
+				if strings.HasPrefix(line, "Inst ") && (strings.Contains(strings.ToLower(line), "-security") || strings.Contains(strings.ToLower(line), "security")) {
 					count++
 				}
 			}
@@ -377,7 +363,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			id.PendingSecurityPatches = count
 		}
 	}
-	
+
 	if id.PendingSecurityPatches > 0 {
 		id.PatchComplianceStatus = "Non-Compliant"
 	}
@@ -385,13 +371,12 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	return id
 }
 
-func collectNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
+func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAccessControlInfo) shared.NetworkExposureAccessInfo {
 	info := analyzeNetworkExposure(ports)
-	
-	id := collectIdentityAccessControl()
+
 	info.SSHRootLoginStatus = id.SSHRootLogin
 	info.SSHPasswordAuthStatus = id.SSHPasswordAuth
-	
+
 	info.SSHKeyAuthStatus = "Unknown"
 	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {

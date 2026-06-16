@@ -34,7 +34,7 @@ func collectSecurity() shared.SecurityInfo {
 			break
 		}
 	}
-	
+
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
 	secureBoot := collectSecureBoot()
@@ -42,7 +42,7 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
-	
+
 	var avProtection shared.AntivirusProtectionInfo
 	for _, av := range avProducts {
 		details := shared.AntivirusDetails{
@@ -62,25 +62,25 @@ func collectSecurity() shared.SecurityInfo {
 		}
 		avProtection.Products = append(avProtection.Products, details)
 	}
-	
+
 	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		avProtection.XProtectVersion = strings.TrimSpace(out)
 	} else if out, err = shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		avProtection.XProtectVersion = strings.TrimSpace(out)
 	}
-	
+
 	if _, err := os.Stat("/System/Library/CoreServices/MRT.app"); err == nil {
 		avProtection.MRTInstalled = true
 	} else if _, err = os.Stat("/Library/Apple/System/Library/CoreServices/MRT.app"); err == nil {
 		avProtection.MRTInstalled = true
 	}
-	
+
 	if avProtection.MRTInstalled {
 		var scan shared.SecurityScanInfo
 		scan.LastScanTime = "Unknown"
 		scan.ScanType = "On-Access"
 		scan.ScanResult = "Clean"
-		
+
 		if mlog, err := os.ReadFile("/var/log/MRT.log"); err == nil {
 			lines := strings.Split(string(mlog), "\n")
 			for i := len(lines) - 1; i >= 0; i-- {
@@ -127,7 +127,7 @@ func collectSecurity() shared.SecurityInfo {
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
 	netExposure := analyzeNetworkExposure(ports)
-	
+
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
 	return shared.SecurityInfo{
@@ -139,38 +139,16 @@ func collectSecurity() shared.SecurityInfo {
 		ListeningPorts:        ports,
 		USBMassStorageEnabled: usb,
 
-		FirewallSecurity:       fwSec,
-		AntivirusProtection:    avProtection,
-		EDRXDRDetection:        edrXdr,
-		KernelHardening:        kernelHard,
-		DeviceEncryption:       devEnc,
-		HardwareSecurity:       hwSec,
-		IdentityAccessControl:  idAccess,
-		NetworkExposureAccess:  netExposure,
-		PostureSummary:         posture,
+		FirewallSecurity:      fwSec,
+		AntivirusProtection:   avProtection,
+		EDRXDRDetection:       edrXdr,
+		KernelHardening:       kernelHard,
+		DeviceEncryption:      devEnc,
+		HardwareSecurity:      hwSec,
+		IdentityAccessControl: idAccess,
+		NetworkExposureAccess: netExposure,
+		PostureSummary:        posture,
 	}
-}
-
-func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {
-	var f shared.FirewallSecurityInfo
-	f.Profiles = profiles
-	allEnabled := true
-	anyEnabled := false
-	for _, p := range profiles {
-		f.ActiveProfiles = append(f.ActiveProfiles, p.Name)
-		if p.Enabled {
-			anyEnabled = true
-		} else {
-			allEnabled = false
-		}
-	}
-	f.FirewallState = "Disabled"
-	if allEnabled && len(profiles) > 0 {
-		f.FirewallState = "Enabled"
-	} else if anyEnabled {
-		f.FirewallState = "Partially Enabled"
-	}
-	return f
 }
 
 func collectEDRInfo() shared.EDRXDRDetectionInfo {
@@ -204,39 +182,38 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		} else if runningProcs[e.proc] {
 			installed = true
 		}
-		
+
 		if !installed {
 			continue
 		}
-		
+
 		isRunning := runningProcs[e.proc]
 		status := "Stopped"
 		if isRunning {
 			status = "Running"
 		}
-		
+
 		agent := shared.EDRXDRAgentDetails{
 			AgentName:              e.name,
 			Vendor:                 e.vendor,
+			AgentVersion:           "Unknown",
 			ServiceStatus:          status,
 			HealthStatus:           "Healthy",
-			ConnectivityStatus:     "Connected",
-			TamperProtectionStatus: "Enabled",
+			ConnectivityStatus:     "Unknown",
+			TamperProtectionStatus: "Unknown",
 			Installed:              true,
 			Running:                isRunning,
 			Stopped:                !isRunning,
 		}
-		
+
 		if isRunning {
-			agent.CloudConnected = true
 			agent.Healthy = true
 		} else {
 			agent.HealthStatus = "Unhealthy"
-			agent.ConnectivityStatus = "Disconnected"
-			agent.CloudDisconnected = true
+			agent.Unhealthy = true
 			agent.Offline = true
 		}
-		
+
 		info.Agents = append(info.Agents, agent)
 	}
 	return info
@@ -257,7 +234,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 			enc.EncryptionStatus = "Encrypted"
 			enc.ProtectionStatus = "Enabled"
 		}
-		
+
 		keyOut, keyErr := shared.RunCommand("fdesetup", "haspersonalrecoverykey")
 		if keyErr == nil && strings.Contains(strings.ToLower(keyOut), "true") {
 			enc.RecoveryKeyBackupStatus = "Backed Up"
@@ -271,17 +248,17 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	hw.TPMStatus = "Unsupported"
 	hw.TPMVersion = "None"
 	hw.SecureBootStatus = collectSecureBoot()
-	
+
 	hw.SecureEnclaveStatus = "Unsupported"
 	hw.ActivationLockStatus = "Unknown"
-	
+
 	hwOut, err := shared.RunCommand("system_profiler", "SPHardwareDataType")
 	if err == nil {
 		lower := strings.ToLower(hwOut)
 		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") || strings.Contains(lower, "t2") {
 			hw.SecureEnclaveStatus = "Enabled"
 		}
-		
+
 		for _, line := range strings.Split(hwOut, "\n") {
 			if strings.Contains(line, "Activation Lock Status:") {
 				parts := strings.Split(line, ":")
@@ -296,24 +273,24 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 
 func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
-	
+
 	id.TouchIDStatus = "Disabled"
 	if out, err := shared.RunCommand("bioutil", "-read", "-system"); err == nil {
 		if strings.Contains(strings.ToLower(out), "enabled") {
 			id.TouchIDStatus = "Enabled"
 		}
 	}
-	
+
 	id.BootstrapTokenStatus = "Disabled"
 	if out, err := shared.RunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
 		if strings.Contains(strings.ToLower(out), "supported: yes") || strings.Contains(strings.ToLower(out), "escrowed: yes") {
 			id.BootstrapTokenStatus = "Enabled"
 		}
 	}
-	
+
 	id.SecureTokenStatus = "Unknown"
 	if currentUser := os.Getenv("USER"); currentUser != "" {
-		if out, err := shared.RunCommand("sysadminctl", "-adminUser", "", "-adminPassword", "", "-secureTokenStatus", currentUser); err == nil {
+		if out, err := shared.RunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
 			if strings.Contains(strings.ToLower(out), "is enabled") {
 				id.SecureTokenStatus = "Enabled"
 			} else if strings.Contains(strings.ToLower(out), "is disabled") {
@@ -321,7 +298,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			}
 		}
 	}
-	
+
 	// Query macOS Software Update status
 	id.PatchComplianceStatus = "Compliant"
 	id.RapidSecurityResponses = "Up to Date"
@@ -332,7 +309,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			id.RapidSecurityResponses = "Out of Date"
 		}
 	}
-	
+
 	return id
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 
 	gnet "github.com/shirou/gopsutil/v4/net"
@@ -18,6 +19,28 @@ const maxListeningPorts = 200
 // Individual probe failures are swallowed; fields default to zero/unknown.
 func Collect() shared.SecurityInfo {
 	return collectSecurity()
+}
+
+func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {
+	var f shared.FirewallSecurityInfo
+	f.Profiles = profiles
+	allEnabled := true
+	anyEnabled := false
+	for _, p := range profiles {
+		f.ActiveProfiles = append(f.ActiveProfiles, p.Name)
+		if p.Enabled {
+			anyEnabled = true
+		} else {
+			allEnabled = false
+		}
+	}
+	f.FirewallState = "Disabled"
+	if allEnabled && len(profiles) > 0 {
+		f.FirewallState = "Enabled"
+	} else if anyEnabled {
+		f.FirewallState = "Partially Enabled"
+	}
+	return f
 }
 
 func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
@@ -79,14 +102,21 @@ func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposure
 	for s := range activeServicesMap {
 		info.ActiveNetworkServices = append(info.ActiveNetworkServices, s)
 	}
+	sort.Strings(info.ActiveNetworkServices)
+
 	info.RemoteAccessServices = []string{}
 	for s := range remoteAccessMap {
 		info.RemoteAccessServices = append(info.RemoteAccessServices, s)
 	}
+	sort.Strings(info.RemoteAccessServices)
+
 	info.OpenAdministrativePorts = []uint16{}
 	for p := range adminPortsMap {
 		info.OpenAdministrativePorts = append(info.OpenAdministrativePorts, p)
 	}
+	sort.Slice(info.OpenAdministrativePorts, func(i, j int) bool {
+		return info.OpenAdministrativePorts[i] < info.OpenAdministrativePorts[j]
+	})
 
 	return info
 }
@@ -111,12 +141,13 @@ func generatePostureSummary(
 	avUpdated := false
 	if len(av.Products) > 0 {
 		avHealth = "Healthy"
+		avUpdated = true
 		for _, p := range av.Products {
 			if strings.EqualFold(p.RealTimeProtectionState, "Enabled") {
 				realTimeProtected = true
 			}
-			if strings.EqualFold(p.UpdateStatus, "Up to Date") {
-				avUpdated = true
+			if !strings.EqualFold(p.UpdateStatus, "Up to Date") {
+				avUpdated = false
 			}
 			if strings.EqualFold(p.ServiceStatus, "Stopped") || strings.EqualFold(p.RealTimeProtectionState, "Disabled") {
 				avHealth = "Unhealthy"
@@ -124,6 +155,7 @@ func generatePostureSummary(
 		}
 	} else if av.WindowsDefenderDetails != nil {
 		avHealth = "Healthy"
+		avUpdated = true
 		if av.WindowsDefenderDetails.RealTimeProtectionEnabled {
 			realTimeProtected = true
 		}
