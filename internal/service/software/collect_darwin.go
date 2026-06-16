@@ -89,31 +89,22 @@ func parseMdlsOutput(output string, paths []string, result map[string]string) {
 	}
 }
 
-// platformSoftware collects installed software on macOS along with the set of
-// source categories that were authoritatively scanned this cycle. A source only
-// appears in the map when its scan succeeded, so a failed scan never demotes its
-// rows.
-func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, map[string]bool) {
-	scanned := make(map[string]bool)
+// platformSoftware collects currently installed software on macOS.
+func (s *SoftwareService) platformSoftware() []SoftwareInfo {
 	var sw []SoftwareInfo
 
 	if items, ok := s.getMacApplications(); ok {
 		sw = append(sw, items...)
-		// system_profiler authoritatively covers both App Store and other apps.
-		scanned["applications"] = true
-		scanned["app_store"] = true
 	}
 	if items, ok := s.getHomebrewPackages(); ok {
 		sw = append(sw, items...)
-		scanned["homebrew"] = true
 	}
 	if items, ok := s.getHomebrewCaskPackages(); ok {
 		sw = append(sw, items...)
-		scanned["homebrew_cask"] = true
 	}
-	s.appendExtensions(&sw, scanned)
+	s.appendExtensions(&sw)
 
-	return sw, scanned
+	return sw
 }
 
 func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
@@ -197,8 +188,7 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 			source = "app_store"
 			appStoreApp = "true"
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
-		firstSeen := now
+		firstSeen := time.Now().UTC().Format(time.RFC3339)
 		if app.LastModified != "" {
 			firstSeen = app.LastModified
 		}
@@ -210,10 +200,7 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 			AppStoreApp:      appStoreApp,
 			Source:           source,
 			Type:             source,
-			Status:           "installed",
 			FirstSeenAt:      firstSeen,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 	return true
@@ -229,17 +216,12 @@ func parseHomebrewPackages(output []byte, packages *[]SoftwareInfo, source strin
 		if len(parts) < 2 {
 			continue
 		}
-		now := time.Now().UTC().Format(time.RFC3339)
 		*packages = append(*packages, SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
 			Source:           source,
 			Type:             source,
-			Status:           "installed",
-			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		})
 	}
 }

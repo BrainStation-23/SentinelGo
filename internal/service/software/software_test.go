@@ -25,10 +25,7 @@ func mockSoftware() []software.SoftwareInfo {
 			Type:             "deb_packages",
 			DisplayName:      "Test Package",
 			SoftwarePackage:  "test-package",
-			Status:           "installed",
 			FirstSeenAt:      now,
-			LastSeenAt:       now,
-			IsActive:         true,
 		},
 		{
 			Name:        "chrome-extension",
@@ -36,18 +33,11 @@ func mockSoftware() []software.SoftwareInfo {
 			Type:        "chrome_extensions",
 			DisplayName: "Chrome Extension",
 			FilePath:    "/path/to/extension",
-			Status:      "installed",
-			FirstSeenAt: now,
-			LastSeenAt:  now,
-			IsActive:    true,
 		},
 		{
-			Name:        "minimal-package",
-			Source:      "snap_packages",
-			Type:        "snap_packages",
-			FirstSeenAt: now,
-			LastSeenAt:  now,
-			IsActive:    true,
+			Name:   "minimal-package",
+			Source: "snap_packages",
+			Type:   "snap_packages",
 		},
 	}
 }
@@ -137,15 +127,11 @@ func TestSoftwareUpsertBasic(t *testing.T) {
 
 	testSoftware := []software.SoftwareInfo{
 		{
-			ID:               1,
 			Name:             "Test Software",
 			Source:           "test-source",
 			InstalledVersion: "1.0.0",
 			Type:             "test-type",
-			Status:           "installed",
 			FirstSeenAt:      time.Now().Format(time.RFC3339),
-			LastSeenAt:       time.Now().Format(time.RFC3339),
-			IsActive:         true,
 		},
 	}
 
@@ -186,9 +172,6 @@ func TestSoftwareUpsertFallbackToRestAPI(t *testing.T) {
 			Source:           "deb_packages",
 			InstalledVersion: "1.0.0",
 			Type:             "deb_packages",
-			Status:           "installed",
-			LastSeenAt:       time.Now().Format(time.RFC3339),
-			IsActive:         true,
 		},
 	}
 
@@ -224,7 +207,7 @@ func TestSoftwareUpsertSetSupabaseURL(t *testing.T) {
 	svc.SetSupabaseURL(server.URL)
 
 	testSoftware := []software.SoftwareInfo{
-		{Name: "SetSupabaseURL Test", Source: "homebrew", Type: "homebrew", Status: "installed", IsActive: true},
+		{Name: "SetSupabaseURL Test", Source: "homebrew", Type: "homebrew"},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -234,37 +217,6 @@ func TestSoftwareUpsertSetSupabaseURL(t *testing.T) {
 	}
 	if !restAPICalled {
 		t.Error("expected REST API fallback to be called")
-	}
-}
-
-// ── TestStartSoftwareSync_CancelledContext ────────────────────────────────────
-
-func TestStartSoftwareSync_CancelledContext(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg := &config.Config{
-		Path:        tmpDir + "/config.json",
-		DeviceID:    "test-device",
-		SupabaseURL: "https://example.supabase.co",
-		AccessToken: "test-token",
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled
-
-	svc := software.NewSoftwareService()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- svc.StartSoftwareSync(ctx, cfg, func() ([]software.SoftwareInfo, map[string]bool) { return nil, nil })
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("StartSoftwareSync with cancelled context returned unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("StartSoftwareSync with cancelled context did not return within 5s")
 	}
 }
 
@@ -305,8 +257,8 @@ func TestUpsertAPI(t *testing.T) {
 
 	now := time.Now().Format(time.RFC3339)
 	testSoftware := []software.SoftwareInfo{
-		{ID: 1, Name: "Integration Test Software 1", Source: "deb_packages", InstalledVersion: "1.0.0", Type: "deb_packages", Status: "installed", FirstSeenAt: now, LastSeenAt: now, IsActive: true},
-		{ID: 2, Name: "Integration Test Software 2", Source: "snap_packages", InstalledVersion: "2.0.0", Type: "snap_packages", Status: "installed", FirstSeenAt: now, LastSeenAt: now, IsActive: true},
+		{Name: "Integration Test Software 1", Source: "deb_packages", InstalledVersion: "1.0.0", Type: "deb_packages", FirstSeenAt: now},
+		{Name: "Integration Test Software 2", Source: "snap_packages", InstalledVersion: "2.0.0", Type: "snap_packages", FirstSeenAt: now},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

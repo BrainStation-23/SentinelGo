@@ -16,6 +16,9 @@ type cliFlags struct {
 	softwareList       *bool
 	softwareListJSON   *bool
 	softwareListCount  *bool
+	servicesList       *bool
+	servicesListJSON   *bool
+	servicesListCount  *bool
 	collectLogs        *bool
 	uploadLogs         *bool
 	loggingStats       *bool
@@ -41,6 +44,9 @@ func parseFlags() *cliFlags {
 		softwareList:       flag.Bool("software-list", false, "Show installed software list"),
 		softwareListJSON:   flag.Bool("software-list-json", false, "Show software list as JSON"),
 		softwareListCount:  flag.Bool("software-list-count", false, "Show total software count only"),
+		servicesList:       flag.Bool("services-list", false, "Show running OS services list"),
+		servicesListJSON:   flag.Bool("services-list-json", false, "Show OS services list as JSON"),
+		servicesListCount:  flag.Bool("services-list-count", false, "Show total services count only"),
 		collectLogs:        flag.Bool("collect-logs", false, "Force immediate log collection"),
 		uploadLogs:         flag.Bool("upload-logs", false, "Force upload of pending logs"),
 		loggingStats:       flag.Bool("logging-stats", false, "Show logging statistics"),

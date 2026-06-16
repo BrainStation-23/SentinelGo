@@ -8,35 +8,24 @@ import (
 	"time"
 )
 
-// appendExtensions runs every browser-extension collector, appending each one's
-// results to sw and recording each successfully-scanned source in scanned. A
-// collector reports failure (and is left out of scanned) only when the scan
-// could not run at all; an empty-but-successful scan is a legitimate "no
-// extensions" state and still reconciles. Note: LastOpened is not collected for
-// extensions on any platform (see readExtensionManifest) — tracked as a gap.
-func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo, scanned map[string]bool) {
+// appendExtensions runs every browser-extension collector, appending results to sw.
+// Note: LastOpened is not collected for extensions on any platform.
+func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo) {
 	if items, ok := s.getChromeExtensions(); ok {
 		*sw = append(*sw, items...)
-		scanned["chrome_extensions"] = true
 	}
 	if items, ok := s.getFirefoxExtensions(); ok {
 		*sw = append(*sw, items...)
-		scanned["firefox_extensions"] = true
 	}
 	if items, ok := s.getEdgeExtensions(); ok {
 		*sw = append(*sw, items...)
-		scanned["edge_extensions"] = true
 	}
 	if items, ok := s.getBraveExtensions(); ok {
 		*sw = append(*sw, items...)
-		scanned["brave_extensions"] = true
 	}
 }
 
 // getChromeExtensions returns installed Chrome extensions for the current user.
-// Path discovery is delegated to the platform-specific chromeExtDirGlobs function.
-// The bool is false only when the user's home directory cannot be resolved (the
-// scan could not run); an empty result with true means no extensions were found.
 func (s *SoftwareService) getChromeExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -70,7 +59,6 @@ func (s *SoftwareService) getChromeExtensions() ([]SoftwareInfo, bool) {
 }
 
 // getFirefoxExtensions returns installed Firefox extensions for the current user.
-// Path discovery is delegated to the platform-specific firefoxProfileGlobs function.
 func (s *SoftwareService) getFirefoxExtensions() ([]SoftwareInfo, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -187,8 +175,7 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		m.Name = fallbackID
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	firstSeen := now
+	firstSeen := time.Now().UTC().Format(time.RFC3339)
 	if fi, err := os.Stat(path); err == nil {
 		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)
 	}
@@ -199,9 +186,6 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		Source:           source,
 		Type:             extType,
 		FilePath:         path,
-		Status:           "installed",
 		FirstSeenAt:      firstSeen,
-		LastSeenAt:       now,
-		IsActive:         true,
 	}
 }

@@ -84,9 +84,6 @@ func TestParsePowerShellOutput(t *testing.T) {
 				if s.Source != tc.source {
 					t.Errorf("[%d] Source = %q, want %q", i, s.Source, tc.source)
 				}
-				if !s.IsActive {
-					t.Errorf("[%d] IsActive = false", i)
-				}
 			}
 		})
 	}

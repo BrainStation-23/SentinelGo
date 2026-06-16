@@ -35,15 +35,8 @@ func showSoftwareList(softwareList []swsvc.SoftwareInfo) {
 			if sw.FilePath != "" {
 				fmt.Printf("   Path: %s\n", sanitize.ForLog(sw.FilePath))
 			}
-			if sw.Status != "" {
-				fmt.Printf("   Status: %s\n", sanitize.ForLog(sw.Status))
-			}
-			fmt.Printf("   Active: %t\n", sw.IsActive)
 			if sw.FirstSeenAt != "" {
-				fmt.Printf("   First Seen: %s\n", sanitize.ForLog(sw.FirstSeenAt))
-			}
-			if sw.LastSeenAt != "" {
-				fmt.Printf("   Last Seen: %s\n", sanitize.ForLog(sw.LastSeenAt))
+				fmt.Printf("   Install Date: %s\n", sanitize.ForLog(sw.FirstSeenAt))
 			}
 			fmt.Println()
 		}
@@ -55,19 +48,17 @@ func outputSoftwareJSON(softwareList []swsvc.SoftwareInfo) {
 	jsonData, err := json.MarshalIndent(softwareList, "", "  ")
 	if err != nil {
 		log.Printf("Error marshaling to JSON: %v", err)
-		os.Exit(1)
+		return
 	}
 	fmt.Println(string(jsonData))
 }
 
-// HandleSoftwareSync runs the software sync service until interrupted.
+// HandleSoftwareSync collects installed software and sends it to Supabase once.
 func HandleSoftwareSync(cfg *config.Config) {
 	if !cfg.SoftwareSyncEnabled {
 		fmt.Println("Software sync is disabled. Enable with software_sync_enabled in config")
 		return
 	}
-
-	fmt.Println("Starting software sync service...")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -76,21 +67,30 @@ func HandleSoftwareSync(cfg *config.Config) {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
-	softwareService := swsvc.NewSoftwareService()
-	softwareService.SetSupabaseURL(cfg.SupabaseURL)
-	if cfg.EdgeFunctionURL != "" {
-		softwareService.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
-	}
-
 	go func() {
-		if err := softwareService.StartSoftwareSync(ctx, cfg, softwareService.GetSoftwareList); err != nil {
-			log.Printf("Software sync error: %v", err)
-		}
+		<-sigChan
+		cancel()
 	}()
 
-	<-sigChan
-	cancel()
-	fmt.Println("Software sync service stopped")
+	svc := swsvc.NewSoftwareService()
+	svc.SetSupabaseURL(cfg.SupabaseURL)
+	if cfg.EdgeFunctionURL != "" {
+		svc.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
+	} else {
+		svc.SetEdgeFunctionConfig(cfg.SupabaseURL+"/functions/v1/sync-software", cfg.AccessToken)
+	}
+
+	list := svc.GetSoftwareList()
+	if len(list) == 0 {
+		fmt.Println("No software found.")
+		return
+	}
+	fmt.Printf("Collected %d software items. Sending...\n", len(list))
+	if err := svc.SendByRPC(ctx, cfg.DeviceID, list, cfg); err != nil {
+		log.Printf("Software sync error: %v", err)
+		return
+	}
+	fmt.Println("Software sync complete.")
 }
 
 // HandleSoftwareListCommand collects installed software and prints it as a list,
@@ -108,7 +108,7 @@ func HandleSoftwareListCommand(cfgPath string, asJSON, countOnly bool) {
 		sw.SetEdgeFunctionConfig(cfg.EdgeFunctionURL, cfg.AccessToken)
 	}
 
-	swList, _ := sw.GetSoftwareList()
+	swList := sw.GetSoftwareList()
 
 	switch {
 	case asJSON:

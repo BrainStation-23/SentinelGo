@@ -58,9 +58,6 @@ func TestParseSystemProfilerApps(t *testing.T) {
 				if tc.wantSrc != nil && s.Source != tc.wantSrc[i] {
 					t.Errorf("[%d] Source = %q, want %q", i, s.Source, tc.wantSrc[i])
 				}
-				if !s.IsActive {
-					t.Errorf("[%d] IsActive = false", i)
-				}
 			}
 		})
 	}
