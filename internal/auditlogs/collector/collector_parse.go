@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/sanitize"
 )
 
 // macLogTimestampLayout is the timestamp format emitted by `log show`.
@@ -84,7 +86,9 @@ func journalString(fields map[string]json.RawMessage, key string) string {
 			}
 			b[i] = byte(v)
 		}
-		return string(b)
+		// Binary journal fields can carry embedded NUL bytes; strip them so the
+		// value stays valid for Postgres text/jsonb downstream.
+		return sanitize.StripNUL(string(b))
 	}
 	return ""
 }

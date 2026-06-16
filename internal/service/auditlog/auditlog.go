@@ -14,6 +14,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/models"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
 )
 
@@ -124,6 +125,8 @@ func (s *AuditLogService) sendToSupabase(ctx context.Context, auditLog models.Au
 	if err != nil {
 		return fmt.Errorf("marshal audit log: %w", err)
 	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	data = sanitize.StripJSONNUL(data)
 
 	req, err := s.newRequest(ctx, data)
 	if err != nil {
@@ -214,6 +217,8 @@ func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchDat
 	if err != nil {
 		return fmt.Errorf("marshal batch data: %w", err)
 	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	data = sanitize.StripJSONNUL(data)
 
 	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 

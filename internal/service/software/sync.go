@@ -66,6 +66,8 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 	if err != nil {
 		return fmt.Errorf("marshal software payload: %w", err)
 	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	body = sanitize.StripJSONNUL(body)
 
 	url := s.supabaseURL + "/rest/v1/rpc/agent_enqueue_software"
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

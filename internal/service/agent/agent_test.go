@@ -2,8 +2,11 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,20 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/agent"
 )
+
+// assertNoNUL fails the test unless body is valid JSON with no encoded NUL escape.
+func assertNoNUL(t *testing.T, body []byte) {
+	t.Helper()
+	if len(body) == 0 {
+		t.Fatal("server captured no request body")
+	}
+	if !json.Valid(body) {
+		t.Fatalf("request body is not valid JSON: %q", body)
+	}
+	if strings.Contains(string(body), "\\u0000") {
+		t.Fatalf("request body still contains an encoded NUL escape: %q", body)
+	}
+}
 
 func mockSysInfo() *shared.SystemInfo {
 	return &shared.SystemInfo{
@@ -108,6 +125,33 @@ func TestUpdateAgentInfo(t *testing.T) {
 	if hits == 0 {
 		t.Error("expected UpdateAgentInfo to call the Supabase endpoint")
 	}
+}
+
+func TestUpdateAgentInfo_StripsNUL(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+
+	// Inject NUL bytes into collected inventory fields; they must not reach the wire.
+	sysInfo := mockSysInfo()
+	sysInfo.Hostname = "host\x00name"
+	sysInfo.SerialNumber = "SER\x00IAL"
+	sysInfo.KernelVersion = "5.15\x000"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := agent.NewAgentService().UpdateAgentInfo(ctx, cfg, sysInfo); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	assertNoNUL(t, body)
 }
 
 func TestUpdateAgentInfo_CancelledContext(t *testing.T) {

@@ -29,6 +29,15 @@ func main() {
 	case *f.enableAutoUpdate:
 		cli.HandleEnableAutoUpdate(*f.cfgPath)
 		return
+	case *f.debugDump:
+		cli.HandleDebugDump()
+		return
+	case *f.osInfoJSON:
+		cli.HandleOSInfoDump()
+		return
+	case *f.auditLogsDump:
+		cli.HandleAuditLogsDump()
+		return
 	}
 
 	// Everything below needs a loaded config.
