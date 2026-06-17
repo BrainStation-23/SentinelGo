@@ -27,7 +27,6 @@ type SystemInfo struct {
 	FirmwareType     string             `json:"firmware_type"`
 	FirmwareVendor   string             `json:"firmware_vendor"`
 	FirmwareVersion  string             `json:"firmware_version"`
-	TPMVersion       string             `json:"tpm_version"`
 	NetworkAdapters  []NetAdapter       `json:"network_adapters"`
 	Peripherals      []PeripheralDevice `json:"peripherals"`
 	Displays         []Display          `json:"display"`

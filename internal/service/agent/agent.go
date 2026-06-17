@@ -40,7 +40,6 @@ type AgentUpdatePayload struct {
 	GPUs             interface{} `json:"gpus,omitempty"`
 	Disks            interface{} `json:"disks,omitempty"`
 	Firmware         interface{} `json:"firmware,omitempty"`
-	TPMVersion       string      `json:"tpm_version,omitempty"`
 	NetworkAdapters  interface{} `json:"network_adapters,omitempty"`
 	Peripherals      interface{} `json:"peripherals,omitempty"`
 	AudioDevices     interface{} `json:"audio_devices,omitempty"`
@@ -101,7 +100,6 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		GPUs:             sysInfo.GPUs,
 		Disks:            sysInfo.Disks,
 		Firmware:         firmware,
-		TPMVersion:       sysInfo.TPMVersion,
 		NetworkAdapters:  sysInfo.NetworkAdapters,
 		Peripherals:      sysInfo.Peripherals,
 		AudioDevices:     sysInfo.AudioDevices,

@@ -48,7 +48,6 @@ func GetHardwareModel() string                  { return getHardwareModel() }
 func GetBatteryCondition() string               { return getBatteryCondition() }
 func GetFQDN() string                           { return getFQDN() }
 func GetChassisType() string                    { return getChassisType() }
-func GetTPMVersion() string                     { return getTPMVersion() }
 func GetFirmwareInfo() (string, string, string) { return getFirmwareInfo() }
 func GetOSInformation() shared.OSInformation    { return getOSInformation() }
 

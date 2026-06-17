@@ -72,7 +72,6 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		FirmwareType:    s.FirmwareType,
 		FirmwareVendor:  s.FirmwareVendor,
 		FirmwareVersion: s.FirmwareVersion,
-		TPMVersion:      s.TPMVersion,
 		OSInformation:   s.OSInformation,
 		CPUInfoDetailed: s.CPUInfoDetailed,
 		RAMs:            s.RAMs,

@@ -130,17 +130,3 @@ func getFirmwareInfo() (firmwareType, vendor, version string) {
 	}
 	return
 }
-
-func getTPMVersion() string {
-	if v, err := shared.ReadFileContent("/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
-		if v = strings.TrimSpace(v); v != "" {
-			return v
-		}
-	}
-	if v, err := shared.ReadFileContent("/sys/class/tpm/tpm0/device/description"); err == nil {
-		if v = strings.TrimSpace(v); v != "" {
-			return v
-		}
-	}
-	return ""
-}

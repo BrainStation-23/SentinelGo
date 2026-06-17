@@ -118,7 +118,6 @@ func Collect() *shared.SystemInfo {
 		FirmwareType:     firmwareType,
 		FirmwareVendor:   firmwareVendor,
 		FirmwareVersion:  firmwareVersion,
-		TPMVersion:       systempkg.GetTPMVersion(),
 		NetworkAdapters:  networkpkg.Get(),
 		Peripherals:      peripheralspkg.Get(),
 		Displays:         displaypkg.Get(),

@@ -154,24 +154,3 @@ func getFirmwareInfo() (firmwareType, vendor, version string) {
 	}
 	return
 }
-
-func getTPMVersion() string {
-	output, err := shared.RunCommand("system_profiler", "SPiBridgeDataType", "-json")
-	if err != nil {
-		return ""
-	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		return ""
-	}
-	if bridgeRaw, ok := result["SPiBridgeDataType"]; ok {
-		if bridgeArr, ok := bridgeRaw.([]any); ok && len(bridgeArr) > 0 {
-			if bridgeItem, ok := bridgeArr[0].(map[string]any); ok {
-				if v, ok := bridgeItem["ibridge_model_name"].(string); ok && v != "" {
-					return v
-				}
-			}
-		}
-	}
-	return ""
-}

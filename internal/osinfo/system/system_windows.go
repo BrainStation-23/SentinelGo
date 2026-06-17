@@ -179,13 +179,3 @@ func getFirmwareInfo() (firmwareType, vendor, version string) {
 	}
 	return
 }
-
-func getTPMVersion() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
-		"Get-CimInstance -Namespace root/cimv2/security/microsofttpm Win32_Tpm | Select-Object -ExpandProperty SpecVersion"); err == nil {
-		if v := strings.TrimSpace(output); v != "" {
-			return v
-		}
-	}
-	return ""
-}
