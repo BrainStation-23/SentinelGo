@@ -69,6 +69,7 @@ func TestGetTasks_Success(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("GetTasks returned nil")
+		return // Early return to satisfy staticcheck
 	}
 	if resp.ServerTime != want.ServerTime {
 		t.Errorf("ServerTime = %q, want %q", resp.ServerTime, want.ServerTime)

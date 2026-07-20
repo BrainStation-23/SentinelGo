@@ -20,6 +20,18 @@ func TestParseFlags_defaults(t *testing.T) {
 	if f == nil {
 		t.Fatal("parseFlags() returned nil")
 	}
+	if f.install == nil {
+		t.Fatal("install flag is nil")
+	}
+	if f.uninstall == nil {
+		t.Fatal("uninstall flag is nil")
+	}
+	if f.version == nil {
+		t.Fatal("version flag is nil")
+	}
+	if f.cfgPath == nil {
+		t.Fatal("cfgPath flag is nil")
+	}
 	if *f.install {
 		t.Error("install should default to false")
 	}

@@ -31,6 +31,10 @@ func TestNewClient_ZeroTimeout(t *testing.T) {
 	if c.Timeout != 0 {
 		t.Errorf("Timeout with zero: got %v, want 0", c.Timeout)
 	}
+	// Access Transport to ensure it's not nil (satisfies staticcheck)
+	if c.Transport == nil {
+		t.Fatal("Transport should not be nil")
+	}
 }
 
 func TestNewClient_HasCustomTransport(t *testing.T) {
