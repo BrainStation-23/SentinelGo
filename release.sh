@@ -35,6 +35,15 @@ fi
 echo "🔨 Building and testing locally..."
 make clean
 make test
+
+# Load signing key from .env file
+if [ -f .env ]; then
+    export $(grep '^SENTINELGO_SIGNING_KEY=' .env | xargs)
+    echo "🔑 Loaded signing key from .env"
+else
+    echo "⚠️  Warning: .env file not found, signing key may not be set"
+fi
+
 make release
 
 echo "✅ Build successful!"
