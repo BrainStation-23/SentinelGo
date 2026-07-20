@@ -70,8 +70,12 @@ func TestReadExtensionManifest_Valid(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo for valid manifest")
 	}
-	if info.Name != "My Extension" {
-		t.Errorf("Name = %q, want My Extension", info.Name)
+	// Name is the stable extension ID; DisplayName is the human-readable label.
+	if info.Name != "fallback-id" {
+		t.Errorf("Name = %q, want fallback-id (extension ID)", info.Name)
+	}
+	if info.DisplayName != "My Extension" {
+		t.Errorf("DisplayName = %q, want My Extension", info.DisplayName)
 	}
 	if info.InstalledVersion != "1.2.3" {
 		t.Errorf("InstalledVersion = %q, want 1.2.3", info.InstalledVersion)
@@ -87,7 +91,11 @@ func TestReadExtensionManifest_I18nName(t *testing.T) {
 		t.Fatal("expected non-nil SoftwareInfo even for i18n name")
 	}
 	if info.Name != "my-ext-id" {
-		t.Errorf("Name = %q, want my-ext-id (fallback for __MSG_ prefix)", info.Name)
+		t.Errorf("Name = %q, want my-ext-id (extension ID)", info.Name)
+	}
+	// Without locale files, DisplayName should fall back to the extension ID.
+	if info.DisplayName != "my-ext-id" {
+		t.Errorf("DisplayName = %q, want my-ext-id (fallback for unresolved __MSG_)", info.DisplayName)
 	}
 }
 
@@ -103,6 +111,9 @@ func TestReadExtensionManifest_InvalidJSON(t *testing.T) {
 	}
 	if info.Name != "fallback" {
 		t.Errorf("Name = %q, want fallback", info.Name)
+	}
+	if info.DisplayName != "fallback" {
+		t.Errorf("DisplayName = %q, want fallback", info.DisplayName)
 	}
 }
 
@@ -122,7 +133,10 @@ func TestReadExtensionManifest_EmptyName(t *testing.T) {
 		t.Fatal("expected non-nil SoftwareInfo for empty name")
 	}
 	if info.Name != "ext-id" {
-		t.Errorf("Name = %q, want ext-id (fallback for empty name)", info.Name)
+		t.Errorf("Name = %q, want ext-id (extension ID)", info.Name)
+	}
+	if info.DisplayName != "ext-id" {
+		t.Errorf("DisplayName = %q, want ext-id (fallback for empty manifest name)", info.DisplayName)
 	}
 }
 
@@ -144,7 +158,7 @@ func TestGetFirefoxExtensions_WithExtension(t *testing.T) {
 	}
 	found := false
 	for _, e := range exts {
-		if e.Name == "Firefox Addon" && e.InstalledVersion == "2.0.0" {
+		if e.DisplayName == "Firefox Addon" && e.InstalledVersion == "2.0.0" {
 			found = true
 		}
 	}
@@ -200,7 +214,7 @@ func TestGetBraveExtensions_WithExtension(t *testing.T) {
 	}
 	found := false
 	for _, e := range exts {
-		if e.Name == "Brave Extension" {
+		if e.DisplayName == "Brave Extension" {
 			found = true
 		}
 	}
@@ -261,9 +275,189 @@ func TestReadExtensionManifest_I18nVariousFormats(t *testing.T) {
 			if info == nil {
 				t.Fatal("expected non-nil SoftwareInfo")
 			}
+			// Without locale files, Name is the extension ID and DisplayName falls back to it too.
 			if info.Name != "fallback-id" {
 				t.Errorf("Name = %q for i18n manifest %q, want fallback-id", info.Name, i18nName)
 			}
+			if info.DisplayName != "fallback-id" {
+				t.Errorf("DisplayName = %q for i18n manifest %q, want fallback-id", info.DisplayName, i18nName)
+			}
 		})
+	}
+}
+
+// TestReadExtensionManifest_WithLocaleResolution verifies that i18n keys
+// are resolved from locale messages.json files when available.
+func TestReadExtensionManifest_WithLocaleResolution(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create Chrome-style extension structure: extID/version/manifest.json
+	extDir := filepath.Join(dir, "extension-id", "1.0.0")
+	if err := os.MkdirAll(extDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write manifest with i18n key
+	manifestPath := filepath.Join(extDir, "manifest.json")
+	manifestData := map[string]string{"name": "__MSG_extensionName__", "version": "1.0.0"}
+	data, _ := json.Marshal(manifestData)
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create _locales/en/messages.json in the version directory (same as manifest.json)
+	localesDir := filepath.Join(extDir, "_locales", "en")
+	if err := os.MkdirAll(localesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	messagesData := map[string]map[string]string{
+		"extensionName": {"message": "My Awesome Extension"},
+	}
+	messagesJSON, _ := json.Marshal(messagesData)
+	if err := os.WriteFile(filepath.Join(localesDir, "messages.json"), messagesJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
+	if info == nil {
+		t.Fatal("expected non-nil SoftwareInfo")
+	}
+	if info.Name != "fallback-id" {
+		t.Errorf("Name = %q, want fallback-id (extension ID)", info.Name)
+	}
+	if info.DisplayName != "My Awesome Extension" {
+		t.Errorf("DisplayName = %q, want 'My Awesome Extension' (resolved from locale)", info.DisplayName)
+	}
+}
+
+// TestReadExtensionManifest_LocaleFallback verifies fallback to other locales
+// when preferred locale is not available.
+func TestReadExtensionManifest_LocaleFallback(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create extension structure
+	extDir := filepath.Join(dir, "extension-id", "1.0.0")
+	if err := os.MkdirAll(extDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(extDir, "manifest.json")
+	manifestData := map[string]string{"name": "__MSG_appName__", "version": "2.0"}
+	data, _ := json.Marshal(manifestData)
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create only Spanish locale in the version directory (no English)
+	localesDir := filepath.Join(extDir, "_locales", "es")
+	if err := os.MkdirAll(localesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	messagesData := map[string]map[string]string{
+		"appName": {"message": "Mi Extensión"},
+	}
+	messagesJSON, _ := json.Marshal(messagesData)
+	if err := os.WriteFile(filepath.Join(localesDir, "messages.json"), messagesJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
+	if info == nil {
+		t.Fatal("expected non-nil SoftwareInfo")
+	}
+	// Should fall back to Spanish locale when English is not available
+	if info.Name != "fallback-id" {
+		t.Errorf("Name = %q, want fallback-id (extension ID)", info.Name)
+	}
+	if info.DisplayName != "Mi Extensión" {
+		t.Errorf("DisplayName = %q, want 'Mi Extensión' (fallback to available locale)", info.DisplayName)
+	}
+}
+
+// TestReadExtensionManifest_MissingLocaleKey verifies fallback to extension ID
+// when the locale file exists but doesn't contain the key.
+func TestReadExtensionManifest_MissingLocaleKey(t *testing.T) {
+	dir := t.TempDir()
+
+	extDir := filepath.Join(dir, "extension-id", "1.0.0")
+	if err := os.MkdirAll(extDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(extDir, "manifest.json")
+	manifestData := map[string]string{"name": "__MSG_unknownKey__", "version": "1.0"}
+	data, _ := json.Marshal(manifestData)
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create locale with different key in the version directory
+	localesDir := filepath.Join(extDir, "_locales", "en")
+	if err := os.MkdirAll(localesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	messagesData := map[string]map[string]string{
+		"otherKey": {"message": "Some other message"},
+	}
+	messagesJSON, _ := json.Marshal(messagesData)
+	if err := os.WriteFile(filepath.Join(localesDir, "messages.json"), messagesJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
+	if info == nil {
+		t.Fatal("expected non-nil SoftwareInfo")
+	}
+	// Should fall back to extension ID when key is not found in locale
+	if info.Name != "fallback-id" {
+		t.Errorf("Name = %q, want fallback-id (key not in locale)", info.Name)
+	}
+}
+
+// TestReadExtensionManifest_CaseInsensitiveKey verifies that keys are resolved
+// regardless of case (e.g., __MSG_APP_NAME__ vs app_name in messages.json)
+func TestReadExtensionManifest_CaseInsensitiveKey(t *testing.T) {
+	dir := t.TempDir()
+
+	extDir := filepath.Join(dir, "extension-id", "1.0.0")
+	if err := os.MkdirAll(extDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write manifest with uppercase key
+	manifestPath := filepath.Join(extDir, "manifest.json")
+	manifestData := map[string]string{"name": "__MSG_APP_NAME__", "version": "1.0"}
+	data, _ := json.Marshal(manifestData)
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create locale with lowercase key
+	localesDir := filepath.Join(extDir, "_locales", "en")
+	if err := os.MkdirAll(localesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	messagesData := map[string]map[string]string{
+		"app_name": {"message": "Chrome Web Store Payments"},
+	}
+	messagesJSON, _ := json.Marshal(messagesData)
+	if err := os.WriteFile(filepath.Join(localesDir, "messages.json"), messagesJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
+	if info == nil {
+		t.Fatal("expected non-nil SoftwareInfo")
+	}
+	// Should resolve the uppercase manifest key to lowercase locale key
+	if info.Name != "fallback-id" {
+		t.Errorf("Name = %q, want fallback-id (extension ID)", info.Name)
+	}
+	if info.DisplayName != "Chrome Web Store Payments" {
+		t.Errorf("DisplayName = %q, want 'Chrome Web Store Payments' (case-insensitive match)", info.DisplayName)
 	}
 }

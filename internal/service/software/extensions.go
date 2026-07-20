@@ -145,8 +145,13 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 	if err := json.Unmarshal(data, &m); err != nil {
 		m.Name = fallbackID
 	}
-	if m.Name == "" || strings.HasPrefix(m.Name, "__MSG_") {
+	if m.Name == "" {
 		m.Name = fallbackID
+	}
+
+	// Resolve i18n message keys (e.g., __MSG_extName__)
+	if strings.HasPrefix(m.Name, "__MSG_") {
+		m.Name = resolveI18nName(path, m.Name, fallbackID)
 	}
 
 	firstSeen := time.Now().UTC().Format(time.RFC3339)
@@ -154,7 +159,7 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)
 	}
 	return &SoftwareInfo{
-		Name:             m.Name,
+		Name:             fallbackID,
 		DisplayName:      m.Name,
 		InstalledVersion: m.Version,
 		Source:           source,
@@ -162,4 +167,98 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 		FilePath:         path,
 		FirstSeenAt:      firstSeen,
 	}
+}
+
+// resolveI18nName attempts to resolve an i18n message key like "__MSG_extName__"
+// by reading the extension's locale messages.json files. Returns the resolved
+// name or the fallbackID if resolution fails.
+func resolveI18nName(manifestPath, msgKey, fallbackID string) string {
+	// Extract key from __MSG_key__ format
+	key := strings.TrimPrefix(msgKey, "__MSG_")
+	key = strings.TrimSuffix(key, "__")
+	if key == "" {
+		return fallbackID
+	}
+
+	// Chrome extension locale files typically use lowercase keys
+	// Try both the original case and lowercase versions
+	keyVariants := []string{key, strings.ToLower(key)}
+
+	// For Chrome extensions, _locales is in the version directory (same dir as manifest.json)
+	// For Firefox extensions, _locales is in the extension root
+	manifestDir := filepath.Dir(manifestPath)
+
+	// First try: _locales in the same directory as manifest.json (Chrome-style)
+	localesDir := filepath.Join(manifestDir, "_locales")
+	entries, err := os.ReadDir(localesDir)
+	if err != nil {
+		// Second try: _locales in parent directory (Firefox-style or alternative Chrome structure)
+		localesDir = filepath.Join(filepath.Dir(manifestDir), "_locales")
+		entries, err = os.ReadDir(localesDir)
+		if err != nil {
+			return fallbackID
+		}
+	}
+
+	// Preferred locales to try (in order)
+	preferredLocales := []string{"en", "en_US", "en_GB", "en_CA"}
+
+	// First try preferred locales with all key variants
+	for _, locale := range preferredLocales {
+		for _, keyVariant := range keyVariants {
+			if name := readLocaleMessage(localesDir, locale, keyVariant); name != "" {
+				return name
+			}
+		}
+	}
+
+	// Then try any available locale with all key variants
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		locale := entry.Name()
+		// Skip if already tried
+		skip := false
+		for _, pref := range preferredLocales {
+			if locale == pref {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		for _, keyVariant := range keyVariants {
+			if name := readLocaleMessage(localesDir, locale, keyVariant); name != "" {
+				return name
+			}
+		}
+	}
+
+	return fallbackID
+}
+
+// readLocaleMessage reads a specific locale's messages.json and returns the
+// value for the given key, or empty string if not found.
+func readLocaleMessage(localesDir, locale, key string) string {
+	messagesPath := filepath.Join(localesDir, locale, "messages.json")
+	data, err := os.ReadFile(messagesPath)
+	if err != nil {
+		return ""
+	}
+
+	var messages map[string]map[string]string
+	if err := json.Unmarshal(data, &messages); err != nil {
+		return ""
+	}
+
+	// Chrome Web Store extensions use "message" field
+	if msg, ok := messages[key]; ok {
+		if name, ok := msg["message"]; ok {
+			return name
+		}
+	}
+
+	return ""
 }

@@ -33,7 +33,7 @@ func TestGetChromeExtensions_MultipleUsers(t *testing.T) {
 
 	names := make(map[string]bool)
 	for _, e := range exts {
-		names[e.Name] = true
+		names[e.DisplayName] = true
 	}
 	if !names["Ext One"] || !names["Ext Two"] {
 		t.Errorf("expected extensions from both users, got %v", exts)
