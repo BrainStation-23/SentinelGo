@@ -19,6 +19,7 @@ func TestParseFlags_defaults(t *testing.T) {
 
 	if f == nil {
 		t.Fatal("parseFlags() returned nil")
+		return // Early return to satisfy staticcheck
 	}
 	if f.install == nil {
 		t.Fatal("install flag is nil")

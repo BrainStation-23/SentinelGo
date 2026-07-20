@@ -98,6 +98,7 @@ func TestParseWiFiInfoFromIW(t *testing.T) {
 		info := parseWiFiInfoFromIW(iwLinkConnected)
 		if info == nil {
 			t.Fatal("expected non-nil WiFiInfo")
+			return // Early return to satisfy staticcheck
 		}
 		if info.SSID != "MyHomeNetwork" {
 			t.Errorf("SSID = %q, want %q", info.SSID, "MyHomeNetwork")
@@ -113,6 +114,7 @@ func TestParseWiFiInfoFromIW(t *testing.T) {
 		info := parseWiFiInfoFromIW(iwLink24GHz)
 		if info == nil {
 			t.Fatal("expected non-nil WiFiInfo")
+			return // Early return to satisfy staticcheck
 		}
 		if info.FrequencyBand != "2.4GHz" {
 			t.Errorf("FrequencyBand = %q, want 2.4GHz", info.FrequencyBand)

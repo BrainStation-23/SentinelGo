@@ -27,13 +27,10 @@ func TestNewClient_ZeroTimeout(t *testing.T) {
 	c := httpx.NewClient(0)
 	if c == nil {
 		t.Fatal("NewClient(0) returned nil")
+		return // Early return to satisfy staticcheck
 	}
 	if c.Timeout != 0 {
 		t.Errorf("Timeout with zero: got %v, want 0", c.Timeout)
-	}
-	// Access Transport to ensure it's not nil (satisfies staticcheck)
-	if c.Transport == nil {
-		t.Fatal("Transport should not be nil")
 	}
 }
 

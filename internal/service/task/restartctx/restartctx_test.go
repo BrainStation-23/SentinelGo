@@ -71,6 +71,7 @@ func TestWrite_RoundTrip(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("ReadAndClear returned nil for existing file")
+		return // Early return to satisfy staticcheck
 	}
 	if got.TaskID != rc.TaskID {
 		t.Errorf("TaskID: got %q, want %q", got.TaskID, rc.TaskID)

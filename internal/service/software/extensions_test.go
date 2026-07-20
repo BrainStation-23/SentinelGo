@@ -69,6 +69,7 @@ func TestReadExtensionManifest_Valid(t *testing.T) {
 	info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "fallback-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo for valid manifest")
+		return // Early return to satisfy staticcheck
 	}
 	// Name is the stable extension ID; DisplayName is the human-readable label.
 	if info.Name != "fallback-id" {
@@ -89,6 +90,7 @@ func TestReadExtensionManifest_I18nName(t *testing.T) {
 	info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "my-ext-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo even for i18n name")
+		return // Early return to satisfy staticcheck
 	}
 	if info.Name != "my-ext-id" {
 		t.Errorf("Name = %q, want my-ext-id (extension ID)", info.Name)
@@ -108,6 +110,7 @@ func TestReadExtensionManifest_InvalidJSON(t *testing.T) {
 	info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "fallback")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo for invalid JSON (fallback to extID)")
+		return // Early return to satisfy staticcheck
 	}
 	if info.Name != "fallback" {
 		t.Errorf("Name = %q, want fallback", info.Name)
@@ -131,6 +134,7 @@ func TestReadExtensionManifest_EmptyName(t *testing.T) {
 	info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "ext-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo for empty name")
+		return // Early return to satisfy staticcheck
 	}
 	if info.Name != "ext-id" {
 		t.Errorf("Name = %q, want ext-id (extension ID)", info.Name)
@@ -246,6 +250,7 @@ func TestReadExtensionManifest_SetsMetadata(t *testing.T) {
 	info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "test-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo")
+		return // Early return to satisfy staticcheck
 	}
 	if info.Source != "chrome" {
 		t.Errorf("Source = %q, want chrome", info.Source)
@@ -274,6 +279,7 @@ func TestReadExtensionManifest_I18nVariousFormats(t *testing.T) {
 			info := readExtensionManifest(filepath.Join(dir, "manifest.json"), "chrome", "chrome_extensions", "fallback-id")
 			if info == nil {
 				t.Fatal("expected non-nil SoftwareInfo")
+				return // Early return to satisfy staticcheck
 			}
 			// Without locale files, Name is the extension ID and DisplayName falls back to it too.
 			if info.Name != "fallback-id" {
@@ -322,6 +328,7 @@ func TestReadExtensionManifest_WithLocaleResolution(t *testing.T) {
 	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo")
+		return // Early return to satisfy staticcheck
 	}
 	if info.Name != "fallback-id" {
 		t.Errorf("Name = %q, want fallback-id (extension ID)", info.Name)
@@ -366,6 +373,7 @@ func TestReadExtensionManifest_LocaleFallback(t *testing.T) {
 	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo")
+		return // Early return to satisfy staticcheck
 	}
 	// Should fall back to Spanish locale when English is not available
 	if info.Name != "fallback-id" {
@@ -410,6 +418,7 @@ func TestReadExtensionManifest_MissingLocaleKey(t *testing.T) {
 	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo")
+		return // Early return to satisfy staticcheck
 	}
 	// Should fall back to extension ID when key is not found in locale
 	if info.Name != "fallback-id" {
@@ -452,6 +461,7 @@ func TestReadExtensionManifest_CaseInsensitiveKey(t *testing.T) {
 	info := readExtensionManifest(manifestPath, "chrome", "chrome_extensions", "fallback-id")
 	if info == nil {
 		t.Fatal("expected non-nil SoftwareInfo")
+		return // Early return to satisfy staticcheck
 	}
 	// Should resolve the uppercase manifest key to lowercase locale key
 	if info.Name != "fallback-id" {

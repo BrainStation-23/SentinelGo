@@ -59,6 +59,7 @@ func TestFetchLatestRelease_Happy(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil release, got nil")
+		return // Early return to satisfy staticcheck
 	}
 	if got.Version != want.Version {
 		t.Errorf("Version = %q, want %q", got.Version, want.Version)

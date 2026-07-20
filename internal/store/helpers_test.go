@@ -57,6 +57,7 @@ func TestParseTime_Valid(t *testing.T) {
 	got := parseTime([]byte("2024-01-15T10:30:00Z"))
 	if got == nil {
 		t.Fatal("parseTime() returned nil for valid input")
+		return // Early return to satisfy staticcheck
 	}
 	want := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	if !got.Equal(want) {
