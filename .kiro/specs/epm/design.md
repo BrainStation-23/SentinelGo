@@ -8,6 +8,7 @@ EPM adds a policy-gated privilege-elevation capability to the existing SentinelG
                          ┌─────────────────────────────┐
                          │   Supabase (policy source)  │
                          └──────────────┬──────────────┘
+                                        │ agent_get_tasks RPC
                                         ▼
                          ┌─────────────────────────────┐
                          │  internal/service/task       │  existing pipeline, reused as-is

@@ -1,11 +1,31 @@
-# Line-ending policy for installer assets.
-#
+# Normalize all text files to LF in the repository; let Git convert to the
+# platform's native line ending on checkout only for files where that matters.
+* text=auto eol=lf
+
+# Windows batch files must use CRLF — cmd.exe requires it.
+*.bat       text eol=crlf
+
 # Shell scripts, the macOS .command wrapper, and the Linux .desktop launcher run
 # on macOS/Linux and MUST use LF: a CRLF shebang ("#!/bin/sh\r") fails with
 # "bad interpreter", and CRLF breaks .desktop Exec parsing. Without this, a
 # Windows checkout/build could ship CRLF copies that silently fail to launch.
-# The Windows .bat installer keeps CRLF.
 *.sh        text eol=lf
 *.command   text eol=lf
 *.desktop   text eol=lf
-*.bat       text eol=crlf
+
+# Source and config files — always LF regardless of checkout platform.
+*.go        text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.toml      text eol=lf
+*.sql       text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.xml       text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
