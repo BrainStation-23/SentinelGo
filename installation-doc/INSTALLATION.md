@@ -356,6 +356,57 @@ install.bat help           # Show help
 
 ---
 
+## 🔐 Endpoint Privilege Management (EPM) Client
+
+Each platform's download also includes `sentinelgo-epm` (`sentinelgo-epm.exe` on Windows) alongside the main `sentinelgo` binary. It's a small, **unprivileged** command-line client for Endpoint Privilege Management — it lets a standard (non-admin) user request that one specific, policy-approved application be launched elevated, without granting that user admin/root rights generally. Full details on policy authoring, the audit trail, and per-platform elevation mechanics: **[docs/EPM-Operator-Guide.md](../docs/EPM-Operator-Guide.md)**.
+
+### Is this something you need to install?
+
+Not separately. `sentinelgo-epm` needs no service registration — no systemd unit, no launchd plist, no Windows service entry. It's a plain executable a standard user runs directly, the same way they'd run any other CLI tool; it just talks to the already-installed, already-running `sentinelgo` agent over a local, machine-only channel (a Named Pipe on Windows, a Unix Domain Socket on Linux/macOS).
+
+### Prerequisites
+
+1. **The main SentinelGo agent must already be installed and running** (see the platform sections above) — `sentinelgo-epm` does nothing on its own; it is only a front end to the agent.
+2. **EPM must be turned on** in the agent's `config.json`:
+   ```json
+   {
+     "enable_epm": true,
+     "epm_policy_sync_interval": "5m"
+   }
+   ```
+   Restart the agent service after changing this (`sudo systemctl restart sentinelgo` / `sudo launchctl ... com.sentinelgo.agent` / `sc.exe stop sentinelgo && sc.exe start sentinelgo`, matching the platform section above). `enable_epm` defaults to `false` — an install with no config changes behaves exactly as it does today, with zero EPM overhead.
+3. **At least one policy rule must be synced to the agent** (delivered via the `epm-policy-sync` remote task) before any elevation request will succeed — with no rules synced, every request is denied by default. See the Operator Guide for the rule payload format.
+
+### Making the client easy to run
+
+The binary needs no installation step, but most users will want it on `PATH` (or in a well-known folder) instead of typing the full download path every time:
+
+**Linux/macOS:**
+```bash
+sudo cp sentinelgo-epm-linux-amd64 /usr/local/bin/sentinelgo-epm   # adjust the filename for your OS/arch
+sudo chmod +x /usr/local/bin/sentinelgo-epm
+```
+
+**Windows** (run as the standard user — this step needs no elevation):
+```powershell
+Copy-Item sentinelgo-epm-windows-amd64.exe "$env:LOCALAPPDATA\SentinelGo\sentinelgo-epm.exe" -Force
+# Optionally add that folder to your user PATH: System Settings -> Environment Variables
+```
+
+### Usage
+
+```bash
+sentinelgo-epm -app "/path/to/approved/tool"
+sentinelgo-epm -app "C:\Program Files\LegacyTool\tool.exe" -args "--flag value"
+```
+
+- Exit code `0`, `Elevation granted: launched PID ...` — the app was policy-approved and launched with elevated privileges on your own desktop.
+- Exit code `1`, `Elevation denied: ...` — no policy rule allowed this request, or EPM/the agent isn't reachable (the message explains which).
+
+See **[docs/EPM-Operator-Guide.md](../docs/EPM-Operator-Guide.md)** for policy rule authoring with examples, the audit trail, per-platform elevation mechanics, current limitations, and troubleshooting.
+
+---
+
 ## 🔧 Troubleshooting
 
 ### Service Not Starting

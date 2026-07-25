@@ -1,6 +1,7 @@
 package procinfo
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -112,6 +113,19 @@ func ParseProcessOutput(output string) []ProcessInfo {
 	return processes
 }
 
+// binaryVersionTimeout bounds the "-version" probe subprocess. Without a
+// timeout, this hung indefinitely against a real process list: cmdLine here
+// comes from a `ps aux` line matched only by a loose "contains sentinelgo"
+// substring check, so it is not guaranteed to be an actual SentinelGo binary
+// — on a real desktop with a full process table, that substring can appear
+// in an unrelated process's arguments (e.g. a file-indexing service scanning
+// a path containing "sentinelgo"), and invoking *that* binary with
+// "-version" is not guaranteed to exit quickly, or at all. Confirmed via a
+// real hang (10 minutes, Go's test-level watchdog) running the full test
+// suite on real macOS hardware — this never surfaced under cross-compilation
+// or in CI, only against a real, populated process table.
+const binaryVersionTimeout = 3 * time.Second
+
 // GetBinaryVersion tries to get version from the binary executable
 func GetBinaryVersion(cmdLine string) string {
 	var binaryPath string
@@ -127,8 +141,10 @@ func GetBinaryVersion(cmdLine string) string {
 	}
 
 	if binaryPath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), binaryVersionTimeout)
+		defer cancel()
 		// #nosec G204 - binaryPath is a controlled path from self-update process
-		cmd := exec.Command(binaryPath, "-version")
+		cmd := exec.CommandContext(ctx, binaryPath, "-version")
 		output, err := cmd.Output()
 		if err == nil {
 			outputStr := string(output)

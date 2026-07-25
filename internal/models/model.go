@@ -11,6 +11,7 @@ const (
 	LogCategoryUser     = "USER_LOG"
 	LogCategoryPolicy   = "POLICY_LOG"
 	LogCategoryRemote   = "REMOTE_ACTION_LOG"
+	LogCategoryEPM      = "EPM_ELEVATION_LOG"
 )
 
 type AuditLog struct {

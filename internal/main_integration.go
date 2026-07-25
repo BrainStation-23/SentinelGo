@@ -9,6 +9,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
+	"sentinelgo/internal/epm"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
@@ -16,7 +17,9 @@ import (
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
+	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/taskstore"
 	"sentinelgo/internal/updater"
 )
 
@@ -36,6 +39,8 @@ type MainIntegration struct {
 	taskManager    *tasksvc.TaskManager
 	servicesStore  *store.ServicesStore
 	softwareStore  *store.SoftwareStore
+	epmStore       *store.EPMStore
+	epmService     *epm.Service
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -94,7 +99,11 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// 6. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
-	// 7. Start the task scheduler.
+	// 7. Start Endpoint Privilege Management (EPM) if enabled. Off by default;
+	// failures are logged, never fatal, matching every other optional component.
+	mi.startEPM(ctx)
+
+	// 8. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
 		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
@@ -322,6 +331,166 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 	}
 }
 
+// epmDBPath returns the path for the EPM policy/audit SQLite cache, placed in
+// the same directory as config.json.
+func (mi *MainIntegration) epmDBPath() string {
+	return filepath.Join(filepath.Dir(mi.cfg.Path), store.EPMDBName)
+}
+
+// startEPM starts Endpoint Privilege Management when enabled. EPM defaults to
+// disabled (cfg.EPMEnabled == false), in which case this is a no-op and the
+// agent behaves exactly as it does today. Even when enabled, the enforcement
+// transport only exists on Windows so far (see internal/epm/service_other.go
+// for the stub on other platforms); any failure here is logged and
+// non-fatal, matching how buildServicesTask/softwareSyncHandler degrade when
+// their stores fail to open.
+func (mi *MainIntegration) startEPM(ctx context.Context) {
+	if !mi.cfg.EPMEnabled {
+		return
+	}
+
+	epmStore, err := store.NewEPMStore(mi.epmDBPath())
+	if err != nil {
+		log.Printf("Warning: failed to open EPM store, EPM disabled for this run: %v", err)
+		return
+	}
+	mi.epmStore = epmStore
+
+	svc := epm.NewService(epmStore, epm.NewAuditor(epmStore))
+	if err := svc.Start(ctx); err != nil {
+		log.Printf("Warning: EPM service failed to start: %v", err)
+		return
+	}
+	mi.epmService = svc
+	log.Printf("EPM enabled (policy sync interval: %v)", mi.cfg.GetEPMPolicySyncInterval())
+
+	// Registering scheduler tasks here (rather than in configureScheduledTasks,
+	// which runs earlier in Start) is safe: AddTask only needs to happen before
+	// scheduler.Start, which is still a later step. It also keeps every piece of
+	// EPM wiring in one place instead of splitting it across two methods.
+	if err := mi.scheduler.AddTask(mi.buildEPMPolicySyncTask()); err != nil {
+		log.Printf("Warning: failed to add epm-policy-sync scheduler task: %v", err)
+	}
+	if auditTask := mi.buildEPMAuditSyncTask(epmStore); auditTask != nil {
+		if err := mi.scheduler.AddTask(auditTask); err != nil {
+			log.Printf("Warning: failed to add epm-audit-sync scheduler task: %v", err)
+		}
+	}
+}
+
+// buildEPMPolicySyncTask periodically pulls and applies any pending
+// epm-policy-sync task on its own cadence (cfg.GetEPMPolicySyncInterval()),
+// independent of the general remote task-polling loop (which may run on a
+// much longer interval, or be disabled entirely via cfg.EnableTaskPolling).
+// It reuses the already-existing agent_get_tasks/agent_update_task RPCs (via
+// taskstore.Client) and the already-registered "epm-policy-sync" native
+// handler (internal/service/task/native) — no new backend endpoint is
+// required. Running alongside the general TaskManager, when both are
+// enabled, is expected and harmless: the native handler's UpsertRules/
+// DeleteRulesNotIn are idempotent, so processing the same pending task twice
+// converges to the same result.
+func (mi *MainIntegration) buildEPMPolicySyncTask() *scheduler.Task {
+	return &scheduler.Task{
+		Name:     "epm-policy-sync",
+		Interval: mi.cfg.GetEPMPolicySyncInterval(),
+		Enabled:  true,
+		Handler:  mi.epmPolicySyncHandler(),
+	}
+}
+
+func (mi *MainIntegration) epmPolicySyncHandler() scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !cfg.EPMEnabled {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping epm-policy-sync until session recovers")
+			return nil
+		}
+
+		handler := native.Find("epm-policy-sync")
+		if handler == nil {
+			return fmt.Errorf("epm-policy-sync: native handler not registered")
+		}
+
+		client := taskstore.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
+
+		var resp *taskstore.AgentTasksResponse
+		var fetchErr error
+		fetch := func() error {
+			client.UpdateToken(cfg.GetAccessToken())
+			resp, fetchErr = client.GetTasks(ctx)
+			return fetchErr
+		}
+		if authSvc != nil {
+			fetchErr = authSvc.DoWithAuthRetry(ctx, cfg, fetch)
+		} else {
+			fetchErr = fetch()
+		}
+		if fetchErr != nil {
+			return fmt.Errorf("epm-policy-sync: fetch tasks: %w", fetchErr)
+		}
+
+		processed := 0
+		for _, task := range resp.Tasks {
+			if task.Slug != "epm-policy-sync" {
+				continue
+			}
+			note, runErr := handler.Run(ctx, cfg, task)
+			status := "success"
+			if runErr != nil {
+				status = "failed"
+				note = runErr.Error()
+				log.Printf("epm-policy-sync: task %s failed: %v", task.ID, runErr)
+			}
+			if updateErr := client.UpdateTask(ctx, task.ID, status, note); updateErr != nil {
+				log.Printf("epm-policy-sync: report status for task %s: %v", task.ID, updateErr)
+			}
+			processed++
+		}
+
+		if processed > 0 {
+			log.Printf("epm-policy-sync: processed %d pending policy-sync task(s)", processed)
+		}
+		return nil
+	}
+}
+
+// buildEPMAuditSyncTask periodically drains EPM elevation-audit rows through
+// the same upload pipeline used for OS-level audit logs (see
+// internal/logging/epm_upload.go). Reuses the audit-log flush cadence
+// (cfg.GetLogFlushInterval()) since this is conceptually the same kind of
+// work. Returns nil (no task added) when audit logging itself is disabled —
+// there is nowhere for EPM audit rows to go without the logging pipeline.
+func (mi *MainIntegration) buildEPMAuditSyncTask(epmStore *store.EPMStore) *scheduler.Task {
+	if mi.loggingService == nil {
+		log.Printf("Warning: audit logs disabled, EPM elevation-audit upload will not run")
+		return nil
+	}
+	return &scheduler.Task{
+		Name:     "epm-audit-sync",
+		Interval: mi.cfg.GetLogFlushInterval(),
+		Enabled:  true,
+		Handler:  mi.epmAuditSyncHandler(epmStore),
+	}
+}
+
+func (mi *MainIntegration) epmAuditSyncHandler(epmStore *store.EPMStore) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+		if !cfg.EPMEnabled || mi.loggingService == nil {
+			return nil
+		}
+		uploaded, err := mi.loggingService.UploadEPMAuditRows(ctx, epmStore)
+		if err != nil {
+			return fmt.Errorf("epm-audit-sync: %w", err)
+		}
+		if uploaded > 0 {
+			log.Printf("epm-audit-sync: uploaded %d elevation audit record(s)", uploaded)
+		}
+		return nil
+	}
+}
+
 // startLoggingService starts the audit log collection pipeline when enabled.
 func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 	if !mi.cfg.AuditLogsEnabled {
@@ -421,6 +590,20 @@ func (mi *MainIntegration) Stop() error {
 	if mi.softwareStore != nil {
 		if err := mi.softwareStore.Close(); err != nil {
 			log.Printf("Warning: Failed to close software store: %v", err)
+		}
+	}
+
+	// Stop EPM service
+	if mi.epmService != nil {
+		if err := mi.epmService.Stop(); err != nil {
+			log.Printf("Warning: Failed to stop EPM service: %v", err)
+		}
+	}
+
+	// Close EPM store
+	if mi.epmStore != nil {
+		if err := mi.epmStore.Close(); err != nil {
+			log.Printf("Warning: Failed to close EPM store: %v", err)
 		}
 	}
 

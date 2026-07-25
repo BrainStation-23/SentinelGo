@@ -113,6 +113,9 @@ type Config struct {
 	EdgeFunctionURL        string   `json:"edge_function_url"`        // Edge Function URL for software data
 	ServicesSyncEnabled    bool     `json:"services_sync_enabled"`    // Enable OS services collection
 	ServicesUpdateInterval Duration `json:"services_update_interval"` // How often to collect OS services (default 5m)
+	// Endpoint Privilege Management (EPM) configuration
+	EPMEnabled            bool     `json:"enable_epm"`               // Enable Endpoint Privilege Management (default false)
+	EPMPolicySyncInterval Duration `json:"epm_policy_sync_interval"` // How often to sync EPM policy rules (default 5m)
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
@@ -195,6 +198,14 @@ func (c *Config) GetServicesUpdateInterval() time.Duration {
 	return time.Duration(c.ServicesUpdateInterval)
 }
 
+// GetEPMPolicySyncInterval returns how often EPM policy rules are synced.
+func (c *Config) GetEPMPolicySyncInterval() time.Duration {
+	if time.Duration(c.EPMPolicySyncInterval) == 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(c.EPMPolicySyncInterval)
+}
+
 // GetTaskPollingInterval returns task polling interval as time.Duration
 func (c *Config) GetTaskPollingInterval() time.Duration {
 	if time.Duration(c.TaskPollingInterval) == 0 {
@@ -223,6 +234,8 @@ func Load(path string) (*Config, error) {
 		AuditLogsEnabled:       true,                      // Enable audit logs by default
 		ServicesSyncEnabled:    true,                      // Enable services collection by default
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
+		// EPMEnabled intentionally left at its zero value (false): EPM is opt-in.
+		EPMPolicySyncInterval: Duration(5 * time.Minute), // Default EPM policy sync interval
 	}
 
 	if path == "" {

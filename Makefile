@@ -43,14 +43,19 @@ all: windows linux macos
 
 windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o build/windows/sentinelgo-epm-windows-amd64.exe ./cmd/sentinelgo-epm
 
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o build/linux/sentinelgo-linux-amd64 ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o build/linux/sentinelgo-linux-arm64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o build/linux/sentinelgo-epm-linux-amd64 ./cmd/sentinelgo-epm
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o build/linux/sentinelgo-epm-linux-arm64 ./cmd/sentinelgo-epm
 
 macos:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-amd64 ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-arm64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o build/darwin/sentinelgo-epm-darwin-amd64 ./cmd/sentinelgo-epm
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o build/darwin/sentinelgo-epm-darwin-arm64 ./cmd/sentinelgo-epm
 
 # Build all platforms for release, then sign and generate SHA256SUMS.
 # Requires SENTINELGO_SIGNING_KEY env var (base64-encoded ed25519 private key).
@@ -71,6 +76,11 @@ release: pre-release clean all
 	@cp build/linux/sentinelgo-linux-arm64 release/
 	@cp build/darwin/sentinelgo-darwin-amd64 release/
 	@cp build/darwin/sentinelgo-darwin-arm64 release/
+	@cp build/windows/sentinelgo-epm-windows-amd64.exe release/
+	@cp build/linux/sentinelgo-epm-linux-amd64 release/
+	@cp build/linux/sentinelgo-epm-linux-arm64 release/
+	@cp build/darwin/sentinelgo-epm-darwin-amd64 release/
+	@cp build/darwin/sentinelgo-epm-darwin-arm64 release/
 	@$(MAKE) sign
 	@echo "\nRelease packages ready in release/ directory:"
 	@ls -la release/
@@ -87,7 +97,12 @@ sign:
 	  release/sentinelgo-linux-arm64 \
 	  release/sentinelgo-darwin-amd64 \
 	  release/sentinelgo-darwin-arm64 \
-	  release/sentinelgo-windows-amd64.exe
+	  release/sentinelgo-windows-amd64.exe \
+	  release/sentinelgo-epm-linux-amd64 \
+	  release/sentinelgo-epm-linux-arm64 \
+	  release/sentinelgo-epm-darwin-amd64 \
+	  release/sentinelgo-epm-darwin-arm64 \
+	  release/sentinelgo-epm-windows-amd64.exe
 	@echo "Signatures and SHA256SUMS written to release/"
 
 clean:
@@ -194,11 +209,11 @@ setup:
 packages: release
 	@echo "Creating distribution packages..."
 	@cd release && \
-		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe INSTALLATION.md install.bat && \
-		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md install.sh install.command && \
-		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md install.sh install.command
+		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe sentinelgo-epm-windows-amd64.exe INSTALLATION.md install.bat && \
+		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 sentinelgo-epm-linux-amd64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 sentinelgo-epm-linux-arm64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 sentinelgo-epm-darwin-amd64 INSTALLATION.md install.sh install.command && \
+		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 sentinelgo-epm-darwin-arm64 INSTALLATION.md install.sh install.command
 	@echo "Packages created:"
 	@ls -la release/*.tar.gz
 
