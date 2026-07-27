@@ -23,6 +23,6 @@ func collectForTest(t *testing.T) *shared.SystemInfo {
 	if testing.Short() {
 		t.Skip("skipping real osinfo.Collect() (slow OS shell-outs) in -short mode")
 	}
-	collectOnce.Do(func() { collected = osinfo.Collect() })
+	collectOnce.Do(func() { collected = osinfo.Collect("test") })
 	return collected
 }

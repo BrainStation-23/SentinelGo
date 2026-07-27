@@ -8,12 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/windows"
+
+	"sentinelgo/internal/epm/svcparse"
 )
 
 // PipeName is the Named Pipe path the user-space EPM client
@@ -37,6 +41,12 @@ type pipeRequest struct {
 	RequestID   string `json:"request_id"`
 	AppPath     string `json:"app_path"`
 	CommandLine string `json:"command_line"`
+	// ScriptPath, when non-empty, is a script/installer payload to run via the
+	// interpreter named by AppPath; the server computes its hash itself (see
+	// evaluateAndLaunch) rather than trusting a client-supplied value.
+	ScriptPath string `json:"script_path,omitempty"`
+	// Args is the argument string the script is being invoked with.
+	Args string `json:"args,omitempty"`
 }
 
 // pipeResponse is the wire shape returned to the client.
@@ -196,6 +206,16 @@ var (
 func (p *PipeServer) evaluateAndLaunch(req pipeRequest, clientPID uint32) pipeResponse {
 	resp := pipeResponse{RequestID: req.RequestID}
 
+	// Validate AppPath before doing any expensive work: it must be an absolute
+	// local path (not a UNC \\server\share path or a relative path). A UNC path
+	// would let a compromised client point the server at a binary on an
+	// attacker-controlled network share; a relative path is ambiguous and
+	// dangerous in a high-privilege context.
+	if err := validateAppPath(req.AppPath); err != nil {
+		resp.Error = fmt.Sprintf("invalid app_path: %v", err)
+		return resp
+	}
+
 	sessionID, err := sessionIDForProcessFn(clientPID)
 	if err != nil {
 		resp.Error = fmt.Sprintf("resolve session: %v", err)
@@ -224,6 +244,20 @@ func (p *PipeServer) evaluateAndLaunch(req pipeRequest, clientPID uint32) pipeRe
 	// publisher-based rules, it isn't a hard failure of the request.
 	publisher, _ := verifyAuthenticodeFn(req.AppPath)
 
+	// The script's hash is always computed server-side from the file on disk
+	// — a client-supplied hash would let a compromised client substitute a
+	// different payload after the policy check.
+	var scriptHash string
+	if req.ScriptPath != "" {
+		var hashErr error
+		scriptHash, hashErr = computeFileHashFn(req.ScriptPath)
+		if hashErr != nil {
+			resp.Error = fmt.Sprintf("hash script: %v", hashErr)
+			return resp
+		}
+	}
+	serviceName, _ := svcparse.ExtractServiceName(req.AppPath, req.CommandLine)
+
 	rules, err := p.rules.GetRules()
 	if err != nil {
 		resp.Error = fmt.Sprintf("load policy rules: %v", err)
@@ -231,12 +265,16 @@ func (p *PipeServer) evaluateAndLaunch(req pipeRequest, clientPID uint32) pipeRe
 	}
 
 	elevReq := ElevationRequest{
-		RequestID: req.RequestID,
-		UserID:    userID,
-		AppPath:   req.AppPath,
-		AppHash:   appHash,
-		Publisher: publisher,
-		Now:       time.Now().UTC(),
+		RequestID:            req.RequestID,
+		UserID:               userID,
+		AppPath:              req.AppPath,
+		AppHash:              appHash,
+		Publisher:            publisher,
+		Now:                  time.Now().UTC(),
+		ScriptPath:           req.ScriptPath,
+		ScriptHash:           scriptHash,
+		ActualArgs:           req.Args,
+		RequestedServiceName: serviceName,
 	}
 	decision := NewEngine(rules).Evaluate(elevReq)
 
@@ -276,7 +314,20 @@ func (p *PipeServer) launch(userToken windows.Token, req pipeRequest) (uint32, e
 	}
 	defer func() { _ = env.Close() }()
 
-	result, err := launchAsUserFn(primary, req.AppPath, req.CommandLine, env)
+	// req.AppPath is always the interpreter/executable to launch. When a
+	// script is requested, the process's own command line must be
+	// "interpreter <scriptPath> [args]", not just "interpreter [args]" — so
+	// the quoted script path (plus its args) is passed as the extra
+	// command-line content appended after the (separately quoted) appPath.
+	commandLine := req.CommandLine
+	if req.ScriptPath != "" {
+		commandLine = quoteWindowsArg(req.ScriptPath)
+		if req.Args != "" {
+			commandLine += " " + req.Args
+		}
+	}
+
+	result, err := launchAsUserFn(primary, req.AppPath, commandLine, env)
 	if err != nil {
 		return 0, err
 	}
@@ -288,13 +339,15 @@ func (p *PipeServer) audit(req ElevationRequest, decision ElevationResponse) {
 		return
 	}
 	entry := AuditEntry{
-		RequestID:  req.RequestID,
-		UserID:     req.UserID,
-		AppPath:    req.AppPath,
-		AppHash:    req.AppHash,
-		Decision:   DecisionDeny,
-		PolicyID:   decision.PolicyID,
-		LaunchedAt: req.Now,
+		RequestID:   req.RequestID,
+		UserID:      req.UserID,
+		AppPath:     req.AppPath,
+		AppHash:     req.AppHash,
+		Decision:    DecisionDeny,
+		PolicyID:    decision.PolicyID,
+		LaunchedAt:  req.Now,
+		ScriptHash:  req.ScriptHash,
+		ServiceName: req.RequestedServiceName,
 	}
 	if decision.Allowed {
 		entry.Decision = DecisionAllow
@@ -314,4 +367,31 @@ func (p *PipeServer) reply(handle windows.Handle, resp pipeResponse) {
 	if err := windows.WriteFile(handle, data, &written, nil); err != nil {
 		log.Printf("epm: WriteFile response: %v", err)
 	}
+}
+
+// validateAppPath rejects AppPath values that are not safe to launch with
+// elevated privileges:
+//   - Empty paths are always invalid.
+//   - UNC paths (\\server\share\...) must be rejected: they resolve across the
+//     network and could point to a binary on an attacker-controlled share.
+//   - Relative paths are ambiguous in an elevated context and must be absolute.
+//
+// The check uses filepath.IsAbs (which on Windows also returns false for
+// device paths that don't begin with a drive letter or \\.\) and an explicit
+// UNC prefix guard, so both \\server\share and \\?\UNC\server\share are
+// caught.
+func validateAppPath(appPath string) error {
+	if appPath == "" {
+		return fmt.Errorf("app_path must not be empty")
+	}
+	// Normalise separators before prefix checks.
+	cleaned := filepath.Clean(appPath)
+	// Reject UNC paths (\\server\share or \\.\Device or \\?\...).
+	if strings.HasPrefix(cleaned, `\\`) {
+		return fmt.Errorf("UNC and device paths are not permitted (got %q)", cleaned)
+	}
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("app_path must be an absolute local path (got %q)", cleaned)
+	}
+	return nil
 }

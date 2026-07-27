@@ -135,23 +135,3 @@ func TestLoggingIntegration_GetStatistics(t *testing.T) {
 	// Stats should be valid even before starting
 	_ = li.GetStatistics()
 }
-
-func TestLoggingIntegration_CheckAgentTaskPolling(t *testing.T) {
-	cfg := &config.Config{
-		DeviceID:         "test-device-id",
-		LogFlushInterval: config.Duration(5 * time.Minute),
-		Path:             "/tmp/test-config.json",
-	}
-
-	li, err := logging.NewLoggingIntegration(cfg)
-	if err != nil {
-		t.Fatalf("NewLoggingIntegration() failed: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	err = li.CheckAgentTaskPolling(ctx)
-	if err != nil {
-		t.Errorf("CheckAgentTaskPolling() failed: %v", err)
-	}
-}

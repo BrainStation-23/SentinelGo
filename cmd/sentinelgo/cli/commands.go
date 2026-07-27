@@ -162,7 +162,7 @@ func HandleAgentInfoUpdate(cfg *config.Config) {
 		return
 	}
 
-	sysInfo := osinfo.Collect()
+	sysInfo := osinfo.Collect(cfg.CurrentVersion)
 
 	if err := agentSvc.UpdateAgentInfo(ctx, cfg, sysInfo); err != nil {
 		fmt.Printf("Agent info update failed: %v\n", err)

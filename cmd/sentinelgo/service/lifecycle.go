@@ -22,11 +22,17 @@ func HandleInstall(svc AgentService) {
 	if runtime.GOOS == "darwin" {
 		fmt.Println("Installing SentinelGo as launchd service...")
 
+		// Discover the actual binary path instead of hardcoding /opt/sentinelgo/sentinelgo.
+		// This allows installs in non-standard locations or development builds to work.
+		binaryPath, err := os.Executable()
+		if err != nil {
+			log.Fatalf("Failed to determine binary path: %v", err)
+		}
+
 		// Remove the quarantine flag macOS attaches to downloaded binaries, then
 		// re-codesign with an ad-hoc identity so Gatekeeper accepts the daemon
 		// without prompting the user to approve "unidentified developer" software.
 		// spctl --add registers the binary in the Gatekeeper allowlist.
-		const binaryPath = "/opt/sentinelgo/sentinelgo"
 		_ = exec.Command("xattr", "-d", "com.apple.quarantine", binaryPath).Run()
 		_ = exec.Command("codesign", "--force", "--sign", "-", binaryPath).Run()
 		_ = exec.Command("spctl", "--add", binaryPath).Run()
@@ -97,9 +103,14 @@ func HandleUninstall(svc AgentService) {
 
 // RunForeground runs the agent in console/foreground mode, guarded by a process
 // lock, until an interrupt signal is received.
+//
+// The lock name is fixed as "sentinelgo" (not version-qualified) so that the
+// foreground mode and the service mode share the same lock namespace and can
+// correctly detect each other. Using a versioned lock name meant two different
+// agent versions could run simultaneously without either detecting the other.
 func RunForeground(cfg *config.Config) {
 	version := config.Version
-	lf := lockfile.NewLockFile(fmt.Sprintf("sentinelgo-%s", version))
+	lf := lockfile.NewLockFile("sentinelgo")
 
 	locked, err := lf.CheckExistingLock()
 	if err != nil {

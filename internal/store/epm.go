@@ -45,8 +45,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_epm_audit_request ON epm_audit_log(request
 CREATE INDEX        IF NOT EXISTS idx_epm_audit_synced  ON epm_audit_log(synced);
 `
 
+// epmSchemaV2 adds script/installer-elevation and service-scoped-elevation
+// columns to the existing tables. ALTER TABLE ADD COLUMN is
+// backward-compatible: existing rows receive the DEFAULT value so no data
+// migration is required.
+const epmSchemaV2 = `
+ALTER TABLE epm_policies  ADD COLUMN script_hash          TEXT NOT NULL DEFAULT '';
+ALTER TABLE epm_policies  ADD COLUMN allowed_args         TEXT NOT NULL DEFAULT '';
+ALTER TABLE epm_policies  ADD COLUMN allowed_service_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE epm_audit_log ADD COLUMN script_hash          TEXT NOT NULL DEFAULT '';
+ALTER TABLE epm_audit_log ADD COLUMN service_name         TEXT NOT NULL DEFAULT '';
+`
+
 var epmMigrations = []Migration{
 	{Version: 1, SQL: epmSchemaV1},
+	{Version: 2, SQL: epmSchemaV2},
 }
 
 // EPMStore is a SQLite-backed local cache for EPM policy rules and the
@@ -100,17 +113,21 @@ func (s *EPMStore) UpsertRules(rules []epm.PolicyRule) error {
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO epm_policies
-			(id, app_path, app_hash, publisher, user_id, decision, expires_at, priority, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, app_path, app_hash, publisher, user_id, decision, expires_at, priority,
+			 script_hash, allowed_args, allowed_service_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			app_path   = excluded.app_path,
-			app_hash   = excluded.app_hash,
-			publisher  = excluded.publisher,
-			user_id    = excluded.user_id,
-			decision   = excluded.decision,
-			expires_at = excluded.expires_at,
-			priority   = excluded.priority,
-			updated_at = excluded.updated_at
+			app_path              = excluded.app_path,
+			app_hash              = excluded.app_hash,
+			publisher             = excluded.publisher,
+			user_id               = excluded.user_id,
+			decision              = excluded.decision,
+			expires_at            = excluded.expires_at,
+			priority              = excluded.priority,
+			script_hash           = excluded.script_hash,
+			allowed_args          = excluded.allowed_args,
+			allowed_service_name  = excluded.allowed_service_name,
+			updated_at            = excluded.updated_at
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare upsert rules stmt: %w", err)
@@ -125,6 +142,7 @@ func (s *EPMStore) UpsertRules(rules []epm.PolicyRule) error {
 		if _, err := stmt.Exec(
 			rule.ID, rule.AppPath, rule.AppHash, rule.Publisher, rule.UserID,
 			string(rule.Decision), formatExpiresAt(rule.ExpiresAt), rule.Priority,
+			rule.ScriptHash, rule.AllowedArgs, rule.AllowedServiceName,
 			now, now,
 		); err != nil {
 			return fmt.Errorf("upsert rule %q: %w", rule.ID, err)
@@ -159,7 +177,8 @@ func (s *EPMStore) DeleteRulesNotIn(activeIDs []string) error {
 // GetRules returns every policy rule currently cached locally.
 func (s *EPMStore) GetRules() ([]epm.PolicyRule, error) {
 	rows, err := s.db.Query(`
-		SELECT id, app_path, app_hash, publisher, user_id, decision, expires_at, priority
+		SELECT id, app_path, app_hash, publisher, user_id, decision, expires_at, priority,
+		       script_hash, allowed_args, allowed_service_name
 		FROM epm_policies
 	`)
 	if err != nil {
@@ -178,6 +197,7 @@ func (s *EPMStore) GetRules() ([]epm.PolicyRule, error) {
 		if err := rows.Scan(
 			&rule.ID, &rule.AppPath, &rule.AppHash, &rule.Publisher, &rule.UserID,
 			&decision, &expiresAt, &rule.Priority,
+			&rule.ScriptHash, &rule.AllowedArgs, &rule.AllowedServiceName,
 		); err != nil {
 			return nil, fmt.Errorf("scan epm policy: %w", err)
 		}
@@ -193,11 +213,13 @@ func (s *EPMStore) GetRules() ([]epm.PolicyRule, error) {
 func (s *EPMStore) InsertAuditLog(entry epm.AuditEntry) error {
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO epm_audit_log
-			(request_id, user_id, app_path, app_hash, decision, policy_id, launched_at, synced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+			(request_id, user_id, app_path, app_hash, decision, policy_id, launched_at,
+			 script_hash, service_name, synced)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
 	`,
 		entry.RequestID, entry.UserID, entry.AppPath, entry.AppHash,
 		string(entry.Decision), entry.PolicyID, entry.LaunchedAt.UTC().Format(time.RFC3339),
+		entry.ScriptHash, entry.ServiceName,
 	)
 	if err != nil {
 		return fmt.Errorf("insert epm audit log: %w", err)
@@ -209,7 +231,8 @@ func (s *EPMStore) InsertAuditLog(entry epm.AuditEntry) error {
 // Pass limit <= 0 to retrieve all unsynced rows.
 func (s *EPMStore) GetUnsyncedAuditLogs(limit int) ([]EPMAuditRow, error) {
 	query := `
-		SELECT id, request_id, user_id, app_path, app_hash, decision, policy_id, launched_at
+		SELECT id, request_id, user_id, app_path, app_hash, decision, policy_id, launched_at,
+		       script_hash, service_name
 		FROM epm_audit_log
 		WHERE synced = 0
 		ORDER BY id ASC
@@ -237,6 +260,7 @@ func (s *EPMStore) GetUnsyncedAuditLogs(limit int) ([]EPMAuditRow, error) {
 		if err := rows.Scan(
 			&row.ID, &row.Entry.RequestID, &row.Entry.UserID, &row.Entry.AppPath,
 			&row.Entry.AppHash, &decision, &row.Entry.PolicyID, &launchedAt,
+			&row.Entry.ScriptHash, &row.Entry.ServiceName,
 		); err != nil {
 			return nil, fmt.Errorf("scan epm audit log row: %w", err)
 		}

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/epm"
+	"sentinelgo/internal/hashutil"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
@@ -189,6 +191,10 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 		tasks = append(tasks, servicesTask)
 	}
 
+	// Append task-db-cleanup: prune completed tasks older than 7 days once a week
+	// so the local SQLite queue does not grow unboundedly on long-running agents.
+	tasks = append(tasks, mi.buildTaskDBCleanupTask())
+
 	for _, task := range tasks {
 		if err := mi.scheduler.AddTask(task); err != nil {
 			return fmt.Errorf("failed to add task %s: %w", task.Name, err)
@@ -202,6 +208,35 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 		mi.cfg.GetServicesUpdateInterval(),
 	)
 	return nil
+}
+
+// buildTaskDBCleanupTask returns a weekly scheduled task that purges completed
+// (success/failed) task rows older than 7 days from the local SQLite queue.
+// Without this, a long-running agent accumulates completed rows indefinitely.
+// The task is always enabled; failures are non-fatal and logged.
+func (mi *MainIntegration) buildTaskDBCleanupTask() *scheduler.Task {
+	return &scheduler.Task{
+		Name:     "task-db-cleanup",
+		Interval: 7 * 24 * time.Hour,
+		Enabled:  true,
+		Handler: func(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
+			tm, err := tasksvc.NewTaskManager(cfg)
+			if err != nil {
+				return fmt.Errorf("task-db-cleanup: open task store: %w", err)
+			}
+			defer func() {
+				if closeErr := tm.Close(); closeErr != nil {
+					log.Printf("task-db-cleanup: close task manager: %v", closeErr)
+				}
+			}()
+			cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour)
+			if err := tm.CleanupCompletedTasks(cutoff); err != nil {
+				return fmt.Errorf("task-db-cleanup: %w", err)
+			}
+			log.Printf("task-db-cleanup: pruned completed tasks older than %s", cutoff.Format(time.RFC3339))
+			return nil
+		},
+	}
 }
 
 // buildServicesTask constructs the services-collect scheduler task. The store
@@ -315,6 +350,21 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 			return nil
 		}
 
+		// Load cached hashes from the local store so the enrichment pass can
+		// skip re-hashing binaries that have not changed since the last cycle.
+		// A cache-load failure is non-fatal: we fall back to an empty cache and
+		// every binary with a FilePath will be hashed this cycle instead.
+		hashCache, err := swStore.GetHashCache(cfg.DeviceID)
+		if err != nil {
+			log.Printf("[software] warning: could not load hash cache, re-hashing all entries: %v", err)
+			hashCache = map[string]string{}
+		}
+
+		// Enrich the collected list with SHA-256 hashes. This is best-effort:
+		// items without a FilePath or with unreadable binaries are left as-is
+		// and never block the sync.
+		list = swsvc.EnrichWithHash(list, hashCache, hashutil.ComputeFileHash)
+
 		send := func() error {
 			_, err := svc.SyncCatalog(ctx, swStore, cfg.DeviceID, list, complete, cfg)
 			return err
@@ -359,6 +409,9 @@ func (mi *MainIntegration) startEPM(ctx context.Context) {
 	svc := epm.NewService(epmStore, epm.NewAuditor(epmStore))
 	if err := svc.Start(ctx); err != nil {
 		log.Printf("Warning: EPM service failed to start: %v", err)
+		if runtime.GOOS != "windows" {
+			log.Printf("Warning: EPM is only supported on Windows; Unix transport is not yet implemented")
+		}
 		return
 	}
 	mi.epmService = svc

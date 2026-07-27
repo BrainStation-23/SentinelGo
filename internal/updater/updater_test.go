@@ -71,28 +71,6 @@ func TestCheckAndApplyWithRetry(t *testing.T) {
 	_ = err
 }
 
-func TestAutoUpdateChecker(t *testing.T) {
-	cfg := loadUpdaterTestConfig(t)
-	cfg.AutoUpdate = false
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	go updater.AutoUpdateChecker(ctx, cfg)
-	<-ctx.Done()
-}
-
-func TestAutoUpdateChecker_CancelledContext(t *testing.T) {
-	cfg := loadUpdaterTestConfig(t)
-	cfg.AutoUpdate = false
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	go updater.AutoUpdateChecker(ctx, cfg)
-	time.Sleep(10 * time.Millisecond)
-}
-
 func TestCheckAndApply_WithNilContext(t *testing.T) {
 	requireNetwork(t)
 

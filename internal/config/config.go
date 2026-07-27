@@ -448,9 +448,3 @@ func isValidURL(s string) bool {
 func (c *Config) ValidateConfiguration() error {
 	return c.validateConfig()
 }
-
-// SecureConfigFile sets secure permissions on config file
-func (c *Config) SecureConfigFile() error {
-	// Set file permissions to 0600 (read/write for owner only)
-	return os.Chmod(c.Path, 0600)
-}

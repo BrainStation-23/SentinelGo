@@ -21,15 +21,20 @@ type ElevationResult struct {
 }
 
 // RequestElevation connects to the EPM Named Pipe server as the current
-// (unprivileged) user and submits a single elevation request for appPath,
-// with optional extra arguments in commandLine. It blocks until the server
-// responds or the connection fails.
+// (unprivileged) user and submits a single elevation request for appPath. It
+// blocks until the server responds or the connection fails.
+//
+// When scriptPath is "", this is a direct binary elevation request and
+// commandLine carries appPath's own extra arguments (existing behavior).
+// When scriptPath is non-empty, appPath is the interpreter to run scriptPath
+// through, and commandLine is instead interpreted as the script's own
+// arguments.
 //
 // The server independently re-derives the caller's identity from the OS
 // (the connecting process's session, via GetNamedPipeClientProcessId) rather
 // than trusting anything this function sends, so there is no privilege
 // implication in this function running unprivileged.
-func RequestElevation(appPath, commandLine string) (*ElevationResult, error) {
+func RequestElevation(appPath, commandLine, scriptPath string) (*ElevationResult, error) {
 	handle, err := dialPipe()
 	if err != nil {
 		return nil, err
@@ -37,9 +42,14 @@ func RequestElevation(appPath, commandLine string) (*ElevationResult, error) {
 	defer func() { _ = windows.CloseHandle(handle) }()
 
 	req := pipeRequest{
-		RequestID:   uuid.NewString(),
-		AppPath:     appPath,
-		CommandLine: commandLine,
+		RequestID: uuid.NewString(),
+		AppPath:   appPath,
+	}
+	if scriptPath != "" {
+		req.ScriptPath = scriptPath
+		req.Args = commandLine
+	} else {
+		req.CommandLine = commandLine
 	}
 	data, err := json.Marshal(req)
 	if err != nil {

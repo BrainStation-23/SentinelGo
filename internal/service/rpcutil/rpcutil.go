@@ -16,6 +16,12 @@ import (
 // flag set, so every subsequent tick is skipped and reporting silently stops
 // until the process restarts. Bounding the caller here guarantees the task
 // returns and runs again on the next tick.
+//
+// The goroutine spawned to call fn lives until fn returns or panics. If the
+// context is cancelled before fn completes, the goroutine remains active until
+// fn finishes (or the process exits). This is acceptable: the call is in-flight
+// and cannot be cancelled mid-request. The goroutine itself is cheap (a few KB)
+// and the select ensures this function returns promptly despite fn still running.
 func CallWithTimeout(ctx context.Context, timeout time.Duration, fn func() (string, error)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

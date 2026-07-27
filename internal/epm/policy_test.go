@@ -2,6 +2,7 @@ package epm
 
 import (
 	"encoding/json"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -171,5 +172,205 @@ func TestPolicyRule_JSONRoundTrip_WithExpiresAt(t *testing.T) {
 	}
 	if !decoded.ExpiresAt.Equal(expires) {
 		t.Errorf("ExpiresAt = %v, want %v", decoded.ExpiresAt, expires)
+	}
+}
+
+func TestEngine_ScriptHashRuleMatchesInterpreterAndScript(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `C:\Windows\System32\msiexec.exe`, ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `C:\Windows\System32\msiexec.exe`,
+		ScriptPath: `C:\Users\jsmith\Downloads\tool.msi`,
+		ScriptHash: "deadbeef",
+	})
+	if !resp.Allowed || resp.PolicyID != "script-rule" {
+		t.Fatalf("expected script-rule to match, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleRequiresInterpreterPathMatch(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `C:\Windows\System32\msiexec.exe`, ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `C:\Windows\System32\powershell.exe`,
+		ScriptHash: "deadbeef",
+	})
+	if resp.Allowed {
+		t.Fatalf("rule scoped to msiexec.exe must not match a different interpreter, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleRequiresScriptHashMatch(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{AppPath: `/usr/bin/dpkg`, ScriptHash: "wrong-hash"})
+	if resp.Allowed {
+		t.Fatalf("mismatched script hash must not match, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleWithAllowedArgsExactMatch(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef", AllowedArgs: "-i /tmp/tool.deb", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `/usr/bin/dpkg`,
+		ScriptHash: "deadbeef",
+		ActualArgs: "  -i /tmp/tool.deb  ", // request args are trimmed before comparison
+	})
+	if !resp.Allowed || resp.PolicyID != "script-rule" {
+		t.Fatalf("expected trimmed args to match AllowedArgs, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleWithAllowedArgsMismatch(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef", AllowedArgs: "-i /tmp/tool.deb", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `/usr/bin/dpkg`,
+		ScriptHash: "deadbeef",
+		ActualArgs: "-i /tmp/other.deb",
+	})
+	if resp.Allowed {
+		t.Fatalf("mismatched args must not match AllowedArgs, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleWithoutAllowedArgsMatchesAnyArgs(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `/usr/bin/dpkg`,
+		ScriptHash: "deadbeef",
+		ActualArgs: "-i /tmp/anything-at-all.deb",
+	})
+	if !resp.Allowed {
+		t.Fatalf("rule without AllowedArgs should match any args, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashRuleMissingAppPathNeverMatches(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "script-rule", ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef"})
+	if resp.Allowed {
+		t.Fatalf("a ScriptHash rule with no AppPath must fail closed, got %+v", resp)
+	}
+}
+
+func TestEngine_ScriptHashBeatsPathAndPublisherRules(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "deny-path", AppPath: `/usr/bin/dpkg`, Decision: DecisionDeny, Priority: 100},
+		{ID: "deny-publisher", Publisher: "Debian", Decision: DecisionDeny, Priority: 100},
+		{ID: "script-rule", AppPath: `/usr/bin/dpkg`, ScriptHash: "deadbeef", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:    `/usr/bin/dpkg`,
+		Publisher:  "Debian",
+		ScriptHash: "deadbeef",
+	})
+	if !resp.Allowed || resp.PolicyID != "script-rule" {
+		t.Fatalf("expected script-rule (tierHash) to win over path/publisher rules, got %+v", resp)
+	}
+}
+
+func TestEngine_ExistingRulesUnaffectedByNewFields(t *testing.T) {
+	// Regression: rules using only pre-existing fields must evaluate
+	// identically now that ScriptHash/AllowedArgs/AllowedServiceName exist.
+	rules := []PolicyRule{
+		{ID: "hash-rule", AppHash: "abc123", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{AppPath: `/usr/bin/tool`, AppHash: "abc123"})
+	if !resp.Allowed || resp.PolicyID != "hash-rule" {
+		t.Fatalf("expected hash-rule to still match as before, got %+v", resp)
+	}
+}
+
+func TestEngine_AllowedServiceNameStacksOnPathExactTier(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "svc-rule", AppPath: `C:\Windows\System32\sc.exe`, AllowedServiceName: "w3svc", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:              `C:\Windows\System32\sc.exe`,
+		RequestedServiceName: "w3svc",
+	})
+	if !resp.Allowed || resp.PolicyID != "svc-rule" {
+		t.Fatalf("expected svc-rule to match when service name matches, got %+v", resp)
+	}
+}
+
+func TestEngine_AllowedServiceNameMismatchDenies(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "svc-rule", AppPath: `C:\Windows\System32\sc.exe`, AllowedServiceName: "w3svc", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:              `C:\Windows\System32\sc.exe`,
+		RequestedServiceName: "other-service",
+	})
+	if resp.Allowed {
+		t.Fatalf("expected deny when requested service name does not match, got %+v", resp)
+	}
+}
+
+func TestEngine_AllowedServiceNameRequiredButRequestHasNone(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "svc-rule", AppPath: `C:\Windows\System32\sc.exe`, AllowedServiceName: "w3svc", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{AppPath: `C:\Windows\System32\sc.exe`})
+	if resp.Allowed {
+		t.Fatalf("expected deny when no service name could be extracted (safer to deny), got %+v", resp)
+	}
+}
+
+func TestEngine_AllowedServiceNameStacksOnWildcardTier(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "wildcard-svc-rule", UserID: "alice", AllowedServiceName: "nginx", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{UserID: "alice", RequestedServiceName: "nginx"})
+	if !resp.Allowed || resp.PolicyID != "wildcard-svc-rule" {
+		t.Fatalf("expected wildcard rule with matching service name to match, got %+v", resp)
+	}
+
+	respMismatch := e.Evaluate(ElevationRequest{UserID: "alice", RequestedServiceName: "postgresql"})
+	if respMismatch.Allowed {
+		t.Fatalf("wildcard rule scoped to nginx must not match a different service, got %+v", respMismatch)
+	}
+}
+
+func TestEngine_AllowedServiceNameCasingIsOSAware(t *testing.T) {
+	rules := []PolicyRule{
+		{ID: "svc-rule", AppPath: "/usr/bin/systemctl", AllowedServiceName: "W3SVC", Decision: DecisionAllow},
+	}
+	e := NewEngine(rules)
+	resp := e.Evaluate(ElevationRequest{
+		AppPath:              "/usr/bin/systemctl",
+		RequestedServiceName: "w3svc",
+	})
+
+	if runtime.GOOS == "windows" {
+		if !resp.Allowed {
+			t.Fatalf("expected case-insensitive service name match on windows, got %+v", resp)
+		}
+	} else if resp.Allowed {
+		t.Fatalf("expected exact-case service name comparison on %s, got %+v", runtime.GOOS, resp)
 	}
 }

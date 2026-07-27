@@ -70,33 +70,6 @@ func TestNewService_InvalidURL(t *testing.T) {
 	}
 }
 
-// ── NewSessionManager ─────────────────────────────────────────────────────────
-
-func TestNewSessionManager(t *testing.T) {
-	cfg := &config.Config{SupabaseURL: "https://test.supabase.co"}
-	authSvc := auth.NewService("https://test.supabase.co", "")
-	sm := auth.NewSessionManager(cfg, authSvc)
-	if sm == nil {
-		t.Fatal("NewSessionManager() returned nil")
-	}
-}
-
-func TestNewSessionManager_NilConfig(t *testing.T) {
-	authSvc := auth.NewService("https://test.supabase.co", "")
-	sm := auth.NewSessionManager(nil, authSvc)
-	if sm == nil {
-		t.Fatal("NewSessionManager() should handle nil config")
-	}
-}
-
-func TestNewSessionManager_NilAuthService(t *testing.T) {
-	cfg := &config.Config{SupabaseURL: "https://test.supabase.co"}
-	sm := auth.NewSessionManager(cfg, nil)
-	if sm == nil {
-		t.Fatal("NewSessionManager() should handle nil auth service")
-	}
-}
-
 // ── InitSession ───────────────────────────────────────────────────────────────
 
 func TestInitSession_EmptyToken(t *testing.T) {

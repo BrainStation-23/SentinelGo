@@ -22,6 +22,8 @@ Type=simple
 ExecStart=%s
 Restart=on-failure
 RestartSec=5s
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target

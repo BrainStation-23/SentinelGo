@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	enqueueRetryBase = 1 * time.Second
-	enqueueRetryMax  = 5 * time.Minute
+	enqueueRetryBase   = 1 * time.Second
+	enqueueRetryMax    = 5 * time.Minute
+	maxEnqueueAttempts = 10
 )
 
 // WithEnqueueRetry applies the agent-enqueue retry policy to fn:
@@ -18,12 +19,12 @@ const (
 //   - 401                  → error propagated (caller's DoWithAuthRetry handles it)
 //   - other 4xx            → logged and dropped (server rejected the payload; retrying won't help)
 //   - 5xx or network (0)   → exponential backoff + jitter (1 s initial, 5 min max delay),
-//     retried until ctx is cancelled
+//     retried up to maxEnqueueAttempts times before giving up
 //
 // fn must return (httpStatusCode int, err error). Pass 0 as status for network-level
 // errors where no HTTP response was received.
 func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) (int, error)) error {
-	for attempt := 0; ; attempt++ {
+	for attempt := 0; attempt < maxEnqueueAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -45,8 +46,8 @@ func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) (int, er
 
 		// 5xx or network error (status == 0): backoff and retry.
 		delay := computeEnqueueBackoff(attempt)
-		log.Printf("[enqueue] transient error (HTTP %d), retrying in %s: %v",
-			status, delay.Round(time.Millisecond), err)
+		log.Printf("[enqueue] transient error (HTTP %d), retrying in %s (attempt %d/%d): %v",
+			status, delay.Round(time.Millisecond), attempt+1, maxEnqueueAttempts, err)
 
 		select {
 		case <-ctx.Done():
@@ -54,6 +55,8 @@ func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) (int, er
 		case <-time.After(delay):
 		}
 	}
+
+	return fmt.Errorf("enqueue failed after %d attempts", maxEnqueueAttempts)
 }
 
 // computeEnqueueBackoff returns base*2^attempt + jitter, capped at enqueueRetryMax.

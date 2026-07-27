@@ -121,9 +121,14 @@ func HandleDebugDump() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	agentVersion := config.Version
+	if cfg != nil && cfg.CurrentVersion != "" {
+		agentVersion = cfg.CurrentVersion
+	}
+
 	dump := debugDump{
 		CollectedAt: time.Now().UTC().Format(time.RFC3339),
-		OSInfo:      osinfo.Collect(),
+		OSInfo:      osinfo.Collect(agentVersion),
 		Software:    swsvc.NewSoftwareService().GetSoftwareList(),
 		Services:    servicessvc.NewServicesService().GetServiceList(),
 		AuditLogs:   collectAuditLogsLive(ctx, cfg),
@@ -133,7 +138,7 @@ func HandleDebugDump() {
 
 // HandleOSInfoDump collects OS info and prints it as JSON. No upload.
 func HandleOSInfoDump() {
-	printJSON(osinfo.Collect())
+	printJSON(osinfo.Collect(config.Version))
 }
 
 // HandleAuditLogsDump collects audit logs live and prints them as JSON,

@@ -91,7 +91,7 @@ func requestElevationWithRetry(t *testing.T, appPath, cmdLine string, timeout ti
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		result, err := RequestElevation(appPath, cmdLine)
+		result, err := RequestElevation(appPath, cmdLine, "")
 		if err == nil {
 			return result
 		}

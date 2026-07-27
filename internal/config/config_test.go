@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -338,37 +337,6 @@ func TestConfig_ValidateConfiguration(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConfig_SecureConfigFile(t *testing.T) {
-	cfg := minimalTestConfig(t)
-	configPath := filepath.Join(t.TempDir(), "config.json")
-	cfg.Path = configPath
-
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("Save() error = %v", err)
-	}
-
-	if err := cfg.SecureConfigFile(); err != nil {
-		t.Fatalf("SecureConfigFile() error = %v", err)
-	}
-
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(configPath)
-		if err != nil {
-			t.Fatalf("Stat() error = %v", err)
-		}
-		mode := info.Mode().Perm()
-		if mode != 0600 {
-			t.Errorf("SecureConfigFile() mode = %v, want 0600", mode)
-		}
-	}
-}
-
-func TestConfig_SecureConfigFile_NonExistentFile(t *testing.T) {
-	cfg := minimalTestConfig(t)
-	cfg.Path = "/non/existent/path/config.json"
-	_ = cfg.SecureConfigFile()
 }
 
 func TestConfig_Save_EmptyPath(t *testing.T) {

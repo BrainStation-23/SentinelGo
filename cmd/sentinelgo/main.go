@@ -51,7 +51,6 @@ func main() {
 	}
 
 	if *f.run || (!*f.install && !*f.uninstall) {
-		fmt.Println("Consider running './sentinelgo -stop' to stop old versions first")
 		if !*f.run {
 			fmt.Println("Or use './sentinelgo -run' to run in foreground mode")
 		}

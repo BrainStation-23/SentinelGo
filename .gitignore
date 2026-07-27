@@ -5,6 +5,12 @@
 *.so
 *.dylib
 
+# Root-level compiled binaries (e.g. accidental `go build .`)
+/sentinelgo
+/sentinelgo.exe
+/sentinelgo-epm
+/sentinelgo-epm.exe
+
 # Build output directory
 build/
 bin/
@@ -54,5 +60,13 @@ audit-config-sample.json
 sentinelgo_*.db
 sentinelgo_*.db-wal
 sentinelgo_*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Runtime artifacts / test working directories
+/coverage
+dev/
+test-run/
 /.puku
 sentinelgo

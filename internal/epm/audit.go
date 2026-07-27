@@ -8,13 +8,15 @@ import (
 // AuditEntry records a single elevation attempt (allowed or denied) for
 // durable, offline-first audit logging.
 type AuditEntry struct {
-	RequestID  string
-	UserID     string
-	AppPath    string
-	AppHash    string
-	Decision   PolicyDecision
-	PolicyID   string
-	LaunchedAt time.Time
+	RequestID   string
+	UserID      string
+	AppPath     string
+	AppHash     string
+	Decision    PolicyDecision
+	PolicyID    string
+	LaunchedAt  time.Time
+	ScriptHash  string // "" unless the request was script/installer-scoped elevation
+	ServiceName string // "" unless a service name was extracted from the request
 }
 
 // AuditSink persists AuditEntry values. internal/store.EPMStore satisfies this

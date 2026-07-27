@@ -16,7 +16,7 @@ const syncInventoryTimeout = 90 * time.Second
 
 // collectSysInfoFn and updateAgentInfoFn are the real production implementations;
 // replaced in tests to avoid network calls and OS-level collection.
-var collectSysInfoFn = func() *shared.SystemInfo { return osinfo.Collect() }
+var collectSysInfoFn = func(agentVersion string) *shared.SystemInfo { return osinfo.Collect(agentVersion) }
 var updateAgentInfoFn = func(ctx context.Context, cfg *config.Config, info *shared.SystemInfo) error {
 	return agentsvc.NewAgentService().UpdateAgentInfo(ctx, cfg, info)
 }
@@ -35,7 +35,7 @@ func (h *syncInventoryHandler) Run(ctx context.Context, cfg *config.Config, _ ta
 
 	type collectResult struct{ info *shared.SystemInfo }
 	ch := make(chan collectResult, 1)
-	go func() { ch <- collectResult{collectSysInfoFn()} }()
+	go func() { ch <- collectResult{collectSysInfoFn(cfg.CurrentVersion)} }()
 
 	var sysInfo *shared.SystemInfo
 	select {

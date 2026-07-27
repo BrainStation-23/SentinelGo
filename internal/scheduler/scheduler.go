@@ -570,7 +570,7 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 
 	type result struct{ info *shared.SystemInfo }
 	ch := make(chan result, 1)
-	go func() { ch <- result{osinfo.Collect()} }()
+	go func() { ch <- result{osinfo.Collect(cfg.CurrentVersion)} }()
 
 	var sysInfo *shared.SystemInfo
 	select {

@@ -78,6 +78,9 @@ func stopSentinelGoProcesses() error {
 			// Send SIGTERM first; escalate to SIGKILL only if the process survives.
 			if err := exec.Command("kill", strconv.Itoa(proc.PID)).Run(); err != nil {
 				fmt.Printf("Failed to send SIGTERM to PID %d: %v\n", proc.PID, err)
+				if err.Error() == "exit status 1" {
+					fmt.Printf("Hint: Process %d may be owned by a different user; try running with elevated privileges (sudo)\n", proc.PID)
+				}
 			} else {
 				fmt.Printf("Sent SIGTERM to PID %d\n", proc.PID)
 			}

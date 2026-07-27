@@ -9,7 +9,6 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 	psnet "github.com/shirou/gopsutil/v4/net"
 
-	"sentinelgo/internal/config"
 	audiopkg "sentinelgo/internal/osinfo/audio"
 	cpupkg "sentinelgo/internal/osinfo/cpu"
 	diskpkg "sentinelgo/internal/osinfo/disk"
@@ -26,12 +25,9 @@ import (
 )
 
 // Collect gathers comprehensive system information including OS, CPU, memory, disk, and network details.
-func Collect() *shared.SystemInfo {
-	cfg, err := config.Load("")
-	if err != nil {
-		cfg = &config.Config{}
-	}
-
+// agentVersion is passed in by the caller (from config.CurrentVersion) instead of being loaded here,
+// so this function has no dependency on the config package and does not perform I/O at startup.
+func Collect(agentVersion string) *shared.SystemInfo {
 	hInfo, err := host.Info()
 	if err != nil || hInfo == nil {
 		return nil
@@ -108,7 +104,7 @@ func Collect() *shared.SystemInfo {
 		OSQueryVersion:   systempkg.GetOSQueryVersion(),
 		BatteryCondition: systempkg.GetBatteryCondition(),
 		LocalUsers:       userspkg.Get(),
-		AgentVersion:     cfg.CurrentVersion,
+		AgentVersion:     agentVersion,
 		FQDN:             systempkg.GetFQDN(),
 		ChassisType:      systempkg.GetChassisType(),
 		KernelVersion:    osInformation.OSVersion,

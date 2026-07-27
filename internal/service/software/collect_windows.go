@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -115,6 +118,13 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 		}
 		version, _ := item["Version"].(string)
 		installLocation, _ := item["InstallLocation"].(string)
+		// Some registry InstallLocation values are wrapped in double-quotes
+		// (e.g. `"C:\Program Files\App"`) — strip them so os.Stat works correctly.
+		installLocation = strings.Trim(installLocation, `"`)
+		// Publisher is populated for registry ("programs") entries — it comes from
+		// the DisplayPublisher / Publisher registry value selected by the PS query.
+		// Store apps and extensions do not carry this field, so it stays empty.
+		publisher, _ := item["Publisher"].(string)
 
 		now := time.Now().UTC().Format(time.RFC3339)
 		firstSeen := now
@@ -123,16 +133,114 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 				firstSeen = t.UTC().Format(time.RFC3339)
 			}
 		}
+
+		// Resolve the FilePath to a hashable file.
+		// InstallLocation from the registry is typically a directory
+		// (e.g. "C:\Program Files\Google\Chrome\Application\"). We try to
+		// find the primary executable so EnrichWithHash can compute a
+		// meaningful hash. If resolution fails we store the original path
+		// and let EnrichWithHash skip it gracefully.
+		resolvedPath := resolveWindowsExePath(installLocation)
+
 		*software = append(*software, SoftwareInfo{
 			Name:             name,
 			InstalledVersion: version,
-			FilePath:         installLocation,
+			FilePath:         resolvedPath,
 			Source:           source,
 			Type:             source,
 			FirstSeenAt:      firstSeen,
+			Publisher:        publisher,
 		})
 	}
 	return true
+}
+
+// resolveWindowsExePath takes an InstallLocation string from the registry and
+// returns the best path for hashing:
+//
+//   - Empty string                → returned as-is (EnrichWithHash will skip)
+//   - Already a .exe file         → returned as-is
+//   - WindowsApps\ directory      → returned as-is with empty string so
+//     EnrichWithHash skips it; these paths are ACL-protected and always
+//     fail with "Incorrect function" for non-admin processes
+//   - Any other directory         → we look for a single .exe inside the
+//     directory (non-recursive) whose stem matches the last component of
+//     the directory name (e.g. "chrome.exe" inside "…\Chrome\Application\").
+//     If exactly one candidate is found it is returned; otherwise the
+//     directory path itself is returned and EnrichWithHash will skip it.
+func resolveWindowsExePath(installLocation string) string {
+	if installLocation == "" {
+		return ""
+	}
+
+	// Already points at a file — use it directly.
+	info, err := os.Stat(installLocation)
+	if err != nil {
+		// Path does not exist or is inaccessible; return as-is so
+		// EnrichWithHash skips it cleanly.
+		return installLocation
+	}
+	if !info.IsDir() {
+		return installLocation
+	}
+
+	// WindowsApps\ is always ACL-protected at the directory level for
+	// non-admin processes (returns "Incorrect function" / ERROR_INVALID_FUNCTION
+	// on ReadDir). Clear the path so EnrichWithHash skips it silently instead
+	// of logging a confusing per-app error on every cycle.
+	normalized := strings.ToLower(filepath.ToSlash(installLocation))
+	if strings.Contains(normalized, "/windowsapps/") ||
+		strings.Contains(normalized, `\windowsapps\`) {
+		return ""
+	}
+
+	// It is a regular directory — look for .exe files directly inside it.
+	entries, err := os.ReadDir(installLocation)
+	if err != nil {
+		return installLocation
+	}
+
+	// Collect all .exe files in the directory (non-recursive).
+	var exes []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(e.Name()), ".exe") {
+			exes = append(exes, filepath.Join(installLocation, e.Name()))
+		}
+	}
+
+	switch len(exes) {
+	case 0:
+		// No .exe in the top level. Some apps put their binary one level
+		// deeper; return empty so EnrichWithHash skips quietly.
+		return ""
+	case 1:
+		// Exactly one exe — unambiguous.
+		return exes[0]
+	default:
+		// Multiple exes. Prefer one whose stem matches the last meaningful
+		// directory component (e.g. "chrome" in "…\Chrome\Application\").
+		dir := filepath.Clean(installLocation)
+		// Walk up to find a non-trivially-named component.
+		components := strings.Split(filepath.ToSlash(dir), "/")
+		for i := len(components) - 1; i >= 0; i-- {
+			part := strings.ToLower(components[i])
+			if part == "" || part == "application" || part == "bin" || part == "app" {
+				continue
+			}
+			for _, exe := range exes {
+				stem := strings.ToLower(strings.TrimSuffix(filepath.Base(exe), ".exe"))
+				if stem == part || strings.HasPrefix(part, stem) || strings.HasPrefix(stem, part) {
+					return exe
+				}
+			}
+			break
+		}
+		// No name match — return the first exe alphabetically.
+		return exes[0]
+	}
 }
 
 // chromeExtDirGlobs returns Chrome extension directory glob patterns on Windows.

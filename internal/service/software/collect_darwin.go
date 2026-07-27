@@ -206,6 +206,12 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 			Source:           source,
 			Type:             source,
 			FirstSeenAt:      firstSeen,
+			// ObtainedFrom is the closest macOS equivalent of a publisher/signer:
+			// "apple", "mac_app_store", "identified_developer", "developer_id",
+			// "unsigned", etc. It lets policy authors distinguish Apple-signed
+			// apps from third-party or unsigned binaries without having to run
+			// codesign manually.
+			Publisher: app.ObtainedFrom,
 		})
 	}
 	return true

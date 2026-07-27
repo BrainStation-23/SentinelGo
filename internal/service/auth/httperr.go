@@ -16,6 +16,14 @@ import "strings"
 
 // IsUnauthorized reports whether err looks like an HTTP 401 / expired-or-invalid
 // token. An explicit 403 is deliberately NOT treated as unauthorized.
+//
+// String matching is used instead of typed errors because the three client
+// layers (postgrest-go SDK, hand-rolled HTTP taskstore client, and gotrue token
+// refresh) each surface auth failures as differently-shaped error strings with
+// no shared error type. Centralising the heuristics here means every call site
+// gets consistent classification without requiring changes across all three
+// layers. The patterns are tested in httperr_test.go; extend them there when
+// new error shapes are observed in production.
 func IsUnauthorized(err error) bool {
 	if err == nil {
 		return false

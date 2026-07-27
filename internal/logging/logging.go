@@ -197,11 +197,6 @@ func (li *LoggingIntegration) GetStatistics() LoggingStats {
 	return li.stats.snapshot()
 }
 
-// CheckAgentTaskPolling is a placeholder for task polling health checks.
-func (li *LoggingIntegration) CheckAgentTaskPolling(_ context.Context) error {
-	return nil
-}
-
 // collectionLoop runs the periodic collection-and-upload cycle.
 func (li *LoggingIntegration) collectionLoop(ctx context.Context) {
 	defer li.wg.Done()

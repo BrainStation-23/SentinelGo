@@ -6,7 +6,6 @@ import (
 	"log"
 	"strings"
 
-	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/sanitize"
 	servicessvc "sentinelgo/internal/service/services"
@@ -14,12 +13,7 @@ import (
 
 // HandleServicesListCommand collects running OS services and prints them as a
 // table, JSON array, or count depending on the flags.
-func HandleServicesListCommand(cfgPath string, asJSON, countOnly bool) {
-	_, err := config.Load(cfgPath)
-	if err != nil {
-		log.Printf("Warning: Could not load config: %v", err)
-	}
-
+func HandleServicesListCommand(_ string, asJSON, countOnly bool) {
 	svc := servicessvc.NewServicesService()
 	list := svc.GetServiceList()
 

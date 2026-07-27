@@ -40,6 +40,8 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 		LastOpened       string `json:"last_opened,omitempty"`
 		FilePath         string `json:"file_path,omitempty"`
 		FirstSeenAt      string `json:"first_seen_at,omitempty"`
+		SHA256Hash       string `json:"sha256_hash,omitempty"`
+		Publisher        string `json:"publisher,omitempty"`
 	}
 
 	items := make([]softwareItem, 0, len(software))
@@ -55,6 +57,8 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 			LastOpened:       sw.LastOpened,
 			FilePath:         sw.FilePath,
 			FirstSeenAt:      sw.FirstSeenAt,
+			SHA256Hash:       sw.SHA256Hash,
+			Publisher:        sw.Publisher,
 		})
 	}
 

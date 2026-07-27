@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -41,7 +42,7 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}")
+	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}\n")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
@@ -107,12 +108,14 @@ func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
+		pkgName := parts[0]
 		*packages = append(*packages, SoftwareInfo{
-			Name:             parts[0],
+			Name:             pkgName,
 			InstalledVersion: parts[1],
-			SoftwarePackage:  parts[0],
+			SoftwarePackage:  pkgName,
 			Source:           "deb_packages",
 			Type:             "deb_packages",
+			FilePath:         resolveLinuxBinaryPath(pkgName),
 		})
 	}
 }
@@ -133,15 +136,55 @@ func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 				firstSeen = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 			}
 		}
+		pkgName := parts[0]
 		*packages = append(*packages, SoftwareInfo{
-			Name:             parts[0],
+			Name:             pkgName,
 			InstalledVersion: parts[1],
-			SoftwarePackage:  parts[0],
+			SoftwarePackage:  pkgName,
 			Source:           "rpm_packages",
 			Type:             "rpm_packages",
 			FirstSeenAt:      firstSeen,
+			FilePath:         resolveLinuxBinaryPath(pkgName),
 		})
 	}
+}
+
+// resolveLinuxBinaryPath returns the path to the primary executable for a
+// package by checking the standard binary directories in priority order
+// (/usr/bin, /usr/sbin, /bin, /sbin, /usr/local/bin). The first match where
+// the filename equals the package name is returned. This is a fast O(1)
+// stat-per-candidate lookup — it does NOT shell out to dpkg -L or rpm -ql,
+// avoiding the per-package subprocess overhead that would make collection
+// unacceptably slow on machines with hundreds of packages.
+//
+// Returns empty string when no matching binary is found (library packages,
+// data-only packages, daemons with non-obvious names, etc.) — EnrichWithHash
+// will skip those entries cleanly.
+func resolveLinuxBinaryPath(pkgName string) string {
+	// Candidate directories in preference order.
+	dirs := []string{
+		"/usr/bin",
+		"/usr/sbin",
+		"/bin",
+		"/sbin",
+		"/usr/local/bin",
+		"/usr/local/sbin",
+	}
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, pkgName)
+		info, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		// Must be a regular file (not a directory or symlink target that is a dir).
+		if info.Mode().IsRegular() {
+			return candidate
+		}
+		// Follow symlinks: if the stat succeeded but IsRegular is false it may
+		// be a symlink to a regular file — os.Stat already follows symlinks, so
+		// if we're here the target is a directory or special file; skip it.
+	}
+	return ""
 }
 
 func parseSnapPackages(output []byte, packages *[]SoftwareInfo) {

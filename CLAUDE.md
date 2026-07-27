@@ -21,43 +21,59 @@ All builds use `CGO_ENABLED=0`. Version is injected via `-ldflags` from git tags
 
 ```
 cmd/
-  sentinelgo/          main agent: service lifecycle, CLI, heartbeat loop, updater
-  auditlogs/           audit log collection service
+  sentinelgo/          main agent: service lifecycle, CLI, foreground/service modes
+    cli/               CLI subcommands (software, services, tasks, debug, audit logs)
+    service/           platform service adapters (launchd, systemd, Windows SCM)
+  sentinelgo-epm/      unprivileged EPM client (Windows only; connects to pipe server)
 
 internal/
-  config/              JSON config loading, env vars, credential storage
-  heartbeat/           payload generation and Supabase API calls
+  config/              JSON config loading, atomic save, credential storage, path hardening
   lockfile/            file-based process locking and PID tracking
-  osinfo/              cross-platform hardware metrics (platform-specific files)
-  service/             JWT auth (authService.go), agent info (agentService.go)
-  updater/             GitHub release check, binary download, atomic replace, restart
-  auditlogs/           audit log collection and forwarding
-  logging/             logging utilities
-  models/              shared data models
-  constants/           shared constants
+  scheduler/           periodic task scheduler with dependency ordering and jitter
+  osinfo/              cross-platform hardware/OS metrics collection (no cgo)
+    audio/cpu/disk/display/gpu/network/peripherals/printers/ram/security/system/users/
+  service/
+    agent/             Supabase inventory upload (agent_enqueue_inventory RPC)
+    auth/              JWT session management, token refresh, circuit breaker
+    rpcutil/           shared RPC helpers: retry policy, timeout wrapper
+    services/          OS services collection and sync
+    software/          installed-software collection and catalog sync
+    task/              remote task polling, execution, and native handler registry
+      native/          built-in task handlers (sync-inventory, epm-policy-sync, …)
+  epm/                 Endpoint Privilege Management (Windows pipe server + policy engine)
+  store/               local SQLite stores for tasks, software, services, EPM, audit logs
+  updater/             release check, binary download/verify, atomic replace, restart
+  logging/             audit log collection pipeline (collect → parse → SQLite → upload)
+  auditlogs/           OS-level log collectors (journalctl/log/EventLog) and parsers
+  emergencylog/        last-resort on-disk logging for startup failures
+  sanitize/            log-safe string helpers (strip NUL, redact sensitive values)
+  hashutil/            SHA-256 file hashing utilities
 
-supabase/              Edge functions (TypeScript)
-scripts/               Release, diagnostics, and pre-release checks
-release/               Compiled binaries (never edit directly)
+scripts/               Release signing, diagnostics, and pre-release checks
+installation-doc/      Install scripts and user-facing installation docs
 ```
 
 ## Runtime Flow
 
-1. Load config -> acquire lockfile -> init services
-2. Authenticate via Supabase edge function (agent-login) -> store JWT
-3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
-4. Daily GitHub release check -> download -> stop -> replace binary -> restart
+1. Load config → acquire lockfile (`sentinelgo`) → validate config
+2. Startup update check (async, gated by `auto_update`)
+3. Authenticate via Supabase edge function (agent-login) → store JWT
+4. Build and register scheduled tasks (token-refresh, agent-info-update, software-sync, services-collect, auto-update, task-db-cleanup)
+5. Start audit log service (collect → SQLite → upload pipeline)
+6. Start task manager (poll remote tasks → execute → report status)
+7. Start EPM service if `enable_epm=true` (Windows only; logs warning on other platforms)
+8. Run scheduler; all tasks execute on their configured intervals with startup jitter
 
 ## Key Conventions
 
 - Go module: `sentinelgo`, requires Go 1.25+
 - Standard Go layout: `cmd/` for entrypoints, `internal/` for private packages
 - Config format is JSON only (not YAML, not TOML)
-- Config paths: `/opt/sentinelgo/.sentinelgo/config.json` (Linux/macOS), `C:\sentinelgo\.sentinelgo\config.json` (Windows)
+- Config paths: `/opt/sentinelgo/.sentinelgo/config.json` (Linux/macOS), `C:\SentinelGo\.sentinelgo\config.json` (Windows)
 - Never hardcode Supabase credentials or API keys
 - Never modify `release/` directory directly; use `make release`
-- Service lifecycle managed by `github.com/kardianos/service`
-- System metrics collected via `github.com/shirou/gopsutil/v3`
+- Lock name is always `sentinelgo` (not version-qualified) in both foreground and service modes
+- `osinfo.Collect(agentVersion)` takes the version as a parameter — never loads config internally
 
 ## Rules
 

@@ -141,6 +141,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           else
             echo "success=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::AI release notes generation failed or returned empty — falling back to GitHub-generated notes"
           fi
 
       - name: Create Release

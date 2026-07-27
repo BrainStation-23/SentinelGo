@@ -23,14 +23,19 @@ type ElevationResult struct {
 
 // RequestElevation connects to the EPM Unix Domain Socket server as the
 // current (unprivileged) user and submits a single elevation request for
-// appPath, with optional extra arguments in commandLine. It blocks until the
-// server responds or the connection fails.
+// appPath. It blocks until the server responds or the connection fails.
+//
+// When scriptPath is "", this is a direct binary elevation request and
+// commandLine carries appPath's own extra arguments (existing behavior).
+// When scriptPath is non-empty, appPath is the interpreter to run scriptPath
+// through, and commandLine is instead interpreted as the script's own
+// arguments.
 //
 // The server independently re-derives the caller's identity from the OS
 // (SO_PEERCRED on the accepted connection, checked against the active
 // console session) rather than trusting anything this function sends, so
 // there is no privilege implication in this function running unprivileged.
-func RequestElevation(appPath, commandLine string) (*ElevationResult, error) {
+func RequestElevation(appPath, commandLine, scriptPath string) (*ElevationResult, error) {
 	conn, err := net.DialTimeout("unix", SocketPath, requestTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s (is the agent running with EPM enabled?): %w", SocketPath, err)
@@ -39,9 +44,14 @@ func RequestElevation(appPath, commandLine string) (*ElevationResult, error) {
 	_ = conn.SetDeadline(time.Now().Add(requestTimeout))
 
 	req := socketRequest{
-		RequestID:   uuid.NewString(),
-		AppPath:     appPath,
-		CommandLine: commandLine,
+		RequestID: uuid.NewString(),
+		AppPath:   appPath,
+	}
+	if scriptPath != "" {
+		req.ScriptPath = scriptPath
+		req.Args = commandLine
+	} else {
+		req.CommandLine = commandLine
 	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)

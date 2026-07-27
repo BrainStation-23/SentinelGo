@@ -173,3 +173,12 @@ func (tm *TaskManager) Close() error {
 
 	return err
 }
+
+// CleanupCompletedTasks removes completed tasks older than olderThan from the
+// local SQLite queue. Exposed for use by the scheduler's weekly cleanup task.
+func (tm *TaskManager) CleanupCompletedTasks(olderThan time.Time) error {
+	if tm.pollingSvc == nil {
+		return fmt.Errorf("polling service not initialized")
+	}
+	return tm.pollingSvc.CleanupCompletedTasks(olderThan)
+}

@@ -10,11 +10,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
+
+	"sentinelgo/internal/epm/svcparse"
 )
 
 // SocketPath is the Unix Domain Socket path the user-space EPM client
@@ -36,6 +37,12 @@ type socketRequest struct {
 	RequestID   string `json:"request_id"`
 	AppPath     string `json:"app_path"`
 	CommandLine string `json:"command_line"`
+	// ScriptPath, when non-empty, is a script/installer payload to run via the
+	// interpreter named by AppPath; the server computes its hash itself (see
+	// evaluateAndLaunch) rather than trusting a client-supplied value.
+	ScriptPath string `json:"script_path,omitempty"`
+	// Args is the argument string the script is being invoked with.
+	Args string `json:"args,omitempty"`
 }
 
 // socketResponse is the wire shape returned to the client.
@@ -184,6 +191,20 @@ func (s *SocketServer) evaluateAndLaunch(req socketRequest, uid uint32, userID s
 	// request.
 	publisher, _ := VerifyPackageSignature(req.AppPath)
 
+	// The script's hash is always computed server-side from the file on disk
+	// — a client-supplied hash would let a compromised client substitute a
+	// different payload after the policy check.
+	var scriptHash string
+	if req.ScriptPath != "" {
+		var hashErr error
+		scriptHash, hashErr = ComputeFileHash(req.ScriptPath)
+		if hashErr != nil {
+			resp.Error = fmt.Sprintf("hash script: %v", hashErr)
+			return resp
+		}
+	}
+	serviceName, _ := svcparse.ExtractServiceName(req.AppPath, req.CommandLine)
+
 	rules, err := s.rules.GetRules()
 	if err != nil {
 		resp.Error = fmt.Sprintf("load policy rules: %v", err)
@@ -191,12 +212,16 @@ func (s *SocketServer) evaluateAndLaunch(req socketRequest, uid uint32, userID s
 	}
 
 	elevReq := ElevationRequest{
-		RequestID: req.RequestID,
-		UserID:    userID,
-		AppPath:   req.AppPath,
-		AppHash:   appHash,
-		Publisher: publisher,
-		Now:       time.Now().UTC(),
+		RequestID:            req.RequestID,
+		UserID:               userID,
+		AppPath:              req.AppPath,
+		AppHash:              appHash,
+		Publisher:            publisher,
+		Now:                  time.Now().UTC(),
+		ScriptPath:           req.ScriptPath,
+		ScriptHash:           scriptHash,
+		ActualArgs:           req.Args,
+		RequestedServiceName: serviceName,
 	}
 	decision := NewEngine(rules).Evaluate(elevReq)
 
@@ -204,7 +229,15 @@ func (s *SocketServer) evaluateAndLaunch(req socketRequest, uid uint32, userID s
 	resp.Reason = decision.Reason
 
 	if decision.Allowed {
-		if result, launchErr := LaunchAsUser(uid, userID, req.AppPath, splitArgs(req.CommandLine)); launchErr != nil {
+		// req.AppPath is always the interpreter/executable to launch. When a
+		// script is requested, it must be launched as its own argv[0]-following
+		// argument ("interpreter <scriptPath> [args]"), not folded into
+		// CommandLine — so it's prepended onto the launch args slice here.
+		launchArgs := splitArgs(req.CommandLine)
+		if req.ScriptPath != "" {
+			launchArgs = append([]string{req.ScriptPath}, splitArgs(req.Args)...)
+		}
+		if result, launchErr := LaunchAsUser(uid, userID, req.AppPath, launchArgs); launchErr != nil {
 			resp.Allowed = false
 			resp.Error = fmt.Sprintf("launch failed: %v", launchErr)
 		} else {
@@ -221,13 +254,15 @@ func (s *SocketServer) audit(req ElevationRequest, decision ElevationResponse) {
 		return
 	}
 	entry := AuditEntry{
-		RequestID:  req.RequestID,
-		UserID:     req.UserID,
-		AppPath:    req.AppPath,
-		AppHash:    req.AppHash,
-		Decision:   DecisionDeny,
-		PolicyID:   decision.PolicyID,
-		LaunchedAt: req.Now,
+		RequestID:   req.RequestID,
+		UserID:      req.UserID,
+		AppPath:     req.AppPath,
+		AppHash:     req.AppHash,
+		Decision:    DecisionDeny,
+		PolicyID:    decision.PolicyID,
+		LaunchedAt:  req.Now,
+		ScriptHash:  req.ScriptHash,
+		ServiceName: req.RequestedServiceName,
 	}
 	if decision.Allowed {
 		entry.Decision = DecisionAllow
@@ -270,11 +305,7 @@ func peerCredentials(conn *net.UnixConn) (uid uint32, pid uint32, err error) {
 	return uid, pid, nil
 }
 
-// splitArgs splits a client-supplied extra-arguments string on whitespace.
-// This is a simplification with no shell-quoting support (an argument
-// containing a literal space cannot be expressed) — acceptable for the
-// common case of flag-style arguments; a fuller implementation would use a
-// proper shell-word-splitting algorithm if quoted arguments are needed.
-func splitArgs(commandLine string) []string {
-	return strings.Fields(commandLine)
-}
+// splitArgs is defined in splitargs.go (no build tag) and handles
+// single-quoted, double-quoted, and backslash-escaped arguments so that
+// paths containing spaces survive the round-trip from the EPM client to
+// the elevated process launcher.

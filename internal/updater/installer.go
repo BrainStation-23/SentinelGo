@@ -206,8 +206,8 @@ if errorlevel 1 (
   goto retry
 )
 sc start "%s" >nul 2>&1
-del "%s" >nul 2>&1
-`, newPath, selfPath, windowsServiceName, bat)
+del "%%~f0" >nul 2>&1
+`, newPath, selfPath, windowsServiceName)
 
 	// #nosec G306 - the update script must be executable/readable by the system
 	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {

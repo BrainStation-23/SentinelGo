@@ -45,7 +45,7 @@ func TestSyncInventoryHandler_CollectorReturnsNil_Error(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return nil }
+	collectSysInfoFn = func(_ string) *shared.SystemInfo { return nil }
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error {
 		t.Error("UpdateAgentInfo should not be called when collect returns nil")
 		return nil
@@ -66,7 +66,7 @@ func TestSyncInventoryHandler_UpdateAgentInfoFails_ReturnsError(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return &shared.SystemInfo{} }
+	collectSysInfoFn = func(_ string) *shared.SystemInfo { return &shared.SystemInfo{} }
 
 	updateErr := errors.New("supabase unavailable")
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error {
@@ -91,7 +91,7 @@ func TestSyncInventoryHandler_Success(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return &shared.SystemInfo{Hostname: "test-host"} }
+	collectSysInfoFn = func(_ string) *shared.SystemInfo { return &shared.SystemInfo{Hostname: "test-host"} }
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error { return nil }
 
 	h := &syncInventoryHandler{}
@@ -120,7 +120,7 @@ func TestSyncInventoryHandler_Timeout(t *testing.T) {
 	// But since syncInventoryTimeout creates its own context, we need to use a
 	// blocking collector + expired parent context.
 	blocking := make(chan struct{})
-	collectSysInfoFn = func() *shared.SystemInfo {
+	collectSysInfoFn = func(_ string) *shared.SystemInfo {
 		<-blocking // blocks forever
 		return nil
 	}
@@ -150,7 +150,7 @@ func TestSyncInventoryHandler_GoroutineDoesNotLeak(t *testing.T) {
 	cancel()
 
 	done := make(chan struct{})
-	collectSysInfoFn = func() *shared.SystemInfo {
+	collectSysInfoFn = func(_ string) *shared.SystemInfo {
 		close(done)
 		return nil
 	}

@@ -28,7 +28,35 @@ epm: Unix Domain Socket IPC server listening on /var/run/sentinelgo/epm.sock   (
 
 If EPM fails to start (e.g. a locked database file), the agent logs a warning and continues running normally — EPM is treated as a best-effort optional component, the same as software-sync or services-collect.
 
-## 2. Authoring Policy Rules
+## 2. Software Inventory Fields (sha256_hash and publisher)
+
+Before writing hash- or publisher-based policy rules you need to know the exact values the agent will match against. Since v2 of the local software catalog schema, the agent now collects and stores two additional fields for every software entry:
+
+| Field | JSON key | Description |
+|---|---|---|
+| `SHA256Hash` | `sha256_hash` | Lowercase hex-encoded SHA-256 of the installed binary identified by `file_path`. Populated by the enrichment pass that runs after collection; empty when `file_path` is unknown, the file is unreadable (e.g. SIP-protected on macOS), or a transient I/O error occurred. |
+| `Publisher` | `publisher` | Vendor or signing authority. **Windows**: the `Publisher` registry value from the Uninstall key (same string shown in *Add/Remove Programs*). **macOS**: the `obtained_from` field from `system_profiler` — one of `apple`, `mac_app_store`, `identified_developer`, `developer_id`, or `unsigned`. **Linux / browser extensions**: empty (no equivalent metadata is available from package managers or extension manifests). |
+
+### How hash caching works
+
+Re-hashing every installed binary on every sync cycle would create significant disk I/O on machines with hundreds of packages. The agent avoids this by caching hashes in the local SQLite catalog (`sentinelgo_software.db`):
+
+- On the first sync (or when a binary is newly seen), the hash is computed and stored.
+- On subsequent syncs the cached hash is reused; `computeHash` is only called again if the entry has no cached hash yet (e.g. after a version upgrade that creates a new catalog row).
+- A hash that cannot be computed (permission error, file removed mid-scan) is left empty for that cycle but does **not** overwrite a previously cached non-empty hash — so a transient failure never erases a known-good value.
+
+### Using inventory data to author policy rules
+
+These fields are included in every software-sync payload sent to the backend (`agent_enqueue_software` RPC), so they are available in the server-side software inventory tables. When authoring an EPM policy rule:
+
+1. Look up the software entry in the inventory UI (or query the backend directly).
+2. Copy `sha256_hash` into the rule's `app_hash` field for the most precise match.
+3. Copy `publisher` into the rule's `publisher` field for a vendor-wide rule that survives version upgrades without needing to update the hash.
+4. Use `app_path` only when neither hash nor publisher is available (e.g. a Linux binary not owned by any package manager).
+
+> **Note:** `sha256_hash` in the inventory reflects the binary at the time of the last successful sync. If the software is upgraded between syncs the hash will be stale until the next cycle. For frequently-updated software, a `publisher`-based rule (which survives upgrades) is usually more maintainable than a `hash`-based rule.
+
+## 3. Authoring Policy Rules
 
 Policy rules are delivered to the agent as the payload of a remote task with slug `epm-policy-sync` (the same `agent_get_tasks` mechanism used for every other remote task type — no new backend endpoint is required). Example payload:
 
@@ -96,7 +124,7 @@ Within the same tier, higher `priority` wins. **No matching rule → deny by def
 
 Because hash beats publisher beats path, you can safely combine a broad publisher-based allow rule with a specific hash-based deny rule to block one bad version of an otherwise-trusted vendor's tool, without needing to touch the publisher rule.
 
-## 3. How a Request Actually Gets Elevated (per platform)
+## 4. How a Request Actually Gets Elevated (per platform)
 
 The end user runs the unprivileged CLI client, `sentinelgo-epm`:
 
@@ -113,13 +141,13 @@ The client is a thin front end — it carries no privilege of its own and cannot
 
 All three platforms converge on the same principle: **the agent's own already-elevated privilege is extended to one specific, policy-approved process on the user's desktop — nothing is dropped, and nothing prompts the user for credentials a second time**, since the whole point of EPM is that policy already made the allow/deny decision.
 
-## 4. Audit Trail
+## 5. Audit Trail
 
 Every elevation attempt — allowed or denied — is recorded locally first (`epm_audit_log` table, durable across restarts and offline periods) and uploaded to Supabase on its own cadence (`epm-audit-sync` scheduler task, reusing the same flush interval and upload pipeline as OS-level audit logs), tagged with `log_category = "EPM_ELEVATION_LOG"` so it can be filtered independently from other audit events. A row is marked synced only after a confirmed successful upload; failures are retried on the next cycle, nothing is dropped.
 
 Each record includes: request ID, resolved user identity, application path and hash, the decision, which policy rule (if any) matched, and the launch timestamp.
 
-## 5. Current Limitations
+## 6. Current Limitations
 
 - **Linux code-signature verification checks package-manager integrity, not a cryptographic GPG signature chain** — and this is a structural limitation of the Linux package managers themselves, not just an unfinished implementation detail. This was empirically tested (built a real GPG-signed test RPM, imported the key, installed it, and queried it): neither `dpkg` nor `rpm` retain a queryable, re-verifiable GPG signature for an *already-installed* package without the original `.deb`/`.rpm` file on hand — `rpm -q --qf '%{SIGPGP:pgpsig}'` returns `(none)` even for a package that `rpm -K` confirms is validly signed as a *file*, because the installed package database doesn't carry that tag forward. So `dpkg -V`/`rpm -V` (does the file still match what was recorded at install) plus the Maintainer/Vendor field remains the best generically-available check across distributions. A binary not owned by any package (e.g. something dropped directly into `/opt`) can only match by hash or exact path, never by publisher.
 - **Windows Authenticode publisher extraction** identifies the leaf (end-entity) certificate among everything embedded in the signature — distinguishing it from intermediate/root CA certificates also present — by checking which certificate's Subject never appears as another certificate's Issuer in the same chain. Verified against a real, multi-certificate-chain-signed system binary (`explorer.exe`, which embeds a full leaf→intermediate→root chain), correctly resolving to the leaf's name rather than a CA name. This covers the standard single-chain case; a signature using cross-signing (rare) could still be ambiguous.
@@ -129,7 +157,7 @@ Each record includes: request ID, resolved user identity, application path and h
 - **Wayland**: the Linux launcher propagates `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, and `XDG_CURRENT_DESKTOP` into the elevated process's environment (in addition to the X11 `DISPLAY`/`XAUTHORITY` pair), since GTK/Qt applications and the `xdg-desktop-portal` machinery commonly branch on these to pick a rendering backend and portal implementation. This is a defensive improvement based on documented variable semantics, **not confirmed by testing against a real GNOME/KDE Wayland session** — no such environment was available to validate against.
 - **Real-hardware validation of the actual elevate-and-launch step remains outstanding on all three platforms.** `go build`/`go test ./...` have been run for real — not just cross-compiled — on Windows (native), Linux (Ubuntu 26.04 via WSL2), and macOS (real Apple Silicon hardware over SSH), and the Named Pipe transport was end-to-end tested on Windows with the privileged primitives stubbed. What has *not* been exercised on any platform is the actual privileged launch against a real interactive desktop login (real WTS session + `CreateProcessAsUser`, real `launchctl asuser`, a real logind session with `/proc/<pid>/environ` GUI variables) — that needs a real interactive session, which SSH/WSL shells do not provide. Treat a first production rollout on each platform as a pilot.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|

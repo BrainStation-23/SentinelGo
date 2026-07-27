@@ -169,13 +169,16 @@ func (s *AgentService) SetAgentStatus(ctx context.Context, cfg *config.Config, s
 }
 
 // GetAgentInfo retrieves agent information from the agents table via the
-// PostgREST SDK.
+// PostgREST SDK. It selects only the columns needed for display and filters
+// by the agent's own DeviceID so the query never returns rows belonging to
+// other devices (defence-in-depth on top of RLS).
 func (s *AgentService) GetAgentInfo(ctx context.Context, cfg *config.Config) (map[string]interface{}, error) {
 	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
 
 	var agents []map[string]interface{}
 	_, err := client.From("agents").
-		Select("*", "", false).
+		Select("id,device_id,hostname,status,agent_version,os_information,created_at,updated_at", "", false).
+		Eq("device_id", cfg.DeviceID).
 		ExecuteToWithContext(ctx, &agents)
 	if err != nil {
 		return nil, fmt.Errorf("get agent info: %w", err)
