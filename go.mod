@@ -3,7 +3,7 @@ module sentinelgo
 go 1.25.11
 
 require (
-	github.com/shirou/gopsutil/v4 v4.26.5
+	github.com/shirou/gopsutil/v4 v4.26.6
 	github.com/supabase-community/postgrest-go v0.0.12
 	github.com/supabase-community/supabase-go v0.0.4
 	github.com/yusufpapurcu/wmi v1.2.4
