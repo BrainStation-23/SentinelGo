@@ -70,3 +70,5 @@ dev/
 test-run/
 /.puku
 sentinelgo
+sentinelgo-macos-arm64
+sentinelgo-linux
