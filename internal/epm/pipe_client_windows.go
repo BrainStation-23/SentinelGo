@@ -34,6 +34,11 @@ type ElevationResult struct {
 // (the connecting process's session, via GetNamedPipeClientProcessId) rather
 // than trusting anything this function sends, so there is no privilege
 // implication in this function running unprivileged.
+//
+// Sends a v1-shaped request (no protocol_version/op set) — see protocol.go's
+// Envelope doc comment — so this client keeps working unmodified against
+// both a pre-Phase-2 server and the current one; Phase 5 is what upgrades
+// this client to speak v2.
 func RequestElevation(appPath, commandLine, scriptPath string) (*ElevationResult, error) {
 	handle, err := dialPipe()
 	if err != nil {
@@ -41,17 +46,17 @@ func RequestElevation(appPath, commandLine, scriptPath string) (*ElevationResult
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
 
-	req := pipeRequest{
+	env := Envelope{
 		RequestID: uuid.NewString(),
 		AppPath:   appPath,
 	}
 	if scriptPath != "" {
-		req.ScriptPath = scriptPath
-		req.Args = commandLine
+		env.ScriptPath = scriptPath
+		env.Args = commandLine
 	} else {
-		req.CommandLine = commandLine
+		env.CommandLine = commandLine
 	}
-	data, err := json.Marshal(req)
+	data, err := json.Marshal(env)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -67,7 +72,7 @@ func RequestElevation(appPath, commandLine, scriptPath string) (*ElevationResult
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	var resp pipeResponse
+	var resp Response
 	if err := json.Unmarshal(buf[:n], &resp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}

@@ -32,6 +32,35 @@ type EPMAuditSource interface {
 	MarkAuditLogSynced(ids []int64) error
 }
 
+// EPMAuditUploader ships EPM elevation-audit rows through the shared audit-log
+// Uploader without requiring the full collect→parse→store logging pipeline.
+//
+// It exists because EPM elevation audit and OS audit-log collection are
+// independently configurable: a deployment can reasonably run EPM with
+// audit_logs_enabled=false, and previously that combination silently dropped
+// EPM audit on the floor — rows accumulated in SQLite forever and never
+// reached the backend. Only the upload half of the pipeline is actually needed
+// here, so this type takes just that.
+type EPMAuditUploader struct {
+	cfg      *config.Config
+	uploader *Uploader
+}
+
+// NewEPMAuditUploader builds a standalone EPM audit uploader. auth may be nil;
+// when set (with *authsvc.Service) uploads recover the session on a 401 and
+// pause while it is unrecoverable, exactly as LoggingIntegration.SetAuth does.
+func NewEPMAuditUploader(cfg *config.Config, auth authRetrier) *EPMAuditUploader {
+	e := &EPMAuditUploader{cfg: cfg}
+	// stats is per-uploader and only read through GetStatistics on the logging
+	// integration, so a private counter here is sufficient and keeps this
+	// uploader from perturbing the audit-log pipeline's numbers.
+	e.uploader = NewUploader(cfg, &statsCounter{})
+	if auth != nil {
+		e.uploader.SetAuth(auth)
+	}
+	return e
+}
+
 // UploadEPMAuditRows drains up to epmAuditChunkSize pending EPM
 // elevation-audit rows from src and uploads them through the same
 // batching/retry/auth-recovery Uploader used for OS-level audit logs (see
@@ -43,8 +72,8 @@ type EPMAuditSource interface {
 // This reuses the existing pipeline rather than standing up a parallel one:
 // the only new code is the small conversion from epm.AuditEntry to
 // models.AuditLog below.
-func (li *LoggingIntegration) UploadEPMAuditRows(ctx context.Context, src EPMAuditSource) (int, error) {
-	if src == nil {
+func (e *EPMAuditUploader) UploadEPMAuditRows(ctx context.Context, src EPMAuditSource) (int, error) {
+	if e == nil || src == nil {
 		return 0, nil
 	}
 
@@ -59,11 +88,11 @@ func (li *LoggingIntegration) UploadEPMAuditRows(ctx context.Context, src EPMAud
 	logs := make([]models.AuditLog, len(rows))
 	ids := make([]int64, len(rows))
 	for i, r := range rows {
-		logs[i] = epmAuditLogRecord(li.cfg, r.Entry)
+		logs[i] = epmAuditLogRecord(e.cfg, r.Entry)
 		ids[i] = r.ID
 	}
 
-	uploaded, uploadErr := li.uploader.Upload(ctx, logs)
+	uploaded, uploadErr := e.uploader.Upload(ctx, logs)
 	if uploaded == 0 {
 		if uploadErr != nil {
 			return 0, fmt.Errorf("upload epm audit rows: %w", uploadErr)
@@ -81,6 +110,21 @@ func (li *LoggingIntegration) UploadEPMAuditRows(ctx context.Context, src EPMAud
 		return uploaded, fmt.Errorf("mark epm audit rows synced: %w", err)
 	}
 	return uploaded, nil
+}
+
+// UploadEPMAuditRows drains and uploads pending EPM elevation-audit rows using
+// the logging integration's own Uploader, so EPM audit shares the audit-log
+// pipeline's auth handle and upload statistics when both are running.
+//
+// Retained with its original signature: callers that already hold a
+// *LoggingIntegration keep working unchanged. Callers that do not (audit-log
+// collection disabled) use NewEPMAuditUploader instead.
+func (li *LoggingIntegration) UploadEPMAuditRows(ctx context.Context, src EPMAuditSource) (int, error) {
+	if li == nil {
+		return 0, nil
+	}
+	e := &EPMAuditUploader{cfg: li.cfg, uploader: li.uploader}
+	return e.UploadEPMAuditRows(ctx, src)
 }
 
 // epmAuditLogRecord converts an EPM elevation-audit entry into the generic

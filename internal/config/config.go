@@ -116,6 +116,64 @@ type Config struct {
 	// Endpoint Privilege Management (EPM) configuration
 	EPMEnabled            bool     `json:"enable_epm"`               // Enable Endpoint Privilege Management (default false)
 	EPMPolicySyncInterval Duration `json:"epm_policy_sync_interval"` // How often to sync EPM policy rules (default 5m)
+	// EPMWindowsTokenType selects how the Windows enforcement transport derives
+	// the token for an allowed elevation. "" means the code default; see
+	// GetEPMWindowsTokenType for the values and their meaning.
+	//
+	// Deliberately NOT pre-filled in Load: SaveAtomic marshals the whole struct
+	// with no omitempty and the agent saves config on every token refresh, so a
+	// value written here becomes sticky on disk and a later change to the code
+	// default would never reach that machine. Every new EPM setting must follow
+	// the same zero-value-plus-accessor pattern.
+	EPMWindowsTokenType string `json:"epm_windows_token_type"`
+	// EPMPolicySignatureMode controls whether Phase 3 policy bundles must
+	// carry a valid ed25519 signature. "" means the code default (see
+	// GetEPMPolicySignatureMode). Left unset in Load for the same
+	// config-stickiness reason as EPMWindowsTokenType above.
+	EPMPolicySignatureMode string `json:"epm_policy_signature_mode"`
+	// EPMProcessMonitorMode gates Phase 6's process telemetry and
+	// terminate-on-violation enforcement: "off" (code default) runs no
+	// monitor at all; "observe" runs internal/epm/procmon and records
+	// events but never kills anything; "enforce" additionally runs
+	// internal/epm/enforce's Tracker/Enforcer. "" means the code default;
+	// left unset in Load for the same config-stickiness reason as every
+	// other EPM setting above.
+	EPMProcessMonitorMode string `json:"epm_process_monitor_mode"`
+	// EPMMaxKillsPerMinute is the terminate-on-violation kill-rate limiter
+	// (see internal/epm/enforce): once this many kills happen inside a
+	// rolling 60s window, enforcement disables itself for the rest of the
+	// run (observation continues) rather than risk turning a bad rule into
+	// a self-inflicted DoS. 0 means the code default (10); left unset in
+	// Load for the same config-stickiness reason as every other EPM
+	// setting above.
+	EPMMaxKillsPerMinute int `json:"epm_max_kills_per_minute"`
+	// EPMBackendTransport selects which internal/epm/transportbe
+	// implementation the agent negotiates: "" (code default)/"auto" probes
+	// v2 once and falls back to v1 on failure; "v1" and "v2" pin one
+	// transport outright, mainly for testing/debugging. "" means the code
+	// default; left unset in Load for the same config-stickiness reason as
+	// every other EPM setting above.
+	EPMBackendTransport string `json:"epm_backend_transport"`
+	// EPMAuditRetention bounds how long a synced (already-uploaded)
+	// epm_audit_log row is kept locally before epm-db-maintenance deletes
+	// it (see main_integration.go's buildEPMDBMaintenanceTask) — closes
+	// audit finding DB-3: rows were flagged synced=1 and never deleted,
+	// growing the local SQLite file unboundedly on a long-running agent.
+	// 0 means the code default (30 days); left unset in Load for the same
+	// config-stickiness reason as every other EPM setting above.
+	EPMAuditRetention Duration `json:"epm_audit_retention"`
+	// EPMGroupedLogUpload switches EPM_ELEVATION_LOG rows from the
+	// Uploader's "other" bucket (today's behavior — see uploader.go's
+	// buildBatchPayload) into their own "epm" group. Defaults to false
+	// (unlike every *bool-guarded EPM flag above, this one's desired
+	// default really is false, and a bare bool's zero value already IS
+	// false, so this needs no Get accessor or config-stickiness
+	// workaround): an existing backend may already depend on
+	// EPM_ELEVATION_LOG rows arriving in the "other" group, and
+	// log_category is already set per-row regardless (the backend can
+	// filter on it today without this flag at all) — this is a nicety to
+	// opt into, not a correction to roll out silently.
+	EPMGroupedLogUpload bool `json:"epm_grouped_log_upload"`
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
@@ -204,6 +262,123 @@ func (c *Config) GetEPMPolicySyncInterval() time.Duration {
 		return 5 * time.Minute
 	}
 	return time.Duration(c.EPMPolicySyncInterval)
+}
+
+// EPM Windows token types. See GetEPMWindowsTokenType.
+const (
+	// EPMTokenElevated launches with the requester's linked full-admin token
+	// (the other half of UAC's split token). This is the default and the only
+	// value that actually grants administrative privilege to an admin user.
+	EPMTokenElevated = "elevated"
+	// EPMTokenSystem launches as LocalSystem inside the requester's session.
+	// It is the only way to run something privileged for a true standard user,
+	// who has no linked elevated token at all, but the process runs as SYSTEM
+	// rather than as the user: no HKCU, no user profile, no user network
+	// identity. Opt-in precisely because those semantics differ.
+	EPMTokenSystem = "system"
+	// EPMTokenFiltered launches with the requester's own default (UAC-filtered)
+	// token. This grants no privilege beyond what the requester already had and
+	// exists only as an escape hatch to restore pre-fix behavior.
+	EPMTokenFiltered = "filtered"
+)
+
+// GetEPMWindowsTokenType returns the configured Windows elevation token type,
+// defaulting to EPMTokenElevated.
+func (c *Config) GetEPMWindowsTokenType() string {
+	if c.EPMWindowsTokenType == "" {
+		return EPMTokenElevated
+	}
+	return c.EPMWindowsTokenType
+}
+
+// EPM policy signature modes. See GetEPMPolicySignatureMode. Matches
+// epm.SignatureModeOff/Warn/Require exactly — internal/config does not
+// import internal/epm (see EPMWindowsTokenType's doc comment for why), so
+// these are declared independently and epm.TestSignatureModeMatchesConfigConstants
+// guards the two sets against drift.
+const (
+	EPMSignatureModeOff     = "off"
+	EPMSignatureModeWarn    = "warn"
+	EPMSignatureModeRequire = "require"
+)
+
+// GetEPMPolicySignatureMode returns the configured policy-bundle signature
+// mode, defaulting to EPMSignatureModeWarn — every bundle is verified and a
+// failure is logged and recorded, but still applies, so an existing backend
+// that has not adopted bundle signing keeps working. Flip the code default to
+// EPMSignatureModeRequire only once real signing keys are deployed
+// fleet-wide (see epm.PolicySigningKeys's doc comment).
+func (c *Config) GetEPMPolicySignatureMode() string {
+	if c.EPMPolicySignatureMode == "" {
+		return EPMSignatureModeWarn
+	}
+	return c.EPMPolicySignatureMode
+}
+
+// EPM process-monitor modes. See GetEPMProcessMonitorMode. Matches
+// enforce.ModeOff/Observe/Enforce exactly, declared independently for the
+// same reason as EPMSignatureModeOff/Warn/Require above (internal/config
+// does not import internal/epm or its subpackages).
+const (
+	EPMProcessMonitorOff     = "off"
+	EPMProcessMonitorObserve = "observe"
+	EPMProcessMonitorEnforce = "enforce"
+)
+
+// GetEPMProcessMonitorMode returns the configured process-monitor mode,
+// defaulting to EPMProcessMonitorOff — no monitor goroutine runs and no
+// terminate-on-violation enforcement happens, identical to the agent's
+// behavior before Phase 6 existed.
+func (c *Config) GetEPMProcessMonitorMode() string {
+	if c.EPMProcessMonitorMode == "" {
+		return EPMProcessMonitorOff
+	}
+	return c.EPMProcessMonitorMode
+}
+
+// DefaultEPMMaxKillsPerMinute is the terminate-on-violation kill-rate
+// limiter's code default. See EPMMaxKillsPerMinute's doc comment.
+const DefaultEPMMaxKillsPerMinute = 10
+
+// GetEPMMaxKillsPerMinute returns the configured kill-rate limit, defaulting
+// to DefaultEPMMaxKillsPerMinute.
+func (c *Config) GetEPMMaxKillsPerMinute() int {
+	if c.EPMMaxKillsPerMinute == 0 {
+		return DefaultEPMMaxKillsPerMinute
+	}
+	return c.EPMMaxKillsPerMinute
+}
+
+// EPM backend transport modes. See GetEPMBackendTransport. Matches
+// transportbe.ModeAuto/V1/V2 exactly, declared independently for the same
+// reason as the other EPM mode constants above.
+const (
+	EPMBackendTransportAuto = "auto"
+	EPMBackendTransportV1   = "v1"
+	EPMBackendTransportV2   = "v2"
+)
+
+// GetEPMBackendTransport returns the configured backend transport mode,
+// defaulting to EPMBackendTransportAuto.
+func (c *Config) GetEPMBackendTransport() string {
+	if c.EPMBackendTransport == "" {
+		return EPMBackendTransportAuto
+	}
+	return c.EPMBackendTransport
+}
+
+// DefaultEPMAuditRetention is epm-db-maintenance's code default: how long a
+// synced audit row is kept locally after upload. See EPMAuditRetention's
+// doc comment.
+const DefaultEPMAuditRetention = 30 * 24 * time.Hour
+
+// GetEPMAuditRetention returns the configured EPM audit-log retention
+// window, defaulting to DefaultEPMAuditRetention.
+func (c *Config) GetEPMAuditRetention() time.Duration {
+	if time.Duration(c.EPMAuditRetention) <= 0 {
+		return DefaultEPMAuditRetention
+	}
+	return time.Duration(c.EPMAuditRetention)
 }
 
 // GetTaskPollingInterval returns task polling interval as time.Duration
@@ -430,6 +605,44 @@ func (c *Config) validateConfig() error {
 
 	if c.GetTaskPollingInterval() <= 0 {
 		return fmt.Errorf("task_polling_interval must be positive")
+	}
+
+	// EPM settings. Validated even when EPM is disabled so a typo surfaces at
+	// startup rather than the first time someone flips enable_epm on.
+	if c.GetEPMPolicySyncInterval() <= 0 {
+		return fmt.Errorf("epm_policy_sync_interval must be positive")
+	}
+
+	switch c.GetEPMWindowsTokenType() {
+	case EPMTokenElevated, EPMTokenSystem, EPMTokenFiltered:
+	default:
+		return fmt.Errorf("epm_windows_token_type must be one of %q, %q, %q (got %q)",
+			EPMTokenElevated, EPMTokenSystem, EPMTokenFiltered, c.EPMWindowsTokenType)
+	}
+
+	switch c.GetEPMPolicySignatureMode() {
+	case EPMSignatureModeOff, EPMSignatureModeWarn, EPMSignatureModeRequire:
+	default:
+		return fmt.Errorf("epm_policy_signature_mode must be one of %q, %q, %q (got %q)",
+			EPMSignatureModeOff, EPMSignatureModeWarn, EPMSignatureModeRequire, c.EPMPolicySignatureMode)
+	}
+
+	switch c.GetEPMProcessMonitorMode() {
+	case EPMProcessMonitorOff, EPMProcessMonitorObserve, EPMProcessMonitorEnforce:
+	default:
+		return fmt.Errorf("epm_process_monitor_mode must be one of %q, %q, %q (got %q)",
+			EPMProcessMonitorOff, EPMProcessMonitorObserve, EPMProcessMonitorEnforce, c.EPMProcessMonitorMode)
+	}
+
+	if c.EPMMaxKillsPerMinute < 0 {
+		return fmt.Errorf("epm_max_kills_per_minute must not be negative (got %d)", c.EPMMaxKillsPerMinute)
+	}
+
+	switch c.GetEPMBackendTransport() {
+	case EPMBackendTransportAuto, EPMBackendTransportV1, EPMBackendTransportV2:
+	default:
+		return fmt.Errorf("epm_backend_transport must be one of %q, %q, %q (got %q)",
+			EPMBackendTransportAuto, EPMBackendTransportV1, EPMBackendTransportV2, c.EPMBackendTransport)
 	}
 
 	return nil

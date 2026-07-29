@@ -105,19 +105,10 @@ func TestEPMPolicySyncHandler_PrunesRulesNotInPayload(t *testing.T) {
 	}
 }
 
-func TestEPMPolicySyncHandler_EmptyRulesWipesCache(t *testing.T) {
-	cfg := testEPMCfg(t)
-	h := &epmPolicySyncHandler{}
-
-	if _, err := h.Run(context.Background(), cfg, taskstore.Task{
-		Payload: map[string]interface{}{"rules": []map[string]interface{}{{"id": "rule-1", "decision": "allow"}}},
-	}); err != nil {
-		t.Fatalf("first Run: %v", err)
-	}
-	if _, err := h.Run(context.Background(), cfg, taskstore.Task{Payload: map[string]interface{}{}}); err != nil {
-		t.Fatalf("second Run (no rules): %v", err)
-	}
-
+// cachedRuleIDs reopens the store the handler wrote to and returns the IDs it
+// holds, so a test can assert on the durable result rather than the note.
+func cachedRuleIDs(t *testing.T, cfg *config.Config) []string {
+	t.Helper()
 	st, err := store.NewEPMStore(filepath.Join(filepath.Dir(cfg.Path), store.EPMDBName))
 	if err != nil {
 		t.Fatalf("open store to verify: %v", err)
@@ -128,8 +119,74 @@ func TestEPMPolicySyncHandler_EmptyRulesWipesCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRules: %v", err)
 	}
-	if len(rules) != 0 {
-		t.Errorf("want 0 rules after empty-payload resync, got %d", len(rules))
+	ids := make([]string, len(rules))
+	for i, r := range rules {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
+// seedOneRule runs a successful sync so later assertions have something to lose.
+func seedOneRule(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	h := &epmPolicySyncHandler{}
+	if _, err := h.Run(context.Background(), cfg, taskstore.Task{
+		Payload: map[string]interface{}{"rules": []map[string]interface{}{{"id": "rule-1", "decision": "allow"}}},
+	}); err != nil {
+		t.Fatalf("seed Run: %v", err)
+	}
+}
+
+// TestEPMPolicySyncHandler_ExplicitEmptyRulesClearsCache covers the one case
+// that is genuinely an instruction to clear policy: the server sent "rules": [].
+func TestEPMPolicySyncHandler_ExplicitEmptyRulesClearsCache(t *testing.T) {
+	cfg := testEPMCfg(t)
+	seedOneRule(t, cfg)
+
+	h := &epmPolicySyncHandler{}
+	note, err := h.Run(context.Background(), cfg, taskstore.Task{
+		Payload: map[string]interface{}{"rules": []map[string]interface{}{}},
+	})
+	if err != nil {
+		t.Fatalf("Run with explicit empty rules: %v", err)
+	}
+	if !strings.Contains(note, "0 rules") {
+		t.Errorf("note = %q, want it to mention 0 rules", note)
+	}
+	if ids := cachedRuleIDs(t, cfg); len(ids) != 0 {
+		t.Errorf("want 0 rules after explicit empty resync, got %v", ids)
+	}
+}
+
+// TestEPMPolicySyncHandler_MissingRulesKeyPreservesCache is the regression test
+// for the wipe bug: a payload with no "rules" key (malformed, truncated, or a
+// backend that failed to populate it) previously parsed as an empty rule set and
+// silently deleted every cached rule. Under default-deny that locks every user
+// out of every elevation, so absent must fail the task and leave policy intact.
+func TestEPMPolicySyncHandler_MissingRulesKeyPreservesCache(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload map[string]interface{}
+	}{
+		{"no key at all", map[string]interface{}{}},
+		{"unrelated keys only", map[string]interface{}{"timeout_minutes": float64(5)}},
+		{"explicit null", map[string]interface{}{"rules": nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testEPMCfg(t)
+			seedOneRule(t, cfg)
+
+			h := &epmPolicySyncHandler{}
+			_, err := h.Run(context.Background(), cfg, taskstore.Task{Payload: tc.payload})
+			if !errors.Is(err, errNoRulesKey) {
+				t.Fatalf("Run error = %v, want errNoRulesKey", err)
+			}
+
+			ids := cachedRuleIDs(t, cfg)
+			if len(ids) != 1 || ids[0] != "rule-1" {
+				t.Errorf("cache must be untouched after a rejected sync: got %v, want [rule-1]", ids)
+			}
+		})
 	}
 }
 
@@ -154,8 +211,13 @@ func TestEPMPolicySyncHandler_StoreOpenFailureReturnsError(t *testing.T) {
 	openErr := errors.New("disk unavailable")
 	openEPMStoreFn = func(_ *config.Config) (*store.EPMStore, error) { return nil, openErr }
 
+	// The payload must be well-formed: parsing happens before the store is
+	// opened, so an absent "rules" key would fail earlier and never exercise
+	// the seam under test.
 	h := &epmPolicySyncHandler{}
-	_, err := h.Run(context.Background(), testEPMCfg(t), taskstore.Task{Payload: map[string]interface{}{}})
+	_, err := h.Run(context.Background(), testEPMCfg(t), taskstore.Task{
+		Payload: map[string]interface{}{"rules": []map[string]interface{}{}},
+	})
 	if err == nil || !errors.Is(err, openErr) {
 		t.Fatalf("expected wrapped open error, got %v", err)
 	}

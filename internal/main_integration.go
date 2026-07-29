@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -42,7 +41,10 @@ type MainIntegration struct {
 	servicesStore  *store.ServicesStore
 	softwareStore  *store.SoftwareStore
 	epmStore       *store.EPMStore
-	epmService     *epm.Service
+	epmService     epmEnforcer
+	// epmUploader is the fallback EPM audit uploader used when the audit-log
+	// collection pipeline is disabled; built lazily by epmAuditUploader().
+	epmUploader *logging.EPMAuditUploader
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -387,11 +389,25 @@ func (mi *MainIntegration) epmDBPath() string {
 	return filepath.Join(filepath.Dir(mi.cfg.Path), store.EPMDBName)
 }
 
+// epmServiceFactory builds the EPM enforcement service. It is a package-level
+// var so a test can inject a service whose Start fails, which is the only way
+// to exercise the "transport unavailable" path on a host where the real
+// transport would happily bind. Mirrors the openEPMStoreFn seam in
+// internal/service/task/native.
+var epmServiceFactory = func(rules epm.RuleProvider, auditor *epm.Auditor, opts epm.ServiceOptions) epmEnforcer {
+	return epm.NewServiceWithOptions(rules, auditor, opts)
+}
+
+// epmEnforcer is the subset of *epm.Service that startEPM and Stop depend on,
+// extracted so epmServiceFactory can return a stub.
+type epmEnforcer interface {
+	Start(ctx context.Context) error
+	Stop() error
+}
+
 // startEPM starts Endpoint Privilege Management when enabled. EPM defaults to
 // disabled (cfg.EPMEnabled == false), in which case this is a no-op and the
-// agent behaves exactly as it does today. Even when enabled, the enforcement
-// transport only exists on Windows so far (see internal/epm/service_other.go
-// for the stub on other platforms); any failure here is logged and
+// agent behaves exactly as it does today. Any failure here is logged and
 // non-fatal, matching how buildServicesTask/softwareSyncHandler degrade when
 // their stores fail to open.
 func (mi *MainIntegration) startEPM(ctx context.Context) {
@@ -406,29 +422,40 @@ func (mi *MainIntegration) startEPM(ctx context.Context) {
 	}
 	mi.epmStore = epmStore
 
-	svc := epm.NewService(epmStore, epm.NewAuditor(epmStore))
-	if err := svc.Start(ctx); err != nil {
-		log.Printf("Warning: EPM service failed to start: %v", err)
-		if runtime.GOOS != "windows" {
-			log.Printf("Warning: EPM is only supported on Windows; Unix transport is not yet implemented")
-		}
-		return
-	}
-	mi.epmService = svc
-	log.Printf("EPM enabled (policy sync interval: %v)", mi.cfg.GetEPMPolicySyncInterval())
-
-	// Registering scheduler tasks here (rather than in configureScheduledTasks,
-	// which runs earlier in Start) is safe: AddTask only needs to happen before
-	// scheduler.Start, which is still a later step. It also keeps every piece of
-	// EPM wiring in one place instead of splitting it across two methods.
+	// Register scheduler work BEFORE attempting to start the enforcement
+	// transport, and unconditionally. Policy sync and audit upload are useful
+	// even on a host where the transport cannot bind (unsupported platform,
+	// socket already in use, insufficient privilege): the local cache stays
+	// current, so enforcement is correct the moment the transport does come up,
+	// and queued audit rows still reach the backend. Registering these only
+	// after a successful Start — as this function previously did — left every
+	// such host with a policy cache that went stale permanently.
+	//
+	// Registering here rather than in configureScheduledTasks (which runs
+	// earlier in Start) is safe: AddTask only has to happen before
+	// scheduler.Start, which is a later step still. It also keeps every piece
+	// of EPM wiring in one place instead of splitting it across two methods.
 	if err := mi.scheduler.AddTask(mi.buildEPMPolicySyncTask()); err != nil {
 		log.Printf("Warning: failed to add epm-policy-sync scheduler task: %v", err)
 	}
-	if auditTask := mi.buildEPMAuditSyncTask(epmStore); auditTask != nil {
-		if err := mi.scheduler.AddTask(auditTask); err != nil {
-			log.Printf("Warning: failed to add epm-audit-sync scheduler task: %v", err)
-		}
+	if err := mi.scheduler.AddTask(mi.buildEPMAuditSyncTask(epmStore)); err != nil {
+		log.Printf("Warning: failed to add epm-audit-sync scheduler task: %v", err)
 	}
+	if err := mi.scheduler.AddTask(mi.buildEPMDBMaintenanceTask(epmStore)); err != nil {
+		log.Printf("Warning: failed to add epm-db-maintenance scheduler task: %v", err)
+	}
+
+	tokenType := epm.TokenType(mi.cfg.GetEPMWindowsTokenType())
+	svc := epmServiceFactory(epmStore, epm.NewAuditor(epmStore), epm.ServiceOptions{
+		WindowsTokenType: tokenType,
+	})
+	if err := svc.Start(ctx); err != nil {
+		log.Printf("Warning: EPM enforcement transport failed to start; policy sync and audit upload continue: %v", err)
+		return
+	}
+	mi.epmService = svc
+	log.Printf("EPM enabled (policy sync interval: %v, windows token type: %s)",
+		mi.cfg.GetEPMPolicySyncInterval(), sanitize.ForLog(string(tokenType)))
 }
 
 // buildEPMPolicySyncTask periodically pulls and applies any pending
@@ -512,14 +539,15 @@ func (mi *MainIntegration) epmPolicySyncHandler() scheduler.TaskHandler {
 // buildEPMAuditSyncTask periodically drains EPM elevation-audit rows through
 // the same upload pipeline used for OS-level audit logs (see
 // internal/logging/epm_upload.go). Reuses the audit-log flush cadence
-// (cfg.GetLogFlushInterval()) since this is conceptually the same kind of
-// work. Returns nil (no task added) when audit logging itself is disabled —
-// there is nowhere for EPM audit rows to go without the logging pipeline.
+// (cfg.GetLogFlushInterval()) since this is conceptually the same kind of work.
+//
+// The task is always built. It previously returned nil whenever OS audit-log
+// collection was disabled, on the assumption that EPM audit had nowhere to go
+// without that pipeline — but only the upload half is actually needed, and the
+// two features are independently configurable. The result was that running EPM
+// with audit_logs_enabled=false accumulated elevation records in SQLite
+// forever and shipped none of them. See logging.NewEPMAuditUploader.
 func (mi *MainIntegration) buildEPMAuditSyncTask(epmStore *store.EPMStore) *scheduler.Task {
-	if mi.loggingService == nil {
-		log.Printf("Warning: audit logs disabled, EPM elevation-audit upload will not run")
-		return nil
-	}
 	return &scheduler.Task{
 		Name:     "epm-audit-sync",
 		Interval: mi.cfg.GetLogFlushInterval(),
@@ -528,12 +556,29 @@ func (mi *MainIntegration) buildEPMAuditSyncTask(epmStore *store.EPMStore) *sche
 	}
 }
 
+// epmAuditUploader returns the uploader EPM audit rows should go through:
+// the logging integration's when audit-log collection is running (so both
+// share one auth handle and one set of statistics), otherwise a standalone one
+// built on demand and cached for the life of the agent.
+func (mi *MainIntegration) epmAuditUploader() interface {
+	UploadEPMAuditRows(ctx context.Context, src logging.EPMAuditSource) (int, error)
+} {
+	if mi.loggingService != nil {
+		return mi.loggingService
+	}
+	if mi.epmUploader == nil {
+		log.Printf("EPM: audit-log collection disabled, using standalone uploader for elevation audit")
+		mi.epmUploader = logging.NewEPMAuditUploader(mi.cfg, mi.authSvc)
+	}
+	return mi.epmUploader
+}
+
 func (mi *MainIntegration) epmAuditSyncHandler(epmStore *store.EPMStore) scheduler.TaskHandler {
 	return func(ctx context.Context, cfg *config.Config, _ *authsvc.Service) error {
-		if !cfg.EPMEnabled || mi.loggingService == nil {
+		if !cfg.EPMEnabled {
 			return nil
 		}
-		uploaded, err := mi.loggingService.UploadEPMAuditRows(ctx, epmStore)
+		uploaded, err := mi.epmAuditUploader().UploadEPMAuditRows(ctx, epmStore)
 		if err != nil {
 			return fmt.Errorf("epm-audit-sync: %w", err)
 		}
@@ -541,6 +586,43 @@ func (mi *MainIntegration) epmAuditSyncHandler(epmStore *store.EPMStore) schedul
 			log.Printf("epm-audit-sync: uploaded %d elevation audit record(s)", uploaded)
 		}
 		return nil
+	}
+}
+
+// buildEPMDBMaintenanceTask returns a weekly scheduled task that prunes
+// already-uploaded (synced) EPM audit-log and process-event rows older than
+// cfg.GetEPMAuditRetention() (default 30 days), prunes stale policy bundle
+// payloads down to the last 3, and reclaims the freed disk space with
+// VACUUM. Closes audit finding DB-3: previously, rows were flagged
+// synced=1 and never deleted, so sentinelgo_epm.db grew without bound on a
+// long-running agent. Mirrors buildTaskDBCleanupTask's shape exactly.
+func (mi *MainIntegration) buildEPMDBMaintenanceTask(epmStore *store.EPMStore) *scheduler.Task {
+	return &scheduler.Task{
+		Name:     "epm-db-maintenance",
+		Interval: 7 * 24 * time.Hour,
+		Enabled:  true,
+		Handler: func(_ context.Context, cfg *config.Config, _ *authsvc.Service) error {
+			if !cfg.EPMEnabled {
+				return nil
+			}
+			cutoff := time.Now().UTC().Add(-cfg.GetEPMAuditRetention())
+
+			if err := epmStore.PruneAuditLog(cutoff); err != nil {
+				return fmt.Errorf("epm-db-maintenance: prune audit log: %w", err)
+			}
+			if err := epmStore.PruneProcessEvents(cutoff); err != nil {
+				return fmt.Errorf("epm-db-maintenance: prune process events: %w", err)
+			}
+			if err := epmStore.PruneBundles(3); err != nil {
+				return fmt.Errorf("epm-db-maintenance: prune bundles: %w", err)
+			}
+			if err := epmStore.Vacuum(); err != nil {
+				return fmt.Errorf("epm-db-maintenance: vacuum: %w", err)
+			}
+
+			log.Printf("epm-db-maintenance: pruned synced rows older than %s and vacuumed", cutoff.Format(time.RFC3339))
+			return nil
+		},
 	}
 }
 

@@ -155,6 +155,72 @@ func TestUpload_RetryOnTransientError(t *testing.T) {
 
 // TestUpload_TwoBatches_Success verifies that > maxBatchSize logs are split into
 // two separate HTTP requests and all are counted as uploaded.
+// batchGroupKeys returns the top-level group keys ("system", "security",
+// "epm", "other", ...) present in buildBatchPayload's payload.logs list, in
+// order.
+func batchGroupKeys(t *testing.T, payload map[string]interface{}) []string {
+	t.Helper()
+	inner, ok := payload["payload"].(map[string]interface{})
+	if !ok {
+		t.Fatalf(`payload["payload"] is %T, want map[string]interface{}`, payload["payload"])
+	}
+	raw, ok := inner["logs"]
+	if !ok {
+		t.Fatal(`payload has no "logs" key`)
+	}
+	groups, ok := raw.([]map[string]interface{})
+	if !ok {
+		t.Fatalf("logs is %T, want []map[string]interface{}", raw)
+	}
+	var keys []string
+	for _, g := range groups {
+		for k := range g {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func TestBuildBatchPayload_EPMDefaultsToOtherGroup(t *testing.T) {
+	u := NewUploader(&config.Config{}, &statsCounter{})
+	payload := u.buildBatchPayload([]models.AuditLog{makeTestLog(models.LogCategoryEPM)})
+
+	keys := batchGroupKeys(t, payload)
+	if len(keys) != 1 || keys[0] != "other" {
+		t.Errorf("group keys = %v, want [other] (EPMGroupedLogUpload defaults to false)", keys)
+	}
+}
+
+func TestBuildBatchPayload_EPMGroupedWhenFlagEnabled(t *testing.T) {
+	u := NewUploader(&config.Config{EPMGroupedLogUpload: true}, &statsCounter{})
+	payload := u.buildBatchPayload([]models.AuditLog{makeTestLog(models.LogCategoryEPM)})
+
+	keys := batchGroupKeys(t, payload)
+	if len(keys) != 1 || keys[0] != "epm" {
+		t.Errorf("group keys = %v, want [epm]", keys)
+	}
+}
+
+func TestBuildBatchPayload_EPMGroupedDoesNotAffectOtherCategories(t *testing.T) {
+	u := NewUploader(&config.Config{EPMGroupedLogUpload: true}, &statsCounter{})
+	payload := u.buildBatchPayload([]models.AuditLog{
+		makeTestLog(models.LogCategoryEPM),
+		makeTestLog(models.LogCategorySystem),
+		makeTestLog(models.LogCategorySecurity),
+	})
+
+	keys := batchGroupKeys(t, payload)
+	want := map[string]bool{"epm": true, "system": true, "security": true}
+	if len(keys) != len(want) {
+		t.Fatalf("group keys = %v, want exactly %v", keys, want)
+	}
+	for _, k := range keys {
+		if !want[k] {
+			t.Errorf("unexpected group key %q", k)
+		}
+	}
+}
+
 func TestUpload_TwoBatches_Success(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

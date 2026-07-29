@@ -127,6 +127,7 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 	securityLogs := make([]map[string]interface{}, 0)
 	networkLogs := make([]map[string]interface{}, 0)
 	policyLogs := make([]map[string]interface{}, 0)
+	epmLogs := make([]map[string]interface{}, 0)
 	otherLogs := make([]map[string]interface{}, 0)
 
 	for i := range logs {
@@ -148,6 +149,16 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 			networkLogs = append(networkLogs, entry)
 		case models.LogCategoryPolicy, models.LogCategoryRemote:
 			policyLogs = append(policyLogs, entry)
+		case models.LogCategoryEPM:
+			// Grouping EPM_ELEVATION_LOG rows separately is opt-in — see
+			// EPMGroupedLogUpload's doc comment for why the default keeps
+			// them in "other", matching every release before this flag
+			// existed.
+			if u.cfg.EPMGroupedLogUpload {
+				epmLogs = append(epmLogs, entry)
+			} else {
+				otherLogs = append(otherLogs, entry)
+			}
 		default:
 			otherLogs = append(otherLogs, entry)
 		}
@@ -165,6 +176,9 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 	}
 	if len(policyLogs) > 0 {
 		logGroups = append(logGroups, map[string]interface{}{"mdm": policyLogs})
+	}
+	if len(epmLogs) > 0 {
+		logGroups = append(logGroups, map[string]interface{}{"epm": epmLogs})
 	}
 	if len(otherLogs) > 0 {
 		logGroups = append(logGroups, map[string]interface{}{"other": otherLogs})

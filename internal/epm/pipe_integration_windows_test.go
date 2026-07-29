@@ -56,10 +56,18 @@ func stubIdentitySeams(t *testing.T, hash, userID string) {
 func stubLaunchSeams(t *testing.T, launched *bool) {
 	t.Helper()
 	origDup, origEnv, origLaunch := duplicateAsPrimaryTokenFn, buildEnvironmentBlockFn, launchAsUserFn
+	origLinked, origSystem := linkedElevatedTokenFn, systemTokenForSessionFn
 	t.Cleanup(func() {
 		duplicateAsPrimaryTokenFn, buildEnvironmentBlockFn, launchAsUserFn = origDup, origEnv, origLaunch
+		linkedElevatedTokenFn, systemTokenForSessionFn = origLinked, origSystem
 	})
 
+	// The default (TokenElevated) path resolves the requester's linked
+	// full-admin token before launching, so it must be stubbed alongside the
+	// original three seams — the fake handles used here are not real tokens and
+	// would fail the underlying GetTokenInformation call.
+	linkedElevatedTokenFn = func(t windows.Token) (windows.Token, error) { return t, nil }
+	systemTokenForSessionFn = func(_ uint32) (windows.Token, error) { return windows.Token(1), nil }
 	duplicateAsPrimaryTokenFn = func(t windows.Token) (windows.Token, error) { return t, nil }
 	buildEnvironmentBlockFn = func(_ windows.Token) (*environmentBlock, error) { return &environmentBlock{}, nil }
 	launchAsUserFn = func(_ windows.Token, _, _ string, _ *environmentBlock) (*LaunchResult, error) {

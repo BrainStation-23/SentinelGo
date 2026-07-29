@@ -24,7 +24,9 @@ cmd/
   sentinelgo/          main agent: service lifecycle, CLI, foreground/service modes
     cli/               CLI subcommands (software, services, tasks, debug, audit logs)
     service/           platform service adapters (launchd, systemd, Windows SCM)
-  sentinelgo-epm/      unprivileged EPM client (Windows only; connects to pipe server)
+  sentinelgo-epm/      unprivileged EPM client — one-shot elevation request (default) or
+                       long-lived per-user "-session" prompt helper; cross-platform
+                       (Windows named pipe / Unix domain socket)
 
 internal/
   config/              JSON config loading, atomic save, credential storage, path hardening
@@ -39,9 +41,29 @@ internal/
     services/          OS services collection and sync
     software/          installed-software collection and catalog sync
     task/              remote task polling, execution, and native handler registry
-      native/          built-in task handlers (sync-inventory, epm-policy-sync, …)
-  epm/                 Endpoint Privilege Management (Windows pipe server + policy engine)
-  store/               local SQLite stores for tasks, software, services, EPM, audit logs
+      native/          built-in task handlers (sync-inventory, epm-policy-sync, epm-policy-rollback, …)
+  epm/                 Endpoint Privilege Management: cross-platform enforcement transport
+                       (Windows named pipe / Unix domain socket) + v2 condition-tree policy
+                       engine (verdict/condition/matchers/compile/engine_v2), v1-compatible
+                       (adapter_v1.go), signed policy bundles (bundle.go/bundle_manager.go)
+    devicectx/         background device-posture/network context collector (feeds the
+                       engine's context-sourced conditions; no-op until epm_context_mode
+                       is wired to "on")
+    procmon/           observational process-start/exit telemetry (Windows Event ID 4688/
+                       4689, Linux netlink proc connector with a polling fallback, macOS
+                       gopsutil polling) — see enforce/ for what consumes it
+    enforce/           terminate-on-violation: kills a child process that violates its
+                       root elevation's ChildProcess policy, gated by a kill-rate limiter
+                       and a never-kill list. Observe-then-kill only — no kernel driver,
+                       so nothing here blocks a process before it runs
+    transportbe/        backend transport abstraction (v1 task-payload piggyback / v2 RPC
+                       stub, auto-negotiated) — agent-side plumbing; see
+                       docs/EPM-RPC-Contract-v2.md. Not yet wired into the running agent
+    prompt/             native interactive dialogs (Windows MessageBoxW + a WinForms
+                       input box, Linux zenity/kdialog, macOS osascript) for
+                       cmd/sentinelgo-epm's "-session" helper
+  store/               local SQLite stores for tasks, software, services, EPM (policies,
+                       bundles, elevation/process audit), audit logs
   updater/             release check, binary download/verify, atomic replace, restart
   logging/             audit log collection pipeline (collect → parse → SQLite → upload)
   auditlogs/           OS-level log collectors (journalctl/log/EventLog) and parsers
@@ -58,10 +80,10 @@ installation-doc/      Install scripts and user-facing installation docs
 1. Load config → acquire lockfile (`sentinelgo`) → validate config
 2. Startup update check (async, gated by `auto_update`)
 3. Authenticate via Supabase edge function (agent-login) → store JWT
-4. Build and register scheduled tasks (token-refresh, agent-info-update, software-sync, services-collect, auto-update, task-db-cleanup)
+4. Build and register scheduled tasks (token-refresh, agent-info-update, software-sync, services-collect, auto-update, task-db-cleanup, epm-policy-sync, epm-audit-sync, epm-db-maintenance)
 5. Start audit log service (collect → SQLite → upload pipeline)
 6. Start task manager (poll remote tasks → execute → report status)
-7. Start EPM service if `enable_epm=true` (Windows only; logs warning on other platforms)
+7. Start EPM enforcement transport if `enable_epm=true` — cross-platform (Windows named pipe / Unix domain socket); policy sync and audit upload are registered unconditionally in step 4 even if the transport itself fails to bind, so the local policy cache never goes stale on a host where enforcement can't start
 8. Run scheduler; all tasks execute on their configured intervals with startup jitter
 
 ## Key Conventions

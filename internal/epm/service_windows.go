@@ -23,7 +23,14 @@ type Service struct {
 // supplies the live policy rule set and auditor records every elevation
 // decision; internal/store.EPMStore implements both.
 func NewService(rules RuleProvider, auditor *Auditor) *Service {
-	return &Service{pipe: NewPipeServer(rules, auditor)}
+	return NewServiceWithOptions(rules, auditor, ServiceOptions{})
+}
+
+// NewServiceWithOptions builds a Service honouring opts. On Windows the only
+// field that applies is WindowsTokenType, which selects how an allowed launch
+// derives its token (see launcher_iface_windows.go's elevationToken).
+func NewServiceWithOptions(rules RuleProvider, auditor *Auditor, opts ServiceOptions) *Service {
+	return &Service{pipe: NewPipeServerWithTokenType(rules, auditor, opts.WindowsTokenType)}
 }
 
 // Start begins accepting elevation requests in the background. It returns

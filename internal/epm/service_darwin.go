@@ -23,6 +23,13 @@ type Service struct {
 // rules supplies the live policy rule set and auditor records every
 // elevation decision; internal/store.EPMStore implements both.
 func NewService(rules RuleProvider, auditor *Auditor) *Service {
+	return NewServiceWithOptions(rules, auditor, ServiceOptions{})
+}
+
+// NewServiceWithOptions builds a Service honouring opts. No ServiceOptions
+// field currently applies on macOS: the daemon already runs as root and
+// LaunchAsUser retains that privilege, so there is no token selection to make.
+func NewServiceWithOptions(rules RuleProvider, auditor *Auditor, _ ServiceOptions) *Service {
 	return &Service{socket: NewSocketServer(rules, auditor)}
 }
 

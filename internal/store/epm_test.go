@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -94,18 +95,95 @@ func TestEPMStore_DeleteRulesNotIn(t *testing.T) {
 	}
 }
 
-func TestEPMStore_DeleteRulesNotInEmptyWipesAll(t *testing.T) {
+// TestEPMStore_DeleteRulesNotInEmptyErrors pins the fail-safe: an empty ID set
+// must NOT be read as "the server sent zero rules". A malformed or truncated
+// sync payload easily produces one, and because policy evaluation is
+// default-deny, wiping the cache locks every user out of every elevation. The
+// caller has to reach for PruneAll deliberately.
+func TestEPMStore_DeleteRulesNotInEmptyErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		activeID []string
+	}{
+		{"nil", nil},
+		{"empty slice", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openEPMStoreInMemory(t)
+			if err := s.UpsertRules([]epm.PolicyRule{{ID: "rule-1", Decision: epm.DecisionAllow}}); err != nil {
+				t.Fatalf("UpsertRules: %v", err)
+			}
+
+			err := s.DeleteRulesNotIn(tc.activeID)
+			if !errors.Is(err, store.ErrEmptyActiveIDs) {
+				t.Fatalf("DeleteRulesNotIn(%v) error = %v, want ErrEmptyActiveIDs", tc.activeID, err)
+			}
+
+			got, err := s.GetRules()
+			if err != nil {
+				t.Fatalf("GetRules: %v", err)
+			}
+			if len(got) != 1 {
+				t.Errorf("rules must survive a rejected prune: got %d, want 1", len(got))
+			}
+		})
+	}
+}
+
+func TestEPMStore_PruneAll(t *testing.T) {
 	s := openEPMStoreInMemory(t)
 
-	if err := s.UpsertRules([]epm.PolicyRule{{ID: "rule-1", Decision: epm.DecisionAllow}}); err != nil {
+	if err := s.UpsertRules([]epm.PolicyRule{
+		{ID: "rule-1", Decision: epm.DecisionAllow},
+		{ID: "rule-2", Decision: epm.DecisionDeny},
+	}); err != nil {
 		t.Fatalf("UpsertRules: %v", err)
 	}
-	if err := s.DeleteRulesNotIn(nil); err != nil {
-		t.Fatalf("DeleteRulesNotIn(nil): %v", err)
+	if err := s.PruneAll(); err != nil {
+		t.Fatalf("PruneAll: %v", err)
 	}
-	got, _ := s.GetRules()
+
+	got, err := s.GetRules()
+	if err != nil {
+		t.Fatalf("GetRules: %v", err)
+	}
 	if len(got) != 0 {
-		t.Errorf("want 0 rules after empty prune, got %d", len(got))
+		t.Errorf("want 0 rules after PruneAll, got %d", len(got))
+	}
+
+	// PruneAll on an already-empty table is not an error.
+	if err := s.PruneAll(); err != nil {
+		t.Errorf("PruneAll on empty store: %v", err)
+	}
+}
+
+// TestEPMStore_GetRulesOrderedByID pins the deterministic ordering that
+// epm.Engine's tie-break depends on: without it, two rules of equal tier and
+// priority resolve by whichever storage happened to return first, so the same
+// request could be allowed on one agent boot and denied on the next.
+func TestEPMStore_GetRulesOrderedByID(t *testing.T) {
+	s := openEPMStoreInMemory(t)
+
+	if err := s.UpsertRules([]epm.PolicyRule{
+		{ID: "c-rule", Decision: epm.DecisionAllow},
+		{ID: "a-rule", Decision: epm.DecisionAllow},
+		{ID: "b-rule", Decision: epm.DecisionAllow},
+	}); err != nil {
+		t.Fatalf("UpsertRules: %v", err)
+	}
+
+	got, err := s.GetRules()
+	if err != nil {
+		t.Fatalf("GetRules: %v", err)
+	}
+	want := []string{"a-rule", "b-rule", "c-rule"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rules, want %d", len(got), len(want))
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Errorf("rule[%d].ID = %q, want %q", i, got[i].ID, id)
+		}
 	}
 }
 
@@ -173,6 +251,83 @@ func TestEPMStore_AuditLogInsertGetMarkSynced(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Errorf("want 0 unsynced rows after MarkAuditLogSynced, got %d", len(remaining))
+	}
+}
+
+func TestEPMStore_AuditLogPhase8FieldsRoundTrip(t *testing.T) {
+	s := openEPMStoreInMemory(t)
+
+	exitCode := 0
+	retainUntil := time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
+	entry := epm.AuditEntry{
+		RequestID: "req-p8", UserID: "alice", Decision: epm.DecisionAllow,
+		LaunchedAt: time.Date(2024, 5, 1, 10, 0, 0, 0, time.UTC),
+
+		SchemaVersion:     2,
+		Verdict:           epm.VerdictAllow,
+		Mode:              epm.ModeSilent,
+		BundleID:          "bundle-7",
+		RuleVersion:       3,
+		Specificity:       250,
+		Publisher:         "Contoso Inc",
+		CommandLine:       "tool.exe --flag",
+		ProcessID:         4242,
+		ParentPID:         100,
+		ParentPath:        `C:\explorer.exe`,
+		ExitCode:          &exitCode,
+		Justification:     "approved via ticket",
+		ApprovalID:        "appr-1",
+		GrantID:           "grant-1",
+		DeviceContext:     `{"os_type":"windows"}`,
+		MatchedConditions: `["hash","user"]`,
+		AgentVersion:      "1.2.3",
+		RetainUntil:       &retainUntil,
+	}
+	if err := s.InsertAuditLog(entry); err != nil {
+		t.Fatalf("InsertAuditLog: %v", err)
+	}
+
+	unsynced, err := s.GetUnsyncedAuditLogs(0)
+	if err != nil {
+		t.Fatalf("GetUnsyncedAuditLogs: %v", err)
+	}
+	if len(unsynced) != 1 {
+		t.Fatalf("want 1 unsynced row, got %d", len(unsynced))
+	}
+	got := unsynced[0].Entry
+	if got.Verdict != epm.VerdictAllow || got.Mode != epm.ModeSilent || got.BundleID != "bundle-7" ||
+		got.RuleVersion != 3 || got.Specificity != 250 || got.Publisher != "Contoso Inc" ||
+		got.CommandLine != "tool.exe --flag" || got.ProcessID != 4242 || got.ParentPID != 100 ||
+		got.ParentPath != `C:\explorer.exe` || got.Justification != "approved via ticket" ||
+		got.ApprovalID != "appr-1" || got.GrantID != "grant-1" || got.DeviceContext != `{"os_type":"windows"}` ||
+		got.MatchedConditions != `["hash","user"]` || got.AgentVersion != "1.2.3" {
+		t.Errorf("Phase 8 fields did not round-trip: %+v", got)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 0 {
+		t.Errorf("ExitCode = %v, want pointer to 0 (a real exit code of 0 must survive, not collapse to the -1 sentinel)", got.ExitCode)
+	}
+	if got.RetainUntil == nil || !got.RetainUntil.Equal(retainUntil) {
+		t.Errorf("RetainUntil = %v, want %v", got.RetainUntil, retainUntil)
+	}
+}
+
+func TestEPMStore_AuditLogExitCodeNilStaysNilNotZero(t *testing.T) {
+	s := openEPMStoreInMemory(t)
+
+	entry := epm.AuditEntry{RequestID: "req-noexit", Decision: epm.DecisionDeny, LaunchedAt: time.Now()}
+	if err := s.InsertAuditLog(entry); err != nil {
+		t.Fatalf("InsertAuditLog: %v", err)
+	}
+
+	unsynced, err := s.GetUnsyncedAuditLogs(0)
+	if err != nil {
+		t.Fatalf("GetUnsyncedAuditLogs: %v", err)
+	}
+	if len(unsynced) != 1 {
+		t.Fatalf("want 1 unsynced row, got %d", len(unsynced))
+	}
+	if unsynced[0].Entry.ExitCode != nil {
+		t.Errorf("ExitCode = %v, want nil (unknown) when the caller never set it", *unsynced[0].Entry.ExitCode)
 	}
 }
 

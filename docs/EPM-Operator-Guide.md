@@ -2,7 +2,7 @@
 
 Endpoint Privilege Management (EPM) lets a standard (non-admin) user run a specific, pre-approved application with elevated privileges, without granting that user admin/root/Administrator rights generally. This guide covers enabling it, authoring policy, reading the audit trail, and current per-platform limitations.
 
-Related: `docs/EPM-Capability-Assessment.md` (original gap analysis this feature was built against), `.kiro/specs/epm/{requirements,design,tasks}.md` (full spec and implementation status).
+Related: `docs/EPM-Capability-Assessment.md` (original gap analysis this feature was built against; now historical, see the status note at its top), `docs/EPM-RPC-Contract-v2.md` (the v2 backend RPC spec — agent-side complete, no backend implementation exists yet), `.kiro/specs/epm/{requirements,design,tasks}.md` (full spec and implementation status).
 
 ## 1. Enabling EPM
 
@@ -147,7 +147,103 @@ Every elevation attempt — allowed or denied — is recorded locally first (`ep
 
 Each record includes: request ID, resolved user identity, application path and hash, the decision, which policy rule (if any) matched, and the launch timestamp.
 
-## 6. Current Limitations
+## 6. Beyond v1 Rules: Condition Trees, Bundles, Context, Process Monitoring
+
+Everything in sections 1–5 above still works exactly as described — the v1 rule format
+(`app_hash`/`publisher`/`app_path`/`user_id`/`decision`/`priority`) is not deprecated, and
+existing `epm-policy-sync` payloads continue to apply with byte-identical results. What
+follows is additive.
+
+### 6.1 Condition-tree rules (v2)
+
+A v2 rule replaces the flat `app_hash`/`publisher`/`app_path` fields with a `conditions`
+tree of AND/OR/NOT nodes over ~34 condition kinds (path, hash, publisher, signed, command
+line, parent/child process, user/user group, device group, org/department,
+domain/Entra join, disk encryption, secure boot, firewall, antivirus, compliance, network
+type, VPN, corporate network, business hours, day of week, OS type/version, and more) —
+see `internal/epm/condition.go` for the full list. Rules are matched by specificity: a
+rule combining several strong conditions (e.g. `hash AND user AND business_hours`) can
+outrank a bare hash match, but a rule's strongest identity condition sets a hard ceiling —
+a publisher-only rule can never outrank a hash rule, preserving v1's tier ordering exactly.
+Conditions sourced from data that hasn't been collected yet, or has gone stale, evaluate
+to **Unknown**, which fails closed: an allow-family rule with an Unknown condition simply
+does not match (no elevation on unverifiable context); a deny-family rule with one still
+matches (denial stands on unverifiable context).
+
+### 6.2 Signed policy bundles
+
+Instead of (or alongside) a raw `epm-policy-sync` task payload, policy can be delivered as
+a `PolicyBundle` — versioned (`generation`, monotonic per tenant), optionally
+ed25519-signed, and containing rules, rule groups, and tenant-wide defaults (business
+hours, corporate network definitions, org/department). `epm_policy_signature_mode`
+(`"off"` | `"warn"` default | `"require"`) controls whether an unsigned or
+signature-mismatched bundle is rejected outright or merely logged. A bundle is staged,
+compiled, and run against its own embedded canary checks (request/expected-verdict pairs)
+**before** it goes live — a bundle that fails its own canaries, or that compiles down to
+zero usable rules, is rejected and the previously active policy stays in force. Rollback
+is two-layered: an operator can push an `epm-policy-rollback` task
+(`{"generation": N}`) to revert to a specific prior bundle, and the agent automatically
+reverts on its own if the same bundle causes 3 process restarts within 10 minutes
+(crash-loop protection), recording the event to the emergency log.
+
+### 6.3 Device context and process monitoring
+
+`epm_context_mode` (default `off`) and `epm_process_monitor_mode` (default `off`, then
+`"observe"` or `"enforce"`) gate two background collectors:
+
+- **Device context** (`internal/epm/devicectx`): posture (disk encryption, secure boot,
+  firewall, antivirus, TPM, domain/Entra join — refreshed every 15 minutes) and network
+  state (type, VPN, corporate-network match against tenant-configured CIDRs/DNS
+  suffixes/adapter-name patterns — refreshed every 60 seconds), feeding the condition
+  kinds listed above. With no provider wired (the default), every context-sourced
+  condition is simply Unknown, identical to the agent's behavior before this existed.
+- **Process monitoring** (`internal/epm/procmon`): observes process start/exit —
+  Windows via Security-channel Event ID 4688/4689 (needs "Audit Process Creation" enabled
+  via policy for command-line capture), Linux via the netlink proc connector (falling back
+  to polling if `CAP_NET_ADMIN` isn't available), macOS via polling (gopsutil; there is no
+  pure-Go, no-cgo alternative to EndpointSecurity/libproc — see §7). In `"enforce"` mode,
+  a child process that violates its parent elevation's `Constraints.ChildProcess` policy
+  (`deny` or `allowlist`) is killed — subject to a kill-rate limiter
+  (`epm_max_kills_per_minute`, default 10 — tripping it disables further kills for the
+  rest of the process's run, observation continues) and a never-kill list covering PIDs
+  0/1/4, the agent's own process and ancestry, and critical system process names
+  (`lsass.exe`, `systemd`, `launchd`, etc.).
+
+  **This is containment, not prevention.** Without a kernel driver, nothing in this agent
+  can block a process before it runs — every enforcement path here is observe-then-kill.
+  Measured latency depends on which backend is active: Windows 4688 ~200ms–3s, Linux
+  netlink ~1–10ms, any polling backend ~250ms–1s. Malicious code can complete meaningful
+  work inside any of those windows.
+
+### 6.4 Audit retention and log-upload grouping
+
+`epm_audit_retention` (default 30 days) bounds how long an already-uploaded audit row is
+kept locally; a weekly `epm-db-maintenance` task deletes expired synced rows (never
+unsynced ones, regardless of age), prunes old bundle payloads beyond the last 3, and
+reclaims disk space with `VACUUM`. `epm_grouped_log_upload` (default `false`) is a
+opt-in flag to upload `EPM_ELEVATION_LOG` rows in their own `"epm"` batch group instead of
+the default `"other"` bucket — left off by default since an existing backend may already
+depend on the current grouping; `log_category` is set per-row either way, so a backend can
+filter EPM events today without needing this flag at all.
+
+### 6.5 Backend transport v2 and interactive prompts (not yet live)
+
+Two pieces of Phase 5–7 work are complete and tested but **not wired into the running
+agent**:
+
+- `internal/epm/transportbe` implements a v1/v2 backend-transport abstraction with
+  automatic negotiation (`epm_backend_transport`, default `auto`) — but
+  `main_integration.go`'s `epm-policy-sync`/`epm-audit-sync` tasks still use the original
+  v1 RPCs directly. See `docs/EPM-RPC-Contract-v2.md` for the v2 RPC spec, which currently
+  has no backend implementation either.
+- `internal/epm/prompt` implements native dialogs (Windows, Linux, macOS) for
+  `cmd/sentinelgo-epm -session`, a long-lived per-user helper (`-install-session` registers
+  it to autostart). But the privileged agent's `Server` does not yet drive a live
+  prompt exchange with it — a rule whose verdict is `Prompt`, `RequireJustification`, or
+  `RequireApproval` still always falls back to its configured `FallbackVerdict` (default
+  deny), exactly as before this work existed.
+
+## 7. Current Limitations
 
 - **Linux code-signature verification checks package-manager integrity, not a cryptographic GPG signature chain** — and this is a structural limitation of the Linux package managers themselves, not just an unfinished implementation detail. This was empirically tested (built a real GPG-signed test RPM, imported the key, installed it, and queried it): neither `dpkg` nor `rpm` retain a queryable, re-verifiable GPG signature for an *already-installed* package without the original `.deb`/`.rpm` file on hand — `rpm -q --qf '%{SIGPGP:pgpsig}'` returns `(none)` even for a package that `rpm -K` confirms is validly signed as a *file*, because the installed package database doesn't carry that tag forward. So `dpkg -V`/`rpm -V` (does the file still match what was recorded at install) plus the Maintainer/Vendor field remains the best generically-available check across distributions. A binary not owned by any package (e.g. something dropped directly into `/opt`) can only match by hash or exact path, never by publisher.
 - **Windows Authenticode publisher extraction** identifies the leaf (end-entity) certificate among everything embedded in the signature — distinguishing it from intermediate/root CA certificates also present — by checking which certificate's Subject never appears as another certificate's Issuer in the same chain. Verified against a real, multi-certificate-chain-signed system binary (`explorer.exe`, which embeds a full leaf→intermediate→root chain), correctly resolving to the leaf's name rather than a CA name. This covers the standard single-chain case; a signature using cross-signing (rare) could still be ambiguous.
@@ -157,7 +253,7 @@ Each record includes: request ID, resolved user identity, application path and h
 - **Wayland**: the Linux launcher propagates `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, and `XDG_CURRENT_DESKTOP` into the elevated process's environment (in addition to the X11 `DISPLAY`/`XAUTHORITY` pair), since GTK/Qt applications and the `xdg-desktop-portal` machinery commonly branch on these to pick a rendering backend and portal implementation. This is a defensive improvement based on documented variable semantics, **not confirmed by testing against a real GNOME/KDE Wayland session** — no such environment was available to validate against.
 - **Real-hardware validation of the actual elevate-and-launch step remains outstanding on all three platforms.** `go build`/`go test ./...` have been run for real — not just cross-compiled — on Windows (native), Linux (Ubuntu 26.04 via WSL2), and macOS (real Apple Silicon hardware over SSH), and the Named Pipe transport was end-to-end tested on Windows with the privileged primitives stubbed. What has *not* been exercised on any platform is the actual privileged launch against a real interactive desktop login (real WTS session + `CreateProcessAsUser`, real `launchctl asuser`, a real logind session with `/proc/<pid>/environ` GUI variables) — that needs a real interactive session, which SSH/WSL shells do not provide. Treat a first production rollout on each platform as a pilot.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
@@ -165,3 +261,6 @@ Each record includes: request ID, resolved user identity, application path and h
 | Elevation always denied, even for an app you added a rule for | Check the rule's match field actually matches what the agent computes — hash and publisher must match exactly; verify with the audit log's recorded `app_hash`/policy_id (or lack thereof) for the denied request. |
 | Policy changes don't take effect | Rules are re-read fresh from local SQLite on every request (no in-memory staleness), but the *sync from the backend* to local SQLite depends on the `epm-policy-sync` task actually being delivered and processed — check agent logs for `epm-policy-sync: processed N pending policy-sync task(s)`. |
 | No audit events appearing in Supabase | Confirm `audit_logs_enabled` is also `true` — EPM audit upload rides the same logging pipeline and is a no-op if that pipeline isn't running. |
+| A `RequireApproval`/`RequireJustification`/`Prompt` rule always resolves to deny, no dialog ever appears | Expected today — see §6.5. The session helper and its native dialogs exist, but the agent does not yet drive a live prompt exchange with it; every interaction verdict falls back to `FallbackVerdict` (default deny) regardless of `-session` being installed or running. |
+| `epm_process_monitor_mode: "observe"` is set but a rule's `child_process: deny` never kills a violating child | `"observe"` deliberately never kills anything (see §6.3) — it only runs the collector. Set `epm_process_monitor_mode: "enforce"` to enable terminate-on-violation. |
+| Terminate-on-violation stopped killing mid-run even though violations are still happening | The kill-rate limiter tripped (`epm_max_kills_per_minute`, default 10 kills/minute) — this is a deliberate, permanent-for-the-run safety valve, not a bug; check the emergency log for `terminate-on-violation disabled: kill-rate limit reached`, and check whether the triggering rule is actually correct before raising the limit. |

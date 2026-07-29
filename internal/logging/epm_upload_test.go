@@ -47,6 +47,58 @@ func testLoggingCfg(t *testing.T) *config.Config {
 	}
 }
 
+// TestNewEPMAuditUploader_WorksWithoutLoggingIntegration covers the standalone
+// path: EPM elevation audit must ship even when OS audit-log collection is
+// disabled. Previously the two were conflated, so running EPM with
+// audit_logs_enabled=false queued elevation records in SQLite forever and
+// uploaded none of them.
+func TestNewEPMAuditUploader_WorksWithoutLoggingIntegration(t *testing.T) {
+	cfg := testLoggingCfg(t)
+	up := NewEPMAuditUploader(cfg, nil)
+	if up == nil {
+		t.Fatal("NewEPMAuditUploader returned nil")
+	}
+
+	// No rows: a clean no-op, no network touched.
+	src := &stubEPMAuditSource{}
+	uploaded, err := up.UploadEPMAuditRows(context.Background(), src)
+	if err != nil || uploaded != 0 {
+		t.Errorf("UploadEPMAuditRows with no rows = (%d, %v), want (0, nil)", uploaded, err)
+	}
+	if src.getCalledWith != epmAuditChunkSize {
+		t.Errorf("drained with limit %d, want %d", src.getCalledWith, epmAuditChunkSize)
+	}
+
+	// With rows and an unreachable backend: the upload must fail and, crucially,
+	// mark nothing synced so the rows are retried rather than lost.
+	src = &stubEPMAuditSource{rows: []store.EPMAuditRow{{
+		ID: 1,
+		Entry: epm.AuditEntry{
+			RequestID:  "req-1",
+			UserID:     `CONTOSO\jsmith`,
+			AppPath:    `C:\apps\tool.exe`,
+			Decision:   epm.DecisionAllow,
+			LaunchedAt: time.Now().UTC(),
+		},
+	}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := up.UploadEPMAuditRows(ctx, src); err == nil {
+		t.Error("expected an error uploading to an unreachable backend")
+	}
+	if src.markedIDs != nil {
+		t.Errorf("no row may be marked synced after a failed upload, got %v", src.markedIDs)
+	}
+}
+
+func TestNewEPMAuditUploader_NilSourceIsNoop(t *testing.T) {
+	up := NewEPMAuditUploader(testLoggingCfg(t), nil)
+	uploaded, err := up.UploadEPMAuditRows(context.Background(), nil)
+	if err != nil || uploaded != 0 {
+		t.Errorf("UploadEPMAuditRows(nil) = (%d, %v), want (0, nil)", uploaded, err)
+	}
+}
+
 func TestUploadEPMAuditRows_NilSourceIsNoop(t *testing.T) {
 	li := newTestLoggingIntegration(t)
 	uploaded, err := li.UploadEPMAuditRows(context.Background(), nil)

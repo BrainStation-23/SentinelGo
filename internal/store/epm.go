@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -57,10 +58,16 @@ ALTER TABLE epm_audit_log ADD COLUMN script_hash          TEXT NOT NULL DEFAULT 
 ALTER TABLE epm_audit_log ADD COLUMN service_name         TEXT NOT NULL DEFAULT '';
 `
 
-var epmMigrations = []Migration{
+// epmMigrations is append-only: v1 and v2's SQL below is never edited once
+// released (an already-migrated agent never re-runs it), and new versions are
+// only ever added at the end, in ascending order — store.Migrate applies
+// migrations in the order given, not sorted. v3 onward lives in
+// schema_epm_v3.go, for the v2 policy engine (internal/epm's Phase 1
+// condition-tree rule model).
+var epmMigrations = append([]Migration{
 	{Version: 1, SQL: epmSchemaV1},
 	{Version: 2, SQL: epmSchemaV2},
-}
+}, epmMigrationsV3Plus...)
 
 // EPMStore is a SQLite-backed local cache for EPM policy rules and the
 // durable elevation-audit queue. It implements epm.AuditSink.
@@ -152,14 +159,36 @@ func (s *EPMStore) UpsertRules(rules []epm.PolicyRule) error {
 	return tx.Commit()
 }
 
-// DeleteRulesNotIn removes policy rules whose ID is not in activeIDs. Pass an
-// empty slice to wipe every rule (a full sync that delivered zero rules).
-// Callers must only invoke this after a complete rule-set sync, never after a
-// partial one, or live rules would be dropped.
+// ErrEmptyActiveIDs is returned by DeleteRulesNotIn when activeIDs is empty.
+// See DeleteRulesNotIn for why an empty set is not silently treated as "the
+// server sent zero rules".
+var ErrEmptyActiveIDs = errors.New("DeleteRulesNotIn: empty ID set; call PruneAll explicitly to wipe all rules")
+
+// PruneAll removes every cached policy rule. It is split out from
+// DeleteRulesNotIn so that a nil or empty ID slice — which a malformed,
+// truncated, or partially-parsed sync payload can trivially produce — can never
+// be mistaken for a deliberate "the server sent zero rules" instruction.
+//
+// Wiping the cache is not a benign operation: policy evaluation is default-deny
+// (see epm.Engine.Evaluate), so an empty rule set locks every user out of every
+// elevation until the next successful sync. Only call this when the server has
+// explicitly delivered an empty rule set.
+func (s *EPMStore) PruneAll() error {
+	if _, err := s.db.Exec("DELETE FROM epm_policies"); err != nil {
+		return fmt.Errorf("prune all epm policies: %w", err)
+	}
+	return nil
+}
+
+// DeleteRulesNotIn removes policy rules whose ID is not in activeIDs. Callers
+// must only invoke this after a complete rule-set sync, never after a partial
+// one, or live rules would be dropped.
+//
+// An empty activeIDs returns ErrEmptyActiveIDs rather than deleting everything:
+// see PruneAll for the rationale.
 func (s *EPMStore) DeleteRulesNotIn(activeIDs []string) error {
 	if len(activeIDs) == 0 {
-		_, err := s.db.Exec("DELETE FROM epm_policies")
-		return err
+		return ErrEmptyActiveIDs
 	}
 
 	placeholders := make([]string, len(activeIDs))
@@ -174,12 +203,20 @@ func (s *EPMStore) DeleteRulesNotIn(activeIDs []string) error {
 	return err
 }
 
-// GetRules returns every policy rule currently cached locally.
+// GetRules returns every policy rule currently cached locally, ordered by rule
+// ID.
+//
+// The ORDER BY is load-bearing, not cosmetic: SQLite makes no guarantee about
+// the row order of an unordered scan, and epm.Engine.Evaluate breaks ties
+// between rules of equal (tier, priority) by which it saw first. Without a
+// stable order, two such rules produce a nondeterministic verdict across agent
+// restarts — the same request allowed on one boot and denied on the next.
 func (s *EPMStore) GetRules() ([]epm.PolicyRule, error) {
 	rows, err := s.db.Query(`
 		SELECT id, app_path, app_hash, publisher, user_id, decision, expires_at, priority,
 		       script_hash, allowed_args, allowed_service_name
 		FROM epm_policies
+		ORDER BY id ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query epm policies: %w", err)
@@ -209,17 +246,42 @@ func (s *EPMStore) GetRules() ([]epm.PolicyRule, error) {
 }
 
 // InsertAuditLog writes entry to the audit queue. A duplicate RequestID
-// (retried sync) is silently ignored, satisfying epm.AuditSink.
+// (retried sync) is silently ignored, satisfying epm.AuditSink. The Phase 8
+// enrichment columns (verdict, mode, bundle_id, ...) all have SQL DEFAULTs
+// (see epmSchemaV5), so a caller passing a v1-shaped AuditEntry with those
+// fields at their zero value writes exactly the same row shape as before
+// Phase 8 existed — this INSERT statement is a strict superset of the
+// pre-Phase-8 one, not a replacement.
 func (s *EPMStore) InsertAuditLog(entry epm.AuditEntry) error {
+	var retainUntil string
+	if entry.RetainUntil != nil {
+		retainUntil = entry.RetainUntil.UTC().Format(time.RFC3339)
+	}
+	// exit_code's SQL DEFAULT is -1 ("unknown"); entry.ExitCode is a
+	// pointer specifically so nil (unknown) is never confused with a real
+	// exit code of 0 (success) — see AuditEntry.ExitCode's doc comment.
+	exitCode := -1
+	if entry.ExitCode != nil {
+		exitCode = *entry.ExitCode
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO epm_audit_log
 			(request_id, user_id, app_path, app_hash, decision, policy_id, launched_at,
-			 script_hash, service_name, synced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+			 script_hash, service_name, synced,
+			 verdict, mode, bundle_id, rule_version, specificity, publisher, command_line,
+			 process_id, parent_pid, parent_path, exit_code, justification, approval_id,
+			 grant_id, device_context, matched_conditions, agent_version, retain_until)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		entry.RequestID, entry.UserID, entry.AppPath, entry.AppHash,
 		string(entry.Decision), entry.PolicyID, entry.LaunchedAt.UTC().Format(time.RFC3339),
 		entry.ScriptHash, entry.ServiceName,
+		string(entry.Verdict), string(entry.Mode), entry.BundleID, entry.RuleVersion, entry.Specificity,
+		entry.Publisher, entry.CommandLine,
+		entry.ProcessID, entry.ParentPID, entry.ParentPath, exitCode, entry.Justification,
+		entry.ApprovalID, entry.GrantID, entry.DeviceContext, entry.MatchedConditions,
+		entry.AgentVersion, retainUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("insert epm audit log: %w", err)
@@ -232,7 +294,10 @@ func (s *EPMStore) InsertAuditLog(entry epm.AuditEntry) error {
 func (s *EPMStore) GetUnsyncedAuditLogs(limit int) ([]EPMAuditRow, error) {
 	query := `
 		SELECT id, request_id, user_id, app_path, app_hash, decision, policy_id, launched_at,
-		       script_hash, service_name
+		       script_hash, service_name,
+		       verdict, mode, bundle_id, rule_version, specificity, publisher, command_line,
+		       process_id, parent_pid, parent_path, exit_code, justification, approval_id,
+		       grant_id, device_context, matched_conditions, agent_version, retain_until
 		FROM epm_audit_log
 		WHERE synced = 0
 		ORDER BY id ASC
@@ -256,15 +321,31 @@ func (s *EPMStore) GetUnsyncedAuditLogs(limit int) ([]EPMAuditRow, error) {
 	var result []EPMAuditRow
 	for rows.Next() {
 		var row EPMAuditRow
-		var decision, launchedAt string
+		var decision, launchedAt, verdict, mode, retainUntil string
+		var exitCode int
 		if err := rows.Scan(
 			&row.ID, &row.Entry.RequestID, &row.Entry.UserID, &row.Entry.AppPath,
 			&row.Entry.AppHash, &decision, &row.Entry.PolicyID, &launchedAt,
 			&row.Entry.ScriptHash, &row.Entry.ServiceName,
+			&verdict, &mode, &row.Entry.BundleID, &row.Entry.RuleVersion, &row.Entry.Specificity,
+			&row.Entry.Publisher, &row.Entry.CommandLine,
+			&row.Entry.ProcessID, &row.Entry.ParentPID, &row.Entry.ParentPath, &exitCode, &row.Entry.Justification,
+			&row.Entry.ApprovalID, &row.Entry.GrantID, &row.Entry.DeviceContext, &row.Entry.MatchedConditions,
+			&row.Entry.AgentVersion, &retainUntil,
 		); err != nil {
 			return nil, fmt.Errorf("scan epm audit log row: %w", err)
 		}
 		row.Entry.Decision = epm.PolicyDecision(decision)
+		row.Entry.Verdict = epm.Verdict(verdict)
+		row.Entry.Mode = epm.ElevationMode(mode)
+		if exitCode != -1 {
+			row.Entry.ExitCode = &exitCode
+		}
+		if retainUntil != "" {
+			if t, err := time.Parse(time.RFC3339, retainUntil); err == nil {
+				row.Entry.RetainUntil = &t
+			}
+		}
 		if t, err := time.Parse(time.RFC3339, launchedAt); err == nil {
 			row.Entry.LaunchedAt = t
 		}
@@ -291,6 +372,51 @@ func (s *EPMStore) MarkAuditLogSynced(ids []int64) error {
 
 	if _, err := s.db.Exec(query, args...); err != nil {
 		return fmt.Errorf("mark epm audit logs synced: %w", err)
+	}
+	return nil
+}
+
+// PruneAuditLog deletes already-uploaded (synced=1) audit rows older than
+// cutoff — closes audit finding DB-3 (see epm-db-maintenance in
+// main_integration.go): rows were flagged synced=1 and never deleted,
+// growing the local SQLite file unboundedly on a long-running agent.
+// Unsynced rows are never touched regardless of age — a row not yet
+// uploaded is not eligible for deletion no matter how old, since deleting
+// it would silently lose that elevation from the audit trail forever.
+func (s *EPMStore) PruneAuditLog(cutoff time.Time) error {
+	_, err := s.db.Exec(
+		`DELETE FROM epm_audit_log WHERE synced = 1 AND launched_at < ?`,
+		cutoff.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("prune epm audit log: %w", err)
+	}
+	return nil
+}
+
+// PruneProcessEvents deletes already-uploaded (synced=1) rows from
+// epm_process_events (Phase 6's procmon telemetry) older than cutoff — the
+// same fail-safe as PruneAuditLog, for the same reason.
+func (s *EPMStore) PruneProcessEvents(cutoff time.Time) error {
+	_, err := s.db.Exec(
+		`DELETE FROM epm_process_events WHERE synced = 1 AND observed_at < ?`,
+		cutoff.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("prune epm process events: %w", err)
+	}
+	return nil
+}
+
+// Vacuum reclaims disk space freed by PruneAuditLog/PruneProcessEvents/
+// PruneBundles. SQLite does not shrink the on-disk file on DELETE by
+// itself; VACUUM is the only way to actually give that space back to the
+// filesystem. Called occasionally (see epm-db-maintenance), not after every
+// prune — VACUUM rewrites the entire database file, which is wasteful to
+// do on every weekly maintenance cycle if there was little to reclaim.
+func (s *EPMStore) Vacuum() error {
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("vacuum epm database: %w", err)
 	}
 	return nil
 }

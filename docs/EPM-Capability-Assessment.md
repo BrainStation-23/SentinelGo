@@ -8,6 +8,34 @@
 
 ---
 
+> **Status note (2026-07-29): this document is a point-in-time, pre-implementation gap
+> analysis and is now historical.** Every gap it identifies as missing — token/elevation
+> APIs, cross-platform IPC, a policy enforcement engine, process telemetry — has since
+> been built. For the current, accurate state of the system, see
+> `docs/EPM-Operator-Guide.md` (how to configure and operate it) and
+> `docs/EPM-RPC-Contract-v2.md` (the backend transport contract). In summary, relative to
+> the gaps below: a cross-platform enforcement transport (Windows named pipe / Unix domain
+> socket, unified behind one `internal/epm/server.go`) with a v2 condition-tree policy
+> engine (34 condition kinds, tri-state Unknown handling, specificity-ranked matching, full
+> backward compatibility with the original hash/publisher/path rule format) now exists;
+> signed, versioned policy bundles with staged activation and automatic crash-loop
+> rollback (`internal/epm/bundle_manager.go`) replace ad hoc rule delivery; a background
+> device-context collector (`internal/epm/devicectx`) and observational process monitor
+> (`internal/epm/procmon` — Windows Event ID 4688/4689, Linux netlink, macOS polling) feed
+> the engine and a terminate-on-violation enforcer (`internal/epm/enforce`); a native
+> interactive-prompt package (`internal/epm/prompt`) and session helper exist for
+> `cmd/sentinelgo-epm -session`. What remains not fully wired end-to-end: the v2 backend
+> RPC transport (`internal/epm/transportbe` — implemented and tested, but
+> `main_integration.go` still uses the original v1 task-payload piggyback) and the
+> interaction-verdict prompt flow (the policy engine can express Prompt/
+> RequireJustification/RequireApproval verdicts and the session helper can render dialogs,
+> but the privileged Server does not yet drive a live prompt exchange between the two —
+> both currently fall back to deny). See `docs/EPM-Operator-Guide.md` §6 for the complete,
+> current list of limitations, framed the way an operator needs them, not the way a
+> feasibility study does.
+
+---
+
 ## ১. Executive Summary
 
 SentinelGo একটি cross-platform (Windows / Linux / macOS) endpoint monitoring agent যা প্রতিটি platform-এ privileged system daemon হিসেবে চলে। Agent মূলত hardware inventory, software inventory, audit log collection, এবং remote task execution-এর জন্য তৈরি। EPM (Enterprise Endpoint Privilege Management) হলো এমন একটি capability যা standard (non-admin) user-কে নির্দিষ্ট application elevated privilege-এ চালানোর অনুমতি দেয় — Windows UAC bypass, Linux sudo replacement, macOS Authorization Services-এর বিকল্প হিসেবে।

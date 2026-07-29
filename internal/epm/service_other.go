@@ -21,6 +21,12 @@ func NewService(_ RuleProvider, _ *Auditor) *Service {
 	return &Service{}
 }
 
+// NewServiceWithOptions returns a no-op Service on this platform; there is no
+// enforcement transport for any ServiceOptions field to configure.
+func NewServiceWithOptions(_ RuleProvider, _ *Auditor, _ ServiceOptions) *Service {
+	return &Service{}
+}
+
 // Start always fails on this platform: there is no enforcement transport yet.
 func (s *Service) Start(_ context.Context) error {
 	return fmt.Errorf("epm: enforcement is not yet implemented on %s", runtime.GOOS)
