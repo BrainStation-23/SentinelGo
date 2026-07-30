@@ -3,13 +3,17 @@
 **Status: agent-side plumbing complete, no backend implementation exists yet.**
 This document specifies five new Supabase RPC functions the SentinelGo agent
 is prepared to call (`internal/epm/transportbe/v2_rpc.go`), and is the
-deliverable for whoever implements the backend side. Nothing in the running
-agent calls these endpoints today — `internal/epm/transportbe` is complete
-and unit-tested against a mock HTTP server, but it is not yet wired into
-`main_integration.go` in place of the existing v1 task-payload piggyback.
-Until a real backend exists, `epm_backend_transport` should stay at its
-default (`auto`), which negotiates and — since v2 does not exist — always
-falls back to v1.
+deliverable for whoever implements the backend side. `main_integration.go`
+now builds a `transportbe.Negotiator` and consults it once per
+`epm-policy-sync` cycle, so `agent_epm_get_policy` (via `Probe`) is genuinely
+called against the configured Supabase project today — but only as a
+negotiation probe. No RPC response is acted on: `epm-policy-sync` still
+fetches and applies rules exclusively through the existing v1 task-payload
+piggyback, because a v2-fetched `PolicyBundle` has nowhere to go yet
+(`BundleManager` is not wired into `epm.Server`'s rule source). Until both a
+real backend and that engine wiring exist, `epm_backend_transport` should
+stay at its default (`auto`), which negotiates and — since v2 does not exist
+— always falls back to v1 after the first probe.
 
 ## Conventions
 
@@ -203,10 +207,14 @@ not prescribe one.
 
 - **No backend implementation.** This is a specification, not a working
   endpoint — see the status line at the top.
-- **No wiring into the live agent.** `main_integration.go`'s existing
-  `epm-policy-sync`/`epm-audit-sync` scheduler tasks are unmodified;
-  swapping them to go through `internal/epm/transportbe` is a separate,
-  later change once a real v2 backend exists to negotiate against.
+- **No policy application through this transport yet.** `main_integration.go`
+  constructs a `Negotiator` and consults it once per `epm-policy-sync` cycle
+  (so `Probe` genuinely calls `agent_epm_get_policy`), but actual rule
+  fetch/apply/ack still goes exclusively through the v1 task-payload
+  piggyback; `epm-audit-sync` is entirely unmodified. Routing real policy
+  retrieval and event upload through this transport is a separate, later
+  change that also requires wiring `BundleManager` into `epm.Server`'s rule
+  source, once a real v2 backend exists to negotiate against.
 - **Authentication/authorization model.** Assumed identical to every other
   agent RPC (Supabase JWT + RLS keyed on the device's identity) — nothing
   here introduces a new auth mechanism.

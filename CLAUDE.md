@@ -57,8 +57,12 @@ internal/
                        and a never-kill list. Observe-then-kill only — no kernel driver,
                        so nothing here blocks a process before it runs
     transportbe/        backend transport abstraction (v1 task-payload piggyback / v2 RPC
-                       stub, auto-negotiated) — agent-side plumbing; see
-                       docs/EPM-RPC-Contract-v2.md. Not yet wired into the running agent
+                       stub, auto-negotiated) — see docs/EPM-RPC-Contract-v2.md. Its
+                       Negotiator is consulted once per epm-policy-sync cycle (a real
+                       negotiation probe runs), but no policy fetch/apply/ack routes
+                       through it yet — epm-policy-sync still runs the v1 path
+                       exclusively, since a v2-fetched bundle has nowhere to go until
+                       BundleManager is wired to epm.Server's rule source
     prompt/             native interactive dialogs (Windows MessageBoxW + a WinForms
                        input box, Linux zenity/kdialog, macOS osascript) for
                        cmd/sentinelgo-epm's "-session" helper

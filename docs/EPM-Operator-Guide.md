@@ -228,14 +228,20 @@ filter EPM events today without needing this flag at all.
 
 ### 6.5 Backend transport v2 and interactive prompts (not yet live)
 
-Two pieces of Phase 5–7 work are complete and tested but **not wired into the running
-agent**:
+Two pieces of Phase 5–7 work are complete and tested but **not fully wired into the
+running agent**:
 
-- `internal/epm/transportbe` implements a v1/v2 backend-transport abstraction with
-  automatic negotiation (`epm_backend_transport`, default `auto`) — but
-  `main_integration.go`'s `epm-policy-sync`/`epm-audit-sync` tasks still use the original
-  v1 RPCs directly. See `docs/EPM-RPC-Contract-v2.md` for the v2 RPC spec, which currently
-  has no backend implementation either.
+- `internal/epm/transportbe`'s `Negotiator` (`epm_backend_transport`, default `auto`) is
+  now constructed in `startEPM` and consulted once per `epm-policy-sync` cycle, so v1/v2
+  probing and 404/501 latching genuinely run in production — but that is as far as the
+  wiring goes today. `epm-policy-sync` still fetches and applies rules exclusively through
+  the original v1 task-payload path regardless of what the negotiator selects, because a
+  v2-fetched `PolicyBundle` has nowhere to go yet: `BundleManager` is not wired to
+  `epm.Server`'s rule source (see the next bullet's sibling gap below and
+  `internal/service/task/native/epm_policy_rollback.go`'s doc comment), so applying one
+  would have no effect on real enforcement. `epm-audit-sync` is untouched and still
+  uploads exclusively through the v1 pipeline. See `docs/EPM-RPC-Contract-v2.md` for the
+  v2 RPC spec, which currently has no backend implementation either.
 - `internal/epm/prompt` implements native dialogs (Windows, Linux, macOS) for
   `cmd/sentinelgo-epm -session`, a long-lived per-user helper (`-install-session` registers
   it to autostart). But the privileged agent's `Server` does not yet drive a live

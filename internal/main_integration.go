@@ -10,6 +10,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/epm"
+	"sentinelgo/internal/epm/transportbe"
 	"sentinelgo/internal/hashutil"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
@@ -45,6 +46,16 @@ type MainIntegration struct {
 	// epmUploader is the fallback EPM audit uploader used when the audit-log
 	// collection pipeline is disabled; built lazily by epmAuditUploader().
 	epmUploader *logging.EPMAuditUploader
+	// epmNegotiator selects between the v1 task-payload piggyback and the v2
+	// backend RPC transport (internal/epm/transportbe) for epm-policy-sync's
+	// policy retrieval. Built in startEPM; nil (guarded by a nil check at
+	// every call site) when EPM is disabled or hasn't started yet. Selecting
+	// v2 here only identifies which transport would serve a bundle — nothing
+	// yet applies a v2-fetched bundle to the enforcement engine (BundleManager
+	// is not wired to epm.Server's rule source), so epmPolicySyncHandler
+	// continues to run the v1 task-payload path regardless of what is
+	// selected; see docs/EPM-Operator-Guide.md §6.5.
+	epmNegotiator *transportbe.Negotiator
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -422,6 +433,18 @@ func (mi *MainIntegration) startEPM(ctx context.Context) {
 	}
 	mi.epmStore = epmStore
 
+	// Negotiator selection (auto/v1/v2, see cfg.GetEPMBackendTransport) is
+	// built here so epmPolicySyncHandler can exercise real v1/v2 negotiation
+	// on its own cadence. v1 is given a nil uploader: this negotiator is only
+	// ever consulted for its Policy side today (see epmPolicySyncHandler),
+	// never for SendAudit, so there is nothing for the uploader to serve.
+	v1Transport := transportbe.NewV1PiggybackTransport(mi.cfg, nil)
+	v2Transport := transportbe.NewV2RPCTransport(mi.cfg)
+	mi.epmNegotiator = transportbe.NewNegotiator(mi.cfg.GetEPMBackendTransport(),
+		transportbe.Transports{Policy: v1Transport, Event: v1Transport},
+		transportbe.Transports{Policy: v2Transport, Event: v2Transport},
+	)
+
 	// Register scheduler work BEFORE attempting to start the enforcement
 	// transport, and unconditionally. Policy sync and audit upload are useful
 	// even on a host where the transport cannot bind (unsupported platform,
@@ -486,6 +509,20 @@ func (mi *MainIntegration) epmPolicySyncHandler() scheduler.TaskHandler {
 		if authSvc != nil && !authSvc.Healthy() {
 			log.Printf("Scheduler: auth degraded, skipping epm-policy-sync until session recovers")
 			return nil
+		}
+
+		// Negotiate which backend transport would serve this cycle
+		// (cfg.GetEPMBackendTransport(): auto/v1/v2). This genuinely probes
+		// v2 and latches to v1 on a 404/501 per internal/epm/transportbe's
+		// design — but the result only informs the log line below; nothing
+		// yet routes actual policy retrieval through it, since a v2-fetched
+		// bundle has nowhere to go until BundleManager is wired to
+		// epm.Server's rule source (see docs/EPM-Operator-Guide.md §6.5). The
+		// v1 task-payload path a few lines down always runs, unconditionally.
+		if mi.epmNegotiator != nil {
+			if transports := mi.epmNegotiator.Select(ctx); transports.Policy.Name() != "v1-piggyback" {
+				log.Printf("epm-policy-sync: backend transport negotiated to %s, but v2 policy application is not yet wired to the enforcement engine — continuing with v1 task-payload processing this cycle", transports.Policy.Name())
+			}
 		}
 
 		handler := native.Find("epm-policy-sync")
