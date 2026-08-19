@@ -114,6 +114,30 @@ type Config struct {
 	ServicesSyncEnabled    bool     `json:"services_sync_enabled"`    // Enable OS services collection
 	ServicesUpdateInterval Duration `json:"services_update_interval"` // How often to collect OS services (default 5m)
 
+	// Telemetry layer configuration.
+	//
+	// The telemetry layer is additive: it runs alongside the existing inventory,
+	// software and services pipelines without altering them. It stays disabled by
+	// default until collectors and the backend contract are in place.
+	TelemetryEnabled         bool     `json:"telemetry_enabled"`          // Enable the enterprise telemetry layer
+	TelemetryCollectInterval Duration `json:"telemetry_collect_interval"` // How often the telemetry task runs (default 15m)
+	TelemetryQueueMaxRows    int      `json:"telemetry_queue_max_rows"`   // Outbound queue row cap (default 5000)
+	TelemetryQueueMaxBytes   int64    `json:"telemetry_queue_max_bytes"`  // Outbound queue byte cap (default 64MB)
+	TelemetryQueueMaxAge     Duration `json:"telemetry_queue_max_age"`    // Outbound queue age cap (default 72h)
+
+	// ProcessesCollectCmdline enables process command-line capture. Off by
+	// default and deliberately separate from process collection itself: command
+	// lines routinely carry tokens, passwords and connection strings passed as
+	// arguments, so capturing them is its own privacy decision.
+	ProcessesCollectCmdline bool `json:"processes_collect_cmdline"`
+	// IncludeBuiltinScheduledTasks includes OS-shipped scheduled tasks on Windows.
+	// Off by default: they are the large majority of the list and rarely of
+	// interest for enterprise inventory.
+	IncludeBuiltinScheduledTasks bool `json:"include_builtin_scheduled_tasks"`
+	// CollectRoutingTable enables full routing-table collection, which is
+	// detailed telemetry rather than basic network inventory.
+	CollectRoutingTable bool `json:"collect_routing_table"`
+
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
 	// software-sync, and upload tasks read the tokens; without this they race,
@@ -195,6 +219,39 @@ func (c *Config) GetServicesUpdateInterval() time.Duration {
 	return time.Duration(c.ServicesUpdateInterval)
 }
 
+// GetTelemetryCollectInterval returns how often the telemetry task runs,
+// defaulting to 15 minutes when unset or invalid.
+func (c *Config) GetTelemetryCollectInterval() time.Duration {
+	if time.Duration(c.TelemetryCollectInterval) <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.TelemetryCollectInterval)
+}
+
+// GetTelemetryQueueMaxAge returns the outbound queue age cap, defaulting to 72h.
+func (c *Config) GetTelemetryQueueMaxAge() time.Duration {
+	if time.Duration(c.TelemetryQueueMaxAge) <= 0 {
+		return 72 * time.Hour
+	}
+	return time.Duration(c.TelemetryQueueMaxAge)
+}
+
+// GetTelemetryQueueMaxRows returns the outbound queue row cap, defaulting to 5000.
+func (c *Config) GetTelemetryQueueMaxRows() int {
+	if c.TelemetryQueueMaxRows <= 0 {
+		return 5000
+	}
+	return c.TelemetryQueueMaxRows
+}
+
+// GetTelemetryQueueMaxBytes returns the outbound queue byte cap, defaulting to 64MB.
+func (c *Config) GetTelemetryQueueMaxBytes() int64 {
+	if c.TelemetryQueueMaxBytes <= 0 {
+		return 64 * 1024 * 1024
+	}
+	return c.TelemetryQueueMaxBytes
+}
+
 // GetTaskPollingInterval returns task polling interval as time.Duration
 func (c *Config) GetTaskPollingInterval() time.Duration {
 	if time.Duration(c.TaskPollingInterval) == 0 {
@@ -223,6 +280,16 @@ func Load(path string) (*Config, error) {
 		AuditLogsEnabled:       true,                      // Enable audit logs by default
 		ServicesSyncEnabled:    true,                      // Enable services collection by default
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
+		// Telemetry layer: off until collectors and the backend contract land.
+		TelemetryEnabled:         false,
+		TelemetryCollectInterval: Duration(15 * time.Minute),
+		TelemetryQueueMaxRows:    5000,
+		TelemetryQueueMaxBytes:   64 * 1024 * 1024,
+		TelemetryQueueMaxAge:     Duration(72 * time.Hour),
+		// Privacy-sensitive collection stays opt-in.
+		ProcessesCollectCmdline:      false,
+		IncludeBuiltinScheduledTasks: false,
+		CollectRoutingTable:          false,
 	}
 
 	if path == "" {

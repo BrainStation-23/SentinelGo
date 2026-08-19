@@ -16,7 +16,9 @@ import (
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
+	telemetrysvc "sentinelgo/internal/service/telemetry"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/telemetry"
 	"sentinelgo/internal/updater"
 )
 
@@ -29,13 +31,14 @@ const startupTokenSkew = 5 * time.Minute
 // collaborators it is given and drives their startup/shutdown ordering; the
 // concrete dependencies are supplied at construction time.
 type MainIntegration struct {
-	cfg            *config.Config
-	scheduler      *scheduler.Scheduler
-	authSvc        *authsvc.Service
-	loggingService *logging.LoggingIntegration
-	taskManager    *tasksvc.TaskManager
-	servicesStore  *store.ServicesStore
-	softwareStore  *store.SoftwareStore
+	cfg              *config.Config
+	scheduler        *scheduler.Scheduler
+	authSvc          *authsvc.Service
+	loggingService   *logging.LoggingIntegration
+	taskManager      *tasksvc.TaskManager
+	servicesStore    *store.ServicesStore
+	softwareStore    *store.SoftwareStore
+	telemetryService *telemetrysvc.Service
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -180,6 +183,12 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 		tasks = append(tasks, servicesTask)
 	}
 
+	// Append the telemetry task. It is additive: the legacy agent-info,
+	// software and services tasks are untouched and keep their own cadence.
+	if telemetryTask := mi.buildTelemetryTask(); telemetryTask != nil {
+		tasks = append(tasks, telemetryTask)
+	}
+
 	for _, task := range tasks {
 		if err := mi.scheduler.AddTask(task); err != nil {
 			return fmt.Errorf("failed to add task %s: %w", task.Name, err)
@@ -193,6 +202,56 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 		mi.cfg.GetServicesUpdateInterval(),
 	)
 	return nil
+}
+
+// buildTelemetryTask constructs the telemetry-collect scheduler task.
+//
+// The telemetry layer is opt-in and off by default: until collectors are
+// registered and the backend contract exists, running it would produce no
+// sections and no traffic. Returning nil when disabled avoids creating the
+// store files at all.
+//
+// Returns nil (logged) if the stores cannot be opened; the rest of the agent
+// continues normally, exactly as the services task behaves.
+func (mi *MainIntegration) buildTelemetryTask() *scheduler.Task {
+	if !mi.cfg.TelemetryEnabled {
+		log.Printf("Telemetry layer disabled in config (telemetry_enabled=false)")
+		return nil
+	}
+
+	svc, err := telemetrysvc.New(mi.cfg, telemetry.NewCollectorSet())
+	if err != nil {
+		log.Printf("Warning: failed to open telemetry stores, telemetry-collect disabled: %v", err)
+		return nil
+	}
+	mi.telemetryService = svc
+
+	return &scheduler.Task{
+		Name:     "telemetry-collect",
+		Interval: mi.cfg.GetTelemetryCollectInterval(),
+		Enabled:  mi.cfg.TelemetryEnabled,
+		Handler:  mi.telemetryCollectHandler(svc),
+	}
+}
+
+// telemetryCollectHandler returns the TaskHandler for the telemetry-collect task.
+func (mi *MainIntegration) telemetryCollectHandler(svc *telemetrysvc.Service) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !cfg.TelemetryEnabled {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping telemetry-collect until session recovers")
+			return nil
+		}
+
+		report, err := svc.RunCycle(ctx)
+		if err != nil {
+			return fmt.Errorf("telemetry-collect: %w", err)
+		}
+		telemetrysvc.LogCycle(report)
+		return nil
+	}
 }
 
 // buildServicesTask constructs the services-collect scheduler task. The store
@@ -421,6 +480,13 @@ func (mi *MainIntegration) Stop() error {
 	if mi.softwareStore != nil {
 		if err := mi.softwareStore.Close(); err != nil {
 			log.Printf("Warning: Failed to close software store: %v", err)
+		}
+	}
+
+	// Close telemetry stores
+	if mi.telemetryService != nil {
+		if err := mi.telemetryService.Close(); err != nil {
+			log.Printf("Warning: Failed to close telemetry stores: %v", err)
 		}
 	}
 
