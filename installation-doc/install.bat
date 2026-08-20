@@ -1,7 +1,7 @@
 @echo off
 REM SentinelGo Windows Agent Installation Script
 REM Enhanced version with better error handling and auto-start configuration
-REM Usage: install.bat [install|uninstall|update|status|help|enable-autostart|disable-autostart]
+REM Usage: install.bat [install|clean-install|uninstall|update|status|help|enable-autostart|disable-autostart]
 REM 
 REM To run as administrator:
 REM   - Right-click install.bat and select "Run as administrator"
@@ -19,6 +19,11 @@ set INSTALL_DIR=C:\SentinelGo
 set CONFIG_DIR=%INSTALL_DIR%\.sentinelgo
 set REQUIRED_BINARY=sentinelgo-windows-amd64.exe
 
+REM Resolve the requested operation before elevation so UAC relaunches the
+REM same command instead of silently changing clean-install/uninstall to install.
+set COMMAND=%~1
+if "%COMMAND%"=="" set COMMAND=install
+
 REM Check administrator privileges and auto-elevate if needed
 net session >nul 2>&1
 if %errorLevel% neq 0 (
@@ -27,29 +32,33 @@ if %errorLevel% neq 0 (
     
     REM Try to auto-elevate using VBScript (works from CMD)
     echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
-    echo UAC.ShellExecute "%~f0", "install", "", "runas", 1 >> "%temp%\getadmin.vbs"
+    echo UAC.ShellExecute "%~f0", "%COMMAND%", "", "runas", 1 >> "%temp%\getadmin.vbs"
     "%temp%\getadmin.vbs"
     del "%temp%\getadmin.vbs" >nul 2>&1
     exit /b 0
 )
 
-REM Get command from parameters
-set COMMAND=%1
-if "%COMMAND%"=="" set COMMAND=install
-
 REM Command routing
-if "%COMMAND%"=="install" goto install
-if "%COMMAND%"=="uninstall" goto uninstall
-if "%COMMAND%"=="update" goto update
-if "%COMMAND%"=="status" goto status
-if "%COMMAND%"=="help" goto help
-if "%COMMAND%"=="enable-autostart" goto enable-autostart
-if "%COMMAND%"=="disable-autostart" goto disable-autostart
+if /I "%COMMAND%"=="install" goto install
+if /I "%COMMAND%"=="clean-install" goto clean-install
+if /I "%COMMAND%"=="uninstall" goto uninstall
+if /I "%COMMAND%"=="update" goto update
+if /I "%COMMAND%"=="status" goto status
+if /I "%COMMAND%"=="help" goto help
+if /I "%COMMAND%"=="enable-autostart" goto enable-autostart
+if /I "%COMMAND%"=="disable-autostart" goto disable-autostart
 goto unknown
 
+:clean-install
+set CLEAN_INSTALL=1
+goto install
+
 :install
+if not defined CLEAN_INSTALL set CLEAN_INSTALL=0
 echo ========================================
 echo SentinelGo Windows Agent Installation
+if "%CLEAN_INSTALL%"=="1" echo Mode: CLEAN INSTALL ^(old identity/config will be removed^)
+if "%CLEAN_INSTALL%"=="0" echo Mode: UPGRADE ^(old identity/config will be preserved^)
 echo ========================================
 echo.
 
@@ -65,46 +74,101 @@ if not exist "%REQUIRED_BINARY%" (
 echo [SUCCESS] Found %REQUIRED_BINARY%
 echo.
 
-REM Step 2: Uninstall existing installation (if present)
+REM Step 2: Remove every previous service/file installation. Detection is
+REM independent: a manually deleted directory can leave an SCM service behind,
+REM while a failed install can leave files without a registered service.
 echo [STEP 2] Checking for existing installation...
-set EXISTING_CONFIG_BACKUP=%TEMP%\sentinelgo_config_backup.json
+set EXISTING_CONFIG_BACKUP=%TEMP%\sentinelgo_config_backup_%RANDOM%_%RANDOM%.json
+set EXISTING_BINARY_BACKUP=%TEMP%\sentinelgo_binary_backup_%RANDOM%_%RANDOM%.exe
+set EXISTING_TELEMETRY_STATE_BACKUP=%TEMP%\sentinelgo_telemetry_state_%RANDOM%_%RANDOM%.db
+set EXISTING_TELEMETRY_QUEUE_BACKUP=%TEMP%\sentinelgo_telemetry_queue_%RANDOM%_%RANDOM%.db
+set EXISTING_SERVICE=0
+set EXISTING_FILES=0
 sc query "%SERVICE_NAME%" >nul 2>&1
-if %errorLevel% equ 0 (
-    echo [INFO] Existing installation detected - performing clean uninstall first...
+if %errorLevel% equ 0 set EXISTING_SERVICE=1
+if exist "%INSTALL_DIR%" set EXISTING_FILES=1
 
-    REM Preserve config to TEMP before wiping install directory
-    if exist "%CONFIG_DIR%\config.json" (
-        copy "%CONFIG_DIR%\config.json" "%EXISTING_CONFIG_BACKUP%" /Y >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Preserved existing config to %EXISTING_CONFIG_BACKUP%
-        ) else (
-            echo [WARNING] Failed to preserve existing config - agent identity may be lost
-        )
+if "%CLEAN_INSTALL%"=="0" if exist "%CONFIG_DIR%\config.json" (
+    copy "%CONFIG_DIR%\config.json" "%EXISTING_CONFIG_BACKUP%" /Y >nul 2>&1
+    if !errorLevel! neq 0 (
+        echo [ERROR] Failed to preserve the existing config; aborting to protect agent identity
+        exit /b 1
     )
+    echo [SUCCESS] Preserved existing agent configuration
+)
+if "%CLEAN_INSTALL%"=="0" if exist "%INSTALL_DIR%\%BINARY_NAME%" (
+    copy "%INSTALL_DIR%\%BINARY_NAME%" "%EXISTING_BINARY_BACKUP%" /Y >nul 2>&1
+    if !errorLevel! neq 0 (
+        echo [ERROR] Failed to preserve the existing executable; aborting upgrade
+        if exist "%EXISTING_CONFIG_BACKUP%" del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
+        exit /b 1
+    )
+    echo [SUCCESS] Preserved previous working executable for rollback
+)
 
+if "%EXISTING_SERVICE%"=="1" (
     echo [INFO] Stopping existing service...
     sc stop "%SERVICE_NAME%" >nul 2>&1
-    timeout /t 3 /nobreak >nul
+    timeout /t 2 /nobreak >nul
+)
 
+REM The monotonic telemetry generation and durable outbound queue are part of
+REM protocol correctness. Copy them only after the service has stopped so the
+REM SQLite files are consistent across an installer upgrade.
+if "%CLEAN_INSTALL%"=="0" if exist "%CONFIG_DIR%\sentinelgo_telemetry.db" (
+    copy "%CONFIG_DIR%\sentinelgo_telemetry.db" "%EXISTING_TELEMETRY_STATE_BACKUP%" /Y >nul 2>&1
+    if !errorLevel! neq 0 (
+        echo [ERROR] Failed to preserve telemetry ordering state; restarting previous service and aborting
+        if "%EXISTING_SERVICE%"=="1" sc start "%SERVICE_NAME%" >nul 2>&1
+        exit /b 1
+    )
+)
+if "%CLEAN_INSTALL%"=="0" if exist "%CONFIG_DIR%\sentinelgo_telemetry_queue.db" (
+    copy "%CONFIG_DIR%\sentinelgo_telemetry_queue.db" "%EXISTING_TELEMETRY_QUEUE_BACKUP%" /Y >nul 2>&1
+    if !errorLevel! neq 0 (
+        echo [ERROR] Failed to preserve queued telemetry; restarting previous service and aborting
+        if "%EXISTING_SERVICE%"=="1" sc start "%SERVICE_NAME%" >nul 2>&1
+        exit /b 1
+    )
+)
+
+if "%EXISTING_SERVICE%"=="1" (
     echo [INFO] Deleting existing service...
     sc delete "%SERVICE_NAME%" >nul 2>&1
-    timeout /t 2 /nobreak >nul
-
-    echo [INFO] Removing installation directory...
-    if exist "%INSTALL_DIR%" (
-        rmdir /S /Q "%INSTALL_DIR%" >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Installation directory removed
-        ) else (
-            echo [WARNING] Failed to fully remove installation directory
-        )
+    if !errorLevel! neq 0 (
+        echo [ERROR] Windows refused to delete the existing service
+        if exist "%EXISTING_CONFIG_BACKUP%" echo [INFO] Preserved config backup: %EXISTING_CONFIG_BACKUP%
+        exit /b 1
     )
-
-    echo [SUCCESS] Existing installation removed
-) else (
-    echo [INFO] No existing installation found - clean install
-    if exist "%EXISTING_CONFIG_BACKUP%" del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
 )
+
+set SERVICE_DELETE_WAIT=0
+:wait_for_service_delete
+sc query "%SERVICE_NAME%" >nul 2>&1
+if %errorLevel% neq 0 goto service_deleted
+set /a SERVICE_DELETE_WAIT+=1
+if %SERVICE_DELETE_WAIT% geq 15 (
+    echo [ERROR] Existing service is still registered after 30 seconds
+    echo [INFO] Close Services.msc and any process holding the service, then retry
+    if exist "%EXISTING_CONFIG_BACKUP%" echo [INFO] Preserved config backup: %EXISTING_CONFIG_BACKUP%
+    exit /b 1
+)
+timeout /t 2 /nobreak >nul
+goto wait_for_service_delete
+
+:service_deleted
+if exist "%INSTALL_DIR%" (
+    echo [INFO] Removing previous installation directory...
+    rmdir /S /Q "%INSTALL_DIR%" >nul 2>&1
+    if exist "%INSTALL_DIR%" (
+        echo [ERROR] Failed to remove %INSTALL_DIR%; installation stopped
+        if exist "%EXISTING_CONFIG_BACKUP%" echo [INFO] Preserved config backup: %EXISTING_CONFIG_BACKUP%
+        exit /b 1
+    )
+)
+if "%EXISTING_SERVICE%"=="0" if "%EXISTING_FILES%"=="0" echo [INFO] No existing installation found
+if "%EXISTING_SERVICE%"=="1" echo [SUCCESS] Existing Windows service removed
+if "%EXISTING_FILES%"=="1" echo [SUCCESS] Existing installation files removed
 echo.
 
 REM Step 3: Prepare Installation Directory
@@ -126,43 +190,34 @@ if exist "%EXISTING_CONFIG_BACKUP%" (
     copy "%EXISTING_CONFIG_BACKUP%" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
     if !errorLevel! equ 0 (
         echo [SUCCESS] Restored existing agent configuration (identity preserved)
-        del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
     ) else (
-        echo [WARNING] Failed to restore existing config - falling back to bundled config
-        goto deploy_bundled_config
+        echo [ERROR] Failed to restore existing config; refusing to replace device identity
+        goto install_failed
+    )
+) else goto deploy_bundled_config
+goto config_deployed
+
+:deploy_bundled_config
+if exist "config.json" (
+    copy "config.json" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
+    if !errorLevel! equ 0 (
+        echo [SUCCESS] Configuration deployed to %CONFIG_DIR%\config.json
+    ) else (
+        echo [ERROR] Failed to deploy configuration
+        goto install_failed
     )
 ) else (
-    :deploy_bundled_config
-    if exist "config.json" (
-        copy "config.json" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Configuration deployed to %CONFIG_DIR%\config.json
-        ) else (
-            echo [ERROR] Failed to deploy configuration
-            pause
-            exit /b 1
-        )
-    ) else (
-        echo [WARNING] No config.json found in current directory
-        echo [INFO] Creating default configuration...
-        (
-            echo {
-            echo   "heartbeat_interval": "5m0s",
-            echo   "github_owner": "habib45",
-            echo   "github_repo": "SentinelGo",
-            echo   "current_version": "v2.1.4",
-            echo   "auto_update": true,
-            echo   "supabase_url": "https://tvoszjyryzlfdampkozd.supabase.co",
-            echo   "device_id": "",
-            echo   "agent_uuid": "",
-            echo   "agent_secret": "",
-            echo   "agent_id": "",
-            echo   "access_token": "",
-            echo   "refresh_token": ""
-            echo }
-        ) > "%CONFIG_DIR%\config.json"
-        echo [SUCCESS] Default configuration created
-    )
+    echo [ERROR] Bundled config.json was not found; refusing to install an unconfigured service
+    goto install_failed
+)
+:config_deployed
+if exist "%EXISTING_TELEMETRY_STATE_BACKUP%" (
+    copy "%EXISTING_TELEMETRY_STATE_BACKUP%" "%CONFIG_DIR%\sentinelgo_telemetry.db" /Y >nul 2>&1
+    if errorLevel 1 goto install_failed
+)
+if exist "%EXISTING_TELEMETRY_QUEUE_BACKUP%" (
+    copy "%EXISTING_TELEMETRY_QUEUE_BACKUP%" "%CONFIG_DIR%\sentinelgo_telemetry_queue.db" /Y >nul 2>&1
+    if errorLevel 1 goto install_failed
 )
 echo.
 
@@ -173,8 +228,7 @@ if %errorLevel% equ 0 (
     echo [SUCCESS] Binary deployed and renamed to %BINARY_NAME%
 ) else (
     echo [ERROR] Failed to deploy binary
-    pause
-    exit /b 1
+    goto install_failed
 )
 echo.
 
@@ -185,8 +239,8 @@ if %errorLevel% equ 0 (
     echo [SUCCESS] Service created with auto-start enabled
 ) else (
     echo [ERROR] Failed to create service (error code: %errorLevel%)
-    echo [INFO] Continuing with installation - you can create the service manually later
-    echo [INFO] Manual service creation: sc create "%SERVICE_NAME%" binPath= "%INSTALL_DIR%\%BINARY_NAME%" start= auto DisplayName= "SentinelGo Agent"
+    echo [INFO] Installation stopped; no partially configured service will be reported as successful
+    goto install_failed
 )
 
 echo [INFO] Configuring service recovery (restart on failure)...
@@ -207,25 +261,24 @@ if %errorLevel% equ 0 (
 
 echo [INFO] Forcefully starting service...
 sc start "%SERVICE_NAME%" >nul 2>&1
-timeout /t 3 /nobreak >nul
-
-REM Verify service is running
-sc query "%SERVICE_NAME%" | find "RUNNING" >nul 2>&1
+call :verify_service_stable
 if %errorLevel% equ 0 (
-    echo [SUCCESS] Service is running
+    echo [SUCCESS] Service is stable and running
 ) else (
     echo [WARNING] Service may not be running, attempting force start...
     sc start "%SERVICE_NAME%" >nul 2>&1
-    timeout /t 2 /nobreak >nul
-    sc query "%SERVICE_NAME%" | find "RUNNING" >nul 2>&1
+    call :verify_service_stable
     if %errorLevel% equ 0 (
         echo [SUCCESS] Service started successfully on retry
     ) else (
         echo [ERROR] Service failed to start
-        echo [INFO] Check service status with: sc query %SERVICE_NAME%
-        echo [INFO] Start manually with: sc start %SERVICE_NAME%
+        goto install_failed
     )
 )
+if exist "%EXISTING_CONFIG_BACKUP%" del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
+if exist "%EXISTING_BINARY_BACKUP%" del "%EXISTING_BINARY_BACKUP%" >nul 2>&1
+if exist "%EXISTING_TELEMETRY_STATE_BACKUP%" del "%EXISTING_TELEMETRY_STATE_BACKUP%" >nul 2>&1
+if exist "%EXISTING_TELEMETRY_QUEUE_BACKUP%" del "%EXISTING_TELEMETRY_QUEUE_BACKUP%" >nul 2>&1
 echo.
 
 REM Step 7: Runtime Update Check Info
@@ -280,6 +333,48 @@ if /i "%RESTART_CHOICE%"=="yes" goto restart_computer
 echo Restart canceled. Please restart later to ensure proper operation.
 echo.
 goto end
+
+:install_failed
+if "%CLEAN_INSTALL%"=="1" (
+    echo [ERROR] Clean installation failed; no previous version was retained by design
+    exit /b 1
+)
+if not exist "%EXISTING_BINARY_BACKUP%" (
+    echo [ERROR] Upgrade failed and no previous executable was available to restore
+    if exist "%EXISTING_CONFIG_BACKUP%" echo [INFO] Preserved config backup: %EXISTING_CONFIG_BACKUP%
+    exit /b 1
+)
+echo [WARNING] Upgrade failed; restoring the previous SentinelGo version...
+sc stop "%SERVICE_NAME%" >nul 2>&1
+sc delete "%SERVICE_NAME%" >nul 2>&1
+call :wait_service_absent
+if errorLevel 1 goto install_rollback_failed
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+if not exist "%CONFIG_DIR%" mkdir "%CONFIG_DIR%"
+copy "%EXISTING_BINARY_BACKUP%" "%INSTALL_DIR%\%BINARY_NAME%" /Y >nul 2>&1
+if errorLevel 1 goto install_rollback_failed
+if exist "%EXISTING_CONFIG_BACKUP%" copy "%EXISTING_CONFIG_BACKUP%" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
+if exist "%EXISTING_TELEMETRY_STATE_BACKUP%" copy "%EXISTING_TELEMETRY_STATE_BACKUP%" "%CONFIG_DIR%\sentinelgo_telemetry.db" /Y >nul 2>&1
+if exist "%EXISTING_TELEMETRY_QUEUE_BACKUP%" copy "%EXISTING_TELEMETRY_QUEUE_BACKUP%" "%CONFIG_DIR%\sentinelgo_telemetry_queue.db" /Y >nul 2>&1
+sc create "%SERVICE_NAME%" binPath= "%INSTALL_DIR%\%BINARY_NAME%" start= auto DisplayName= "SentinelGo Agent" >nul 2>&1
+if errorLevel 1 goto install_rollback_failed
+sc failure "%SERVICE_NAME%" reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&1
+sc start "%SERVICE_NAME%" >nul 2>&1
+call :verify_service_stable
+if errorLevel 1 goto install_rollback_failed
+echo update_failed_rolled_back>"%INSTALL_DIR%\sentinelgo_update_failure.txt"
+del "%EXISTING_BINARY_BACKUP%" >nul 2>&1
+if exist "%EXISTING_CONFIG_BACKUP%" del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
+if exist "%EXISTING_TELEMETRY_STATE_BACKUP%" del "%EXISTING_TELEMETRY_STATE_BACKUP%" >nul 2>&1
+if exist "%EXISTING_TELEMETRY_QUEUE_BACKUP%" del "%EXISTING_TELEMETRY_QUEUE_BACKUP%" >nul 2>&1
+echo [SUCCESS] Previous SentinelGo version restored and running
+exit /b 1
+
+:install_rollback_failed
+echo update_failed_rollback_failed>"%INSTALL_DIR%\sentinelgo_update_failure.txt"
+echo [ERROR] Automatic rollback failed; previous executable remains at %EXISTING_BINARY_BACKUP%
+if exist "%EXISTING_CONFIG_BACKUP%" echo [INFO] Previous config remains at %EXISTING_CONFIG_BACKUP%
+exit /b 2
 
 :restart_computer
 echo [INFO] Restarting computer in 10 seconds...
@@ -336,6 +431,12 @@ if not exist "%REQUIRED_BINARY%" (
 )
 
 echo [INFO] Stopping service...
+set UPDATE_BINARY_BACKUP=%TEMP%\sentinelgo_update_backup_%RANDOM%_%RANDOM%.exe
+copy "%INSTALL_DIR%\%BINARY_NAME%" "%UPDATE_BINARY_BACKUP%" /Y >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] Could not preserve the running executable; update aborted
+    exit /b 1
+)
 sc stop "%SERVICE_NAME%" >nul 2>&1
 timeout /t 3 /nobreak >nul
 
@@ -345,21 +446,41 @@ if %errorLevel% equ 0 (
     echo [SUCCESS] Binary updated
 ) else (
     echo [ERROR] Failed to update binary
-    pause
-    exit /b 1
+    goto update_rollback
 )
 
 echo [INFO] Starting service...
 sc start "%SERVICE_NAME%" >nul 2>&1
-if %errorLevel% equ 0 (
-    echo [SUCCESS] Service restarted
-) else (
-    echo [WARNING] Service start may have failed
-)
+call :verify_service_stable
+if %errorLevel% neq 0 goto update_rollback
+echo [SUCCESS] Service restarted and is running
+del "%UPDATE_BINARY_BACKUP%" >nul 2>&1
 
 echo.
 echo [SUCCESS] Update complete!
 goto end
+
+:update_rollback
+echo [WARNING] Update failed; restoring previous executable...
+sc stop "%SERVICE_NAME%" >nul 2>&1
+timeout /t 2 /nobreak >nul
+copy "%UPDATE_BINARY_BACKUP%" "%INSTALL_DIR%\%BINARY_NAME%" /Y >nul 2>&1
+if %errorLevel% neq 0 (
+    echo update_failed_rollback_failed>"%INSTALL_DIR%\sentinelgo_update_failure.txt"
+    echo [ERROR] Rollback copy failed; backup retained at %UPDATE_BINARY_BACKUP%
+    exit /b 2
+)
+sc start "%SERVICE_NAME%" >nul 2>&1
+call :verify_service_stable
+if %errorLevel% neq 0 (
+    echo update_failed_rollback_failed>"%INSTALL_DIR%\sentinelgo_update_failure.txt"
+    echo [ERROR] Previous service failed to restart; backup retained at %UPDATE_BINARY_BACKUP%
+    exit /b 2
+)
+echo update_failed_rolled_back>"%INSTALL_DIR%\sentinelgo_update_failure.txt"
+del "%UPDATE_BINARY_BACKUP%" >nul 2>&1
+echo [SUCCESS] Previous version restored and running
+exit /b 1
 
 :status
 echo ========================================
@@ -439,7 +560,8 @@ echo.
 echo Usage: install.bat [command]
 echo.
 echo Commands:
-echo   install              Install SentinelGo service (default)
+echo   install              Upgrade/reinstall and preserve the existing device identity (default)
+echo   clean-install        Remove old service, files, config and device identity before installing
 echo   uninstall            Remove SentinelGo service completely
 echo   update               Update to new binary version
 echo   status               Check service and installation status
@@ -450,11 +572,12 @@ echo.
 echo Installation Requirements:
 echo   - Administrator privileges
 echo   - sentinelgo-windows-amd64.exe in current directory
-echo   - config.json (optional, will create default)
+echo   - bundled config.json in the current directory
 echo.
 echo Examples:
 echo   install.bat                    # Install service
-echo   install.bat install            # Install service (explicit)
+echo   install.bat install            # Upgrade/reinstall and preserve agent identity
+echo   install.bat clean-install      # Completely replace service, files and config
 echo   install.bat uninstall          # Remove completely
 echo   install.bat status             # Check status
 echo   install.bat update             # Update binary
@@ -469,7 +592,7 @@ echo.
 echo Auto-Start Configuration:
 echo   - enable-autostart: Service starts automatically on Windows boot
 echo   - disable-autostart: Service must be started manually
-echo   - Default on install: Manual start (use enable-autostart to change)
+echo   - Default on install: Automatic start
 echo.
 goto end
 
@@ -481,3 +604,26 @@ exit /b 1
 
 :end
 pause
+goto :eof
+
+:verify_service_stable
+set VERIFY_ATTEMPTS=0
+set VERIFY_HEALTHY=0
+:verify_service_stable_loop
+timeout /t 2 /nobreak >nul
+sc query "%SERVICE_NAME%" | find "RUNNING" >nul 2>&1
+if errorLevel 1 (set VERIFY_HEALTHY=0) else (set /a VERIFY_HEALTHY+=1)
+if !VERIFY_HEALTHY! geq 5 exit /b 0
+set /a VERIFY_ATTEMPTS+=1
+if !VERIFY_ATTEMPTS! geq 30 exit /b 1
+goto verify_service_stable_loop
+
+:wait_service_absent
+set DELETE_ATTEMPTS=0
+:wait_service_absent_loop
+sc query "%SERVICE_NAME%" >nul 2>&1
+if errorLevel 1 exit /b 0
+set /a DELETE_ATTEMPTS+=1
+if !DELETE_ATTEMPTS! geq 15 exit /b 1
+timeout /t 2 /nobreak >nul
+goto wait_service_absent_loop

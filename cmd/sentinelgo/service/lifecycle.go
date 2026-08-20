@@ -123,7 +123,7 @@ func RunForeground(cfg *config.Config) {
 		}
 	}()
 
-	fmt.Printf("Started SentinelGo v%s in foreground mode\n", version)
+	fmt.Printf("Started SentinelGo %s in foreground mode\n", version)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

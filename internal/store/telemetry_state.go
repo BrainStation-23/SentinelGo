@@ -31,8 +31,17 @@ CREATE TABLE IF NOT EXISTS telemetry_section_state (
 );
 `
 
+const telemetryStateSchemaV2 = `
+CREATE TABLE IF NOT EXISTS telemetry_generation (
+	singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+	generation INTEGER NOT NULL CHECK (generation >= 0)
+);
+INSERT OR IGNORE INTO telemetry_generation(singleton, generation) VALUES (1, 0);
+`
+
 var telemetryStateMigrations = []Migration{
 	{Version: 1, SQL: telemetryStateSchemaV1},
+	{Version: 2, SQL: telemetryStateSchemaV2},
 }
 
 // SectionState is the persisted reconciliation state of one telemetry section.
@@ -127,6 +136,34 @@ func (s *TelemetryStateStore) GetAll() (map[string]*SectionState, error) {
 		out[st.Section] = &st
 	}
 	return out, rows.Err()
+}
+
+// NextCollectionGeneration atomically allocates the next device-local
+// generation. Reset deliberately preserves this table: a manual reconciliation
+// reset must never let newly collected telemetry compare older than data the
+// backend has already accepted.
+func (s *TelemetryStateStore) NextCollectionGeneration() (uint64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin generation allocation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var current uint64
+	if err := tx.QueryRow("SELECT generation FROM telemetry_generation WHERE singleton = 1").Scan(&current); err != nil {
+		return 0, fmt.Errorf("read collection generation: %w", err)
+	}
+	if current >= uint64(1<<63-1) {
+		return 0, fmt.Errorf("collection generation exhausted")
+	}
+	next := current + 1
+	if _, err := tx.Exec("UPDATE telemetry_generation SET generation = ? WHERE singleton = 1", next); err != nil {
+		return 0, fmt.Errorf("advance collection generation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit collection generation: %w", err)
+	}
+	return next, nil
 }
 
 // MarkCollected records a collection result without implying an upload.

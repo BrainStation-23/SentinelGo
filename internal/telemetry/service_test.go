@@ -47,7 +47,13 @@ func (f *fakeCollector) Collect(context.Context, CollectorConfig) (any, Collecto
 }
 
 type fakeState struct {
-	states map[string]*SectionState
+	states     map[string]*SectionState
+	generation uint64
+}
+
+func (f *fakeState) NextCollectionGeneration() (uint64, error) {
+	f.generation++
+	return f.generation, nil
 }
 
 func newFakeState() *fakeState { return &fakeState{states: make(map[string]*SectionState)} }
@@ -155,6 +161,36 @@ func TestRunCycleUploadsOnceThenSuppresses(t *testing.T) {
 	}
 	if len(queue.messages) != 1 {
 		t.Fatalf("queue holds %d messages after two cycles, want 1", len(queue.messages))
+	}
+}
+
+// TestRunCycleHealthUsesSectionNotCapabilityKey is a regression test. A
+// section's name and the capability key that gates it are not always the same
+// string — SectionPatches is "patches" but its key is CapKeyPatchInventory
+// ("patch_inventory"), and this fixture's own SectionIdentity/CapKeyDirectoryJoin
+// pairing is deliberately mismatched the same way. Health must key off the
+// section, not assume it equals the capability key, or a perfectly healthy
+// collector is misreported as not_applicable purely because the two strings
+// differ.
+func TestRunCycleHealthUsesSectionNotCapabilityKey(t *testing.T) {
+	c := &fakeCollector{
+		name: "identity", section: SectionIdentity,
+		capKey: CapKeyDirectoryJoin, capState: CapSupported,
+		payload: map[string]any{"hostname": "host-1"},
+	}
+	svc, _, _ := newTestService(t, c)
+	svc.SetClock(func() time.Time { return baseTime })
+
+	report, err := svc.RunCycle(context.Background(), &config.Config{DeviceID: "dev-1"})
+	if err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+
+	if len(report.Health.Domains) != 1 {
+		t.Fatalf("expected one domain, got %+v", report.Health.Domains)
+	}
+	if got := report.Health.Domains[0].State; got != HealthHealthy {
+		t.Errorf("domain state = %q, want %q", got, HealthHealthy)
 	}
 }
 

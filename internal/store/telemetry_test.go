@@ -135,6 +135,34 @@ func TestResetForcesFullResync(t *testing.T) {
 	}
 }
 
+func TestCollectionGenerationSurvivesRestartAndReset(t *testing.T) {
+	path := t.TempDir() + "/telemetry_state.db"
+	s, err := store.NewTelemetryStateStore(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	first, err := s.NextCollectionGeneration()
+	if err != nil || first != 1 {
+		t.Fatalf("first generation = %d, err=%v", first, err)
+	}
+	if err := s.Reset(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s, err = store.NewTelemetryStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	second, err := s.NextCollectionGeneration()
+	if err != nil || second != 2 {
+		t.Fatalf("generation after reset/restart = %d, err=%v; want 2", second, err)
+	}
+}
+
 // ── outbound queue ───────────────────────────────────────────────────────────
 
 func enqueueN(t *testing.T, q *store.TelemetryOutboundStore, n int, priority int, payload string) {

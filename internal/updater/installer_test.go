@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +193,21 @@ func TestCreateBackup_ContentMatchesSource(t *testing.T) {
 		if selfBytes[i] != backupBytes[i] {
 			t.Errorf("content differs at byte %d: self=%02x backup=%02x", i, selfBytes[i], backupBytes[i])
 			break
+		}
+	}
+}
+
+func TestWindowsUpdateScriptHasBoundedHealthCheckAndRollback(t *testing.T) {
+	script := windowsUpdateScript(`C:\stage\new.exe`, `C:\SentinelGo\sentinelgo.exe`,
+		`C:\SentinelGo\sentinelgo.exe.backup`, `C:\SentinelGo\update.bat`,
+		`C:\SentinelGo\sentinelgo_update_failure.txt`)
+	for _, required := range []string{
+		"SWAP_ATTEMPTS", "GEQ 30 goto rollback", "HEALTHY_COUNT", "GEQ 5 goto success",
+		":rollback", `copy /Y "C:\SentinelGo\sentinelgo.exe.backup" "C:\SentinelGo\sentinelgo.exe"`,
+		"ROLLBACK_HEALTHY", ":rollback_success", "update_failed_rolled_back", "update_failed_rollback_failed",
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("Windows update script missing %q", required)
 		}
 	}
 }

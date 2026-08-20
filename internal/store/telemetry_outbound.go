@@ -34,8 +34,21 @@ CREATE INDEX IF NOT EXISTS idx_tel_outbound_priority ON telemetry_outbound(prior
 CREATE INDEX IF NOT EXISTS idx_tel_outbound_created  ON telemetry_outbound(created_at);
 `
 
+// telemetryOutboundSchemaV2 adds an explicit dead-letter state.
+//
+// Without it, a message that exhausted its delivery attempts stayed at the head
+// of the queue forever. GetPending orders by (priority, id), so a page full of
+// permanently-rejected messages starved everything behind them: one bad batch
+// could stall a device's telemetry indefinitely. Dead-lettered rows are
+// retained for inspection but excluded from delivery.
+const telemetryOutboundSchemaV2 = `
+ALTER TABLE telemetry_outbound ADD COLUMN dead_lettered_at TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_tel_outbound_dead ON telemetry_outbound(dead_lettered_at);
+`
+
 var telemetryOutboundMigrations = []Migration{
 	{Version: 1, SQL: telemetryOutboundSchemaV1},
+	{Version: 2, SQL: telemetryOutboundSchemaV2},
 }
 
 // OutboundLimits bounds the queue so a long-offline agent cannot fill its disk.
@@ -71,6 +84,9 @@ type OutboundMessage struct {
 	ByteSize   int
 	Attempts   int
 	CreatedAt  time.Time
+	// DeadLettered is true once delivery attempts were exhausted. Such messages
+	// are retained for inspection but never offered for delivery again.
+	DeadLettered bool
 }
 
 // TelemetryOutboundStore is the bounded durable send queue.
@@ -166,9 +182,13 @@ func (s *TelemetryOutboundStore) evictLowestPriority(n int64) (int64, error) {
 	if n <= 0 {
 		return 0, nil
 	}
+	// Dead-lettered rows go first: they are undeliverable, so evicting them
+	// costs nothing that a retry could have recovered.
 	res, err := s.db.Exec(`
 		DELETE FROM telemetry_outbound WHERE id IN (
-			SELECT id FROM telemetry_outbound ORDER BY priority DESC, id ASC LIMIT ?
+			SELECT id FROM telemetry_outbound
+			ORDER BY (length(dead_lettered_at) > 0) DESC, priority DESC, id ASC
+			LIMIT ?
 		)`, n)
 	if err != nil {
 		return 0, err
@@ -224,8 +244,9 @@ func (s *TelemetryOutboundStore) GetPending(limit int) ([]OutboundMessage, error
 	}
 	rows, err := s.db.Query(`
 		SELECT id, snapshot_id, section, class, priority, batch_index, batch_count,
-		       payload, byte_size, attempts, created_at
+		       payload, byte_size, attempts, created_at, dead_lettered_at
 		FROM telemetry_outbound
+		WHERE length(dead_lettered_at) = 0
 		ORDER BY priority ASC, id ASC
 		LIMIT ?`, limit)
 	if err != nil {
@@ -240,14 +261,17 @@ func (s *TelemetryOutboundStore) GetPending(limit int) ([]OutboundMessage, error
 	var out []OutboundMessage
 	for rows.Next() {
 		var (
-			m       OutboundMessage
-			created []byte
+			m          OutboundMessage
+			created    []byte
+			deadLetter []byte
 		)
 		if scanErr := rows.Scan(&m.ID, &m.SnapshotID, &m.Section, &m.Class, &m.Priority,
-			&m.BatchIndex, &m.BatchCount, &m.Payload, &m.ByteSize, &m.Attempts, &created); scanErr != nil {
+			&m.BatchIndex, &m.BatchCount, &m.Payload, &m.ByteSize, &m.Attempts,
+			&created, &deadLetter); scanErr != nil {
 			return nil, fmt.Errorf("scan pending telemetry: %w", scanErr)
 		}
 		m.CreatedAt = derefTime(parseTime(created))
+		m.DeadLettered = len(deadLetter) > 0
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -297,10 +321,99 @@ func (s *TelemetryOutboundStore) IncrementAttempts(ids []int64) error {
 	return nil
 }
 
-// Depth returns the number of queued messages, for telemetry health.
+// MarkDeadLettered moves messages into the dead-letter state.
+//
+// They stay in the table so an operator can inspect what the backend refused,
+// but GetPending no longer returns them, so they cannot block delivery of
+// anything behind them.
+func (s *TelemetryOutboundStore) MarkDeadLettered(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	at := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range ids {
+		if _, err := s.db.Exec(
+			"UPDATE telemetry_outbound SET dead_lettered_at = ? WHERE id = ?", at, id); err != nil {
+			return fmt.Errorf("dead-letter message %d: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// DeadLetterDepth returns how many messages are in the dead-letter state.
+func (s *TelemetryOutboundStore) DeadLetterDepth() (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM telemetry_outbound WHERE length(dead_lettered_at) > 0").Scan(&n)
+	return n, err
+}
+
+// ListDeadLettered returns dead-lettered messages for inspection.
+func (s *TelemetryOutboundStore) ListDeadLettered(limit int) ([]OutboundMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, snapshot_id, section, class, priority, batch_index, batch_count,
+		       payload, byte_size, attempts, created_at, dead_lettered_at
+		FROM telemetry_outbound
+		WHERE length(dead_lettered_at) > 0
+		ORDER BY id ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query dead-lettered telemetry: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("TelemetryOutboundStore: close rows: %v", closeErr)
+		}
+	}()
+
+	var out []OutboundMessage
+	for rows.Next() {
+		var (
+			m          OutboundMessage
+			created    []byte
+			deadLetter []byte
+		)
+		if scanErr := rows.Scan(&m.ID, &m.SnapshotID, &m.Section, &m.Class, &m.Priority,
+			&m.BatchIndex, &m.BatchCount, &m.Payload, &m.ByteSize, &m.Attempts,
+			&created, &deadLetter); scanErr != nil {
+			return nil, fmt.Errorf("scan dead-lettered telemetry: %w", scanErr)
+		}
+		m.CreatedAt = derefTime(parseTime(created))
+		m.DeadLettered = true
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Clear removes every queued message.
+//
+// Distinct from Delete(GetPending(...)): GetPending applies a page limit, so
+// draining a full queue through it would silently leave rows behind.
+func (s *TelemetryOutboundStore) Clear() (int64, error) {
+	res, err := s.db.Exec("DELETE FROM telemetry_outbound")
+	if err != nil {
+		return 0, fmt.Errorf("clear outbound queue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// The delete succeeded; only the count is unavailable.
+		return 0, nil
+	}
+	return n, nil
+}
+
+// Depth returns the number of DELIVERABLE queued messages.
+//
+// Dead-lettered rows are excluded: they are retained for inspection but will
+// never be sent, so counting them as queue depth would misreport a stalled
+// backlog as pending work. Use DeadLetterDepth for those.
 func (s *TelemetryOutboundStore) Depth() (int, error) {
 	var n int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM telemetry_outbound").Scan(&n)
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM telemetry_outbound WHERE length(dead_lettered_at) = 0").Scan(&n)
 	return n, err
 }
 

@@ -300,12 +300,24 @@ install.bat install
 
 #### Windows Script Commands:
 ```cmd
-install.bat install        # Install service
+install.bat install        # Upgrade/reinstall; preserve the existing device identity
+install.bat clean-install  # Remove old service, files and config; create a new identity
 install.bat uninstall      # Remove service
 install.bat update         # Update binary
 install.bat status          # Show service status
 install.bat help            # Show help
 ```
+
+Windows upgrade and update commands first preserve the working executable and
+configuration. Installer upgrades also preserve the telemetry generation state
+and durable outbound queue after stopping the service, so ordering and pending
+delivery survive replacement. The scripts then start and validate the new
+service. If deployment or startup validation fails, they restore and restart
+the previous version. A generic
+`C:\SentinelGo\sentinelgo_update_failure.txt` marker records whether rollback
+succeeded without including configuration, command output, or credentials.
+`clean-install` intentionally has no rollback identity because it explicitly
+removes the previous installation.
 
 
 #### Option 2: Manual Windows Installation
@@ -347,7 +359,8 @@ sc.exe delete sentinelgo         # Delete service
 
 #### Windows Script Commands:
 ```cmd
-install.bat install        # Install service
+install.bat install        # Upgrade/reinstall; preserve the existing device identity
+install.bat clean-install  # Fully replace the old installation and identity
 install.bat uninstall      # Remove service
 install.bat update         # Update binary
 install.bat status         # Show status

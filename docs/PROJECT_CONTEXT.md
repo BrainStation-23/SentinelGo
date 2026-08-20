@@ -1,3 +1,9 @@
+> ⚠️ **This document is stale and has not been verified against the current code.**
+>
+> This document describes environment-variable configuration that nothing reads (`internal/config` calls `os.Getenv` zero times), an `/functions/v1/agent-refresh` endpoint that does not exist, and an `agent-login` request shape that does not match the code. Treat `internal/config/config.go` and `internal/service/auth/` as the source of truth.
+>
+> See [06-existing-code-observations.md](telemetry/06-existing-code-observations.md) for the full list of documentation drift.
+
 # SentinelGo
 
 > **Status: Superseded.** This document is preserved as a historical snapshot

@@ -75,13 +75,13 @@ func HandleSoftwareSync(cfg *config.Config) {
 	svc := swsvc.NewSoftwareService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
 
-	list := svc.GetSoftwareList()
+	list, complete := svc.GetSoftwareListWithStatus()
 	if len(list) == 0 {
 		fmt.Println("No software found.")
 		return
 	}
 	fmt.Printf("Collected %d software items. Sending...\n", len(list))
-	if err := svc.SendByRPC(ctx, cfg.DeviceID, list, cfg); err != nil {
+	if err := svc.SendSnapshotByRPC(ctx, list, complete, cfg); err != nil {
 		log.Printf("Software sync error: %v", err)
 		return
 	}

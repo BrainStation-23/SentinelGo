@@ -21,6 +21,8 @@ import (
 // downloadClient has a generous timeout for large binary downloads (~18 MB+).
 var downloadClient = httpx.NewClient(10 * time.Minute)
 
+const maxReleaseBytes int64 = 256 * 1024 * 1024
+
 // storageBase constructs the Supabase Storage authenticated download URL for a
 // given bucket and asset path.
 func storageURL(supabaseURL, bucket, assetPath string) string {
@@ -35,7 +37,13 @@ func storageURL(supabaseURL, bucket, assetPath string) string {
 // Both requests are authenticated with the agent's JWT and the Supabase anon
 // key — the agent-releases bucket has RLS that allows any authenticated user
 // to download.
-func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string) (string, string, error) {
+func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string, expectedSize int64) (string, string, error) {
+	if expectedSize <= 0 || expectedSize > maxReleaseBytes {
+		return "", "", fmt.Errorf("invalid release size %d (max %d)", expectedSize, maxReleaseBytes)
+	}
+	if len(expectedChecksum) != sha256.Size*2 {
+		return "", "", fmt.Errorf("invalid SHA256 in release manifest")
+	}
 	binaryURL := storageURL(cfg.SupabaseURL, "agent-releases", assetPath)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binaryURL, nil)
@@ -53,6 +61,9 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("binary download status %d", resp.StatusCode)
 	}
+	if resp.ContentLength > expectedSize || resp.ContentLength > maxReleaseBytes {
+		return "", "", fmt.Errorf("binary response size %d exceeds manifest size %d", resp.ContentLength, expectedSize)
+	}
 
 	selfPath, err := os.Executable()
 	if err != nil {
@@ -69,12 +80,21 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 
 	// Stream to disk and compute SHA256 simultaneously.
 	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, hash), resp.Body); err != nil {
+	written, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(resp.Body, expectedSize+1))
+	if err != nil {
 		_ = os.Remove(newPath)
 		return "", "", err
 	}
+	if written != expectedSize {
+		_ = os.Remove(newPath)
+		return "", "", fmt.Errorf("binary size mismatch: manifest %d, downloaded %d", expectedSize, written)
+	}
 
 	actualChecksum := hex.EncodeToString(hash.Sum(nil))
+	if !strings.EqualFold(actualChecksum, expectedChecksum) {
+		_ = os.Remove(newPath)
+		return "", actualChecksum, fmt.Errorf("checksum mismatch")
+	}
 
 	// Lock the staged binary down so a standard user cannot swap it between
 	// download and the privileged replace/restart.

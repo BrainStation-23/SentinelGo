@@ -180,6 +180,8 @@ func TestSoftwareEnqueuePayloadShape(t *testing.T) {
 			t.Error("expected top-level 'payload' key")
 		} else if inner["software"] == nil {
 			t.Error("expected payload.software to be present")
+		} else if inner["snapshot"] != "full" {
+			t.Errorf("snapshot = %v, want full", inner["snapshot"])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -202,5 +204,30 @@ func TestSoftwareEnqueuePayloadShape(t *testing.T) {
 
 	if err := svc.SendByRPC(ctx, "dev-1", list, cfg); err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestSoftwareEnqueuePartialSnapshotUsesDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope struct {
+			Payload struct {
+				Snapshot string `json:"snapshot"`
+			} `json:"payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if envelope.Payload.Snapshot != "delta" {
+			t.Errorf("snapshot = %q, want delta", envelope.Payload.Snapshot)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"enqueued":true,"msg_id":3}`))
+	}))
+	defer server.Close()
+
+	svc := software.NewSoftwareService()
+	svc.SetSupabaseURL(server.URL)
+	if err := svc.SendSnapshotByRPC(context.Background(), mockSoftware(), false, nil); err != nil {
+		t.Fatalf("SendSnapshotByRPC: %v", err)
 	}
 }

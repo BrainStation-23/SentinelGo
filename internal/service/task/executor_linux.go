@@ -70,8 +70,7 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 	// block the goroutine indefinitely.
 	cmd.WaitDelay = 30 * time.Second
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	return runCommandBounded(cmd)
 }
 
 // containsPrivilegedCommands reports whether the script contains commands that

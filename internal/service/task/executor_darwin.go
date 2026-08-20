@@ -32,6 +32,5 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 
 	cmd.WaitDelay = 30 * time.Second
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	return runCommandBounded(cmd)
 }

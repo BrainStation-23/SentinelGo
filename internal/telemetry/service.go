@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -21,6 +22,7 @@ import (
 // approach the software service takes with its Catalog interface.
 type StateStore interface {
 	GetAll() (map[string]*SectionState, error)
+	NextCollectionGeneration() (uint64, error)
 	MarkCollected(section string, schemaVersion int, hash string, itemCount int, status string, at time.Time) error
 	MarkUploaded(section string, at time.Time) error
 }
@@ -55,6 +57,8 @@ type CycleReport struct {
 	Results           []CollectorResult
 	Capabilities      CapabilityManifest
 	Health            *TelemetryHealth
+	// Truncated lists sections where at least one item was too large to send.
+	Truncated []string
 }
 
 // Service runs telemetry collection cycles.
@@ -122,7 +126,7 @@ func CollectorConfigFrom(cfg *config.Config) CollectorConfig {
 func (s *Service) RunCycle(ctx context.Context, cfg *config.Config) (*CycleReport, error) {
 	now := s.now().UTC()
 
-	data, results, caps := RunAll(ctx, s.set, CollectorConfigFrom(cfg))
+	data, results, caps, sectionCaps := RunAll(ctx, s.set, CollectorConfigFrom(cfg))
 
 	report := &CycleReport{
 		Reasons:      make(map[string]string),
@@ -130,8 +134,13 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config) (*CycleRepor
 		Capabilities: caps,
 	}
 
+	// Indexed by section, not by capability key: a section's key (when it has
+	// one at all) is not always the section's own name — see RunAll's doc
+	// comment — so looking this up in the capability manifest itself would
+	// silently mis-report "not_applicable" for every section whose name and
+	// key differ.
 	for _, res := range results {
-		s.health.Observe(res, caps.Get(res.Section))
+		s.health.Observe(res, sectionCaps[res.Section])
 	}
 
 	if len(data) == 0 {
@@ -157,13 +166,28 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config) (*CycleRepor
 	}
 
 	if len(upload) > 0 {
-		if err := s.enqueue(cfg, upload, data, now, report); err != nil {
+		generation, genErr := s.nextCollectionGeneration()
+		if genErr != nil {
+			return report, genErr
+		}
+		if err := s.enqueue(cfg, upload, data, now, generation, report); err != nil {
 			return report, err
 		}
 	}
 
 	report.Health = s.finishHealth()
 	return report, nil
+}
+
+func (s *Service) nextCollectionGeneration() (uint64, error) {
+	if s.state == nil {
+		return 0, nil
+	}
+	generation, err := s.state.NextCollectionGeneration()
+	if err != nil {
+		return 0, fmt.Errorf("telemetry: allocate collection generation: %w", err)
+	}
+	return generation, nil
 }
 
 // loadState reads persisted section state, tolerating a missing store.
@@ -223,13 +247,15 @@ func (s *Service) decide(
 
 // enqueue builds envelopes for the sections due for upload and queues them.
 //
-// Chunked sections get their own envelope so a large list can be split without
+// Non-chunked sections of the same class travel together in one envelope.
+// Chunked sections get their own envelopes so a large list can be split without
 // dragging unrelated sections into every batch.
 func (s *Service) enqueue(
 	cfg *config.Config,
 	upload []string,
 	data SectionData,
 	now time.Time,
+	generation uint64,
 	report *CycleReport,
 ) error {
 	if s.queue == nil {
@@ -253,18 +279,38 @@ func (s *Service) enqueue(
 		if len(names) == 0 {
 			continue
 		}
-		if err := s.enqueueEnvelope(cfg, class, names, data, now, report); err != nil {
+		if err := s.enqueueEnvelope(cfg, class, names, data, now, generation, report); err != nil {
 			return err
 		}
 	}
 
 	for _, name := range chunked {
-		spec, _ := s.registry.Get(name)
-		if err := s.enqueueEnvelope(cfg, spec.Class, []string{name}, data, now, report); err != nil {
+		if err := s.enqueueChunked(cfg, name, data[name], now, generation, report); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// newEnvelopeFor builds an envelope pre-populated with this cycle capabilities
+// and diagnostics.
+func (s *Service) newEnvelopeFor(cfg *config.Config, class Class, now time.Time, generation uint64, report *CycleReport) *Envelope {
+	env := NewEnvelope(cfg, class, now)
+	env.CollectionGeneration = generation
+	env.Capabilities = report.Capabilities.Clone()
+	env.Meta = &Meta{Results: report.Results, Health: s.health.Report()}
+	return env
+}
+
+// marshalEnvelope renders an envelope for the wire.
+func marshalEnvelope(env *Envelope) ([]byte, error) {
+	env.Finalize()
+	body, err := json.Marshal(map[string]any{"payload": env})
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: marshal envelope: %w", err)
+	}
+	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
+	return sanitize.StripJSONNUL(body), nil
 }
 
 // enqueueEnvelope builds and queues one envelope for the given sections.
@@ -274,26 +320,21 @@ func (s *Service) enqueueEnvelope(
 	names []string,
 	data SectionData,
 	now time.Time,
+	generation uint64,
 	report *CycleReport,
 ) error {
-	env := NewEnvelope(cfg, class, now)
-	env.Capabilities = report.Capabilities.Clone()
-	env.Meta = &Meta{Results: report.Results, Health: s.health.Report()}
-
+	env := s.newEnvelopeFor(cfg, class, now, generation, report)
 	for _, name := range names {
 		spec, _ := s.registry.Get(name)
 		env.AddSection(name, spec.SchemaVersion, data[name])
 	}
-	env.Finalize()
 
-	body, err := json.Marshal(map[string]any{"payload": env})
+	body, err := marshalEnvelope(env)
 	if err != nil {
-		return fmt.Errorf("telemetry: marshal envelope: %w", err)
+		return err
 	}
-	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
-	body = sanitize.StripJSONNUL(body)
 
-	evicted, err := s.queue.Enqueue(QueuedMessage{
+	return s.queueMessage(QueuedMessage{
 		SnapshotID: NewSnapshotID(),
 		Sections:   names,
 		Class:      class,
@@ -301,27 +342,157 @@ func (s *Service) enqueueEnvelope(
 		BatchIndex: 0,
 		BatchCount: 1,
 		Payload:    body,
-	})
+	}, report)
+}
+
+// chunkBudget measures how many bytes of section items fit in one message once
+// the envelope wrapper, capability manifest and diagnostics are accounted for.
+//
+// Measuring rather than guessing matters: the capability manifest and per-cycle
+// results run to several kilobytes, so a fixed guess would either waste headroom
+// or produce batches that exceed the cap once wrapped.
+func (s *Service) chunkBudget(cfg *config.Config, spec SectionSpec, name string, now time.Time, generation uint64, report *CycleReport) int {
+	probe := s.newEnvelopeFor(cfg, spec.Class, now, generation, report)
+	probe.AddSection(name, spec.SchemaVersion, []any{})
+	probe.Chunk = ChunkMetaFor(NewSnapshotID(), 0, 1, 0, 0)
+
+	body, err := marshalEnvelope(probe)
 	if err != nil {
-		return fmt.Errorf("telemetry: enqueue %s envelope: %w", class, err)
+		return MaxPayloadBytes / 2
+	}
+
+	budget := MaxPayloadBytes - len(body) - envelopeOverheadMargin
+	if budget < 1024 {
+		budget = 1024
+	}
+	return budget
+}
+
+// enqueueChunked splits a high-cardinality section across as many messages as it
+// needs, all sharing one snapshot_id.
+//
+// Every batch of a snapshot is queued together with that snapshot_id stored
+// alongside it, so a delivery retry replays the stored message rather than
+// generating a fresh id. The backend therefore never sees two logical snapshots
+// for one collection.
+func (s *Service) enqueueChunked(
+	cfg *config.Config,
+	name string,
+	payload any,
+	now time.Time,
+	generation uint64,
+	report *CycleReport,
+) error {
+	spec, ok := s.registry.Get(name)
+	if !ok {
+		return nil
+	}
+
+	budget := s.chunkBudget(cfg, spec, name, now, generation, report)
+
+	batches, totalItems, oversized, err := ChunkSection(payload, budget)
+	if err != nil {
+		if errors.Is(err, ErrNotChunkable) {
+			// The section is declared chunked but produced a scalar. Send it as a
+			// single envelope rather than failing the cycle.
+			log.Printf("[telemetry] section %s is marked chunked but is not a list; sending unsplit",
+				sanitize.ForLog(name))
+			return s.enqueueEnvelope(cfg, spec.Class, []string{name}, SectionData{name: payload}, now, generation, report)
+		}
+		return fmt.Errorf("telemetry: chunk section %q: %w", name, err)
+	}
+
+	if len(oversized) > 0 {
+		// Never silent: an item too large for any batch is reported in the
+		// payload, in the log, and in telemetry health.
+		log.Printf("[telemetry] section %s: %d item(s) exceed the %d-byte budget and cannot be sent; snapshot marked truncated",
+			sanitize.ForLog(name), len(oversized), budget)
+		s.health.AddDropped(int64(len(oversized)))
+		report.Truncated = append(report.Truncated, name)
+	}
+
+	if len(batches) == 0 {
+		// An explicitly collected empty list is authoritative. It must become a
+		// one-chunk empty snapshot; sending nothing would leave the previous
+		// generation visible forever. The same representation safely records a
+		// fully-excluded truncated snapshot.
+		batches = [][]any{{}}
+	}
+
+	snapshotID := NewSnapshotID()
+	batchCount := len(batches)
+
+	for i, batch := range batches {
+		env := s.newEnvelopeFor(cfg, spec.Class, now, generation, report)
+		env.AddSection(name, spec.SchemaVersion, batch)
+		env.Chunk = ChunkMetaFor(snapshotID, i, batchCount, totalItems, len(oversized))
+
+		body, mErr := marshalEnvelope(env)
+		if mErr != nil {
+			return mErr
+		}
+		if len(body) > MaxPayloadBytes {
+			// The budget should prevent this. If it happens the batch is still
+			// queued rather than dropped, and the oversize is logged so it can be
+			// diagnosed instead of failing invisibly at the backend.
+			log.Printf("[telemetry] section %s batch %d/%d is %d bytes, over the %d cap",
+				sanitize.ForLog(name), i+1, batchCount, len(body), MaxPayloadBytes)
+		}
+
+		if qErr := s.queueMessage(QueuedMessage{
+			SnapshotID: snapshotID,
+			Sections:   []string{name},
+			Class:      spec.Class,
+			Priority:   int(models.PriorityNormal),
+			BatchIndex: i,
+			BatchCount: batchCount,
+			Payload:    body,
+		}, report); qErr != nil {
+			return qErr
+		}
+	}
+
+	log.Printf("[telemetry] section %s chunked into %d batch(es): items=%d excluded=%d snapshot=%s",
+		sanitize.ForLog(name), batchCount, totalItems, len(oversized), snapshotID)
+	return nil
+}
+
+// queueMessage enqueues one prepared message and records it in the report.
+func (s *Service) queueMessage(msg QueuedMessage, report *CycleReport) error {
+	evicted, err := s.queue.Enqueue(msg)
+	if err != nil {
+		return fmt.Errorf("telemetry: enqueue %s message: %w", msg.Class, err)
 	}
 
 	report.Messages++
 	report.Evicted += evicted
-	report.UploadedSections = append(report.UploadedSections, names...)
+	for _, name := range msg.Sections {
+		if !containsString(report.UploadedSections, name) {
+			report.UploadedSections = append(report.UploadedSections, name)
+		}
+	}
 
-	// Log the size on every send: the shared enqueue retry policy drops
-	// non-auth 4xx responses, so an oversized payload would otherwise fail
-	// permanently and invisibly.
-	log.Printf("[telemetry] queued %s envelope: sections=%s bytes=%d evicted=%d",
-		sanitize.ForLog(string(class)),
-		sanitize.ForLog(strings.Join(names, ",")),
-		len(body), evicted)
+	// Log the size on every send: the shared enqueue retry policy drops non-auth
+	// 4xx responses, so an oversized payload would otherwise fail permanently and
+	// invisibly.
+	log.Printf("[telemetry] queued %s message: sections=%s batch=%d/%d bytes=%d evicted=%d",
+		sanitize.ForLog(string(msg.Class)),
+		sanitize.ForLog(strings.Join(msg.Sections, ",")),
+		msg.BatchIndex+1, msg.BatchCount, len(msg.Payload), evicted)
 
 	if evicted > 0 {
 		s.health.AddDropped(evicted)
 	}
 	return nil
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // finishHealth stamps queue depth onto the health report.

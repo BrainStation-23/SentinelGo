@@ -87,6 +87,16 @@ func dispatchConfigFlags(f *cliFlags, cfg *config.Config) bool {
 		cli.HandleSoftwareListCommand(cfg.Path, *f.softwareListJSON, *f.softwareListCount)
 	case *f.servicesList || *f.servicesListJSON || *f.servicesListCount:
 		cli.HandleServicesListCommand(cfg.Path, *f.servicesListJSON, *f.servicesListCount)
+	case *f.telemetryHealth:
+		cli.HandleTelemetryHealth(cfg)
+	case *f.telemetryHealthJSON:
+		cli.HandleTelemetryHealthJSON(cfg)
+	case *f.capabilities:
+		cli.HandleCapabilities(cfg)
+	case *f.telemetryCycle:
+		cli.HandleTelemetryCycle(cfg)
+	case *f.telemetryReset:
+		cli.HandleTelemetryReset(cfg)
 	case *f.stop:
 		cli.HandleStop()
 	default:
@@ -115,6 +125,7 @@ func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 
 	switch {
 	case *f.install:
+		warnIfConfigIncomplete(cfg)
 		svcsub.HandleInstall(svc)
 	case *f.uninstall:
 		svcsub.HandleUninstall(svc)
@@ -123,4 +134,29 @@ func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 	default:
 		svcsub.RunAsService(svc)
 	}
+}
+
+// warnIfConfigIncomplete prints a plain-language warning when the configuration
+// cannot start the agent.
+//
+// Installation still proceeds — the service is created successfully and only
+// dies on its first start, where the SCM reports a bare numeric code. Without
+// this warning there is nothing connecting "install looked fine" to "the
+// service will not stay running", which is exactly the gap that makes a missing
+// supabase_url look like a broken build.
+func warnIfConfigIncomplete(cfg *config.Config) {
+	err := cfg.ValidateConfiguration()
+	if err == nil {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("WARNING: the configuration is incomplete, so the service will install")
+	fmt.Println("         but will not stay running.")
+	fmt.Printf("  Reason: %v\n", err)
+	fmt.Printf("  Config: %s\n", cfg.Path)
+	fmt.Println()
+	fmt.Println("  Fix the config, then verify in the foreground before relying on the service:")
+	fmt.Printf("    sentinelgo -run -config %s\n", cfg.Path)
+	fmt.Println()
 }

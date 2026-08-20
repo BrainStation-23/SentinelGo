@@ -17,8 +17,17 @@ import (
 
 const rpcTimeout = 60 * time.Second
 
-// SendByRPC sends the full software list to the agent_enqueue_software RPC.
+// SendByRPC sends a backwards-compatible full software snapshot to the
+// agent_enqueue_software RPC. Call SendSnapshotByRPC when collector completeness
+// is known so a partial scan cannot be mistaken for an authoritative full set.
 func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []SoftwareInfo, cfg *config.Config) error {
+	return s.SendSnapshotByRPC(ctx, software, true, cfg)
+}
+
+// SendSnapshotByRPC sends installed software together with its authoritative
+// snapshot mode. A partial collector result is represented as a delta so the
+// backend upserts received rows without pruning previously known software.
+func (s *SoftwareService) SendSnapshotByRPC(ctx context.Context, software []SoftwareInfo, complete bool, cfg *config.Config) error {
 	if s.supabaseURL == "" {
 		return fmt.Errorf("supabase base URL not configured for RPC call")
 	}
@@ -58,9 +67,14 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 		})
 	}
 
+	snapshot := "delta"
+	if complete {
+		snapshot = "full"
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"payload": map[string]interface{}{
 			"software": items,
+			"snapshot": snapshot,
 		},
 	})
 	if err != nil {
@@ -90,7 +104,10 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 
 		respBody, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode >= 400 {
-			return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+			// PostgREST errors may echo the submitted row and therefore software
+			// paths or other endpoint data. Status and response length are enough
+			// for retry classification; never copy the body into logs.
+			return resp.StatusCode, fmt.Errorf("HTTP %d (%d byte response)", resp.StatusCode, len(respBody))
 		}
 
 		var enqResp rpcutil.EnqueueResponse

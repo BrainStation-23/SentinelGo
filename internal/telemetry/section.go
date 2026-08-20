@@ -7,24 +7,26 @@ import (
 
 // Section names. Part of the backend contract: add, never rename.
 const (
-	SectionIdentity      = "identity"
-	SectionFirmware      = "firmware"
-	SectionTPM           = "tpm"
-	SectionCPU           = "cpu"
-	SectionMemoryModules = "memory_modules"
-	SectionPhysicalDisks = "physical_disks"
-	SectionOS            = "os"
-	SectionVolumes       = "volumes"
-	SectionNetwork       = "network"
-	SectionSessions      = "sessions"
-	SectionSecurityPost  = "security_posture"
-	SectionEncryption    = "encryption"
-	SectionSecureBoot    = "secure_boot"
-	SectionPatches       = "patches"
-	SectionPersistence   = "persistence"
-	SectionProcesses     = "processes"
-	SectionCertificates  = "certificates"
-	SectionHealth        = "health"
+	SectionIdentity       = "identity"
+	SectionVirtualization = "virtualization"
+	SectionDirectory      = "directory"
+	SectionFirmware       = "firmware"
+	SectionTPM            = "tpm"
+	SectionCPU            = "cpu"
+	SectionMemoryModules  = "memory_modules"
+	SectionPhysicalDisks  = "physical_disks"
+	SectionOS             = "os"
+	SectionVolumes        = "volumes"
+	SectionNetwork        = "network"
+	SectionSessions       = "sessions"
+	SectionSecurityPost   = "security_posture"
+	SectionEncryption     = "encryption"
+	SectionSecureBoot     = "secure_boot"
+	SectionPatches        = "patches"
+	SectionPersistence    = "persistence"
+	SectionProcesses      = "processes"
+	SectionCertificates   = "certificates"
+	SectionHealth         = "health"
 )
 
 // SectionSpec describes how one telemetry section is collected and reconciled.
@@ -58,6 +60,7 @@ func DefaultSections() []SectionSpec {
 	return []SectionSpec{
 		// Static hardware and identity: cheap to re-read, almost never changes.
 		{SectionIdentity, ClassInventory, 1, 6 * h, 24 * h, false},
+		{SectionVirtualization, ClassInventory, 1, 6 * h, 24 * h, false},
 		{SectionFirmware, ClassInventory, 1, 6 * h, 24 * h, false},
 		{SectionTPM, ClassInventory, 1, 6 * h, 24 * h, false},
 		{SectionCPU, ClassInventory, 1, 6 * h, 24 * h, false},
@@ -68,6 +71,10 @@ func DefaultSections() []SectionSpec {
 		{SectionOS, ClassInventory, 1, 1 * h, 24 * h, false},
 		{SectionVolumes, ClassInventory, 1, 1 * h, 24 * h, false},
 		{SectionNetwork, ClassInventory, 1, 1 * h, 24 * h, false},
+		// Directory join can change independently of a reboot (a device can be
+		// joined or unjoined at any time), so it collects on the same cadence as
+		// other dynamic inventory rather than the 6h static-hardware bucket.
+		{SectionDirectory, ClassInventory, 1, 1 * h, 24 * h, false},
 		{SectionSessions, ClassInventory, 1, 15 * m, 4 * h, false},
 		{SectionPersistence, ClassInventory, 1, 1 * h, 12 * h, true},
 		{SectionProcesses, ClassInventory, 1, 15 * m, 1 * h, true},

@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +21,19 @@ import (
 )
 
 const (
-	defaultTaskTimeout = 30 * time.Minute
-	maxTaskTimeout     = 24 * time.Hour
-	watchdogInterval   = 2 * time.Minute
-	watchdogGrace      = 5 * time.Minute
+	defaultTaskTimeout   = 30 * time.Minute
+	maxTaskTimeout       = 24 * time.Hour
+	watchdogInterval     = 2 * time.Minute
+	watchdogGrace        = 5 * time.Minute
+	maxInlineScriptBytes = 2 * 1024 * 1024
 )
+
+type resolvedTaskScript struct {
+	remotePath     string
+	inline         string
+	filename       string
+	expectedSHA256 string
+}
 
 // activeTask tracks an in-flight task for the watchdog.
 type activeTask struct {
@@ -202,7 +212,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		return handler(taskCtx, task)
 	}
 
-	scriptPath, scriptName, err := s.resolveScript(task)
+	script, err := s.resolveScript(task)
 	if err != nil {
 		return "", err
 	}
@@ -217,9 +227,9 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		}
 	}()
 
-	localScriptPath := filepath.Join(tempDir, scriptName)
-	if err := s.downloadScript(taskCtx, scriptPath, localScriptPath); err != nil {
-		return "", fmt.Errorf("download script: %w", err)
+	localScriptPath, err := s.materializeScript(taskCtx, tempDir, script)
+	if err != nil {
+		return "", err
 	}
 
 	payloadPath := filepath.Join(tempDir, "payload.json")
@@ -255,25 +265,96 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}
 }
 
-func (s *TaskExecutorService) resolveScript(task taskstore.Task) (string, string, error) {
+func (s *TaskExecutorService) resolveScript(task taskstore.Task) (resolvedTaskScript, error) {
 	osKey := runtime.GOOS
 
-	if scriptObj, ok := task.Scripts[osKey].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
+	for _, key := range []string{osKey, "all"} {
+		scriptObj, ok := task.Scripts[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if remotePath, ok := scriptObj["path"].(string); ok && remotePath != "" {
+			filename := filepath.Base(remotePath)
+			if configured, ok := scriptObj["filename"].(string); ok && configured != "" {
+				filename = filepath.Base(configured)
+			}
+			if filename == "." || filename == string(filepath.Separator) {
+				return resolvedTaskScript{}, fmt.Errorf("invalid script filename for platform: %s", key)
+			}
+			expectedSHA256, err := optionalScriptSHA256(scriptObj)
+			if err != nil {
+				return resolvedTaskScript{}, err
+			}
+			return resolvedTaskScript{remotePath: remotePath, filename: filename, expectedSHA256: expectedSHA256}, nil
+		}
+
+		if inline, ok := scriptObj["inline"].(string); ok && inline != "" {
+			if len(inline) > maxInlineScriptBytes {
+				return resolvedTaskScript{}, fmt.Errorf("inline script exceeds %d byte limit", maxInlineScriptBytes)
+			}
+			configured, _ := scriptObj["filename"].(string)
+			filename := filepath.Base(configured)
+			if configured == "" || filename == "." || filename == string(filepath.Separator) {
+				return resolvedTaskScript{}, fmt.Errorf("inline script filename missing for platform: %s", key)
+			}
+			expectedSHA256, err := optionalScriptSHA256(scriptObj)
+			if err != nil {
+				return resolvedTaskScript{}, err
+			}
+			return resolvedTaskScript{inline: inline, filename: filename, expectedSHA256: expectedSHA256}, nil
 		}
 	}
 
-	if scriptObj, ok := task.Scripts["all"].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
-		}
-	}
-
-	return "", "", fmt.Errorf("no script found for platform: %s", osKey)
+	return resolvedTaskScript{}, fmt.Errorf("no script found for platform: %s", osKey)
 }
 
-func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath string) error {
+func optionalScriptSHA256(scriptObj map[string]interface{}) (string, error) {
+	raw, _ := scriptObj["sha256"].(string)
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return "", nil // backward compatibility for already-queued tasks
+	}
+	if len(raw) != sha256.Size*2 {
+		return "", fmt.Errorf("invalid script SHA-256 metadata")
+	}
+	for _, r := range raw {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return "", fmt.Errorf("invalid script SHA-256 metadata")
+		}
+	}
+	return raw, nil
+}
+
+func verifyScriptSHA256(content []byte, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(content))
+	if actual != expected {
+		return fmt.Errorf("script integrity verification failed")
+	}
+	return nil
+}
+
+func (s *TaskExecutorService) materializeScript(ctx context.Context, tempDir string, script resolvedTaskScript) (string, error) {
+	localPath := filepath.Join(tempDir, script.filename)
+	if script.inline != "" {
+		if err := verifyScriptSHA256([]byte(script.inline), script.expectedSHA256); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(localPath, []byte(script.inline), 0600); err != nil {
+			return "", fmt.Errorf("write inline script: %w", err)
+		}
+		return localPath, nil
+	}
+	if err := s.downloadScript(ctx, script.remotePath, localPath, script.expectedSHA256); err != nil {
+		return "", fmt.Errorf("download script: %w", err)
+	}
+	return localPath, nil
+}
+
+func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath, expectedSHA256 string) error {
 	url := fmt.Sprintf("%s/storage/v1/object/authenticated/command-scripts/%s", s.cfg.SupabaseURL, remotePath)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -295,8 +376,7 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("script download returned HTTP %d", resp.StatusCode)
 	}
 
 	// #nosec G304 - localPath is a controlled path from task store
@@ -311,6 +391,18 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	}()
 
 	const maxScriptBytes = 10 * 1024 * 1024
-	_, err = io.Copy(out, io.LimitReader(resp.Body, maxScriptBytes))
-	return err
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(resp.Body, maxScriptBytes+1))
+	if err != nil {
+		return err
+	}
+	if n > maxScriptBytes {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("downloaded script exceeds %d byte limit", maxScriptBytes)
+	}
+	if expectedSHA256 != "" && fmt.Sprintf("%x", h.Sum(nil)) != expectedSHA256 {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("script integrity verification failed")
+	}
+	return nil
 }

@@ -1,3 +1,9 @@
+> ⚠️ **This document is stale and has not been verified against the current code.**
+>
+> This document claims tokens are encrypted at rest via `EncryptSensitiveData()`. **No such function exists** — `config.json` stores the access token, refresh token and agent secret in plaintext, protected only by filesystem ACLs. It also references `tenant_id` and `heartbeat_interval`, neither of which exists in the code.
+>
+> See [docs/telemetry/06-existing-code-observations.md](docs/telemetry/06-existing-code-observations.md) for the full list of documentation drift.
+
 # SentinelGo — Process Flow & Architecture
 
 > **DEPRECATED.** This document has been superseded by [`docs/08-project-overview.md`](docs/08-project-overview.md), the canonical architecture and runtime-flow reference. It is kept here for historical context only. Please refer to `docs/08` for accurate, current information.

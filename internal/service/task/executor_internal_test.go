@@ -5,10 +5,14 @@ package task
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -206,15 +210,99 @@ func TestResolveScript_AllFallback(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	path, name, err := s.resolveScript(task)
+	script, err := s.resolveScript(task)
 	if err != nil {
 		t.Fatalf("resolveScript(all fallback): %v", err)
 	}
-	if path != "/scripts/cross-platform.sh" {
-		t.Errorf("path = %q, want /scripts/cross-platform.sh", path)
+	if script.remotePath != "/scripts/cross-platform.sh" {
+		t.Errorf("path = %q, want /scripts/cross-platform.sh", script.remotePath)
 	}
-	if name != "cross-platform.sh" {
-		t.Errorf("name = %q, want cross-platform.sh", name)
+	if script.filename != "cross-platform.sh" {
+		t.Errorf("name = %q, want cross-platform.sh", script.filename)
+	}
+}
+
+func TestResolveScript_InlinePlatformScript(t *testing.T) {
+	task := taskstore.Task{
+		Scripts: map[string]interface{}{
+			runtime.GOOS: map[string]interface{}{
+				"filename": "disk-partition-inventory.ps1",
+				"inline":   "Write-Host '__PARTITION_INVENTORY__ {}'",
+			},
+		},
+	}
+	s := &TaskExecutorService{}
+	script, err := s.resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript(inline): %v", err)
+	}
+	if script.remotePath != "" {
+		t.Errorf("remotePath = %q, want empty", script.remotePath)
+	}
+	if script.inline == "" {
+		t.Error("inline script was discarded")
+	}
+	if script.filename != "disk-partition-inventory.ps1" {
+		t.Errorf("filename = %q, want disk-partition-inventory.ps1", script.filename)
+	}
+}
+
+func TestResolveScript_InlineRequiresSafeFilename(t *testing.T) {
+	task := taskstore.Task{
+		Scripts: map[string]interface{}{
+			"all": map[string]interface{}{"inline": "echo hello"},
+		},
+	}
+	s := &TaskExecutorService{}
+	if _, err := s.resolveScript(task); err == nil {
+		t.Error("expected missing inline filename to be rejected")
+	}
+}
+
+func TestResolveScript_InlineSizeLimit(t *testing.T) {
+	task := taskstore.Task{
+		Scripts: map[string]interface{}{
+			"all": map[string]interface{}{
+				"filename": "script.sh",
+				"inline":   strings.Repeat("x", maxInlineScriptBytes+1),
+			},
+		},
+	}
+	s := &TaskExecutorService{}
+	if _, err := s.resolveScript(task); err == nil {
+		t.Error("expected oversized inline script to be rejected")
+	}
+}
+
+func TestMaterializeScript_WritesInlineBody(t *testing.T) {
+	s := &TaskExecutorService{}
+	want := "Write-Host '__PARTITION_INVENTORY__ {}'"
+	path, err := s.materializeScript(context.Background(), t.TempDir(), resolvedTaskScript{
+		inline:   want,
+		filename: "disk-partition-inventory.ps1",
+	})
+	if err != nil {
+		t.Fatalf("materializeScript(inline): %v", err)
+	}
+	if filepath.Base(path) != "disk-partition-inventory.ps1" {
+		t.Fatalf("materialized filename = %q", filepath.Base(path))
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read materialized inline script: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("materialized body = %q, want %q", got, want)
+	}
+}
+
+func TestMaterializeScriptRejectsHashMismatch(t *testing.T) {
+	s := &TaskExecutorService{}
+	_, err := s.materializeScript(context.Background(), t.TempDir(), resolvedTaskScript{
+		inline: "echo tampered", filename: "script.sh", expectedSHA256: strings.Repeat("0", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "integrity verification failed") {
+		t.Fatalf("expected integrity failure, got %v", err)
 	}
 }
 
@@ -227,7 +315,7 @@ func TestResolveScript_NoMatch(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	_, _, err := s.resolveScript(task)
+	_, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for no matching script platform, got nil")
 	}
@@ -238,7 +326,7 @@ func TestResolveScript_NoMatch(t *testing.T) {
 func TestResolveScript_EmptyScripts(t *testing.T) {
 	task := taskstore.Task{Scripts: map[string]interface{}{}}
 	s := &TaskExecutorService{}
-	_, _, err := s.resolveScript(task)
+	_, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for empty scripts map, got nil")
 	}
@@ -260,7 +348,8 @@ func TestDownloadScript_Success(t *testing.T) {
 	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
 
 	localPath := filepath.Join(t.TempDir(), "script.sh")
-	if err := s.downloadScript(context.Background(), "path/to/script.sh", localPath); err != nil {
+	wantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	if err := s.downloadScript(context.Background(), "path/to/script.sh", localPath, wantHash); err != nil {
 		t.Fatalf("downloadScript: %v", err)
 	}
 	got, _ := os.ReadFile(localPath)
@@ -281,7 +370,7 @@ func TestDownloadScript_NotFound(t *testing.T) {
 	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
 
 	err := s.downloadScript(context.Background(), "missing.sh",
-		filepath.Join(t.TempDir(), "missing.sh"))
+		filepath.Join(t.TempDir(), "missing.sh"), "")
 	if err == nil {
 		t.Error("expected error for 404 response, got nil")
 	}
@@ -299,7 +388,7 @@ func TestDownloadScript_ServerError(t *testing.T) {
 	s := &TaskExecutorService{cfg: cfg, client: &http.Client{}}
 
 	err := s.downloadScript(context.Background(), "script.sh",
-		filepath.Join(t.TempDir(), "script.sh"))
+		filepath.Join(t.TempDir(), "script.sh"), "")
 	if err == nil {
 		t.Error("expected error for 500 response, got nil")
 	}

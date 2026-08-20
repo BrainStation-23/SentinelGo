@@ -39,5 +39,5 @@ func (s *SoftwareService) SyncCatalog(ctx context.Context, cat Catalog, deviceID
 			log.Printf("[software] partial scan; skipping prune to preserve catalog")
 		}
 	}
-	return s.SendByRPCIfChanged(ctx, deviceID, list, cfg)
+	return s.SendSnapshotByRPCIfChanged(ctx, deviceID, list, complete, cfg)
 }

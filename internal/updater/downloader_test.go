@@ -35,7 +35,7 @@ func TestDownloadAndVerify_NonOKStatus(t *testing.T) {
 	defer cancel()
 
 	cfg := cfgForServer(srv.URL)
-	_, _, err := downloadAndVerify(ctx, cfg, "v1.0.0/sentinelgo-linux-amd64", "somechecksum", "v1.0.0/sentinelgo-linux-amd64.sig")
+	_, _, err := downloadAndVerify(ctx, cfg, "v1.0.0/sentinelgo-linux-amd64", strings.Repeat("0", 64), "v1.0.0/sentinelgo-linux-amd64.sig", 1)
 	if err == nil {
 		t.Error("expected error for non-200 status, got nil")
 	}
@@ -66,7 +66,7 @@ func TestDownloadAndVerify_EmptySigPath(t *testing.T) {
 	defer cancel()
 
 	cfg := cfgForServer(srv.URL)
-	_, _, err := downloadAndVerify(ctx, cfg, assetPath, expectedChecksum, "")
+	_, _, err := downloadAndVerify(ctx, cfg, assetPath, expectedChecksum, "", int64(len(content)))
 	if err == nil {
 		t.Error("expected error from empty sigAssetPath (fail closed), got nil")
 	}
@@ -103,7 +103,7 @@ func TestDownloadAndVerify_AuthHeadersSent(t *testing.T) {
 	}
 	cfg.SetTokens("my-jwt-token", "")
 
-	_, _, _ = downloadAndVerify(ctx, cfg, "v1.0.0/binary", "sha", "v1.0.0/binary.sig")
+	_, _, _ = downloadAndVerify(ctx, cfg, "v1.0.0/binary", strings.Repeat("0", 64), "v1.0.0/binary.sig", 1)
 
 	if gotAuth != "Bearer my-jwt-token" {
 		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer my-jwt-token")
@@ -128,7 +128,7 @@ func TestDownloadAndVerify_CancelledContext(t *testing.T) {
 	cancel() // cancel immediately
 
 	cfg := cfgForServer(srv.URL)
-	_, _, err := downloadAndVerify(ctx, cfg, "v1/binary", "checksum", "v1/binary.sig")
+	_, _, err := downloadAndVerify(ctx, cfg, "v1/binary", strings.Repeat("0", 64), "v1/binary.sig", 1)
 	if err == nil {
 		t.Error("expected error from cancelled context, got nil")
 	}
@@ -143,8 +143,18 @@ func TestDownloadAndVerify_InvalidURL(t *testing.T) {
 		SupabaseURL: fmt.Sprintf("http://127.0.0.1:%d", 1),
 		SupabaseKey: "key",
 	}
-	_, _, err := downloadAndVerify(ctx, cfg, "v1/binary", "checksum", "v1/binary.sig")
+	_, _, err := downloadAndVerify(ctx, cfg, "v1/binary", strings.Repeat("0", 64), "v1/binary.sig", 1)
 	if err == nil {
 		t.Error("expected error for unreachable URL, got nil")
+	}
+}
+
+func TestDownloadAndVerifyRejectsInvalidManifestSizeBeforeDownload(t *testing.T) {
+	cfg := cfgForServer("http://127.0.0.1:1")
+	for _, size := range []int64{0, maxReleaseBytes + 1} {
+		_, _, err := downloadAndVerify(context.Background(), cfg, "v1/binary", strings.Repeat("0", 64), "v1/binary.sig", size)
+		if err == nil || !strings.Contains(err.Error(), "release size") {
+			t.Errorf("size %d: expected manifest size rejection, got %v", size, err)
+		}
 	}
 }

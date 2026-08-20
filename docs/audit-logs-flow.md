@@ -1,3 +1,9 @@
+> ⚠️ **This document is stale and has not been verified against the current code.**
+>
+> This document references an `agent_insert_audit_logs_batch` RPC that does not exist. The agent calls `agent_enqueue_audit_logs`. Treat `internal/logging/` and `internal/service/auditlog/` as the source of truth.
+>
+> See [06-existing-code-observations.md](telemetry/06-existing-code-observations.md) for the full list of documentation drift.
+
 # Audit Logs System
 
 ## Overview

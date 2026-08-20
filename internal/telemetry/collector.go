@@ -106,16 +106,27 @@ func (s *CollectorSet) All() []Collector {
 }
 
 // RunAll executes every collector in order, honouring cancellation between
-// each. It returns the section payloads, the per-collector results, and the
-// capability manifest.
+// each. It returns the section payloads, the per-collector results, the
+// capability manifest, and each collector's capability state indexed by
+// section name.
+//
+// The last return value exists because a section name and the capability key
+// that gates it are not always equal — SectionPatches is "patches" but its key
+// is CapKeyPatchInventory ("patch_inventory"), and a section like SectionCPU
+// owns no capability key at all. The wire-facing CapabilityManifest must stay
+// indexed by capability key (that shape is the backend contract), so callers
+// that need "what was this SECTION's capability state" — health bookkeeping,
+// specifically — need this separate, section-indexed view rather than
+// re-deriving it by assuming the two strings match.
 //
 // A collector that panics is contained: the surrounding cycle continues and the
 // failure is reported as that collector's result. One malformed WMI response
 // must not cost the agent every other section in the cycle.
-func RunAll(ctx context.Context, set *CollectorSet, cfg CollectorConfig) (SectionData, []CollectorResult, CapabilityManifest) {
+func RunAll(ctx context.Context, set *CollectorSet, cfg CollectorConfig) (SectionData, []CollectorResult, CapabilityManifest, map[string]CapabilityState) {
 	data := make(SectionData)
 	results := make([]CollectorResult, 0, set.Len())
 	caps := NewCapabilityManifest()
+	sectionCaps := make(map[string]CapabilityState, set.Len())
 
 	for _, c := range set.All() {
 		if ctx.Err() != nil {
@@ -125,12 +136,13 @@ func RunAll(ctx context.Context, set *CollectorSet, cfg CollectorConfig) (Sectio
 		if capKey != "" {
 			caps.Set(capKey, capState)
 		}
+		sectionCaps[c.Section()] = capState
 		results = append(results, res)
 		if payload != nil && res.Status.OK() {
 			data[c.Section()] = payload
 		}
 	}
-	return data, results, caps
+	return data, results, caps, sectionCaps
 }
 
 // runOne executes a single collector with panic containment.

@@ -41,6 +41,10 @@ func (a stateAdapter) GetAll() (map[string]*tel.SectionState, error) {
 	return out, nil
 }
 
+func (a stateAdapter) NextCollectionGeneration() (uint64, error) {
+	return a.s.NextCollectionGeneration()
+}
+
 func (a stateAdapter) MarkCollected(section string, schemaVersion int, hash string, itemCount int, status string, at time.Time) error {
 	return a.s.MarkCollected(section, schemaVersion, hash, itemCount, status, at)
 }

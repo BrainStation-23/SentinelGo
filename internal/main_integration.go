@@ -19,6 +19,7 @@ import (
 	telemetrysvc "sentinelgo/internal/service/telemetry"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/telemetry"
+	"sentinelgo/internal/telemetry/collectors"
 	"sentinelgo/internal/updater"
 )
 
@@ -206,10 +207,8 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 
 // buildTelemetryTask constructs the telemetry-collect scheduler task.
 //
-// The telemetry layer is opt-in and off by default: until collectors are
-// registered and the backend contract exists, running it would produce no
-// sections and no traffic. Returning nil when disabled avoids creating the
-// store files at all.
+// The telemetry layer is opt-in and off by default. Returning nil when
+// disabled avoids creating the store files at all.
 //
 // Returns nil (logged) if the stores cannot be opened; the rest of the agent
 // continues normally, exactly as the services task behaves.
@@ -219,7 +218,13 @@ func (mi *MainIntegration) buildTelemetryTask() *scheduler.Task {
 		return nil
 	}
 
-	svc, err := telemetrysvc.New(mi.cfg, telemetry.NewCollectorSet())
+	set := telemetry.NewCollectorSet()
+	if err := collectors.RegisterAll(set); err != nil {
+		log.Printf("Warning: failed to register telemetry collectors, telemetry-collect disabled: %v", err)
+		return nil
+	}
+
+	svc, err := telemetrysvc.New(mi.cfg, set)
 	if err != nil {
 		log.Printf("Warning: failed to open telemetry stores, telemetry-collect disabled: %v", err)
 		return nil
@@ -250,6 +255,25 @@ func (mi *MainIntegration) telemetryCollectHandler(svc *telemetrysvc.Service) sc
 			return fmt.Errorf("telemetry-collect: %w", err)
 		}
 		telemetrysvc.LogCycle(report)
+
+		// Drain whatever is queued, including anything left by an earlier cycle
+		// that could not reach the backend. A 401 mid-drain is recovered once
+		// and retried; queued rows survive either way.
+		flush := func() error {
+			_, ferr := svc.Flush(ctx)
+			return ferr
+		}
+		if authSvc != nil {
+			flush = func() error {
+				return authSvc.DoWithAuthRetry(ctx, cfg, func() error {
+					_, ferr := svc.Flush(ctx)
+					return ferr
+				})
+			}
+		}
+		if err := flush(); err != nil {
+			return fmt.Errorf("telemetry-flush: %w", err)
+		}
 		return nil
 	}
 }

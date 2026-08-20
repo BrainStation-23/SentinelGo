@@ -63,6 +63,12 @@ const (
 	CapKeyNetworkRoutingTable = "network.routing_table"
 	CapKeyPersistence         = "persistence"
 	CapKeyPeripheralsUSB      = "peripherals.usb"
+	// CapKeyVirtualization covers VM/hypervisor detection. Unlike most keys
+	// this is rarely CapNotPresent (bare metal is a legitimate "supported,
+	// is_virtual=false" result) — it exists for the genuine failure mode where
+	// this host offers no detection mechanism at all, e.g. a minimal Linux
+	// image with neither systemd-detect-virt nor a readable DMI table.
+	CapKeyVirtualization = "virtualization"
 )
 
 // AllCapabilityKeys lists every capability the agent knows about, so a manifest
@@ -83,6 +89,7 @@ func AllCapabilityKeys() []string {
 		CapKeyNetworkRoutingTable,
 		CapKeyPersistence,
 		CapKeyPeripheralsUSB,
+		CapKeyVirtualization,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -62,8 +63,9 @@ func (ws *windowsService) Install() error {
 
 	existing, err := m.OpenService(ws.name)
 	if err == nil {
-		_ = existing.Close()
-		return fmt.Errorf("service %q already exists", ws.name)
+		if err := stopDeleteAndWait(existing, m, ws.name); err != nil {
+			return err
+		}
 	}
 
 	s, err := m.CreateService(ws.name, exePath, mgr.Config{
@@ -78,6 +80,58 @@ func (ws *windowsService) Install() error {
 
 	_ = eventlog.InstallAsEventCreate(ws.name, eventlog.Error|eventlog.Warning|eventlog.Info)
 	return nil
+}
+
+// stopDeleteAndWait makes `sentinelgo -install` a deterministic reinstall,
+// matching install.bat. Deleting C:\SentinelGo does not unregister the SCM
+// entry, and Windows can keep a deleted service marked for deletion until all
+// handles close, so CreateService must not race the old registration.
+func stopDeleteAndWait(existing *mgr.Service, manager *mgr.Mgr, name string) error {
+	status, queryErr := existing.Query()
+	if queryErr == nil && status.State != svc.Stopped {
+		if _, err := existing.Control(svc.Stop); err != nil {
+			_ = existing.Close()
+			return fmt.Errorf("stop existing service %q: %w", name, err)
+		}
+
+		deadline := time.Now().Add(30 * time.Second)
+		stopped := false
+		for time.Now().Before(deadline) {
+			currentStatus, err := existing.Query()
+			if err != nil {
+				_ = existing.Close()
+				return fmt.Errorf("query existing service %q while stopping: %w", name, err)
+			}
+			if currentStatus.State == svc.Stopped {
+				stopped = true
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if !stopped {
+			_ = existing.Close()
+			return fmt.Errorf("existing service %q did not stop within 30 seconds", name)
+		}
+	}
+
+	if err := existing.Delete(); err != nil {
+		_ = existing.Close()
+		return fmt.Errorf("delete existing service %q: %w", name, err)
+	}
+	if err := existing.Close(); err != nil {
+		return fmt.Errorf("close existing service %q: %w", name, err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		probe, err := manager.OpenService(name)
+		if err != nil {
+			return nil
+		}
+		_ = probe.Close()
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("existing service %q is still registered after 30 seconds", name)
 }
 
 func (ws *windowsService) Start() error {
@@ -117,6 +171,15 @@ func (ws *windowsService) Uninstall() error {
 	return nil
 }
 
+// startFailureExitCode is reported to the SCM when the agent cannot start.
+//
+// It is returned as a SERVICE-SPECIFIC code (the true first return value of
+// Execute), not a Win32 code. Returning a plain Win32 code of 1 made Windows
+// render every startup failure as Event 7023 "Incorrect function" — technically
+// what error 1 means, but useless for diagnosis, and the reason a simple
+// missing supabase_url looked like a corrupt binary.
+const startFailureExitCode = 1
+
 // windowsHandler implements svc.Handler, driving the Program Start/Stop
 // lifecycle in response to Windows SCM control requests.
 type windowsHandler struct {
@@ -127,8 +190,15 @@ func (h *windowsHandler) Execute(_ []string, r <-chan svc.ChangeRequest, changes
 	changes <- svc.Status{State: svc.StartPending}
 
 	if err := h.ws.prg.Start(h.ws); err != nil {
+		// The SCM only ever surfaces a number, so the actual reason has to be
+		// written somewhere an operator will look. The event log is that place:
+		// stdout goes nowhere under the SCM, and the agent may have failed
+		// before its own file logging was initialised.
 		log.Printf("Failed to start program: %v", err)
-		return false, 1
+		if logger != nil {
+			_ = logger.Errorf("SentinelGo failed to start: %v", err)
+		}
+		return true, startFailureExitCode
 	}
 
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}

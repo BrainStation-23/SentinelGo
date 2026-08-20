@@ -35,13 +35,21 @@ var (
 // two identical payloads at the same time.
 // Returns skipped=true when no upload was performed.
 func (s *SoftwareService) SendByRPCIfChanged(ctx context.Context, deviceID string, list []SoftwareInfo, cfg *config.Config) (skipped bool, err error) {
+	return s.SendSnapshotByRPCIfChanged(ctx, deviceID, list, true, cfg)
+}
+
+// SendSnapshotByRPCIfChanged is the completeness-aware variant used by the
+// scheduler and remote sync task. Completeness is included in the dedupe hash:
+// transitioning from a partial scan to a complete scan must be uploaded even
+// when the collected item list itself is unchanged.
+func (s *SoftwareService) SendSnapshotByRPCIfChanged(ctx context.Context, _ string, list []SoftwareInfo, complete bool, cfg *config.Config) (skipped bool, err error) {
 	if !swInProgress.CompareAndSwap(false, true) {
 		log.Printf("[software] sync already in progress, skipping concurrent call")
 		return true, nil
 	}
 	defer swInProgress.Store(false)
 
-	hash := hashSoftwareList(list)
+	hash := hashSoftwareSnapshot(list, complete)
 
 	swStateMu.Lock()
 	unchanged := hash == swLastHash && time.Now().Before(swLastForce.Add(swForceResendInterval))
@@ -52,7 +60,7 @@ func (s *SoftwareService) SendByRPCIfChanged(ctx context.Context, deviceID strin
 		return true, nil
 	}
 
-	if err := s.SendByRPC(ctx, deviceID, list, cfg); err != nil {
+	if err := s.SendSnapshotByRPC(ctx, list, complete, cfg); err != nil {
 		return false, err
 	}
 
@@ -63,8 +71,11 @@ func (s *SoftwareService) SendByRPCIfChanged(ctx context.Context, deviceID strin
 	return false, nil
 }
 
-func hashSoftwareList(list []SoftwareInfo) string {
-	data, _ := json.Marshal(list)
+func hashSoftwareSnapshot(list []SoftwareInfo, complete bool) string {
+	data, _ := json.Marshal(struct {
+		Complete bool           `json:"complete"`
+		Items    []SoftwareInfo `json:"items"`
+	}{Complete: complete, Items: list})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

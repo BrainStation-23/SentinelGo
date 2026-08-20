@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
-	"time"
 
 	tel "sentinelgo/internal/telemetry"
 
@@ -21,6 +21,7 @@ type Service struct {
 	stateStore *store.TelemetryStateStore
 	queueStore *store.TelemetryOutboundStore
 	domain     *tel.Service
+	client     *http.Client
 }
 
 // StateDBPath returns the telemetry state database path, placed alongside
@@ -68,6 +69,7 @@ func New(cfg *config.Config, set *tel.CollectorSet) (*Service, error) {
 		stateStore: stateStore,
 		queueStore: queueStore,
 		domain:     domain,
+		client:     newHTTPClient(),
 	}, nil
 }
 
@@ -82,8 +84,16 @@ func (s *Service) RunCycle(ctx context.Context) (*tel.CycleReport, error) {
 // Health returns the current telemetry health report, including queue depth.
 func (s *Service) Health() *tel.TelemetryHealth { return s.domain.Health() }
 
-// QueueDepth returns the number of queued telemetry messages.
+// QueueDepth returns the number of deliverable queued telemetry messages.
 func (s *Service) QueueDepth() (int, error) { return s.queueStore.Depth() }
+
+// DeadLetterDepth returns how many undeliverable messages are retained.
+func (s *Service) DeadLetterDepth() (int, error) { return s.queueStore.DeadLetterDepth() }
+
+// DeadLettered returns retained undeliverable messages for inspection.
+func (s *Service) DeadLettered(limit int) ([]store.OutboundMessage, error) {
+	return s.queueStore.ListDeadLettered(limit)
+}
 
 // QueueBytes returns the queue's current payload size.
 func (s *Service) QueueBytes() (int64, error) { return s.queueStore.TotalBytes() }
@@ -93,31 +103,24 @@ func (s *Service) Pending(limit int) ([]store.OutboundMessage, error) {
 	return s.queueStore.GetPending(limit)
 }
 
-// MarkDelivered removes delivered messages from the queue and advances the
-// reconcile clock for exactly the sections they carried.
+// ResetState clears telemetry reconciliation state and the outbound queue,
+// forcing a full resync on the next cycle.
 //
-// Delivery, not enqueue, is what advances reconciliation: the interval measures
-// how long it has been since the backend saw a section, so a message sitting in
-// the queue must not count as delivered.
-func (s *Service) MarkDelivered(msgs []store.OutboundMessage, at time.Time) error {
-	if len(msgs) == 0 {
-		return nil
+// Scope is deliberately narrow: it touches ONLY the two telemetry databases.
+// Device registration, credentials, agent identity, the software and services
+// catalogs, the audit-log queue and the task store are all left untouched, so
+// this is safe to run on a live agent to recover from a bad telemetry state.
+func (s *Service) ResetState() error {
+	if err := s.stateStore.Reset(); err != nil {
+		return fmt.Errorf("telemetry: reset section state: %w", err)
 	}
-	ids := make([]int64, 0, len(msgs))
-	for _, m := range msgs {
-		ids = append(ids, m.ID)
+	cleared, err := s.queueStore.Clear()
+	if err != nil {
+		return fmt.Errorf("telemetry: clear outbound queue: %w", err)
 	}
-	if err := s.queueStore.Delete(ids); err != nil {
-		return fmt.Errorf("telemetry: delete delivered messages: %w", err)
-	}
-	for _, m := range msgs {
-		s.domain.MarkDelivered(SectionsOf(m), at)
-	}
+	log.Printf("[telemetry] reset: section state cleared, %d queued message(s) discarded", cleared)
 	return nil
 }
-
-// ResetState clears reconciliation state, forcing a full resync next cycle.
-func (s *Service) ResetState() error { return s.stateStore.Reset() }
 
 // Close releases both database handles.
 func (s *Service) Close() error {

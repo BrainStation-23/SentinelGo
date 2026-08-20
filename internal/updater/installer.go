@@ -159,14 +159,14 @@ func recodesignForGatekeeper(selfPath string) {
 // relaunch fails, the old binary keeps running and its compiled-in version
 // (config.Version) ensures the update is retried on the next check, rather than
 // the agent silently reporting a version it isn't running.
-func restart(newPath string) error {
+func restart(newPath, backupPath string) error {
 	selfPath, err := os.Executable()
 	if err != nil {
 		return err
 	}
 
 	if runtime.GOOS == "windows" {
-		return restartWindows(newPath, selfPath)
+		return restartWindows(newPath, selfPath, backupPath)
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -193,21 +193,12 @@ func restart(newPath string) error {
 // retry loop (the file unlocks only once we exit), then restarts the service via
 // the SCM. `timeout` is avoided: it fails in non-interactive Session 0 with
 // "Input redirection is not supported"; `ping` provides the delay instead.
-func restartWindows(newPath, selfPath string) error {
+func restartWindows(newPath, selfPath, backupPath string) error {
 	dir := filepath.Dir(selfPath)
 	bat := filepath.Join(dir, "sentinelgo_update.bat")
+	failureMarker := filepath.Join(dir, "sentinelgo_update_failure.txt")
 
-	script := fmt.Sprintf(`@echo off
-ping -n 3 127.0.0.1 >nul
-:retry
-move /Y "%s" "%s" >nul 2>&1
-if errorlevel 1 (
-  ping -n 2 127.0.0.1 >nul
-  goto retry
-)
-sc start "%s" >nul 2>&1
-del "%s" >nul 2>&1
-`, newPath, selfPath, windowsServiceName, bat)
+	script := windowsUpdateScript(newPath, selfPath, backupPath, bat, failureMarker)
 
 	// #nosec G306 - the update script must be executable/readable by the system
 	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
@@ -230,4 +221,69 @@ del "%s" >nul 2>&1
 	log.Println("Updater: update staged; exiting so the SCM can restart the service with the new binary")
 	os.Exit(0)
 	return nil
+}
+
+// windowsUpdateScript performs a bounded swap, requires five consecutive SCM
+// RUNNING observations, and restores the known-good binary on any failure. The
+// marker contains no command output or configuration data and is safe to ship
+// as an operational signal on the next startup.
+func windowsUpdateScript(newPath, selfPath, backupPath, bat, failureMarker string) string {
+	return fmt.Sprintf(`@echo off
+setlocal
+ping -n 3 127.0.0.1 >nul
+set SWAP_ATTEMPTS=0
+:swap_retry
+move /Y "%s" "%s" >nul 2>&1
+if errorlevel 1 (
+  set /a SWAP_ATTEMPTS+=1
+  if %%SWAP_ATTEMPTS%% GEQ 30 goto rollback
+  ping -n 2 127.0.0.1 >nul
+  goto swap_retry
+)
+sc start "%s" >nul 2>&1
+set HEALTH_ATTEMPTS=0
+set HEALTHY_COUNT=0
+:health_check
+ping -n 3 127.0.0.1 >nul
+sc query "%s" | find "RUNNING" >nul 2>&1
+if errorlevel 1 (set HEALTHY_COUNT=0) else (set /a HEALTHY_COUNT+=1)
+if %%HEALTHY_COUNT%% GEQ 5 goto success
+set /a HEALTH_ATTEMPTS+=1
+if %%HEALTH_ATTEMPTS%% GEQ 30 goto rollback
+goto health_check
+
+:rollback
+sc stop "%s" >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+copy /Y "%s" "%s" >nul 2>&1
+if errorlevel 1 goto rollback_failed
+sc start "%s" >nul 2>&1
+set ROLLBACK_ATTEMPTS=0
+set ROLLBACK_HEALTHY=0
+:rollback_health
+ping -n 3 127.0.0.1 >nul
+sc query "%s" | find "RUNNING" >nul 2>&1
+if errorlevel 1 (set ROLLBACK_HEALTHY=0) else (set /a ROLLBACK_HEALTHY+=1)
+if %%ROLLBACK_HEALTHY%% GEQ 5 goto rollback_success
+set /a ROLLBACK_ATTEMPTS+=1
+if %%ROLLBACK_ATTEMPTS%% GEQ 30 goto rollback_failed
+goto rollback_health
+
+:rollback_success
+>"%s" echo update_failed_rolled_back
+del "%s" >nul 2>&1
+exit /b 1
+
+:rollback_failed
+>"%s" echo update_failed_rollback_failed
+exit /b 2
+
+:success
+del "%s" >nul 2>&1
+del "%s" >nul 2>&1
+del "%s" >nul 2>&1
+exit /b 0
+`, newPath, selfPath, windowsServiceName, windowsServiceName, windowsServiceName,
+		backupPath, selfPath, windowsServiceName, windowsServiceName, failureMarker, bat, failureMarker,
+		backupPath, failureMarker, bat)
 }

@@ -98,7 +98,7 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	// sig is stored alongside the binary with a .sig suffix, mirroring GitHub releases.
 	sigAssetPath := latest.AssetPath + ".sig"
 
-	newPath, actualChecksum, err := downloadAndVerify(ctx, cfg, latest.AssetPath, latest.SHA256, sigAssetPath)
+	newPath, actualChecksum, err := downloadAndVerify(ctx, cfg, latest.AssetPath, latest.SHA256, sigAssetPath, latest.Size)
 	if err != nil {
 		_ = removeFile(backupPath)
 		return fmt.Errorf("download and verify failed: %w", err)
@@ -119,9 +119,15 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	}
 
 	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
-	_ = removeFile(backupPath)
+	// Windows completes the swap after this process exits. Its helper retains
+	// the backup until the replacement has remained RUNNING, and restores it if
+	// the swap/startup check fails. Other platforms have already completed the
+	// atomic replacement above.
+	if runtime.GOOS != "windows" {
+		_ = removeFile(backupPath)
+	}
 
-	return restart(newPath)
+	return restart(newPath, backupPath)
 }
 
 // CheckAndApplyWithRetry performs an update check and apply with exponential

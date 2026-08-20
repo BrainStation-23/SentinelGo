@@ -1,3 +1,9 @@
+> ⚠️ **This document is stale and has not been verified against the current code.**
+>
+> This document states that `agent_info_update_interval` defaults to 1h. The actual runtime default is **5 minutes**, in both `Load()` and `GetAgentInfoUpdateInterval()`. Other intervals may have drifted similarly. Treat `internal/config/config.go` as the source of truth.
+>
+> See [06-existing-code-observations.md](telemetry/06-existing-code-observations.md) for the full list of documentation drift.
+
 # SentinelGo — Config Module (`internal/config`)
 
 Single JSON file that holds every tunable the agent reads at startup.

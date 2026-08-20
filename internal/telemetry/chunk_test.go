@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func makeProcesses(n, cmdlineBytes int) []fakeProcess {
 // A truncated process or certificate list is indistinguishable from a genuinely
 // short one, so dropping the tail would silently misreport the endpoint.
 // 5,000 processes with 4 KB command lines is roughly 20 MB — far past the
-// enqueue limit, and exactly the shape that would previously have been lost.
+// enqueue limit, and exactly the shape that would otherwise be lost.
 func TestChunkSplitsInsteadOfTruncating(t *testing.T) {
 	const (
 		count        = 5000
@@ -43,19 +44,18 @@ func TestChunkSplitsInsteadOfTruncating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chunk: %v", err)
 	}
-	if oversized != 0 {
-		t.Fatalf("no single item should exceed the cap, got %d oversized", oversized)
+	if len(oversized) != 0 {
+		t.Fatalf("no single item should exceed the cap, got %d oversized", len(oversized))
 	}
 	if len(batches) < 2 {
 		t.Fatalf("expected the payload to be split, got %d batch(es)", len(batches))
 	}
 
-	// Every batch must fit, and the union must be the complete, ordered input.
 	total := 0
 	for i, batch := range batches {
-		encoded, err := json.Marshal(batch)
-		if err != nil {
-			t.Fatalf("marshal batch %d: %v", i, err)
+		encoded, mErr := json.Marshal(batch)
+		if mErr != nil {
+			t.Fatalf("marshal batch %d: %v", i, mErr)
 		}
 		if len(encoded) > MaxPayloadBytes {
 			t.Errorf("batch %d is %d bytes, over the %d cap", i, len(encoded), MaxPayloadBytes)
@@ -78,6 +78,49 @@ func TestChunkSplitsInsteadOfTruncating(t *testing.T) {
 	}
 }
 
+// TestChunkExcludesUnsendableItem covers the one case where truncation is
+// permitted: an item whose own encoding exceeds the limit cannot be placed in
+// any batch that respects the cap.
+//
+// It is excluded rather than emitted, because emitting it would guarantee a
+// rejected payload and lose the whole batch instead of the single item. The
+// exclusion is reported so the caller can mark the snapshot truncated.
+func TestChunkExcludesUnsendableItem(t *testing.T) {
+	items := []fakeProcess{
+		{PID: 1, Name: "small.exe", Cmdline: "x"},
+		{PID: 2, Name: "huge.exe", Cmdline: strings.Repeat("y", 2000)},
+		{PID: 3, Name: "small2.exe", Cmdline: "z"},
+	}
+
+	batches, oversized, err := Chunk(items, 500)
+	if err != nil {
+		t.Fatalf("chunk: %v", err)
+	}
+	if len(oversized) != 1 || oversized[0] != 1 {
+		t.Fatalf("oversized = %v, want [1]", oversized)
+	}
+
+	var flat []fakeProcess
+	for _, b := range batches {
+		flat = append(flat, b...)
+	}
+	if len(flat) != 2 {
+		t.Fatalf("expected the two sendable items, got %d", len(flat))
+	}
+	for _, p := range flat {
+		if p.PID == 2 {
+			t.Fatal("the unsendable item must not be emitted")
+		}
+	}
+	// Every emitted batch must respect the cap.
+	for i, b := range batches {
+		encoded, _ := json.Marshal(b)
+		if len(encoded) > 500 {
+			t.Errorf("batch %d is %d bytes, over the 500 cap", i, len(encoded))
+		}
+	}
+}
+
 // TestChunkMetaDescribesTheSnapshot checks the fields the backend needs to
 // reassemble a snapshot and to notice a missing batch.
 func TestChunkMetaDescribesTheSnapshot(t *testing.T) {
@@ -94,7 +137,7 @@ func TestChunkMetaDescribesTheSnapshot(t *testing.T) {
 
 	seen := make(map[int]bool)
 	for i := range batches {
-		meta := ChunkMetaFor(snapshotID, i, len(batches), len(items))
+		meta := ChunkMetaFor(snapshotID, i, len(batches), len(items), 0)
 		if meta.SnapshotID != snapshotID {
 			t.Errorf("batch %d has snapshot id %q, want %q", i, meta.SnapshotID, snapshotID)
 		}
@@ -130,41 +173,14 @@ func TestChunkSnapshotIDsAreUnique(t *testing.T) {
 	}
 }
 
-// TestChunkOversizedItemStillEmitted verifies a single item larger than the cap
-// is reported but not dropped: losing a real endpoint fact is worse than an
-// oversized batch the caller can shrink.
-func TestChunkOversizedItemStillEmitted(t *testing.T) {
-	items := []fakeProcess{
-		{PID: 1, Name: "small.exe", Cmdline: "x"},
-		{PID: 2, Name: "huge.exe", Cmdline: strings.Repeat("y", 2000)},
-		{PID: 3, Name: "small2.exe", Cmdline: "z"},
-	}
-
-	batches, oversized, err := Chunk(items, 500)
-	if err != nil {
-		t.Fatalf("chunk: %v", err)
-	}
-	if oversized != 1 {
-		t.Fatalf("oversized = %d, want 1", oversized)
-	}
-
-	total := 0
-	for _, b := range batches {
-		total += len(b)
-	}
-	if total != len(items) {
-		t.Fatalf("oversized item was dropped: %d items emitted, want %d", total, len(items))
-	}
-}
-
 // TestChunkSmallInputStaysSingleBatch avoids needless fragmentation.
 func TestChunkSmallInputStaysSingleBatch(t *testing.T) {
 	batches, oversized, err := Chunk(makeProcesses(10, 64), MaxPayloadBytes)
 	if err != nil {
 		t.Fatalf("chunk: %v", err)
 	}
-	if oversized != 0 {
-		t.Errorf("oversized = %d, want 0", oversized)
+	if len(oversized) != 0 {
+		t.Errorf("oversized = %v, want none", oversized)
 	}
 	if len(batches) != 1 {
 		t.Fatalf("expected a single batch for a small payload, got %d", len(batches))
@@ -177,7 +193,82 @@ func TestChunkEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chunk: %v", err)
 	}
-	if len(batches) != 0 || oversized != 0 {
-		t.Fatalf("empty input produced %d batches / %d oversized", len(batches), oversized)
+	if len(batches) != 0 || len(oversized) != 0 {
+		t.Fatalf("empty input produced %d batches / %d oversized", len(batches), len(oversized))
+	}
+}
+
+// ── ChunkSection (the reflective production path) ────────────────────────────
+
+// TestChunkSectionWalksSlicePayload verifies the reflective path used for
+// collector-defined `any` payloads matches the typed path.
+func TestChunkSectionWalksSlicePayload(t *testing.T) {
+	items := makeProcesses(2000, 512)
+
+	batches, totalItems, oversized, err := ChunkSection(any(items), 100_000)
+	if err != nil {
+		t.Fatalf("ChunkSection: %v", err)
+	}
+	if totalItems != len(items) {
+		t.Errorf("totalItems = %d, want %d", totalItems, len(items))
+	}
+	if len(oversized) != 0 {
+		t.Errorf("oversized = %v, want none", oversized)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("expected multiple batches, got %d", len(batches))
+	}
+
+	total := 0
+	for _, b := range batches {
+		total += len(b)
+	}
+	if total != len(items) {
+		t.Fatalf("reflective chunking lost data: %d, want %d", total, len(items))
+	}
+}
+
+// TestChunkSectionReportsTotalBeforeExclusion is important for the backend: the
+// true set size must be reported even when part of it could not be sent, so a
+// truncated snapshot is recognisable rather than looking merely small.
+func TestChunkSectionReportsTotalBeforeExclusion(t *testing.T) {
+	items := []fakeProcess{
+		{PID: 1, Cmdline: "x"},
+		{PID: 2, Cmdline: strings.Repeat("y", 5000)},
+		{PID: 3, Cmdline: "z"},
+	}
+
+	_, totalItems, oversized, err := ChunkSection(any(items), 1000)
+	if err != nil {
+		t.Fatalf("ChunkSection: %v", err)
+	}
+	if totalItems != 3 {
+		t.Errorf("totalItems = %d, want 3 (the count BEFORE exclusion)", totalItems)
+	}
+	if len(oversized) != 1 {
+		t.Errorf("oversized = %v, want one entry", oversized)
+	}
+}
+
+// TestChunkSectionRejectsNonSlice checks a misconfigured section is reported
+// rather than silently mangled.
+func TestChunkSectionRejectsNonSlice(t *testing.T) {
+	_, _, _, err := ChunkSection(map[string]any{"not": "a list"}, MaxPayloadBytes)
+	if err == nil {
+		t.Fatal("expected an error for a non-slice payload")
+	}
+	if !errors.Is(err, ErrNotChunkable) {
+		t.Fatalf("error should be ErrNotChunkable, got %v", err)
+	}
+}
+
+// TestChunkSectionNilPayload covers the empty case.
+func TestChunkSectionNilPayload(t *testing.T) {
+	batches, total, oversized, err := ChunkSection(nil, MaxPayloadBytes)
+	if err != nil {
+		t.Fatalf("ChunkSection(nil): %v", err)
+	}
+	if len(batches) != 0 || total != 0 || len(oversized) != 0 {
+		t.Fatal("nil payload should produce nothing")
 	}
 }

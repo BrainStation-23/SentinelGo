@@ -35,6 +35,12 @@ type Envelope struct {
 	Platform      string `json:"platform"`
 	Class         Class  `json:"class"`
 
+	// CollectionGeneration is a device-persisted monotonic counter allocated
+	// once per collection cycle. Every envelope and chunk produced by that
+	// cycle carries the same value. The backend uses it before endpoint wall
+	// clock time, so a delayed retry can never replace a later collection.
+	CollectionGeneration uint64 `json:"collection_generation,omitempty"`
+
 	// FullSnapshot marks a message carrying every section the agent produces,
 	// as opposed to the changed subset. Set on first upload after provisioning
 	// and on a periodic full reconcile.

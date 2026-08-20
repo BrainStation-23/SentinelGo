@@ -1,6 +1,6 @@
 # SentinelGo
 
-Cross-platform Go system monitoring agent. Collects OS-level metrics (CPU, memory, disk, network, battery, encryption status) and reports to a Supabase backend via heartbeat loop. Runs as a native service on Linux (systemd), macOS (launchd), and Windows (Service API). Includes automatic self-update from GitHub Releases.
+Cross-platform Go endpoint agent. Collects OS-level inventory and security telemetry (CPU, memory, disk, network, battery, encryption, security posture, software, services, event logs) and reports it to a Supabase backend through periodic scheduler tasks. Runs as a native service on Linux (systemd), macOS (launchd), and Windows (Service API). Self-updates from Supabase Storage, verified by SHA-256 checksum and ed25519 signature.
 
 ## Build & Test
 
@@ -21,32 +21,59 @@ All builds use `CGO_ENABLED=0`. Version is injected via `-ldflags` from git tags
 
 ```
 cmd/
-  sentinelgo/          main agent: service lifecycle, CLI, heartbeat loop, updater
-  auditlogs/           audit log collection service
+  sentinelgo/          the only entrypoint: CLI, service lifecycle
 
 internal/
-  config/              JSON config loading, env vars, credential storage
-  heartbeat/           payload generation and Supabase API calls
+  main_integration.go  startup sequencing, task wiring, shutdown ordering
+  scheduler/           task registry and periodic runner (all loops live here)
+  config/              JSON config loading and credential storage (no env vars)
   lockfile/            file-based process locking and PID tracking
-  osinfo/              cross-platform hardware metrics (platform-specific files)
-  service/             JWT auth (authService.go), agent info (agentService.go)
-  updater/             GitHub release check, binary download, atomic replace, restart
-  auditlogs/           audit log collection and forwarding
-  logging/             logging utilities
+  osinfo/              inventory collectors, one sub-package per domain
+    shared/            SystemInfo types + RunCommand/ReadFileContent helpers
+  service/
+    agent/             inventory upload   -> agent_enqueue_inventory
+    software/          software inventory -> agent_enqueue_software
+    services/          service inventory  -> agent_enqueue_services
+    auditlog/          audit log upload   -> agent_enqueue_audit_logs
+    auth/              agent-login, JWT refresh, circuit breaker
+    task/              remote task execution
+    telemetry/         telemetry layer wiring (stores, scheduler task)
+    rpcutil/           shared enqueue retry policy and response types
+  telemetry/           enterprise telemetry domain layer (no DB, no HTTP)
+  auditlogs/collector/ OS event log collection (per-platform)
+  logging/             collector -> parser -> SQLite queue -> uploader
+  store/               local SQLite (software, services, audit logs, tasks, telemetry)
+  taskstore/           remote task client and local task DB
+  updater/             release check via RPC, download, verify, atomic replace, restart
   models/              shared data models
-  constants/           shared constants
 
-supabase/              Edge functions (TypeScript)
+docs/telemetry/        telemetry analysis, architecture, roadmap
+docs/backend/          backend contract specifications
 scripts/               Release, diagnostics, and pre-release checks
 release/               Compiled binaries (never edit directly)
 ```
 
+**The backend is not in this repository.** It is a Supabase project reached over
+HTTP: one edge function (`agent-login`) and a set of `agent_enqueue_*` /
+`agent_*` Postgres RPCs. There are no edge functions, SQL files or migrations
+here — proposed backend changes are specified as markdown in `docs/backend/`.
+
 ## Runtime Flow
 
-1. Load config -> acquire lockfile -> init services
-2. Authenticate via Supabase edge function (agent-login) -> store JWT
-3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
-4. Daily GitHub release check -> download -> stop -> replace binary -> restart
+1. Load config -> acquire lockfile -> validate -> init auth
+2. Authenticate via the `agent-login` edge function -> store JWT (refreshed every 1m)
+3. Register scheduled tasks, then run them on independent tickers with startup jitter:
+   - `agent-info-update` (5m)  -> collect osinfo, upload if the fingerprint changed
+   - `software-sync` (5m)      -> collect software, upload if changed
+   - `services-collect` (5m)   -> collect services, upload if changed
+   - `telemetry-collect` (15m) -> telemetry layer; disabled by default
+   - `auto-update` (1h)        -> check for a newer release
+   - audit-log collect + upload (5m), and task poll + execute (5m)
+4. Update: `get_latest_agent_release` RPC -> download from Supabase Storage ->
+   verify SHA-256 and ed25519 signature -> stop -> replace binary -> restart
+
+There is no single heartbeat loop. Each task is self-sufficient and fails
+independently; every handler is wrapped in `recover()` by the scheduler.
 
 ## Key Conventions
 
@@ -56,8 +83,20 @@ release/               Compiled binaries (never edit directly)
 - Config paths: `/opt/sentinelgo/.sentinelgo/config.json` (Linux/macOS), `C:\sentinelgo\.sentinelgo\config.json` (Windows)
 - Never hardcode Supabase credentials or API keys
 - Never modify `release/` directory directly; use `make release`
+- New enterprise telemetry goes through `internal/telemetry/` (additive layer);
+  see `docs/telemetry/04-architecture.md`. The existing inventory, software,
+  services and audit-log pipelines are stable foundations — extend around them
+  rather than modifying them, and see `docs/telemetry/06-existing-code-observations.md`
+  for known issues in existing code that need approval before being touched
 - Service lifecycle managed by `github.com/kardianos/service`
-- System metrics collected via `github.com/shirou/gopsutil/v3`
+- System metrics collected via `github.com/shirou/gopsutil/v4`
+- Most telemetry is shell-out based, funnelled through `shared.RunCommand` /
+  `shared.RunCommandOutput` (30s timeout, NUL stripping). Native WMI via
+  `github.com/yusufpapurcu/wmi` is preferred for new Windows collectors; see
+  `internal/osinfo/display/display_windows.go` for the pattern
+- Backend calls use `rpcutil.WithEnqueueRetry`, which **drops non-401 4xx
+  responses**. Log payload size on every send, or an oversized payload fails
+  permanently and silently
 
 ## Rules
 

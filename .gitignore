@@ -55,4 +55,5 @@ sentinelgo_*.db
 sentinelgo_*.db-wal
 sentinelgo_*.db-shm
 /.puku
-sentinelgo
+/sentinelgo
+/sentinelgo.exe
