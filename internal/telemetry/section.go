@@ -22,11 +22,18 @@ const (
 	SectionSecurityPost   = "security_posture"
 	SectionEncryption     = "encryption"
 	SectionSecureBoot     = "secure_boot"
-	SectionPatches        = "patches"
-	SectionPersistence    = "persistence"
-	SectionProcesses      = "processes"
-	SectionCertificates   = "certificates"
-	SectionHealth         = "health"
+	// SectionProtection carries the endpoint-protection controls whose loss
+	// leaves a device exposed immediately: firewall state, real-time
+	// protection, tamper protection. It is separate from SectionSecurityPost
+	// (password policy, privileged accounts) because the two fail
+	// independently — one collector per section means one status per section,
+	// and merging them would report the weaker of the two outcomes for both.
+	SectionProtection   = "security_protection"
+	SectionPatches      = "patches"
+	SectionPersistence  = "persistence"
+	SectionProcesses    = "processes"
+	SectionCertificates = "certificates"
+	SectionHealth       = "health"
 )
 
 // SectionSpec describes how one telemetry section is collected and reconciled.
@@ -84,6 +91,7 @@ func DefaultSections() []SectionSpec {
 		{SectionSecurityPost, ClassPosture, 1, 15 * m, 1 * h, false},
 		{SectionEncryption, ClassPosture, 1, 15 * m, 1 * h, false},
 		{SectionSecureBoot, ClassPosture, 1, 15 * m, 1 * h, false},
+		{SectionProtection, ClassPosture, 1, 15 * m, 1 * h, false},
 		{SectionPatches, ClassPosture, 1, 6 * h, 12 * h, true},
 
 		// Health is sampled, never fingerprinted or reconciled.

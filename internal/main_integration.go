@@ -136,26 +136,40 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 	}()
 }
 
-// initAuth creates the auth service and establishes a session. It mints a fresh
-// session via agent-login unless a stored access token is still comfortably
-// valid (a quick restart), in which case that token is reused. Failures are
-// non-fatal: the scheduler's recovery loop keeps retrying, gated by the auth
-// circuit breaker, so a transient outage at boot does not crash the service.
+// initAuth creates the auth service and kicks off session establishment in the
+// background. It mints a fresh session via agent-login unless a stored access
+// token is still comfortably valid (a quick restart), in which case that token
+// is reused. Failures are non-fatal: the scheduler's recovery loop keeps
+// retrying, gated by the auth circuit breaker, so a transient outage at boot
+// does not crash the service.
+//
+// mi.authSvc is constructed synchronously (pure local state, no I/O) so every
+// caller further down Start() gets a valid, non-nil pointer immediately.
+// Establishing the session itself runs in a goroutine: agent-login can take up
+// to loginTimeout per attempt across up to 3 attempts, and on Windows Start()
+// runs inside the SCM's synchronous Execute callback — blocking here for more
+// than ServicesPipeTimeout (30s by default) makes Windows kill the process
+// before it ever reports RUNNING, regardless of whether the login itself would
+// have eventually succeeded. Since a login failure here was already logged and
+// swallowed rather than propagated, moving it off the startup critical path
+// changes no behavior other than when it happens.
 func (mi *MainIntegration) initAuth(ctx context.Context) {
 	mi.authSvc = authsvc.NewService(mi.cfg.SupabaseURL, mi.cfg.SupabaseKey)
 
-	if mi.cfg.AccessToken != "" && !authsvc.ShouldRefresh(mi.cfg.AccessToken, startupTokenSkew) {
-		if err := mi.authSvc.InitSession(mi.cfg); err == nil {
-			log.Printf("Auth: reusing stored access token (still valid)")
-			return
-		} else {
-			log.Printf("Warning: session init from stored token failed: %v", err)
+	go func() {
+		if mi.cfg.AccessToken != "" && !authsvc.ShouldRefresh(mi.cfg.AccessToken, startupTokenSkew) {
+			if err := mi.authSvc.InitSession(mi.cfg); err == nil {
+				log.Printf("Auth: reusing stored access token (still valid)")
+				return
+			} else {
+				log.Printf("Warning: session init from stored token failed: %v", err)
+			}
 		}
-	}
 
-	if err := mi.authSvc.Login(ctx, mi.cfg); err != nil {
-		log.Printf("Warning: startup agent-login failed (will retry in background): %v", err)
-	}
+		if err := mi.authSvc.Login(ctx, mi.cfg); err != nil {
+			log.Printf("Warning: startup agent-login failed (will retry in background): %v", err)
+		}
+	}()
 }
 
 // configureScheduledTasks builds the default task set, applies config-driven

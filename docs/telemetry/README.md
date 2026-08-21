@@ -14,6 +14,7 @@ Analysis, architecture and roadmap for expanding SentinelGo into a full enterpri
 | [04-architecture.md](04-architecture.md) | The telemetry layer: envelope, capabilities, collection status, per-section reconciliation, state and queue separation, chunking, health, change events |
 | [05-impact-and-roadmap.md](05-impact-and-roadmap.md) | Performance and bandwidth impact, fleet scalability at 10k endpoints, privacy and security analysis, backend compatibility, phased roadmap |
 | [06-existing-code-observations.md](06-existing-code-observations.md) | Issues found in existing code. **Findings only — each needs approval before the subsystem is touched** |
+| [07-phase-g-change-events.md](07-phase-g-change-events.md) | Phase G as built: watched values, the events emitted and the ones deliberately blocked, debounce/cooldown/flapping, event identity, delivery routing and privacy guarantees |
 | [../backend/telemetry-contracts.md](../backend/telemetry-contracts.md) | Backend specification for the Supabase owners: RPCs, payload shapes, merge and chunk-assembly semantics, reference DDL |
 
 ## Governing constraint

@@ -2,6 +2,8 @@ package internal_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -50,6 +52,60 @@ func TestMainIntegration_GetStatus_NilConfig(t *testing.T) {
 	if _, exists := status["authentication"]; exists {
 		t.Error("GetStatus() should not include authentication status before Start")
 	}
+}
+
+// TestMainIntegration_StartDoesNotBlockOnSlowLogin guards against the Windows
+// service-start regression: agent-login can take up to loginTimeout (60s) per
+// attempt across up to 3 attempts, but Start() runs inside the Windows SCM's
+// synchronous Execute callback, which must report SERVICE_RUNNING within
+// ServicesPipeTimeout (30s by default) or Windows kills the process (Events
+// 7000/7009). Start() must therefore return promptly regardless of how slow
+// or hung agent-login is; auth establishes in the background and the
+// scheduler's existing Healthy()-gated tasks tolerate it not being ready yet.
+func TestMainIntegration_StartDoesNotBlockOnSlowLogin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration Start() (slow OS collection / network) in -short mode")
+	}
+
+	// block and srv.Close() must be unwound in that exact order: Server.Close()
+	// waits for outstanding requests to finish, and the handler below is
+	// deliberately parked on <-block. A plain t.Cleanup fires after the test
+	// function's own defers, so a separate "defer srv.Close()" would run
+	// first and deadlock waiting on a handler this same cleanup hasn't
+	// unblocked yet. One deferred closure keeps the order explicit.
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block // never respond, simulating a hung/very slow agent-login call
+	}))
+	defer func() {
+		close(block)
+		srv.Close()
+	}()
+
+	cfg := minimalTestConfig(t)
+	cfg.SupabaseURL = srv.URL
+	cfg.AgentSecret = "test-secret" // required for Login() to actually dial out
+
+	mi := internal.NewMainIntegration(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- mi.Start(ctx) }()
+
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("Start() took %v with agent-login hanging; must return in well under "+
+				"the Windows SCM's 30s ServicesPipeTimeout regardless of login latency", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start() did not return within 2s while agent-login was hanging — " +
+			"this is the exact Windows service-start regression (Events 7000/7009)")
+	}
+
+	_ = mi.Stop()
 }
 
 func TestMainIntegration_GetStatus_AfterStart(t *testing.T) {

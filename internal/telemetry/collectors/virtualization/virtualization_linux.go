@@ -4,6 +4,7 @@ package virtualization
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,16 +43,28 @@ func platformSignal(ctx context.Context) (sig signal) {
 		sig.Model = strings.TrimSpace(v)
 		sources = append(sources, "sysfs:/sys/class/dmi/id/product_name")
 	}
-	if sig.Manufacturer == "" && sig.Model == "" {
+	dmiUnreadable := sig.Manufacturer == "" && sig.Model == ""
+	if dmiUnreadable {
 		sig.Warnings = append(sig.Warnings, "DMI vendor/product strings unreadable")
 	}
 
+	// virtDetectFailed distinguishes "genuinely ran and reported nothing
+	// useful" from "did not run at all" — only the latter, combined with
+	// unreadable DMI, means this cycle produced no classification signal
+	// whatsoever and should surface as a real error rather than a confident
+	// bare-metal result. platformCapability already gates the case where
+	// neither mechanism exists on this host at all; reaching both failing
+	// here means a transient failure of a mechanism Capability() found
+	// present moments earlier.
+	virtDetectFailed := false
 	if _, err := exec.LookPath("systemd-detect-virt"); err != nil {
 		sig.Warnings = append(sig.Warnings, "systemd-detect-virt not installed")
+		virtDetectFailed = true
 	} else {
 		out, _, err := shared.RunCommandOutputContext(ctx, "systemd-detect-virt", "--vm")
 		if err != nil {
 			sig.Warnings = append(sig.Warnings, "systemd-detect-virt failed to run")
+			virtDetectFailed = true
 		} else {
 			if hv, isVirt := mapSystemdVirt(out); isVirt {
 				sig.HintVirtual = true
@@ -59,6 +72,10 @@ func platformSignal(ctx context.Context) (sig signal) {
 			}
 			sources = append(sources, "exec:systemd-detect-virt")
 		}
+	}
+
+	if dmiUnreadable && virtDetectFailed {
+		sig.Err = errors.New("linux virtualization detection: no classification source succeeded this cycle")
 	}
 
 	// ", " rather than "+": the sysfs paths here are long enough, and drawn

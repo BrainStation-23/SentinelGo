@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -53,6 +54,21 @@ const (
 	// macOS: /Library/Application Support for system-wide configuration
 	MacConfigPath = `/opt/sentinelgo/.sentinelgo/config.json`
 )
+
+// defaultConfigPath resolves the path Load uses when it is given none.
+//
+// It is a variable, not a direct call, purely so tests can redirect the
+// empty-path branch at a temp directory (see export_test.go). Production
+// behaviour is unchanged: nothing outside a test ever reassigns it, so Load
+// resolves exactly what GetDefaultConfigPath returns.
+//
+// The branch is worth being able to test. It is the one that creates and
+// hardens the directory holding the agent's credentials, and testing it by
+// calling Load("") for real meant reading the live C:\SentinelGo config on the
+// developer's own machine — which fails outright on a host where that
+// directory is not writable by the test user, and reads real credentials on
+// one where it is.
+var defaultConfigPath = GetDefaultConfigPath
 
 // GetDefaultConfigPath returns the platform-specific default config path
 func GetDefaultConfigPath() string {
@@ -124,6 +140,34 @@ type Config struct {
 	TelemetryQueueMaxRows    int      `json:"telemetry_queue_max_rows"`   // Outbound queue row cap (default 5000)
 	TelemetryQueueMaxBytes   int64    `json:"telemetry_queue_max_bytes"`  // Outbound queue byte cap (default 64MB)
 	TelemetryQueueMaxAge     Duration `json:"telemetry_queue_max_age"`    // Outbound queue age cap (default 72h)
+
+	// Event telemetry (change detection) configuration.
+	//
+	// Shipped disabled. An existing config.json that predates these fields
+	// parses unchanged and the agent behaves exactly as it did before: the
+	// zero value of TelemetryEventsEnabled is false, and every interval below
+	// falls back to a vetted default through its Get* accessor rather than to
+	// zero.
+	//
+	// TelemetryEventsEnabled turns on comparison of already-collected values
+	// against a persisted baseline. It performs no collection of its own, so
+	// enabling it costs effectively nothing on a stable endpoint.
+	TelemetryEventsEnabled bool `json:"telemetry_events_enabled"`
+	// TelemetryEventDebounce is how long a Normal-priority change must persist
+	// before it is reported. Zero means "confirm on the next successful
+	// cycle", which is the intended default. Critical and high-priority
+	// changes are never debounced.
+	TelemetryEventDebounce Duration `json:"telemetry_event_debounce"`
+	// TelemetryEventCooldown is the minimum gap between two events for the
+	// same watched value (default 10m).
+	TelemetryEventCooldown Duration `json:"telemetry_event_cooldown"`
+	// TelemetryEventFlapWindow is the period over which repeated changes to
+	// one value are counted (default 1h).
+	TelemetryEventFlapWindow Duration `json:"telemetry_event_flap_window"`
+	// TelemetryEventFlapThreshold is how many changes inside the flapping
+	// window collapse into a single aggregate event instead of one each
+	// (default 4).
+	TelemetryEventFlapThreshold int `json:"telemetry_event_flap_threshold"`
 
 	// ProcessesCollectCmdline enables process command-line capture. Off by
 	// default and deliberately separate from process collection itself: command
@@ -252,6 +296,50 @@ func (c *Config) GetTelemetryQueueMaxBytes() int64 {
 	return c.TelemetryQueueMaxBytes
 }
 
+// GetTelemetryEventDebounce returns the confirmation delay for Normal-priority
+// change events.
+//
+// Zero is a MEANINGFUL value here, not an unset one: it selects the default
+// "confirm on the next successful cycle" rule. Only a negative value is
+// coerced, and coercing it to zero keeps that rule rather than inventing a
+// duration nobody asked for.
+func (c *Config) GetTelemetryEventDebounce() time.Duration {
+	if time.Duration(c.TelemetryEventDebounce) < 0 {
+		return 0
+	}
+	return time.Duration(c.TelemetryEventDebounce)
+}
+
+// GetTelemetryEventCooldown returns the minimum gap between two events for one
+// watched value, defaulting to 10 minutes.
+func (c *Config) GetTelemetryEventCooldown() time.Duration {
+	if time.Duration(c.TelemetryEventCooldown) <= 0 {
+		return 10 * time.Minute
+	}
+	return time.Duration(c.TelemetryEventCooldown)
+}
+
+// GetTelemetryEventFlapWindow returns the flapping window, defaulting to 1 hour.
+func (c *Config) GetTelemetryEventFlapWindow() time.Duration {
+	if time.Duration(c.TelemetryEventFlapWindow) <= 0 {
+		return 1 * time.Hour
+	}
+	return time.Duration(c.TelemetryEventFlapWindow)
+}
+
+// GetTelemetryEventFlapThreshold returns how many changes inside the flapping
+// window collapse into one aggregate event, defaulting to 4.
+//
+// A configured 1 is rejected rather than honoured: it would classify the very
+// first change to any value as flapping, which silently replaces every real
+// event with an aggregate one.
+func (c *Config) GetTelemetryEventFlapThreshold() int {
+	if c.TelemetryEventFlapThreshold <= 1 {
+		return 4
+	}
+	return c.TelemetryEventFlapThreshold
+}
+
 // GetTaskPollingInterval returns task polling interval as time.Duration
 func (c *Config) GetTaskPollingInterval() time.Duration {
 	if time.Duration(c.TaskPollingInterval) == 0 {
@@ -286,6 +374,12 @@ func Load(path string) (*Config, error) {
 		TelemetryQueueMaxRows:    5000,
 		TelemetryQueueMaxBytes:   64 * 1024 * 1024,
 		TelemetryQueueMaxAge:     Duration(72 * time.Hour),
+		// Change detection stays off until it is explicitly switched on.
+		TelemetryEventsEnabled:      false,
+		TelemetryEventDebounce:      0,
+		TelemetryEventCooldown:      Duration(10 * time.Minute),
+		TelemetryEventFlapWindow:    Duration(1 * time.Hour),
+		TelemetryEventFlapThreshold: 4,
 		// Privacy-sensitive collection stays opt-in.
 		ProcessesCollectCmdline:      false,
 		IncludeBuiltinScheduledTasks: false,
@@ -294,7 +388,7 @@ func Load(path string) (*Config, error) {
 
 	if path == "" {
 		// Use platform-specific fixed config path
-		cfg.Path = GetDefaultConfigPath()
+		cfg.Path = defaultConfigPath()
 		// Ensure config directory exists
 		configDir := filepath.Dir(cfg.Path)
 		if err := os.MkdirAll(configDir, 0700); err != nil {
@@ -328,6 +422,15 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Strip a leading UTF-8 BOM before parsing. encoding/json rejects one,
+		// but Windows tooling adds it silently — PowerShell 5.1's Set-Content
+		// and Out-File -Encoding UTF8 both do. The resulting failure is far
+		// worse than it looks: Load returns an error, main exits via log.Fatalf
+		// before svc.Run calls StartServiceCtrlDispatcher, and the SCM reports
+		// a generic 1053 with events 7000/7009 whose "30000 milliseconds" text
+		// is a fixed string, not a measurement. That reads as a startup timeout
+		// and sends you hunting for slow initialisation that isn't there.
+		data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}

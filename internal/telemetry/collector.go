@@ -30,6 +30,25 @@ type Collector interface {
 	Collect(ctx context.Context, cfg CollectorConfig) (payload any, result CollectorResult)
 }
 
+// SubCapabilityReporter is an optional extension for a collector that gates
+// more than one capability key.
+//
+// Collector.Capability returns exactly one key, and runOne treats a non-
+// supported state there as "skip Collect entirely". That is correct for the
+// key that gates the whole section, but it makes a sub-feature impossible to
+// report: saying processes.cmdline is disabled through Capability would
+// suppress the entire process list along with it. Before this interface
+// existed, such keys were simply left unclaimed and inherited the manifest
+// default — which is how "command-line capture is switched off by config"
+// reached the backend as "this operating system cannot provide command lines".
+//
+// SubCapabilities is consulted on every cycle, including cycles where the
+// collector's primary capability caused Collect to be skipped, so a sub-key's
+// state never goes silently missing.
+type SubCapabilityReporter interface {
+	SubCapabilities(ctx context.Context, cfg CollectorConfig) map[string]CapabilityState
+}
+
 // CollectorConfig is the subset of agent configuration collectors may read.
 //
 // Passing a narrow struct rather than *config.Config keeps the telemetry layer
@@ -136,6 +155,11 @@ func RunAll(ctx context.Context, set *CollectorSet, cfg CollectorConfig) (Sectio
 		if capKey != "" {
 			caps.Set(capKey, capState)
 		}
+		for key, state := range subCapabilities(ctx, c, cfg) {
+			if key != "" {
+				caps.Set(key, state)
+			}
+		}
 		sectionCaps[c.Section()] = capState
 		results = append(results, res)
 		if payload != nil && res.Status.OK() {
@@ -143,6 +167,48 @@ func RunAll(ctx context.Context, set *CollectorSet, cfg CollectorConfig) (Sectio
 		}
 	}
 	return data, results, caps, sectionCaps
+}
+
+// CapabilitiesOf reports what every collector in set can provide on this
+// endpoint, WITHOUT collecting anything.
+//
+// It exists so a caller that only wants the manifest — the -capabilities debug
+// command — asks the same code the real cycle does. The alternative, looping
+// over Capability() by hand, silently omits every sub-capability, and a debug
+// command that disagrees with the agent about why data is missing is worse than
+// having no debug command at all.
+func CapabilitiesOf(ctx context.Context, set *CollectorSet, cfg CollectorConfig) CapabilityManifest {
+	caps := NewCapabilityManifest()
+	if set == nil {
+		return caps
+	}
+
+	for _, c := range set.All() {
+		if ctx.Err() != nil {
+			break
+		}
+		key, state := capabilityOf(ctx, c, cfg)
+		if key != "" {
+			caps.Set(key, state)
+		}
+		for subKey, subState := range subCapabilities(ctx, c, cfg) {
+			if subKey != "" {
+				caps.Set(subKey, subState)
+			}
+		}
+	}
+	return caps
+}
+
+// capabilityOf reads one collector's primary capability with panic containment,
+// so a probe that blows up costs that one key rather than the whole manifest.
+func capabilityOf(ctx context.Context, c Collector, cfg CollectorConfig) (key string, state CapabilityState) {
+	defer func() {
+		if r := recover(); r != nil {
+			key, state = "", CapNotCollected
+		}
+	}()
+	return c.Capability(ctx, cfg)
 }
 
 // runOne executes a single collector with panic containment.
@@ -180,9 +246,25 @@ func runOne(ctx context.Context, c Collector, cfg CollectorConfig) (payload any,
 	return payload, res, capKey, capState
 }
 
+// subCapabilities reads a collector's optional sub-capability keys with the
+// same panic containment runOne gives Collect: reporting a capability must
+// never be able to take down the cycle.
+func subCapabilities(ctx context.Context, c Collector, cfg CollectorConfig) (out map[string]CapabilityState) {
+	reporter, ok := c.(SubCapabilityReporter)
+	if !ok {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			out = nil
+		}
+	}()
+	return reporter.SubCapabilities(ctx, cfg)
+}
+
 func statusForCapability(state CapabilityState) Status {
 	switch state {
-	case CapDisabled, CapNotPresent, CapUnsupported, CapUnavailableOS:
+	case CapDisabled, CapNotPresent, CapUnsupported, CapUnavailableOS, CapNotCollected:
 		return StatusUnsupported
 	default:
 		return StatusSuccess
@@ -199,6 +281,8 @@ func reasonForCapability(state CapabilityState) string {
 		return ReasonNotSupported
 	case CapUnavailableOS:
 		return "unavailable_on_os"
+	case CapNotCollected:
+		return "not_collected"
 	default:
 		return ""
 	}

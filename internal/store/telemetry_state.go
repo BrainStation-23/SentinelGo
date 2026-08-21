@@ -42,6 +42,10 @@ INSERT OR IGNORE INTO telemetry_generation(singleton, generation) VALUES (1, 0);
 var telemetryStateMigrations = []Migration{
 	{Version: 1, SQL: telemetryStateSchemaV1},
 	{Version: 2, SQL: telemetryStateSchemaV2},
+	// v3 adds Phase G change-detection state. It is additive: an agent that
+	// never enables event telemetry simply leaves the table empty, and an
+	// existing database gains it on first open with nothing else touched.
+	{Version: 3, SQL: telemetryStateSchemaV3},
 }
 
 // SectionState is the persisted reconciliation state of one telemetry section.

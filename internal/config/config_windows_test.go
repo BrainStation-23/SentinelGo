@@ -152,22 +152,90 @@ func TestConfigLoadMissingAccessToken(t *testing.T) {
 	}
 }
 
-// TestConfigLoadDefaultPath tests default path resolution
+// TestConfigLoadDefaultPath tests default path resolution.
+//
+// It used to call config.Load("") directly, which resolved the LIVE agent
+// config path — C:\SentinelGo\.sentinelgo\config.json on Windows — and then
+// created, hardened and read it. That made the test depend on the machine it
+// ran on twice over: it failed outright where that directory is not writable by
+// the test user, and where it is, it read the real agent's credentials and
+// would have failed on any local edit that made the file unparseable. Redirect
+// the resolver at a temp directory instead, so the branch is still exercised
+// end to end without touching production state.
 func TestConfigLoadDefaultPath(t *testing.T) {
-	// Test loading with empty path (should use default)
+	dir := t.TempDir()
+	want := filepath.Join(dir, ".sentinelgo", "config.json")
+	config.SetDefaultConfigPathForTest(t, want)
+
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("Failed to load config with default path: %v", err)
 	}
 
-	// Should have a valid path (not empty)
-	if cfg.Path == "" {
-		t.Error("Expected config path to be set, got empty string")
+	if cfg.Path != want {
+		t.Errorf("Config path = %q, want %q", cfg.Path, want)
 	}
-
-	// Path should include .sentinelgo directory
 	if filepath.Base(filepath.Dir(cfg.Path)) != ".sentinelgo" {
 		t.Errorf("Expected config path to include .sentinelgo directory, got '%s'", cfg.Path)
+	}
+
+	// The empty-path branch is the one that creates the directory holding the
+	// agent's secrets, so assert it actually did.
+	info, statErr := os.Stat(filepath.Dir(cfg.Path))
+	if statErr != nil {
+		t.Fatalf("config directory was not created: %v", statErr)
+	}
+	if !info.IsDir() {
+		t.Errorf("%s is not a directory", filepath.Dir(cfg.Path))
+	}
+
+	// No file existed, so defaults must survive rather than being overwritten
+	// by a partial parse.
+	if cfg.DeviceID == "" {
+		t.Error("DeviceID was not generated for a fresh config")
+	}
+}
+
+// TestGetDefaultConfigPathShape checks the production resolver itself, with no
+// side effects: it must name a config.json inside a .sentinelgo directory and
+// must be absolute, so the path-traversal cleanup in Load has nothing to fix.
+func TestGetDefaultConfigPathShape(t *testing.T) {
+	got := config.RealDefaultConfigPath()
+
+	if !filepath.IsAbs(got) {
+		t.Errorf("default config path %q is not absolute", got)
+	}
+	if filepath.Base(got) != "config.json" {
+		t.Errorf("default config path %q does not end in config.json", got)
+	}
+	if filepath.Base(filepath.Dir(got)) != ".sentinelgo" {
+		t.Errorf("default config path %q is not inside a .sentinelgo directory", got)
+	}
+}
+
+// TestConfigLoadDefaultPathDoesNotTouchProductionPath is the hygiene guarantee
+// itself: with the resolver redirected, nothing under the real default path is
+// read or created. Without this, a future edit could quietly reintroduce the
+// dependency and the suite would keep passing on the one machine it was written
+// on.
+func TestConfigLoadDefaultPathDoesNotTouchProductionPath(t *testing.T) {
+	production := config.RealDefaultConfigPath()
+	before, beforeErr := os.Stat(production)
+
+	dir := t.TempDir()
+	config.SetDefaultConfigPathForTest(t, filepath.Join(dir, ".sentinelgo", "config.json"))
+	if _, err := config.Load(""); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	after, afterErr := os.Stat(production)
+	switch {
+	case beforeErr != nil && afterErr == nil:
+		t.Errorf("Load() created the production config at %s", production)
+	case beforeErr == nil && afterErr == nil:
+		if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+			t.Errorf("Load() modified the production config at %s", production)
+		}
 	}
 }
 

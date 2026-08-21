@@ -54,7 +54,10 @@ func HealthStateFor(status Status, cap CapabilityState) string {
 	switch cap {
 	case CapDisabled:
 		return HealthDisabled
-	case CapNotPresent, CapUnavailableOS:
+	case CapNotPresent, CapUnavailableOS, CapNotCollected:
+		// CapNotCollected joins these because a key nobody claimed has no
+		// collector to be unhealthy: counting it as a failure would make every
+		// build report itself as failing for the capabilities it does not ship.
 		return HealthNotApplicable
 	}
 

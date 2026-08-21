@@ -3,17 +3,29 @@ package config_test
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"sentinelgo/internal/config"
 )
 
+// TestLoad_EmptyPath checks the empty-path branch resolves and succeeds.
+//
+// The default resolver is redirected at a temp directory first: called for
+// real, this branch creates and hardens the LIVE agent config directory and
+// then reads the operator's actual credentials out of it. See
+// TestConfigLoadDefaultPath, which covers the same branch in detail.
 func TestLoad_EmptyPath(t *testing.T) {
+	config.SetDefaultConfigPathForTest(t, filepath.Join(t.TempDir(), ".sentinelgo", "config.json"))
+
 	cfg, err := config.Load("")
-	// Load() with empty path may return defaults, so we just check it doesn't panic
-	_ = cfg
-	_ = err
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Path == "" {
+		t.Error("Load() left Path empty")
+	}
 }
 
 func TestLoad_InvalidPath(t *testing.T) {

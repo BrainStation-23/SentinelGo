@@ -59,6 +59,29 @@ type CycleReport struct {
 	Health            *TelemetryHealth
 	// Truncated lists sections where at least one item was too large to send.
 	Truncated []string
+
+	// Data is this cycle's section payloads, exposed so change detection can
+	// compare values that were ALREADY collected.
+	//
+	// Exposing it is what keeps Phase G free: the alternative is a second
+	// collection pass to read the same firewall state the posture cycle just
+	// read, which would double the endpoint cost of every watched section and
+	// introduce a window in which the two passes disagree.
+	//
+	// It is not sent anywhere. Only the sections that changed or are due for
+	// reconciliation are enqueued, exactly as before.
+	Data SectionData
+
+	// Events is the change events this cycle produced, already enqueued.
+	Events []models.TelemetryChangeEvent
+	// EventsSeeded counts watch keys whose baseline was established this cycle.
+	// A seeded key produces no event, by design.
+	EventsSeeded int
+	// EventsSuppressed counts transitions withheld by debounce, cooldown or
+	// flap detection.
+	EventsSuppressed int
+	// CriticalEvents counts events that must reach the backend immediately.
+	CriticalEvents int
 }
 
 // Service runs telemetry collection cycles.
@@ -68,6 +91,14 @@ type Service struct {
 	state    StateStore
 	queue    OutboundQueue
 	health   *HealthTracker
+
+	// events is Phase G's change-detection engine, or nil.
+	//
+	// Nil is the shipped default and means the cycle behaves exactly as it did
+	// before Phase G existed: no watched state is read or written, no events
+	// are produced, and nothing new is enqueued. Feature gating is this field
+	// being nil, not a flag checked in ten places.
+	events *EventEngine
 
 	// now is injectable so reconciliation intervals can be tested against a
 	// frozen clock rather than by sleeping.
@@ -97,7 +128,21 @@ func (s *Service) SetClock(fn func() time.Time) {
 	if fn != nil {
 		s.now = fn
 	}
+	if s.events != nil && fn != nil {
+		s.events.SetClock(fn)
+	}
 }
+
+// SetEventEngine enables Phase G change detection. Passing nil disables it.
+func (s *Service) SetEventEngine(engine *EventEngine) {
+	s.events = engine
+	if engine != nil {
+		engine.SetClock(s.now)
+	}
+}
+
+// EventEngine returns the configured change-detection engine, or nil.
+func (s *Service) EventEngine() *EventEngine { return s.events }
 
 // Registry exposes the section registry.
 func (s *Service) Registry() *Registry { return s.registry }
@@ -132,6 +177,7 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config) (*CycleRepor
 		Reasons:      make(map[string]string),
 		Results:      results,
 		Capabilities: caps,
+		Data:         data,
 	}
 
 	// Indexed by section, not by capability key: a section's key (when it has
@@ -146,6 +192,21 @@ func (s *Service) RunCycle(ctx context.Context, cfg *config.Config) (*CycleRepor
 	if len(data) == 0 {
 		report.Health = s.finishHealth()
 		return report, nil
+	}
+
+	// Change detection runs before section upload and is independent of it.
+	//
+	// The order matters in one direction only: a change event must be produced
+	// from what was collected regardless of whether the section itself is due
+	// for upload. Most cycles upload nothing (that is the point of
+	// reconciliation), and a firewall being switched off is exactly the kind of
+	// change that would otherwise wait hours for its section's reconcile clock.
+	if err := s.detectChanges(cfg, data, results, report); err != nil {
+		// Change detection failing must not cost the cycle its inventory. Log
+		// and continue: the sections below are still worth sending, and the
+		// watched state is left untouched so the next cycle retries from the
+		// same baseline rather than re-seeding.
+		log.Printf("[telemetry] change detection failed, continuing with section upload: %v", err)
 	}
 
 	hashes, err := Fingerprint(data)

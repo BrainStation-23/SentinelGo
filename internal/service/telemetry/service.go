@@ -64,6 +64,12 @@ func New(cfg *config.Config, set *tel.CollectorSet) (*Service, error) {
 		queueAdapter{q: queueStore},
 	)
 
+	if err := attachEventEngine(cfg, domain, stateStore); err != nil {
+		_ = queueStore.Close()
+		_ = stateStore.Close()
+		return nil, err
+	}
+
 	return &Service{
 		cfg:        cfg,
 		stateStore: stateStore,
@@ -72,6 +78,46 @@ func New(cfg *config.Config, set *tel.CollectorSet) (*Service, error) {
 		client:     newHTTPClient(),
 	}, nil
 }
+
+// attachEventEngine enables Phase G when configuration asks for it.
+//
+// A configuration error is fatal to telemetry startup rather than silently
+// corrected. Change detection drives security alerting, and a cooldown longer
+// than the flapping window (say) would suppress events in a way nobody would
+// notice until an incident was missed — the failure mode a default would hide.
+func attachEventEngine(cfg *config.Config, domain *tel.Service, stateStore *store.TelemetryStateStore) error {
+	if cfg == nil || !cfg.TelemetryEventsEnabled {
+		log.Printf("[telemetry] change detection disabled (telemetry_events_enabled=false)")
+		return nil
+	}
+
+	eventCfg := tel.EventConfig{
+		Debounce:      cfg.GetTelemetryEventDebounce(),
+		Cooldown:      cfg.GetTelemetryEventCooldown(),
+		FlapWindow:    cfg.GetTelemetryEventFlapWindow(),
+		FlapThreshold: cfg.GetTelemetryEventFlapThreshold(),
+	}
+	if err := eventCfg.Validate(); err != nil {
+		return fmt.Errorf("telemetry: invalid event configuration: %w", err)
+	}
+
+	domain.SetEventEngine(tel.NewEventEngine(
+		tel.DefaultWatches(),
+		watchedStateAdapter{s: stateStore},
+		eventCfg,
+	))
+
+	log.Printf("[telemetry] change detection enabled: watches=%d debounce=%v cooldown=%v flap=%d/%v",
+		len(tel.DefaultWatches()), eventCfg.Debounce, eventCfg.Cooldown,
+		eventCfg.FlapThreshold, eventCfg.FlapWindow)
+	return nil
+}
+
+// WatchedStateDepth returns how many watched values are persisted.
+func (s *Service) WatchedStateDepth() (int, error) { return s.stateStore.WatchedDepth() }
+
+// EventsEnabled reports whether Phase G change detection is active.
+func (s *Service) EventsEnabled() bool { return s.domain.EventEngine() != nil }
 
 // Domain exposes the cycle runner, for CLI commands and tests.
 func (s *Service) Domain() *tel.Service { return s.domain }
@@ -143,9 +189,11 @@ func LogCycle(report *tel.CycleReport) {
 	if report == nil {
 		return
 	}
-	log.Printf("[telemetry] cycle: collected=%d uploaded=%d skipped=%d messages=%d evicted=%d",
+	log.Printf("[telemetry] cycle: collected=%d uploaded=%d skipped=%d messages=%d evicted=%d events=%d critical=%d seeded=%d suppressed=%d",
 		len(report.CollectedSections), len(report.UploadedSections),
-		len(report.SkippedSections), report.Messages, report.Evicted)
+		len(report.SkippedSections), report.Messages, report.Evicted,
+		len(report.Events), report.CriticalEvents,
+		report.EventsSeeded, report.EventsSuppressed)
 
 	for _, section := range report.SkippedSections {
 		log.Printf("[telemetry] section %s skipped (%s)",

@@ -15,12 +15,22 @@ import (
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/store"
+	tel "sentinelgo/internal/telemetry"
 )
 
 const (
-	// rpcEnqueueTelemetry is the backend RPC this layer targets. It does not
-	// exist yet; the agent stays disabled by default until it does.
+	// rpcEnqueueTelemetry is the backend RPC for section telemetry
+	// (inventory, posture and health classes).
 	rpcEnqueueTelemetry = "/rest/v1/rpc/agent_enqueue_telemetry"
+
+	// rpcEnqueueTelemetryEvents is the backend RPC for change events.
+	//
+	// Events go to their own endpoint and their own table because they are a
+	// different kind of record with different retention: a section row is
+	// current state and gets overwritten, an event is a dated assertion that
+	// something changed and is kept for a year. Routing both through one RPC
+	// would force the backend to demultiplex on payload shape.
+	rpcEnqueueTelemetryEvents = "/rest/v1/rpc/agent_enqueue_telemetry_events"
 
 	// rpcTimeout bounds one drain pass, matching the other enqueue paths.
 	rpcTimeout = 60 * time.Second
@@ -243,6 +253,16 @@ func (s *Service) commitDelivered(delivered []store.OutboundMessage, result *Flu
 
 	now := time.Now().UTC()
 	for _, m := range delivered {
+		if m.Class == string(tel.ClassEvent) {
+			// Change events carry no sections and must never advance section
+			// reconciliation. Delivering an event says nothing about whether
+			// the backend has the section's current data, and marking the
+			// section reconciled here would hold its real payload back until
+			// its next content change. The enqueue path already leaves
+			// Sections empty; this is the second, explicit guarantee, because
+			// the failure it prevents is silent data loss rather than an error.
+			continue
+		}
 		sections := SectionsOf(m)
 		s.domain.MarkDelivered(sections, now)
 		for _, name := range sections {
@@ -264,7 +284,7 @@ func (s *Service) commitDelivered(delivered []store.OutboundMessage, result *Flu
 // error string) so callers like recordRejection never need to touch response
 // content to know why a message was rejected.
 func (s *Service) postMessage(ctx context.Context, msg store.OutboundMessage) (deliveryOutcome, int, error) {
-	url := s.cfg.SupabaseURL + rpcEnqueueTelemetry
+	url := s.cfg.SupabaseURL + rpcForClass(msg.Class)
 	accessToken := s.cfg.GetAccessToken()
 	anonKey := s.cfg.SupabaseKey
 
@@ -357,6 +377,18 @@ func (s *Service) recordRejection(msg store.OutboundMessage, httpStatus int) {
 				"message dead-lettered and retained locally for inspection",
 			sanitize.ForLog(sections), maxDeliveryAttempts, httpStatus)
 	}
+}
+
+// rpcForClass selects the backend endpoint for a queued message.
+//
+// The class is stamped at enqueue time and stored with the row, so a message
+// that was queued while offline still routes correctly after a restart — the
+// routing decision does not depend on anything held in memory.
+func rpcForClass(class string) string {
+	if class == string(tel.ClassEvent) {
+		return rpcEnqueueTelemetryEvents
+	}
+	return rpcEnqueueTelemetry
 }
 
 func containsSection(list []string, want string) bool {

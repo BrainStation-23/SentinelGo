@@ -6,6 +6,15 @@
 # - git tag (automatically detected)
 # - defaults to "dev"
 #
+# The git-derived form is for DEVELOPMENT builds only. `git describe` produces
+# strings like "v3.2.6-4-g40f52e7-dirty", and the base tag in it is only the
+# newest tag REACHABLE from HEAD -- on a branch that does not contain the newest
+# tags it names an OLDER version than the one already deployed. A binary stamped
+# that way used to compare as plain "3.2.6" in the updater and report itself as
+# such to the backend. Such builds now decline to self-update (see
+# internal/version), and `make release` refuses to run without an explicit,
+# clean, tag-at-HEAD version (see the verify-release-version target).
+#
 # NOTE: kept shell-agnostic on purpose. Avoid `2>/dev/null` / `|| echo` here —
 # those are Unix-only and break when GNU Make runs $(shell ...) through cmd.exe
 # on Windows (path errors + a literally-quoted version). git describe writes to
@@ -37,7 +46,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross
+.PHONY: build clean clean-all all windows linux macos release sign version verify-release-version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross
 
 all: windows linux macos
 
@@ -55,7 +64,7 @@ macos:
 # Build all platforms for release, then sign and generate SHA256SUMS.
 # Requires SENTINELGO_SIGNING_KEY env var (base64-encoded ed25519 private key).
 # In CI this is injected from GitHub Actions secrets; locally set it before running.
-release: pre-release clean all
+release: verify-release-version pre-release clean all
 	@echo "Release built with version $(VERSION)"
 	@echo "Assets created in build/ directory:"
 	@find build -type f -name "*sentinelgo*" -exec ls -lh {} \;
@@ -102,6 +111,16 @@ build: format
 version:
 	@echo "Current version: $(VERSION)"
 	@echo "Git commit: $(shell git rev-parse --short HEAD || echo unknown)"
+
+# Gate the release build on a version that names exactly what is being built.
+#
+# Written in Go rather than shell on purpose: this Makefile stays shell-agnostic
+# so recipes work when GNU Make drives them through cmd.exe on Windows, and a .sh
+# gate would silently not run there -- the very environment where an accidental
+# "-dirty" release is easiest to produce. Requires an explicit VERSION, a clean
+# working tree, and a tag pointing at HEAD. It never creates or pushes a tag.
+verify-release-version:
+	@go run ./scripts/checkversion -version "$(VERSION)" -require-clean-tree -require-tag-at-head
 
 # Test version injection
 test-version: build
@@ -202,8 +221,8 @@ packages: release
 	@echo "Packages created:"
 	@ls -la release/*.tar.gz
 
-# make release VERSION=v1.0.0
-# make release (uses git tag or "dev")
+# make release VERSION=v1.0.0   (the only supported release invocation)
+# make release                  (FAILS: a release needs an explicit, clean version)
 # make build (development build for current platform)
 # make version (show current version)
 # make test-version (test version injection)

@@ -37,8 +37,10 @@ func TestCapabilityStatesAreDistinct(t *testing.T) {
 		}
 	}
 
-	// The four "no data" states must be mutually distinct values.
-	distinct := []CapabilityState{CapNotPresent, CapUnsupported, CapDisabled, CapUnavailableOS}
+	// The five "no data" states must be mutually distinct values.
+	distinct := []CapabilityState{
+		CapNotPresent, CapUnsupported, CapDisabled, CapUnavailableOS, CapNotCollected,
+	}
 	for i := range distinct {
 		for j := i + 1; j < len(distinct); j++ {
 			if distinct[i] == distinct[j] {
@@ -48,13 +50,19 @@ func TestCapabilityStatesAreDistinct(t *testing.T) {
 	}
 }
 
-// TestNewCapabilityManifestDefaultsToUnavailable ensures a capability nobody
-// claimed reports a defined state instead of silently vanishing.
-func TestNewCapabilityManifestDefaultsToUnavailable(t *testing.T) {
+// TestNewCapabilityManifestDefaultsToNotCollected ensures a capability nobody
+// claimed reports a defined state instead of silently vanishing — and that the
+// state it reports is one about the AGENT, not about the operating system.
+//
+// The default used to be unavailable_on_os, which is why a Windows 11 endpoint
+// reported secure_boot as something Windows could not provide. Windows can; no
+// collector had claimed the key. An operator reading unavailable_on_os stops
+// looking, so the wrong default did not just mislabel the gap, it hid it.
+func TestNewCapabilityManifestDefaultsToNotCollected(t *testing.T) {
 	m := NewCapabilityManifest()
 	for _, key := range AllCapabilityKeys() {
-		if got := m.Get(key); got != CapUnavailableOS {
-			t.Errorf("%s defaulted to %q, want %q", key, got, CapUnavailableOS)
+		if got := m.Get(key); got != CapNotCollected {
+			t.Errorf("%s defaulted to %q, want %q", key, got, CapNotCollected)
 		}
 	}
 }
@@ -64,7 +72,7 @@ func TestNewCapabilityManifestDefaultsToUnavailable(t *testing.T) {
 func TestCapabilityManifestRejectsInvalidState(t *testing.T) {
 	m := NewCapabilityManifest()
 	m.Set(CapKeyTPM, CapabilityState("totally-made-up"))
-	if got := m.Get(CapKeyTPM); got != CapUnavailableOS {
+	if got := m.Get(CapKeyTPM); got != CapNotCollected {
 		t.Fatalf("invalid state was accepted: %q", got)
 	}
 }
@@ -72,8 +80,8 @@ func TestCapabilityManifestRejectsInvalidState(t *testing.T) {
 // TestCapabilityManifestUnknownKey covers reads of keys never set.
 func TestCapabilityManifestUnknownKey(t *testing.T) {
 	m := CapabilityManifest{}
-	if got := m.Get("not.a.real.capability"); got != CapUnavailableOS {
-		t.Fatalf("unknown key = %q, want %q", got, CapUnavailableOS)
+	if got := m.Get("not.a.real.capability"); got != CapNotCollected {
+		t.Fatalf("unknown key = %q, want %q", got, CapNotCollected)
 	}
 }
 
@@ -103,6 +111,7 @@ func TestHealthStateForCapabilityWins(t *testing.T) {
 		{"no battery", StatusUnsupported, CapNotPresent, HealthNotApplicable},
 		{"disabled by config", StatusUnsupported, CapDisabled, HealthDisabled},
 		{"os cannot provide", StatusUnsupported, CapUnavailableOS, HealthNotApplicable},
+		{"no collector ships for it", StatusUnsupported, CapNotCollected, HealthNotApplicable},
 		{"collected fine", StatusSuccess, CapSupported, HealthHealthy},
 		{"partial data", StatusPartial, CapSupported, HealthPartial},
 		{"needs elevation", StatusPermissionDenied, CapSupported, HealthPermissionDenied},

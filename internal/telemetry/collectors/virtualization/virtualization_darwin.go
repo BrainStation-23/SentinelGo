@@ -4,6 +4,7 @@ package virtualization
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -22,12 +23,14 @@ func platformCapability(context.Context) tel.CapabilityState {
 // guest" flag, as a fallback hint for VMs that spoof a generic Mac model.
 func platformSignal(ctx context.Context) (sig signal) {
 	var sources []string
+	modelFailed, hintFailed := false, false
 
 	if out, err := shared.RunCommandContext(ctx, "sysctl", "-n", "hw.model"); err == nil {
 		sig.Model = strings.TrimSpace(out)
 		sources = append(sources, "sysctl:hw.model")
 	} else {
 		sig.Warnings = append(sig.Warnings, "sysctl hw.model failed")
+		modelFailed = true
 	}
 
 	if out, err := shared.RunCommandContext(ctx, "sysctl", "-n", "kern.hv_vmm_present"); err == nil {
@@ -37,6 +40,14 @@ func platformSignal(ctx context.Context) (sig signal) {
 		sources = append(sources, "sysctl:kern.hv_vmm_present")
 	} else {
 		sig.Warnings = append(sig.Warnings, "sysctl kern.hv_vmm_present failed")
+		hintFailed = true
+	}
+
+	// Both sysctl calls failing means this cycle produced no classification
+	// signal at all — a real error, not a confident bare-metal result. One
+	// succeeding is sufficient for classifyVendor/HintVirtual to work with.
+	if modelFailed && hintFailed {
+		sig.Err = errors.New("macos virtualization detection: both sysctl reads failed")
 	}
 
 	sig.Source = strings.Join(sources, ", ")

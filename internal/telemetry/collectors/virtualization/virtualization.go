@@ -40,6 +40,17 @@ type signal struct {
 	HintHypervisor string
 	Source         string
 	Warnings       []string
+	// Err is the real, unclassified error from the platform's classification
+	// probe (WMI/sysctl/DMI query), or nil on success. Flagged in the C1
+	// review as a gap shared with the identity collector: without this, a
+	// total query failure (not merely "no signal, so probably physical")
+	// silently produced Status=Success with IsVirtual=false — a confident,
+	// wrong answer indistinguishable from a genuine bare-metal result. The
+	// directory collector's DomainJoined *bool fix addressed the same class
+	// of bug for a boolean field; here the fix is at the Status level via
+	// this Err, since IsVirtual's false-by-default already only fires when
+	// there is genuinely no positive evidence either way.
+	Err error
 }
 
 // Collector implements telemetry.Collector for VM/hypervisor detection.
@@ -83,5 +94,5 @@ func (c *Collector) Collect(ctx context.Context, _ tel.CollectorConfig) (any, te
 		CloudPlatform: cloud,
 	}
 
-	return payload, *done(nil, sig.Source, 1)
+	return payload, *done(sig.Err, sig.Source, 1)
 }

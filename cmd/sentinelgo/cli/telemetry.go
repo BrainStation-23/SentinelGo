@@ -109,17 +109,19 @@ func HandleCapabilities(cfg *config.Config) {
 	defer func() { _ = svc.Close() }()
 
 	set := svc.Domain().Collectors()
-	caps := tel.NewCapabilityManifest()
 
 	collectorCfg := tel.CollectorConfigFrom(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, c := range set.All() {
-		key, state := c.Capability(ctx, collectorCfg)
-		if key != "" {
-			caps.Set(key, state)
-		}
-	}
+
+	// Reuse the same walk the real cycle performs rather than re-implementing
+	// it here. A hand-rolled loop over Capability() misses every sub-capability
+	// — which is how this command reported nothing at all for
+	// processes.cmdline, security.realtime_protection and
+	// security.tamper_protection while the agent itself reported them
+	// correctly. A debug command that disagrees with the agent is worse than
+	// no debug command.
+	caps := tel.CapabilitiesOf(ctx, set, collectorCfg)
 
 	fmt.Println("=== Telemetry Capabilities ===")
 	fmt.Println()
@@ -128,6 +130,7 @@ func HandleCapabilities(cfg *config.Config) {
 	fmt.Println("  unsupported        present, but this driver/firmware/config will not expose it")
 	fmt.Println("  disabled           switched off by configuration")
 	fmt.Println("  unavailable_on_os  this operating system cannot provide it")
+	fmt.Println("  not_collected      this build ships no collector for it, so nothing was asked")
 	fmt.Println()
 
 	byState := make(map[tel.CapabilityState][]string)
@@ -138,7 +141,7 @@ func HandleCapabilities(cfg *config.Config) {
 
 	order := []tel.CapabilityState{
 		tel.CapSupported, tel.CapNotPresent, tel.CapUnsupported,
-		tel.CapDisabled, tel.CapUnavailableOS,
+		tel.CapDisabled, tel.CapUnavailableOS, tel.CapNotCollected,
 	}
 	for _, state := range order {
 		keys := byState[state]
@@ -225,6 +228,8 @@ func HandleTelemetryCycle(cfg *config.Config) {
 		fmt.Println()
 	}
 
+	printChangeDetection(svc, report)
+
 	depth, _ := svc.QueueDepth()
 	fmt.Printf("Queue now holds %d message(s); delivery happens on the scheduled task.\n", depth)
 
@@ -233,6 +238,38 @@ func HandleTelemetryCycle(cfg *config.Config) {
 		fmt.Println("No sections were collected. This is expected while no collectors")
 		fmt.Println("are registered.")
 	}
+}
+
+// printChangeDetection reports what the change-detection pass did.
+//
+// The seeded count is called out explicitly because "0 events" on a first run
+// is the correct, designed outcome and looks identical to the feature being
+// broken. Saying how many baselines were established distinguishes the two
+// without anyone having to read the source.
+func printChangeDetection(svc *telemetrysvc.Service, report *tel.CycleReport) {
+	fmt.Println("Change detection:")
+	if !svc.EventsEnabled() {
+		fmt.Println("  disabled (telemetry_events_enabled=false)")
+		fmt.Println()
+		return
+	}
+
+	watched, err := svc.WatchedStateDepth()
+	if err != nil {
+		watched = -1
+	}
+
+	fmt.Printf("  watched values:   %d\n", watched)
+	fmt.Printf("  events:           %d (%d critical)\n", len(report.Events), report.CriticalEvents)
+	fmt.Printf("  baselines seeded: %d (a seeded value never produces an event)\n", report.EventsSeeded)
+	fmt.Printf("  suppressed:       %d (awaiting confirmation, in cooldown, or flapping)\n",
+		report.EventsSuppressed)
+
+	for _, e := range report.Events {
+		fmt.Printf("    %-32s %-8s %s\n",
+			sanitize.ForLog(e.EventType), sanitize.ForLog(e.Severity), sanitize.ForLog(e.Section))
+	}
+	fmt.Println()
 }
 
 // HandleTelemetryReset clears local telemetry state so the next cycle resends
@@ -262,6 +299,10 @@ func HandleTelemetryReset(cfg *config.Config) {
 	fmt.Printf("  - outbound telemetry queue (%d undelivered message(s) discarded)\n", depthBefore)
 	fmt.Println()
 	fmt.Println("Left untouched:")
+	// Called out explicitly: re-sending inventory the backend already has is
+	// harmless, but forgetting the change-detection baseline means anything
+	// that changes before the next cycle re-seeds it goes unreported.
+	fmt.Println("  - change-detection baselines (telemetry_watched_state)")
 	fmt.Println("  - device registration and agent identity")
 	fmt.Println("  - credentials (agent secret, access and refresh tokens)")
 	fmt.Println("  - software and services catalogs")

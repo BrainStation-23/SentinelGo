@@ -31,13 +31,28 @@ const (
 	CapDisabled CapabilityState = "disabled"
 
 	// CapUnavailableOS: this operating system cannot provide the data at all.
+	// Reserved for a real platform limitation established by a collector that
+	// actually looked — never for "nobody reported anything", which is
+	// CapNotCollected.
 	CapUnavailableOS CapabilityState = "unavailable_on_os"
+
+	// CapNotCollected: this build ships no collector that claims the key, so
+	// the agent has not determined anything about it either way.
+	//
+	// This exists because the honest answer to "why is secure_boot absent on a
+	// Windows 11 endpoint that plainly has it" is "the agent never asked", and
+	// the previous default said "this OS cannot provide it" — a claim about the
+	// platform that nothing had verified. An operator reading unavailable_on_os
+	// stops investigating; not_collected tells them the gap is on the agent
+	// side and is fixable by shipping a collector.
+	CapNotCollected CapabilityState = "not_collected"
 )
 
 // Valid reports whether s is a recognised capability state.
 func (s CapabilityState) Valid() bool {
 	switch s {
-	case CapSupported, CapNotPresent, CapUnsupported, CapDisabled, CapUnavailableOS:
+	case CapSupported, CapNotPresent, CapUnsupported, CapDisabled,
+		CapUnavailableOS, CapNotCollected:
 		return true
 	default:
 		return false
@@ -63,6 +78,13 @@ const (
 	CapKeyNetworkRoutingTable = "network.routing_table"
 	CapKeyPersistence         = "persistence"
 	CapKeyPeripheralsUSB      = "peripherals.usb"
+	// Endpoint-protection controls. Split into three keys rather than one
+	// "security" key because they fail independently: a host can have a
+	// readable firewall state and an unreadable tamper-protection state, and
+	// collapsing them would report the weaker of the two for both.
+	CapKeyFirewall           = "security.firewall"
+	CapKeyRealtimeProtection = "security.realtime_protection"
+	CapKeyTamperProtection   = "security.tamper_protection"
 	// CapKeyVirtualization covers VM/hypervisor detection. Unlike most keys
 	// this is rarely CapNotPresent (bare metal is a legitimate "supported,
 	// is_virtual=false" result) — it exists for the genuine failure mode where
@@ -90,6 +112,9 @@ func AllCapabilityKeys() []string {
 		CapKeyPersistence,
 		CapKeyPeripheralsUSB,
 		CapKeyVirtualization,
+		CapKeyFirewall,
+		CapKeyRealtimeProtection,
+		CapKeyTamperProtection,
 	}
 }
 
@@ -97,31 +122,36 @@ func AllCapabilityKeys() []string {
 type CapabilityManifest map[string]CapabilityState
 
 // NewCapabilityManifest returns a manifest with every known capability marked
-// unavailable_on_os. Collectors overwrite the keys they own during collection,
-// so a capability nobody claimed reports a defined state instead of vanishing.
+// not_collected. Collectors overwrite the keys they own during collection, so a
+// capability nobody claimed reports a defined state instead of vanishing.
+//
+// The default is deliberately not unavailable_on_os: that is an assertion about
+// the operating system, and the only thing an unclaimed key actually proves is
+// that no collector in this build asked. See CapNotCollected.
 func NewCapabilityManifest() CapabilityManifest {
 	m := make(CapabilityManifest, len(AllCapabilityKeys()))
 	for _, k := range AllCapabilityKeys() {
-		m[k] = CapUnavailableOS
+		m[k] = CapNotCollected
 	}
 	return m
 }
 
-// Set records state for key. Invalid states are coerced to CapUnavailableOS so
-// a collector bug cannot put an unrecognised value on the wire.
+// Set records state for key. Invalid states are coerced to CapNotCollected so
+// a collector bug cannot put an unrecognised value on the wire — and cannot
+// launder itself into a claim about the operating system either.
 func (m CapabilityManifest) Set(key string, state CapabilityState) {
 	if !state.Valid() {
-		state = CapUnavailableOS
+		state = CapNotCollected
 	}
 	m[key] = state
 }
 
-// Get returns the state for key, or CapUnavailableOS when it is not recorded.
+// Get returns the state for key, or CapNotCollected when it is not recorded.
 func (m CapabilityManifest) Get(key string) CapabilityState {
 	if s, ok := m[key]; ok {
 		return s
 	}
-	return CapUnavailableOS
+	return CapNotCollected
 }
 
 // Keys returns the manifest's capability keys in sorted order, for stable

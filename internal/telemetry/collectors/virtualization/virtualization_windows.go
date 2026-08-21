@@ -4,6 +4,7 @@ package virtualization
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/yusufpapurcu/wmi"
 
@@ -36,16 +37,19 @@ func platformSignal(_ context.Context) (sig signal) {
 	defer func() {
 		if r := recover(); r != nil {
 			sig.Warnings = append(sig.Warnings, "wmi query panicked")
+			sig.Err = fmt.Errorf("win32_computersystem panic: %w", tel.ErrWMIQuery)
 		}
 	}()
 
 	var cs []win32ComputerSystem
 	if err := wmi.Query("SELECT Manufacturer, Model FROM Win32_ComputerSystem", &cs); err != nil {
 		sig.Warnings = append(sig.Warnings, "Win32_ComputerSystem query failed")
+		sig.Err = fmt.Errorf("win32_computersystem: %w", tel.ErrWMIQuery)
 		return sig
 	}
 	if len(cs) == 0 {
 		sig.Warnings = append(sig.Warnings, "Win32_ComputerSystem returned no rows")
+		sig.Err = fmt.Errorf("win32_computersystem: %w", tel.ErrEmptyOutput)
 		return sig
 	}
 

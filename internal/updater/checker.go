@@ -19,6 +19,7 @@ import (
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
+	"sentinelgo/internal/version"
 )
 
 // LatestRelease is the row returned by the get_latest_agent_release RPC.
@@ -70,9 +71,29 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	}
 
 	running := config.Version
-	newer, err := isNewerVersion(latest.Version, running)
+
+	// Only a real release version may take part in this comparison.
+	//
+	// git describe produces strings like "v3.2.6-4-g40f52e7-dirty", and the
+	// semver parser below truncates at the first '-' — so such a build used to
+	// compare as plain 3.2.6. That base tag is whatever git could reach from
+	// HEAD, which on a branch missing the newest tags is OLDER than what is
+	// actually deployed. The agent would then either "find" an update it had
+	// already passed, or replace a newer binary with an older one and report
+	// the result as current. Refusing to compare is the only safe answer for a
+	// build whose own version is not authoritative. See internal/version.
+	build := version.Parse(running)
+	comparable, ok := build.Comparable()
+	if !ok {
+		fmt.Printf("Skipping update: %s is not a release build (%s)\n",
+			sanitize.ForLog(build.String()), sanitize.ForLog(build.Reason))
+		return nil
+	}
+
+	newer, err := isNewerVersion(latest.Version, comparable)
 	if err != nil {
-		// Cannot compare versions (e.g. a "dev" build). Skip.
+		// The backend's advertised version is unparseable. Skip rather than
+		// guess at what it meant.
 		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
 		return nil
 	}
