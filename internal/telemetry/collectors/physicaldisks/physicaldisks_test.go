@@ -70,3 +70,67 @@ func TestCollect_Integration(t *testing.T) {
 		t.Logf("  %+v smart=%+v", d, d.SMART)
 	}
 }
+
+// TestSMARTCapabilityIsClaimed is the regression test for a reporting
+// inconsistency found while validating the capability manifest on a real
+// Windows host: this collector gathers SMART attributes, but nothing claimed
+// CapKeyStorageSMART, so the key kept the manifest default. The backend was
+// told "this build ships no collector for it" while the physical_disks section
+// carried temperature, power-on hours and wear.
+//
+// This is the same class of bug as the previously-unclaimed secure_boot and tpm
+// keys; see TestPreviouslyUnclaimedKeysNowHaveOwners in the collectors package.
+func TestSMARTCapabilityIsClaimed(t *testing.T) {
+	c := New()
+
+	reporter, ok := any(c).(tel.SubCapabilityReporter)
+	if !ok {
+		t.Fatal("physical_disks does not implement SubCapabilityReporter, so " +
+			"storage.smart has no owner and reports the manifest default")
+	}
+
+	subs := reporter.SubCapabilities(context.Background(), tel.CollectorConfig{})
+	state, claimed := subs[tel.CapKeyStorageSMART]
+	if !claimed {
+		t.Fatalf("storage.smart is not claimed; got keys %v", subs)
+	}
+	if state == tel.CapNotCollected {
+		t.Error("storage.smart reports not_collected from the collector that " +
+			"actually collects it")
+	}
+	if !state.Valid() {
+		t.Errorf("storage.smart reports an invalid state %q", state)
+	}
+}
+
+// TestSMARTCapabilityDescribesTheMechanismNotTheResult pins the distinction the
+// state is meant to carry. A disk with no wear percentage — a spinning HDD, a
+// USB enclosure, a virtual disk — is a nil field within a supported capability.
+// Only the mechanism being absent makes the capability unsupported.
+func TestSMARTCapabilityDescribesTheMechanismNotTheResult(t *testing.T) {
+	state := smartCapability(context.Background())
+
+	switch state {
+	case tel.CapSupported, tel.CapUnsupported:
+		// Both are legitimate and depend on what this host has installed.
+	default:
+		t.Errorf("smartCapability = %q; the mechanism is either present "+
+			"(supported) or absent (unsupported), never anything else", state)
+	}
+}
+
+// TestSMARTCapabilityDoesNotGateTheDiskList pins that claiming the sub-key did
+// not accidentally turn SMART into a section-level gate. A host without
+// smartctl must still get its disk inventory.
+func TestSMARTCapabilityDoesNotGateTheDiskList(t *testing.T) {
+	key, state := New().Capability(context.Background(), tel.CollectorConfig{})
+	if key != "" {
+		t.Errorf("physical_disks claims primary capability key %q; SMART must "+
+			"stay a sub-capability or a missing smartctl would discard the "+
+			"whole disk list", key)
+	}
+	if state != tel.CapSupported {
+		t.Errorf("primary capability = %q, want supported: disk enumeration "+
+			"works on every supported platform", state)
+	}
+}

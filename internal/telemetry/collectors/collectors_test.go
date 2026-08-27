@@ -24,18 +24,19 @@ func TestRegisterAllSucceeds(t *testing.T) {
 // registry with a full reconcile policy and still have no collector behind it,
 // and nothing in the build complains.
 //
-// Health is exempt because it is sampled rather than reconciled, and the
-// firmware/cpu/memory_modules sections are listed as known-unfilled below so
-// that adding a collector for one of them is a deliberate edit here, not a
-// silent change in behaviour.
+// Health is exempt because it is sampled rather than reconciled. Every other
+// declared section now has an owner: firmware, cpu and memory_modules were the
+// last three, and they are filled by the bridge collectors, which reuse the
+// legacy osinfo collectors read-only rather than adding a second hardware
+// implementation on three platforms.
+//
+// knownUnfilled is kept — empty — on purpose. It is the mechanism by which a
+// newly declared section without a collector fails this test, and re-adding an
+// entry is how a deliberate gap gets recorded rather than hidden.
 func TestEverySectionIsRegistered(t *testing.T) {
 	// Sections declared in the registry that this build knowingly does not
-	// collect yet. Every entry is a real gap, recorded rather than hidden.
-	knownUnfilled := map[string]string{
-		tel.SectionFirmware:      "no firmware/UEFI collector yet",
-		tel.SectionCPU:           "CPU detail still served by the legacy inventory pipeline",
-		tel.SectionMemoryModules: "no per-DIMM collector yet",
-	}
+	// collect. Every entry would be a real gap, recorded rather than hidden.
+	knownUnfilled := map[string]string{}
 
 	set := tel.NewCollectorSet()
 	if err := RegisterAll(set); err != nil {

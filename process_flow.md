@@ -1,6 +1,12 @@
-> ⚠️ **This document is stale and has not been verified against the current code.**
+> ⚠️ **Partially stale — read the caveats below.**
 >
-> This document claims tokens are encrypted at rest via `EncryptSensitiveData()`. **No such function exists** — `config.json` stores the access token, refresh token and agent secret in plaintext, protected only by filesystem ACLs. It also references `tenant_id` and `heartbeat_interval`, neither of which exists in the code.
+> The false claim that tokens are encrypted at rest via `EncryptSensitiveData()`
+> has been corrected: see [Token Storage Security](#token-storage-security) for
+> what the code actually does.
+>
+> Still stale: the `config.json` example below shows `tenant_id` and
+> `heartbeat_interval`, **neither of which exists in the code**. There is no
+> single heartbeat loop — each scheduler task runs on its own ticker.
 >
 > See [docs/telemetry/06-existing-code-observations.md](docs/telemetry/06-existing-code-observations.md) for the full list of documentation drift.
 
@@ -379,11 +385,9 @@ scheduler → handleAutoUpdate()
   "supabase_url": "https://your-project.supabase.co",
   "device_id": "auto-generated-uuid",
   "agent_id": "",
-  "tenant_id": "",
   "access_token": "<jwt-access-token>",
   "refresh_token": "<jwt-refresh-token>",
   "current_version": "v2.1.5",
-  "heartbeat_interval": "5m0s",
   "update_interval": "5m0s",
   "auto_update": false,
   "software_sync_enabled": true,
@@ -396,9 +400,29 @@ scheduler → handleAutoUpdate()
 ```
 
 ### Token Storage Security
-- File permissions: `0600` (owner read/write only)
-- Atomic writes via `SaveAtomic()` (write temp → rename)
-- Tokens encrypted at rest via `EncryptSensitiveData()`
+
+**What is actually implemented today.** `access_token`, `refresh_token` and
+`agent_secret` are written to `config.json` as **plaintext JSON**. There is no
+application-level encryption of the config file, and no function named
+`EncryptSensitiveData()` exists anywhere in this repository.
+
+The protection that does exist is filesystem access control:
+
+| Control | Implementation |
+|---|---|
+| Unix file mode `0600`, directory `0700` | `internal/config/secure_unix.go` |
+| Windows explicit DACL — SYSTEM and Administrators only | `internal/config/secure_windows.go` (`os.Chmod` only toggles the read-only bit on Windows, so a real DACL is set instead) |
+| Atomic writes (temp file → `Chmod(0600)` → rename) | `Config.SaveAtomic()` |
+
+**What this does and does not protect against.** It stops other unprivileged
+local users from reading the credentials. It does **not** protect against
+anything running as root/SYSTEM or as the agent's own identity, and it does not
+protect a backup, a disk image, or a copied config file — those yield working
+credentials on any machine.
+
+See [docs/security/credential-storage.md](docs/security/credential-storage.md)
+for the credential-at-rest design, the platform support matrix, and the upgrade
+and rollback behaviour.
 
 ---
 

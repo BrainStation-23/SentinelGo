@@ -102,8 +102,17 @@ func init() {
 }
 
 type Config struct {
-	Path                    string   `json:"-"`               // Path to the config file
-	UpdateInterval          Duration `json:"update_interval"` // Software sync interval (supports both "5m0s" and numeric formats)
+	Path           string   `json:"-"`               // Path to the config file
+	UpdateInterval Duration `json:"update_interval"` // Software-sync scheduler tick (supports both "5m0s" and numeric formats)
+
+	// SoftwareCollectInterval is the minimum gap between full software scans,
+	// which is the expensive part; the scheduler tick above only decides how
+	// often the agent CHECKS whether a scan is due. Zero means the 6h default;
+	// negative disables the gate and scans on every tick.
+	SoftwareCollectInterval Duration `json:"software_collect_interval"`
+	// SoftwareResendInterval is how long an unchanged inventory may go without
+	// a refresh upload. Zero means the 24h default.
+	SoftwareResendInterval  Duration `json:"software_resend_interval"`
 	CurrentVersion          string   `json:"current_version"`
 	DeviceID                string   `json:"device_id"`                  // persistent unique identifier
 	AutoUpdate              bool     `json:"auto_update"`                // Enable automatic updates
@@ -114,12 +123,18 @@ type Config struct {
 	TaskExecutionInterval   Duration `json:"task_execution_interval"`    // Task execution interval (supports both "5m0s" and numeric formats)
 	TaskDBPath              string   `json:"task_db_path"`               // Override task database path (for testing)
 	// Supabase configuration
-	SupabaseURL  string `json:"supabase_url"`  // Supabase project URL
-	SupabaseKey  string `json:"supabase_key"`  // Supabase anon/public API key (for apikey header)
-	AgentSecret  string `json:"agent_secret"`  // Agent secret for authentication
-	AgentID      string `json:"agent_id"`      // Custom agent UUID field (maps to agent_uuid database column)
-	AccessToken  string `json:"access_token"`  // JWT access token from Supabase
-	RefreshToken string `json:"refresh_token"` // JWT refresh token from Supabase
+	SupabaseURL string `json:"supabase_url"` // Supabase project URL
+	SupabaseKey string `json:"supabase_key"` // Supabase anon/public API key (for apikey header)
+	AgentSecret string `json:"agent_secret"` // Agent secret for authentication
+
+	// CredentialProtection selects how access_token, refresh_token and
+	// agent_secret are stored at rest: "auto" (default) uses the best mechanism
+	// the platform offers, "off" stores plaintext as before. See
+	// internal/config/credential.go and docs/security/credential-storage.md.
+	CredentialProtection string `json:"credential_protection,omitempty"`
+	AgentID              string `json:"agent_id"`      // Custom agent UUID field (maps to agent_uuid database column)
+	AccessToken          string `json:"access_token"`  // JWT access token from Supabase
+	RefreshToken         string `json:"refresh_token"` // JWT refresh token from Supabase
 	// Log collection configuration
 	LogStorageEnabled bool     `json:"log_storage_enabled"` // Enable/disable log storage
 	LogFlushInterval  Duration `json:"log_flush_interval"`  // Log collection/upload interval (supports both "5m0s" and numeric formats)
@@ -140,6 +155,26 @@ type Config struct {
 	TelemetryQueueMaxRows    int      `json:"telemetry_queue_max_rows"`   // Outbound queue row cap (default 5000)
 	TelemetryQueueMaxBytes   int64    `json:"telemetry_queue_max_bytes"`  // Outbound queue byte cap (default 64MB)
 	TelemetryQueueMaxAge     Duration `json:"telemetry_queue_max_age"`    // Outbound queue age cap (default 72h)
+
+	// TelemetryGzipEnabled compresses telemetry request bodies with gzip.
+	//
+	// OFF by default and it must stay off until the SentinelOps backend
+	// confirms it decompresses request bodies. If it does not, every telemetry
+	// upload becomes a 4xx, which the sender retains and dead-letters after
+	// five attempts — the data is not lost, but nothing is delivered either.
+	// See docs/backend/backend-compatibility-checklist.md.
+	TelemetryGzipEnabled bool `json:"telemetry_gzip_enabled"`
+
+	// Audit-log queue retention. The audit queue was originally unbounded and
+	// grew until the endpoint's disk filled whenever uploads stopped; these are
+	// the same three axes the telemetry outbound queue uses. Zero on any axis
+	// means "use the shipped default", never "unbounded" — see
+	// store.AuditLogLimits. The row cap default is an order of magnitude higher
+	// than telemetry's because audit rows are individual OS event records
+	// rather than batched telemetry messages.
+	AuditQueueMaxRows  int      `json:"audit_queue_max_rows"`  // Audit queue row cap (default 50000)
+	AuditQueueMaxBytes int64    `json:"audit_queue_max_bytes"` // Audit queue byte cap (default 64MB)
+	AuditQueueMaxAge   Duration `json:"audit_queue_max_age"`   // Audit queue age cap (default 72h)
 
 	// Event telemetry (change detection) configuration.
 	//
@@ -213,12 +248,46 @@ func (c *Config) GetRefreshToken() string {
 	return c.RefreshToken
 }
 
-// GetSoftwareInfoUpdateInterval returns software update interval as time.Duration
+// GetSoftwareInfoUpdateInterval returns how often the software-sync scheduler
+// task ticks.
+//
+// This remains the legacy `update_interval` key with its legacy five-minute
+// fallback, deliberately: it is the scheduler tick, and an existing config file
+// on disk already carries a value for it. What changed is that a tick no longer
+// implies a scan — the expensive collection is gated separately by
+// GetSoftwareCollectInterval, so an endpoint upgrading with "5m0s" already
+// written into its config stops scanning every five minutes without anyone
+// having to edit it.
 func (c *Config) GetSoftwareInfoUpdateInterval() time.Duration {
 	if time.Duration(c.UpdateInterval) == 0 {
 		return 5 * time.Minute // Default fallback
 	}
 	return time.Duration(c.UpdateInterval)
+}
+
+// GetSoftwareCollectInterval returns the minimum gap between full software
+// scans, defaulting to software.DefaultCollectInterval (6h).
+//
+// Zero means "use the default"; a negative value disables the gate and restores
+// scan-on-every-tick, which is available deliberately for anyone who needs it.
+func (c *Config) GetSoftwareCollectInterval() time.Duration {
+	if c.SoftwareCollectInterval == 0 {
+		return 6 * time.Hour
+	}
+	return time.Duration(c.SoftwareCollectInterval)
+}
+
+// GetSoftwareResendInterval returns how long an unchanged software inventory
+// may go without being re-sent, defaulting to 24h.
+//
+// This is the reconcile clock: it guarantees the backend eventually receives a
+// refresh after a manual database fix, independently of whether anything on the
+// endpoint changed.
+func (c *Config) GetSoftwareResendInterval() time.Duration {
+	if time.Duration(c.SoftwareResendInterval) <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.SoftwareResendInterval)
 }
 
 // GetAutoUpdateInterval returns how often to check for a new release.
@@ -271,6 +340,24 @@ func (c *Config) GetTelemetryCollectInterval() time.Duration {
 	}
 	return time.Duration(c.TelemetryCollectInterval)
 }
+
+// GetAuditQueueMaxAge returns the configured audit-queue age cap.
+//
+// These three getters deliberately return the raw configured value, including
+// zero, rather than substituting a default here. The defaults live in
+// store.AuditLogLimits.withDefaults so there is exactly one place that decides
+// them; duplicating them in this package would let the two drift and leave
+// nobody sure which one an endpoint actually applied. It also keeps config free
+// of a dependency on store.
+func (c *Config) GetAuditQueueMaxAge() time.Duration { return time.Duration(c.AuditQueueMaxAge) }
+
+// GetAuditQueueMaxRows returns the configured audit-queue row cap; see
+// GetAuditQueueMaxAge for why zero is passed through.
+func (c *Config) GetAuditQueueMaxRows() int { return c.AuditQueueMaxRows }
+
+// GetAuditQueueMaxBytes returns the configured audit-queue byte cap; see
+// GetAuditQueueMaxAge for why zero is passed through.
+func (c *Config) GetAuditQueueMaxBytes() int64 { return c.AuditQueueMaxBytes }
 
 // GetTelemetryQueueMaxAge returns the outbound queue age cap, defaulting to 72h.
 func (c *Config) GetTelemetryQueueMaxAge() time.Duration {
@@ -352,7 +439,9 @@ func (c *Config) GetTaskPollingInterval() time.Duration {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Path:                    path,
-		UpdateInterval:          Duration(5 * time.Minute), // Default software sync interval
+		UpdateInterval:          Duration(5 * time.Minute), // software-sync scheduler tick
+		SoftwareCollectInterval: Duration(6 * time.Hour),   // minimum gap between full scans
+		SoftwareResendInterval:  Duration(24 * time.Hour),  // refresh cadence for an unchanged list
 		CurrentVersion:          Version,                   // Use injected version
 		AutoUpdate:              true,                      // Enabled by default; updates fetched from Supabase Storage via get_latest_agent_release RPC
 		AutoUpdateInterval:      Duration(1 * time.Hour),
@@ -455,6 +544,20 @@ func Load(path string) (*Config, error) {
 		cfg.AgentID = generateDeviceID()
 	}
 
+	// Convert stored credentials to plaintext for use in memory. Plaintext
+	// values on disk pass straight through, which is what lets an existing
+	// installation upgrade onto protected storage without re-registering.
+	//
+	// A failure here is reported but is NOT fatal: the agent starts with empty
+	// credentials and takes its existing unauthenticated path, which is
+	// recoverable. Refusing to load would instead stop the service entirely and
+	// take the audit-log and update paths down with it — for a fault whose most
+	// likely cause is a config file copied from another machine, exactly what
+	// machine-bound protection is meant to make harmless.
+	if err := cfg.unprotectSecrets(); err != nil {
+		log.Printf("[config] %v", err)
+	}
+
 	return cfg, nil
 }
 
@@ -479,8 +582,9 @@ func (c *Config) Save() error {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	// #nosec G117 - Config includes AccessToken for persistence, saved with secure permissions
-	data, err := json.MarshalIndent(c, "", "  ")
+	// Credentials are protected on the way out; the live config is never
+	// mutated. See Config.marshalProtected.
+	data, err := c.marshalProtected()
 	if err != nil {
 		return err
 	}
@@ -506,8 +610,8 @@ func (c *Config) SaveAtomic() error {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	// #nosec G117 - Config includes AccessToken for persistence, saved with secure permissions
-	data, err := json.MarshalIndent(c, "", "  ")
+	// Credentials are protected on the way out; see the same note in Save.
+	data, err := c.marshalProtected()
 	if err != nil {
 		return err
 	}

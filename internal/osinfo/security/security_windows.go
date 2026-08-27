@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,8 +9,8 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
-func collectSecurity() shared.SecurityInfo {
-	profiles := collectFirewallProfiles()
+func collectSecurity(ctx context.Context) shared.SecurityInfo {
+	profiles := collectFirewallProfiles(ctx)
 	fwEnabled := false
 	for _, p := range profiles {
 		if p.Enabled {
@@ -18,11 +19,11 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 
-	avProducts := collectAV()
-	coreIsolation := collectCoreIsolation()
-	secureBoot := collectSecureBoot()
+	avProducts := collectAV(ctx)
+	coreIsolation := collectCoreIsolation(ctx)
+	secureBoot := collectSecureBoot(ctx)
 	ports := collectListeningPorts()
-	usb := collectUSBMassStorage()
+	usb := collectUSBMassStorage(ctx)
 
 	fwSec := collectFirewallSecurity(profiles)
 
@@ -50,17 +51,17 @@ func collectSecurity() shared.SecurityInfo {
 		}
 		avProtection.Products = append(avProtection.Products, details)
 	}
-	avProtection.WindowsDefenderDetails = collectWindowsDefenderDetails()
+	avProtection.WindowsDefenderDetails = collectWindowsDefenderDetails(ctx)
 
-	edrXdr := collectEDRInfo()
+	edrXdr := collectEDRInfo(ctx)
 	kernelHard := shared.KernelHardeningInfo{
 		MemoryIntegrityEnabled: coreIsolation.MemoryIntegrityEnabled,
 		VBSEnabled:             coreIsolation.VBSEnabled,
 		USBMassStorageEnabled:  usb,
 	}
-	devEnc := collectDeviceEncryption()
-	hwSec := collectHardwareSecurity()
-	idAccess := collectIdentityAccessControl(coreIsolation)
+	devEnc := collectDeviceEncryption(ctx)
+	hwSec := collectHardwareSecurity(ctx)
+	idAccess := collectIdentityAccessControl(ctx, coreIsolation)
 	netExposure := analyzeNetworkExposure(ports)
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
@@ -86,8 +87,8 @@ func collectSecurity() shared.SecurityInfo {
 	}
 }
 
-func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+func collectWindowsDefenderDetails(ctx context.Context) *shared.WindowsDefenderDetails {
+	output, err := shared.RunCommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		"Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,IsTamperProtected,AntivirusSignatureLastUpdated,ControlledFolderAccessEnabled,LastQuickScanTime,LastFullScanTime | ConvertTo-Json -Compress")
 	if err != nil {
 		return nil
@@ -111,13 +112,13 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 		sigTime, _ := raw["AntivirusSignatureLastUpdated"].(string)
 		details.SignatureLastUpdated = sigTime
 
-		details.SmartScreenEnabled = queryRegistryBool(
+		details.SmartScreenEnabled = queryRegistryBool(ctx,
 			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer`,
-			"SmartScreenEnabled") || queryRegistryBool(
+			"SmartScreenEnabled") || queryRegistryBool(ctx,
 			`HKLM\SOFTWARE\Policies\Microsoft\Windows\System`,
 			"EnableSmartScreen")
 
-		asrOutput, asrErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules`)
+		asrOutput, asrErr := shared.RunCommandContext(ctx, "reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules`)
 		if asrErr == nil {
 			lines := strings.Split(asrOutput, "\n")
 			count := 0
@@ -145,7 +146,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 			scan.ScanType = "Quick Scan"
 		}
 
-		threatsOutput, threatsErr := shared.RunCommand("powershell", "-NoProfile", "-Command",
+		threatsOutput, threatsErr := shared.RunCommandContext(ctx, "powershell", "-NoProfile", "-Command",
 			"Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreatDetection | Select-Object ThreatName,SeverityID,InitialDetectionTime,ActionID | ConvertTo-Json -Compress")
 		if threatsErr == nil && strings.TrimSpace(threatsOutput) != "" {
 			var rawThreats []map[string]interface{}
@@ -209,8 +210,8 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 	return &details
 }
 
-func queryServiceStatus(svcName string) (exists bool, status string, startup string) {
-	out, err := shared.RunCommand("sc.exe", "query", svcName)
+func queryServiceStatus(ctx context.Context, svcName string) (exists bool, status string, startup string) {
+	out, err := shared.RunCommandContext(ctx, "sc.exe", "query", svcName)
 	if err != nil {
 		return false, "Stopped", "Disabled"
 	}
@@ -222,7 +223,7 @@ func queryServiceStatus(svcName string) (exists bool, status string, startup str
 		status = "Stopped"
 	}
 
-	qcOut, qcErr := shared.RunCommand("sc.exe", "qc", svcName)
+	qcOut, qcErr := shared.RunCommandContext(ctx, "sc.exe", "qc", svcName)
 	startup = "Auto"
 	if qcErr == nil {
 		if strings.Contains(qcOut, "DISABLED") {
@@ -234,7 +235,7 @@ func queryServiceStatus(svcName string) (exists bool, status string, startup str
 	return exists, status, startup
 }
 
-func collectEDRInfo() shared.EDRXDRDetectionInfo {
+func collectEDRInfo(ctx context.Context) shared.EDRXDRDetectionInfo {
 	var info shared.EDRXDRDetectionInfo
 	knownEDR := []struct {
 		svc    string
@@ -260,7 +261,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	}
 
 	for _, e := range knownEDR {
-		exists, status, startup := queryServiceStatus(e.svc)
+		exists, status, startup := queryServiceStatus(ctx, e.svc)
 		if !exists {
 			continue
 		}
@@ -293,7 +294,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		}
 
 		if e.svc == "CSFalconService" {
-			vOut, vErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\CrowdStrike\Falcon`, "/v", "version")
+			vOut, vErr := shared.RunCommandContext(ctx, "reg", "query", `HKLM\SOFTWARE\CrowdStrike\Falcon`, "/v", "version")
 			if vErr == nil {
 				parsedVer := parseRegSZ(vOut, "version")
 				if parsedVer != "" {
@@ -323,16 +324,16 @@ func parseRegSZ(output, valueName string) string {
 	return ""
 }
 
-func collectDeviceEncryption() shared.DeviceEncryptionInfo {
+func collectDeviceEncryption(ctx context.Context) shared.DeviceEncryptionInfo {
 	var enc shared.DeviceEncryptionInfo
 	enc.EncryptionProvider = "None"
 	enc.EncryptionStatus = "Unencrypted"
 	enc.ProtectionStatus = "Disabled"
 	enc.RecoveryKeyBackupStatus = "Unknown"
 
-	output, err := shared.RunCommand("manage-bde", "-status", "C:")
+	output, err := shared.RunCommandContext(ctx, "manage-bde", "-status", "C:")
 	if err != nil {
-		output, err = shared.RunCommand("manage-bde", "-status")
+		output, err = shared.RunCommandContext(ctx, "manage-bde", "-status")
 	}
 	if err == nil {
 		lower := strings.ToLower(output)
@@ -350,7 +351,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 			enc.ProtectionStatus = "Disabled"
 		}
 
-		fveOut, fveErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\FVE`)
+		fveOut, fveErr := shared.RunCommandContext(ctx, "reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\FVE`)
 		if fveErr == nil {
 			if strings.Contains(fveOut, "RequireBackupToADDS") || strings.Contains(fveOut, "BackupToAAD") {
 				enc.RecoveryKeyBackupStatus = "Backed Up"
@@ -360,11 +361,11 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 	return enc
 }
 
-func collectHardwareSecurity() shared.HardwareSecurityInfo {
+func collectHardwareSecurity(ctx context.Context) shared.HardwareSecurityInfo {
 	var hw shared.HardwareSecurityInfo
-	hw.SecureBootStatus = collectSecureBoot()
+	hw.SecureBootStatus = collectSecureBoot(ctx)
 
-	tpmOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	tpmOut, err := shared.RunCommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		"Get-CimInstance -Namespace root/CIMV2/Security/MicrosoftTpm -ClassName Win32_Tpm | Select-Object IsEnabled_InitialValue,SpecVersion | ConvertTo-Json -Compress")
 	hw.TPMStatus = "Unsupported"
 	hw.TPMVersion = "None"
@@ -386,11 +387,11 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	return hw
 }
 
-func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.IdentityAccessControlInfo {
+func collectIdentityAccessControl(ctx context.Context, core shared.CoreIsolationInfo) shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 
-	helloEnabled := queryRegistryBool(`HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "Enabled") ||
-		queryRegistryBool(`HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "PassportForWork")
+	helloEnabled := queryRegistryBool(ctx, `HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "Enabled") ||
+		queryRegistryBool(ctx, `HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "PassportForWork")
 	id.WindowsHelloStatus = "Disabled"
 	if helloEnabled {
 		id.WindowsHelloStatus = "Enabled"
@@ -407,7 +408,7 @@ func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.Identity
 	}
 
 	uacVal := parseRegDWORD(
-		queryRegistry(`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`, "EnableLUA"),
+		queryRegistry(ctx, `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`, "EnableLUA"),
 		"EnableLUA")
 	id.UACStatus = "Disabled"
 	if uacVal == 1 {
@@ -415,7 +416,7 @@ func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.Identity
 	}
 
 	// Query Windows missing Security and Critical updates via COM
-	updOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	updOut, err := shared.RunCommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		`$Session = New-Object -ComObject Microsoft.Update.Session; $Searcher = $Session.CreateUpdateSearcher(); $Searcher.Search("IsInstalled=0 and Type='Software'").Updates | Where-Object { $_.Categories | Where-Object { $_.Name -eq 'Security Updates' -or $_.Name -eq 'Critical Updates' } } | Measure-Object | Select-Object -ExpandProperty Count`)
 
 	id.PatchComplianceStatus = "Compliant"
@@ -433,8 +434,8 @@ func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.Identity
 	return id
 }
 
-func queryRegistry(keyPath, valueName string) string {
-	out, err := shared.RunCommand("reg", "query", keyPath, "/v", valueName)
+func queryRegistry(ctx context.Context, keyPath, valueName string) string {
+	out, err := shared.RunCommandContext(ctx, "reg", "query", keyPath, "/v", valueName)
 	if err != nil {
 		return ""
 	}
@@ -444,8 +445,8 @@ func queryRegistry(keyPath, valueName string) string {
 // collectUSBMassStorage checks whether the USB Mass Storage driver (USBSTOR) is
 // enabled via its service start type in the registry.
 // Group Policy / MDM sets Start=4 (SERVICE_DISABLED) to block removable drives.
-func collectUSBMassStorage() string {
-	output, err := shared.RunCommand("reg", "query",
+func collectUSBMassStorage(ctx context.Context) string {
+	output, err := shared.RunCommandContext(ctx, "reg", "query",
 		`HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR`, "/v", "Start")
 	if err != nil {
 		return "unknown"
@@ -468,8 +469,8 @@ func usbStorStartToState(v int) string {
 }
 
 // collectAV queries Windows Security Center 2 for registered antivirus products.
-func collectAV() []shared.AntivirusProduct {
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+func collectAV(ctx context.Context) []shared.AntivirusProduct {
+	output, err := shared.RunCommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		"Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select-Object displayName,productState | ConvertTo-Json -Compress")
 	if err != nil || strings.TrimSpace(output) == "" {
 		return nil
@@ -531,8 +532,8 @@ func parseAVProductsJSON(output string) []shared.AntivirusProduct {
 }
 
 // collectFirewallProfiles parses netsh output for Domain/Private/Public profile states.
-func collectFirewallProfiles() []shared.FirewallProfile {
-	output, err := shared.RunCommand("netsh", "advfirewall", "show", "allprofiles", "state")
+func collectFirewallProfiles(ctx context.Context) []shared.FirewallProfile {
+	output, err := shared.RunCommandContext(ctx, "netsh", "advfirewall", "show", "allprofiles", "state")
 	if err != nil {
 		return nil
 	}
@@ -564,23 +565,23 @@ func parseNetshFirewall(output string) []shared.FirewallProfile {
 }
 
 // collectCoreIsolation reads Windows Device Guard / HVCI registry values.
-func collectCoreIsolation() shared.CoreIsolationInfo {
+func collectCoreIsolation(ctx context.Context) shared.CoreIsolationInfo {
 	return shared.CoreIsolationInfo{
-		MemoryIntegrityEnabled: queryRegistryBool(
+		MemoryIntegrityEnabled: queryRegistryBool(ctx,
 			`HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity`,
 			"Enabled"),
-		VBSEnabled: queryRegistryBool(
+		VBSEnabled: queryRegistryBool(ctx,
 			`HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard`,
 			"EnableVirtualizationBasedSecurity"),
-		CredentialGuardEnabled: queryRegistryBool(
+		CredentialGuardEnabled: queryRegistryBool(ctx,
 			`HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\CredentialGuard`,
 			"Enabled"),
 	}
 }
 
 // queryRegistryBool returns true when the named DWORD registry value equals 1.
-func queryRegistryBool(keyPath, valueName string) bool {
-	output, err := shared.RunCommand("reg", "query", keyPath, "/v", valueName)
+func queryRegistryBool(ctx context.Context, keyPath, valueName string) bool {
+	output, err := shared.RunCommandContext(ctx, "reg", "query", keyPath, "/v", valueName)
 	if err != nil {
 		return false
 	}
@@ -612,8 +613,8 @@ func parseRegDWORD(output, valueName string) int {
 }
 
 // collectSecureBoot reads the UEFI Secure Boot state from the registry.
-func collectSecureBoot() string {
-	output, err := shared.RunCommand("reg", "query",
+func collectSecureBoot(ctx context.Context) string {
+	output, err := shared.RunCommandContext(ctx, "reg", "query",
 		`HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\State`,
 		"/v", "UEFISecureBootEnabled")
 	if err != nil {

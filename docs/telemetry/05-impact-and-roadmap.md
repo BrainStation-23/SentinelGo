@@ -68,7 +68,20 @@ Recommendation: raise the software collect interval to 6 hours with a 24-hour re
 | Processes (450 procs with cmdline) | 250–300 KB |
 | Certificates (200 certs) | 40–80 KB |
 
-There is **no compression anywhere today**. Adding `Content-Encoding: gzip` would cut JSON telemetry by roughly 70–85%, but requires backend confirmation, so it is proposed rather than implemented.
+Compression is **implemented for the telemetry sender and shipped disabled** (`telemetry_gzip_enabled: false`), pending confirmation that the backend decompresses request bodies. The legacy inventory, software, services and audit-log paths remain uncompressed.
+
+The benefit is measured, not estimated. One full collection cycle on a real Windows endpoint, over the 20 sections that host populated (`encryption` and `tpm` produced no data on it):
+
+| | Raw | gzip | Saved |
+|---|---|---|---|
+| Whole cycle | 105,867 B | 18,007 B | **83.0%** |
+| `processes` | 74,027 B | 10,232 B | 86.2% |
+| `certificates` | 14,197 B | 2,946 B | 79.2% |
+| `routes` | 6,947 B | 664 B | 90.4% |
+| `persistence` | 4,653 B | 983 B | 78.9% |
+| `network` | 2,098 B | 607 B | 71.1% |
+
+The saving is entirely in the large sections. Small ones get **bigger** — `virtualization` went from 20 to 44 bytes and `firmware` from 59 to 80 — because the gzip header and trailer cost more than a short JSON object can recover. The sender therefore only compresses bodies of 1 KiB or more, and refuses any result that did not actually shrink.
 
 ### Resource limits
 

@@ -394,6 +394,16 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 			return nil
 		}
 
+		// Gate the expensive scan. The scheduler tick stays where it is, but a
+		// tick no longer means a full registry/package-manager/filesystem walk:
+		// that runs at most once per software_collect_interval (6h by default).
+		// The first tick after startup always collects, so first registration is
+		// never delayed. The on-demand sync-software remote task and the debug
+		// CLI call the collector directly and are unaffected.
+		if !swsvc.ShouldCollect(cfg.GetSoftwareCollectInterval()) {
+			return nil
+		}
+
 		svc := swsvc.NewSoftwareService()
 		svc.SetSupabaseURL(cfg.SupabaseURL)
 

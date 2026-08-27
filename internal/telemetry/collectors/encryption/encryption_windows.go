@@ -4,6 +4,10 @@ package encryption
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os/exec"
 	"strings"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -37,8 +41,29 @@ try {
 		}
 	} | ConvertTo-Json -Compress -Depth 4
 } catch {
+	$code = ''
+	try { $code = ''+$_.Exception.NativeErrorCode } catch {}
+	if ($code -eq 'AccessDenied') { exit 2 }
 	exit 1
 }`
+
+// Exit codes returned by bitlockerVolumeScript.
+//
+// The split exists so an agent that lacks rights is reported as
+// permission_denied — actionable, "give it elevation" — rather than as a
+// generic error that says only "something broke". Both statuses count as a
+// collector failure, so telemetry health is unaffected; what changes is whether
+// an operator can tell which failure they have.
+//
+// AccessDenied is matched on CimException.NativeErrorCode, which is an enum
+// NAME and therefore locale-independent. The obvious alternatives were checked
+// on a real host and do not work: HResult is the generic 0x80131500
+// (COR_E_EXCEPTION), not E_ACCESSDENIED, and matching the message text
+// ("Access denied") would break on any non-English Windows.
+const (
+	exitQueryFailed  = 1
+	exitAccessDenied = 2
+)
 
 // platformCapability checks whether the BitLocker PowerShell module is
 // present: it ships with Pro/Enterprise/Education editions but not Home, so
@@ -52,10 +77,35 @@ func platformCapability(_ context.Context) tel.CapabilityState {
 	return tel.CapSupported
 }
 
+// classifyRunError turns a failed script run into a signal, distinguishing a
+// rights problem from everything else.
+//
+// Split out from platformVolumes so the mapping is testable without a machine
+// that actually denies access — the branch that matters most is the one hardest
+// to reproduce on demand.
+//
+// shared.RunCommand uses cmd.Output(), so a non-zero exit arrives as an
+// *exec.ExitError carrying the script's own code. Reading it here rather than
+// switching to the combined-output helper keeps stdout clean: the script's JSON
+// must not be interleaved with anything PowerShell writes to stderr.
+func classifyRunError(err error) signal {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == exitAccessDenied {
+		return signal{
+			Warnings: []string{"Get-BitLockerVolume denied: the agent lacks the rights to read BitLocker state"},
+			// fs.ErrPermission is what telemetry.SanitizeError maps to
+			// StatusPermissionDenied; wrapping preserves the cause without
+			// putting any command output on the wire.
+			Err: fmt.Errorf("read BitLocker volumes: %w", fs.ErrPermission),
+		}
+	}
+	return signal{Warnings: []string{"Get-BitLockerVolume query failed"}, Err: err}
+}
+
 func platformVolumes(_ context.Context) signal {
 	out, err := shared.RunCommand("powershell", "-NoProfile", "-Command", bitlockerVolumeScript)
 	if err != nil {
-		return signal{Warnings: []string{"Get-BitLockerVolume query failed"}, Err: err}
+		return classifyRunError(err)
 	}
 
 	rows, parseErr := parseWindowsVolumes(out)

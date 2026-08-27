@@ -88,9 +88,25 @@ func NewLoggingIntegration(cfg *config.Config) (*LoggingIntegration, error) {
 	sanitizedDbPath := sanitize.ForLog(dbPath)
 	log.Printf("[logging] Database path: %s", sanitizedDbPath)
 
-	auditStore, err := store.NewAuditLogStore(dbPath)
+	// Bounded retention. Without it this queue grows until the disk fills
+	// whenever uploads stop — rows are deleted only on successful upload, so an
+	// unreachable or permanently-rejecting backend has no other backstop. Zero
+	// on any axis means "shipped default", not "unbounded".
+	auditStore, err := store.NewAuditLogStoreWithLimits(dbPath, store.AuditLogLimits{
+		MaxAge:   cfg.GetAuditQueueMaxAge(),
+		MaxRows:  cfg.GetAuditQueueMaxRows(),
+		MaxBytes: cfg.GetAuditQueueMaxBytes(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open audit log store: %w", err)
+	}
+
+	if dropped, dropErr := auditStore.TotalDropped(); dropErr == nil && dropped > 0 {
+		// Reported at startup because the counter is cumulative and durable:
+		// this is how an operator learns a device has been shedding audit
+		// records across restarts, not just during the current run.
+		log.Printf("[logging] audit queue has discarded %d record(s) to stay within "+
+			"its retention bounds over the lifetime of this database", dropped)
 	}
 
 	li := &LoggingIntegration{

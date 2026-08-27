@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo/shared"
@@ -45,7 +47,7 @@ func TestSyncInventoryHandler_CollectorReturnsNil_Error(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return nil }
+	collectSysInfoFn = func(context.Context) (*shared.SystemInfo, error) { return nil, nil }
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error {
 		t.Error("UpdateAgentInfo should not be called when collect returns nil")
 		return nil
@@ -66,7 +68,7 @@ func TestSyncInventoryHandler_UpdateAgentInfoFails_ReturnsError(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return &shared.SystemInfo{} }
+	collectSysInfoFn = func(context.Context) (*shared.SystemInfo, error) { return &shared.SystemInfo{}, nil }
 
 	updateErr := errors.New("supabase unavailable")
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error {
@@ -91,7 +93,9 @@ func TestSyncInventoryHandler_Success(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	collectSysInfoFn = func() *shared.SystemInfo { return &shared.SystemInfo{Hostname: "test-host"} }
+	collectSysInfoFn = func(context.Context) (*shared.SystemInfo, error) {
+		return &shared.SystemInfo{Hostname: "test-host"}, nil
+	}
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error { return nil }
 
 	h := &syncInventoryHandler{}
@@ -116,23 +120,42 @@ func TestSyncInventoryHandler_Timeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// The collector never returns, so the handler must respect the context cancellation.
-	// But since syncInventoryTimeout creates its own context, we need to use a
-	// blocking collector + expired parent context.
-	blocking := make(chan struct{})
-	collectSysInfoFn = func() *shared.SystemInfo {
-		<-blocking // blocks forever
-		return nil
+	// A collector that runs until its context ends, which is what a real one now
+	// does: osinfo.CollectContext checks the deadline between collectors and the
+	// security collector's subprocesses are killed outright. Previously this
+	// stub could only block forever, because nothing was passed to it that could
+	// ask it to stop — the handler abandoned the goroutine and returned, leaving
+	// the collection and its subprocesses running.
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	collectSysInfoFn = func(ctx context.Context) (*shared.SystemInfo, error) {
+		close(started)
+		<-ctx.Done()
+		close(returned)
+		return nil, ctx.Err()
 	}
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error { return nil }
 
 	h := &syncInventoryHandler{}
 	_, err := h.Run(ctx, testInvCfg(t), taskstore.Task{})
-	// Close the blocking channel to unblock the goroutine and prevent a goroutine leak.
-	close(blocking)
 
 	if err == nil {
 		t.Fatal("expected error when context is cancelled before collection completes")
+	}
+
+	// The collector must have been given the cancellable context and must have
+	// finished because of it. Both channels being closed by the time Run
+	// returned is the proof that nothing was left running behind it.
+	select {
+	case <-started:
+	default:
+		t.Error("the collector was never invoked with the handler's context")
+	}
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Error("the collector did not observe cancellation; it was abandoned " +
+			"rather than stopped, which is the leak this change removes")
 	}
 }
 
@@ -144,28 +167,26 @@ func TestSyncInventoryHandler_GoroutineDoesNotLeak(t *testing.T) {
 		updateAgentInfoFn = origUpdate
 	}()
 
-	// Verify the buffered channel (cap=1) prevents goroutine leak on timeout:
-	// even after the handler returns, the goroutine can still send on the channel.
+	// There is no goroutine to leak any more: the handler calls the collector
+	// directly and the collector honours the context. This asserts the stronger
+	// property the old buffered-channel arrangement could not — that collection
+	// has actually finished by the time Run returns.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	done := make(chan struct{})
-	collectSysInfoFn = func() *shared.SystemInfo {
-		close(done)
-		return nil
+	var running atomic.Bool
+	collectSysInfoFn = func(ctx context.Context) (*shared.SystemInfo, error) {
+		running.Store(true)
+		defer running.Store(false)
+		return nil, ctx.Err()
 	}
 	updateAgentInfoFn = func(_ context.Context, _ *config.Config, _ *shared.SystemInfo) error { return nil }
 
 	h := &syncInventoryHandler{}
 	h.Run(ctx, testInvCfg(t), taskstore.Task{}) //nolint:errcheck
 
-	// If done is never closed, the goroutine leaked. We verify it can close.
-	// The select with a short timeout proves the goroutine eventually ran.
-	select {
-	case <-done:
-		// Goroutine completed; no leak.
-	default:
-		// done was closed synchronously because the context was already cancelled
-		// and the goroutine may have run before or after — this is acceptable.
+	if running.Load() {
+		t.Error("collection was still running after Run returned — the handler " +
+			"stopped waiting for it rather than stopping it")
 	}
 }

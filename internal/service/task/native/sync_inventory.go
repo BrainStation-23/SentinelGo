@@ -16,7 +16,9 @@ const syncInventoryTimeout = 90 * time.Second
 
 // collectSysInfoFn and updateAgentInfoFn are the real production implementations;
 // replaced in tests to avoid network calls and OS-level collection.
-var collectSysInfoFn = func() *shared.SystemInfo { return osinfo.Collect() }
+var collectSysInfoFn = func(ctx context.Context) (*shared.SystemInfo, error) {
+	return osinfo.CollectContext(ctx)
+}
 var updateAgentInfoFn = func(ctx context.Context, cfg *config.Config, info *shared.SystemInfo) error {
 	return agentsvc.NewAgentService().UpdateAgentInfo(ctx, cfg, info)
 }
@@ -33,16 +35,11 @@ func (h *syncInventoryHandler) Run(ctx context.Context, cfg *config.Config, _ ta
 	tctx, cancel := context.WithTimeout(ctx, syncInventoryTimeout)
 	defer cancel()
 
-	type collectResult struct{ info *shared.SystemInfo }
-	ch := make(chan collectResult, 1)
-	go func() { ch <- collectResult{collectSysInfoFn()} }()
-
-	var sysInfo *shared.SystemInfo
-	select {
-	case <-tctx.Done():
-		return "", fmt.Errorf("sync-inventory: osinfo.Collect timed out after %v", syncInventoryTimeout)
-	case r := <-ch:
-		sysInfo = r.info
+	// Called directly rather than in a goroutine the timeout abandons; see the
+	// same change in scheduler.handleAgentInfoUpdate.
+	sysInfo, err := collectSysInfoFn(tctx)
+	if err != nil {
+		return "", fmt.Errorf("sync-inventory: collection cancelled after %v: %w", syncInventoryTimeout, err)
 	}
 
 	if sysInfo == nil {

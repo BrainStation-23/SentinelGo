@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"sentinelgo/internal/osinfo/shared"
+	tel "sentinelgo/internal/telemetry"
 )
 
 // platformDisks enumerates disks via lsblk (one call for every disk, per the
@@ -65,4 +66,22 @@ func smartForDevice(ctx context.Context, name string) (*SMART, string) {
 		return nil, "smartctl returned unparseable JSON for /dev/" + name
 	}
 	return smartFromSmartctl(result), ""
+}
+
+// smartCapability reports whether smartmontools is installed.
+//
+// On Linux SMART comes entirely from smartctl, and smartctl is NOT installed by
+// default on most distributions — this is the common case, not an edge case.
+// Reporting it as unsupported rather than leaving the key unclaimed is the whole
+// point: "unsupported" tells an operator the host could provide SMART if
+// smartmontools were installed, which is actionable, where the previous
+// unclaimed default said the agent had never asked.
+//
+// The probe is a PATH lookup, matching exactly what platformDisks itself tests
+// before deciding to collect. No subprocess is launched.
+func smartCapability(context.Context) tel.CapabilityState {
+	if _, err := exec.LookPath("smartctl"); err != nil {
+		return tel.CapUnsupported
+	}
+	return tel.CapSupported
 }

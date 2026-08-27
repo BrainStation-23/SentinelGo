@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -18,7 +19,22 @@ const maxListeningPorts = 200
 // Collect returns a SecurityInfo populated by platform-specific probes.
 // Individual probe failures are swallowed; fields default to zero/unknown.
 func Collect() shared.SecurityInfo {
-	return collectSecurity()
+	return CollectContext(context.Background())
+}
+
+// CollectContext is Collect with cancellation.
+//
+// Security collection is the most expensive part of the legacy inventory cycle
+// — on Windows it fires roughly 20 PowerShell invocations at 350–900 ms cold
+// each — so it is the first collector migrated off the uncancellable path.
+// Without a context, the scheduler's 90-second timeout abandoned the goroutine
+// running this and every subprocess it had spawned kept going; with one, the
+// child processes are killed when the deadline passes.
+//
+// Collect remains for callers that have no context (the debug CLI), and is
+// unchanged in behaviour.
+func CollectContext(ctx context.Context) shared.SecurityInfo {
+	return collectSecurity(ctx)
 }
 
 func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallSecurityInfo {

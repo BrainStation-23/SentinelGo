@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,8 +27,8 @@ var knownAVServices = []struct {
 	{"eset-daemon", "ESET"},
 }
 
-func collectSecurity() shared.SecurityInfo {
-	profiles := collectFirewallProfiles()
+func collectSecurity(ctx context.Context) shared.SecurityInfo {
+	profiles := collectFirewallProfiles(ctx)
 	fwEnabled := false
 	for _, p := range profiles {
 		if p.Enabled {
@@ -36,9 +37,9 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 
-	avProducts := collectAV()
-	coreIsolation := collectCoreIsolation()
-	secureBoot := collectSecureBoot()
+	avProducts := collectAV(ctx)
+	coreIsolation := collectCoreIsolation(ctx)
+	secureBoot := collectSecureBoot(ctx)
 	ports := collectListeningPorts()
 	usb := collectUSBMassStorage()
 
@@ -111,7 +112,7 @@ func collectSecurity() shared.SecurityInfo {
 		avProtection.Products = append(avProtection.Products, details)
 	}
 
-	edrXdr := collectEDRInfo()
+	edrXdr := collectEDRInfo(ctx)
 	kernelHard := shared.KernelHardeningInfo{
 		MemoryIntegrityEnabled: false,
 		VBSEnabled:             false,
@@ -120,9 +121,9 @@ func collectSecurity() shared.SecurityInfo {
 		KernelLockdown:         coreIsolation.KernelLockdown,
 		USBMassStorageEnabled:  usb,
 	}
-	devEnc := collectDeviceEncryption()
-	hwSec := collectHardwareSecurity()
-	idAccess := collectIdentityAccessControl()
+	devEnc := collectDeviceEncryption(ctx)
+	hwSec := collectHardwareSecurity(ctx)
+	idAccess := collectIdentityAccessControl(ctx)
 	netExposure := collectNetworkExposure(ports, idAccess)
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
@@ -148,7 +149,7 @@ func collectSecurity() shared.SecurityInfo {
 	}
 }
 
-func collectEDRInfo() shared.EDRXDRDetectionInfo {
+func collectEDRInfo(ctx context.Context) shared.EDRXDRDetectionInfo {
 	var info shared.EDRXDRDetectionInfo
 	knownEDR := []struct {
 		svc    string
@@ -183,13 +184,13 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		status := "Stopped"
 		startup := "Disabled"
 
-		if activeOut, err := shared.RunCommand("systemctl", "is-active", e.svc); err == nil {
+		if activeOut, err := shared.RunCommandContext(ctx, "systemctl", "is-active", e.svc); err == nil {
 			installed = true
 			if strings.TrimSpace(activeOut) == "active" {
 				status = "Running"
 			}
 		}
-		if enabledOut, err := shared.RunCommand("systemctl", "is-enabled", e.svc); err == nil {
+		if enabledOut, err := shared.RunCommandContext(ctx, "systemctl", "is-enabled", e.svc); err == nil {
 			installed = true
 			if strings.TrimSpace(enabledOut) == "enabled" {
 				startup = "Auto"
@@ -233,14 +234,14 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	return info
 }
 
-func collectDeviceEncryption() shared.DeviceEncryptionInfo {
+func collectDeviceEncryption(ctx context.Context) shared.DeviceEncryptionInfo {
 	var enc shared.DeviceEncryptionInfo
 	enc.EncryptionProvider = "None"
 	enc.EncryptionStatus = "Unencrypted"
 	enc.ProtectionStatus = "Disabled"
 	enc.RecoveryKeyBackupStatus = "Unknown"
 
-	if output, err := shared.RunCommand("lsblk", "-o", "NAME,FSTYPE"); err == nil {
+	if output, err := shared.RunCommandContext(ctx, "lsblk", "-o", "NAME,FSTYPE"); err == nil {
 		if strings.Contains(output, "crypto_LUKS") {
 			enc.EncryptionProvider = "LUKS"
 			enc.EncryptionStatus = "Encrypted"
@@ -250,9 +251,9 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 	return enc
 }
 
-func collectHardwareSecurity() shared.HardwareSecurityInfo {
+func collectHardwareSecurity(ctx context.Context) shared.HardwareSecurityInfo {
 	var hw shared.HardwareSecurityInfo
-	hw.SecureBootStatus = collectSecureBoot()
+	hw.SecureBootStatus = collectSecureBoot(ctx)
 	hw.TPMStatus = "Unsupported"
 	hw.TPMVersion = "None"
 	hw.SecureEnclaveStatus = "Unsupported"
@@ -348,7 +349,7 @@ func countYumSecurityUpdates(output string) int {
 	return count
 }
 
-func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
+func collectIdentityAccessControl(ctx context.Context) shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 	id.SSHRootLogin = "Unknown"
 	id.SSHPasswordAuth = "Unknown"
@@ -380,7 +381,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	id.PendingSecurityPatches = 0
 
 	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
-		if out, errRun := shared.RunCommand("/usr/lib/update-notifier/apt-check"); errRun == nil {
+		if out, errRun := shared.RunCommandContext(ctx, "/usr/lib/update-notifier/apt-check"); errRun == nil {
 			parts := strings.Split(strings.TrimSpace(out), ";")
 			if len(parts) >= 2 {
 				var sec int
@@ -390,13 +391,13 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 			}
 		}
 	} else if _, errApt := os.Stat("/usr/bin/apt-get"); errApt == nil {
-		if out, errRun := shared.RunCommand("apt-get", "-s", "upgrade"); errRun == nil {
+		if out, errRun := shared.RunCommandContext(ctx, "apt-get", "-s", "upgrade"); errRun == nil {
 			id.PendingSecurityPatches = countAptSecurityUpdates(out)
 		}
 	} else if _, errYum := os.Stat("/usr/bin/yum"); errYum == nil {
 		// yum check-update exits 100 when updates are available, 0 when none.
 		// RunCommandOutput captures output for both exit codes.
-		out, exitCode, errRun := shared.RunCommandOutput("yum", "check-update", "--security")
+		out, exitCode, errRun := shared.RunCommandOutputContext(ctx, "yum", "check-update", "--security")
 		if errRun == nil && (exitCode == 0 || exitCode == 100) {
 			id.PendingSecurityPatches = countYumSecurityUpdates(out)
 		}
@@ -478,14 +479,14 @@ func usbStorageStateFromConfFile(path string) string {
 }
 
 // collectAV probes systemctl for known AV daemons.
-func collectAV() []shared.AntivirusProduct {
+func collectAV(ctx context.Context) []shared.AntivirusProduct {
 	var products []shared.AntivirusProduct
 	seen := map[string]bool{}
 	for _, svc := range knownAVServices {
 		if seen[svc.name] {
 			continue
 		}
-		if p, ok := probeAVService(svc.service, svc.name); ok {
+		if p, ok := probeAVService(ctx, svc.service, svc.name); ok {
 			seen[svc.name] = true
 			products = append(products, p)
 		}
@@ -493,8 +494,8 @@ func collectAV() []shared.AntivirusProduct {
 	return products
 }
 
-func probeAVService(service, name string) (shared.AntivirusProduct, bool) {
-	output, err := shared.RunCommand("systemctl", "is-active", service)
+func probeAVService(ctx context.Context, service, name string) (shared.AntivirusProduct, bool) {
+	output, err := shared.RunCommandContext(ctx, "systemctl", "is-active", service)
 	if err != nil {
 		return shared.AntivirusProduct{}, false
 	}
@@ -515,20 +516,20 @@ func probeAVService(service, name string) (shared.AntivirusProduct, bool) {
 }
 
 // collectFirewallProfiles tries ufw, then firewalld, then iptables.
-func collectFirewallProfiles() []shared.FirewallProfile {
-	if output, err := shared.RunCommand("ufw", "status"); err == nil {
+func collectFirewallProfiles(ctx context.Context) []shared.FirewallProfile {
+	if output, err := shared.RunCommandContext(ctx, "ufw", "status"); err == nil {
 		// First line is "Status: active" or "Status: inactive".
 		first := strings.ToLower(strings.SplitN(output, "\n", 2)[0])
 		active := strings.Contains(first, "active") && !strings.Contains(first, "inactive")
 		return []shared.FirewallProfile{{Name: "ufw", Enabled: active}}
 	}
-	if output, err := shared.RunCommand("firewall-cmd", "--state"); err == nil {
+	if output, err := shared.RunCommandContext(ctx, "firewall-cmd", "--state"); err == nil {
 		running := strings.TrimSpace(strings.ToLower(output)) == "running"
 		return []shared.FirewallProfile{{Name: "firewalld", Enabled: running}}
 	}
 	// iptables is a last resort: report enabled only when DROP/REJECT rules exist.
 	// An empty ACCEPT-all ruleset is not a meaningful firewall.
-	if output, err := shared.RunCommand("iptables", "-L", "-n"); err == nil {
+	if output, err := shared.RunCommandContext(ctx, "iptables", "-L", "-n"); err == nil {
 		lower := strings.ToLower(output)
 		hasRules := strings.Contains(lower, "drop") || strings.Contains(lower, "reject")
 		return []shared.FirewallProfile{{Name: "iptables", Enabled: hasRules}}
@@ -536,16 +537,16 @@ func collectFirewallProfiles() []shared.FirewallProfile {
 	return nil
 }
 
-func collectCoreIsolation() shared.CoreIsolationInfo {
+func collectCoreIsolation(ctx context.Context) shared.CoreIsolationInfo {
 	return shared.CoreIsolationInfo{
-		SELinuxMode:     collectSELinux(),
-		AppArmorEnabled: collectAppArmor(),
+		SELinuxMode:     collectSELinux(ctx),
+		AppArmorEnabled: collectAppArmor(ctx),
 		KernelLockdown:  collectKernelLockdown(),
 	}
 }
 
 // collectSELinux reads the SELinux enforcement mode from sysfs or sestatus.
-func collectSELinux() string {
+func collectSELinux(ctx context.Context) string {
 	if data, err := os.ReadFile("/sys/fs/selinux/enforce"); err == nil {
 		switch strings.TrimSpace(string(data)) {
 		case "1":
@@ -554,7 +555,7 @@ func collectSELinux() string {
 			return "permissive"
 		}
 	}
-	if output, err := shared.RunCommand("sestatus"); err == nil {
+	if output, err := shared.RunCommandContext(ctx, "sestatus"); err == nil {
 		if mode := parseSEStatusOutput(output); mode != "" {
 			return mode
 		}
@@ -583,11 +584,11 @@ func parseSEStatusOutput(output string) string {
 }
 
 // collectAppArmor returns true when AppArmor is loaded.
-func collectAppArmor() bool {
+func collectAppArmor(ctx context.Context) bool {
 	if _, err := os.Stat("/sys/kernel/security/apparmor"); err == nil {
 		return true
 	}
-	_, err := shared.RunCommand("aa-status", "--enabled")
+	_, err := shared.RunCommandContext(ctx, "aa-status", "--enabled")
 	return err == nil
 }
 
@@ -608,8 +609,8 @@ func collectKernelLockdown() string {
 }
 
 // collectSecureBoot checks UEFI Secure Boot state via mokutil or EFI variables.
-func collectSecureBoot() string {
-	if output, err := shared.RunCommand("mokutil", "--sb-state"); err == nil {
+func collectSecureBoot(ctx context.Context) string {
+	if output, err := shared.RunCommandContext(ctx, "mokutil", "--sb-state"); err == nil {
 		lower := strings.ToLower(strings.TrimSpace(output))
 		if strings.Contains(lower, "secureboot enabled") {
 			return "enabled"

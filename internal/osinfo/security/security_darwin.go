@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -25,8 +26,8 @@ var knownAVApps = []struct {
 	{"/Library/Sophos Anti-Virus Extension", "Sophos AV"},
 }
 
-func collectSecurity() shared.SecurityInfo {
-	profiles := collectFirewallProfiles()
+func collectSecurity(ctx context.Context) shared.SecurityInfo {
+	profiles := collectFirewallProfiles(ctx)
 	fwEnabled := false
 	for _, p := range profiles {
 		if p.Enabled {
@@ -35,11 +36,11 @@ func collectSecurity() shared.SecurityInfo {
 		}
 	}
 
-	avProducts := collectAV()
-	coreIsolation := collectCoreIsolation()
-	secureBoot := collectSecureBoot()
+	avProducts := collectAV(ctx)
+	coreIsolation := collectCoreIsolation(ctx)
+	secureBoot := collectSecureBoot(ctx)
 	ports := collectListeningPorts()
-	usb := collectUSBMassStorage()
+	usb := collectUSBMassStorage(ctx)
 
 	fwSec := collectFirewallSecurity(profiles)
 
@@ -63,9 +64,9 @@ func collectSecurity() shared.SecurityInfo {
 		avProtection.Products = append(avProtection.Products, details)
 	}
 
-	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+	if out, err := shared.RunCommandContext(ctx, "defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		avProtection.XProtectVersion = strings.TrimSpace(out)
-	} else if out, err = shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+	} else if out, err = shared.RunCommandContext(ctx, "defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		avProtection.XProtectVersion = strings.TrimSpace(out)
 	}
 
@@ -116,16 +117,16 @@ func collectSecurity() shared.SecurityInfo {
 		})
 	}
 
-	edrXdr := collectEDRInfo()
+	edrXdr := collectEDRInfo(ctx)
 	kernelHard := shared.KernelHardeningInfo{
 		MemoryIntegrityEnabled: false,
 		VBSEnabled:             false,
 		SIPEnabled:             coreIsolation.SIPEnabled,
 		USBMassStorageEnabled:  usb,
 	}
-	devEnc := collectDeviceEncryption()
-	hwSec := collectHardwareSecurity()
-	idAccess := collectIdentityAccessControl()
+	devEnc := collectDeviceEncryption(ctx)
+	hwSec := collectHardwareSecurity(ctx)
+	idAccess := collectIdentityAccessControl(ctx)
 	netExposure := analyzeNetworkExposure(ports)
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
@@ -151,7 +152,7 @@ func collectSecurity() shared.SecurityInfo {
 	}
 }
 
-func collectEDRInfo() shared.EDRXDRDetectionInfo {
+func collectEDRInfo(ctx context.Context) shared.EDRXDRDetectionInfo {
 	var info shared.EDRXDRDetectionInfo
 	knownEDR := []struct {
 		path   string
@@ -169,7 +170,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	}
 
 	runningProcs := make(map[string]bool)
-	if psOut, err := shared.RunCommand("ps", "-axco", "comm"); err == nil {
+	if psOut, err := shared.RunCommandContext(ctx, "ps", "-axco", "comm"); err == nil {
 		for _, line := range strings.Split(psOut, "\n") {
 			runningProcs[strings.TrimSpace(line)] = true
 		}
@@ -219,14 +220,14 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	return info
 }
 
-func collectDeviceEncryption() shared.DeviceEncryptionInfo {
+func collectDeviceEncryption(ctx context.Context) shared.DeviceEncryptionInfo {
 	var enc shared.DeviceEncryptionInfo
 	enc.EncryptionProvider = "None"
 	enc.EncryptionStatus = "Unencrypted"
 	enc.ProtectionStatus = "Disabled"
 	enc.RecoveryKeyBackupStatus = "Unknown"
 
-	output, err := shared.RunCommand("fdesetup", "status")
+	output, err := shared.RunCommandContext(ctx, "fdesetup", "status")
 	if err == nil {
 		lower := strings.ToLower(output)
 		if strings.Contains(lower, "filevault is on") {
@@ -235,7 +236,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 			enc.ProtectionStatus = "Enabled"
 		}
 
-		keyOut, keyErr := shared.RunCommand("fdesetup", "haspersonalrecoverykey")
+		keyOut, keyErr := shared.RunCommandContext(ctx, "fdesetup", "haspersonalrecoverykey")
 		if keyErr == nil && strings.Contains(strings.ToLower(keyOut), "true") {
 			enc.RecoveryKeyBackupStatus = "Backed Up"
 		}
@@ -243,16 +244,16 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 	return enc
 }
 
-func collectHardwareSecurity() shared.HardwareSecurityInfo {
+func collectHardwareSecurity(ctx context.Context) shared.HardwareSecurityInfo {
 	var hw shared.HardwareSecurityInfo
 	hw.TPMStatus = "Unsupported"
 	hw.TPMVersion = "None"
-	hw.SecureBootStatus = collectSecureBoot()
+	hw.SecureBootStatus = collectSecureBoot(ctx)
 
 	hw.SecureEnclaveStatus = "Unsupported"
 	hw.ActivationLockStatus = "Unknown"
 
-	hwOut, err := shared.RunCommand("system_profiler", "SPHardwareDataType")
+	hwOut, err := shared.RunCommandContext(ctx, "system_profiler", "SPHardwareDataType")
 	if err == nil {
 		lower := strings.ToLower(hwOut)
 		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") || strings.Contains(lower, "t2") {
@@ -271,18 +272,18 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	return hw
 }
 
-func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
+func collectIdentityAccessControl(ctx context.Context) shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 
 	id.TouchIDStatus = "Disabled"
-	if out, err := shared.RunCommand("bioutil", "-read", "-system"); err == nil {
+	if out, err := shared.RunCommandContext(ctx, "bioutil", "-read", "-system"); err == nil {
 		if strings.Contains(strings.ToLower(out), "enabled") {
 			id.TouchIDStatus = "Enabled"
 		}
 	}
 
 	id.BootstrapTokenStatus = "Disabled"
-	if out, err := shared.RunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
+	if out, err := shared.RunCommandContext(ctx, "profiles", "status", "-type", "bootstraptoken"); err == nil {
 		if strings.Contains(strings.ToLower(out), "supported: yes") || strings.Contains(strings.ToLower(out), "escrowed: yes") {
 			id.BootstrapTokenStatus = "Enabled"
 		}
@@ -294,7 +295,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		currentUser = os.Getenv("LOGNAME") // fallback when running as a launchd service
 	}
 	if currentUser != "" {
-		if out, err := shared.RunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
+		if out, err := shared.RunCommandContext(ctx, "sysadminctl", "-secureTokenStatus", currentUser); err == nil {
 			if strings.Contains(strings.ToLower(out), "is enabled") {
 				id.SecureTokenStatus = "Enabled"
 			} else if strings.Contains(strings.ToLower(out), "is disabled") {
@@ -309,7 +310,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	// trigger a false Non-Compliant result.
 	id.PatchComplianceStatus = "Compliant"
 	id.RapidSecurityResponses = "Up to Date"
-	if out, err := shared.RunCommand("softwareupdate", "-l"); err == nil {
+	if out, err := shared.RunCommandContext(ctx, "softwareupdate", "-l"); err == nil {
 		lower := strings.ToLower(out)
 		if strings.Contains(lower, "security") {
 			id.PatchComplianceStatus = "Non-Compliant"
@@ -324,7 +325,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 }
 
 // collectAV checks for known AV app bundles and reports Gatekeeper status.
-func collectAV() []shared.AntivirusProduct {
+func collectAV(ctx context.Context) []shared.AntivirusProduct {
 	var products []shared.AntivirusProduct
 	seen := map[string]bool{}
 
@@ -345,7 +346,7 @@ func collectAV() []shared.AntivirusProduct {
 
 	// Gatekeeper: macOS built-in application assessment.
 	gkEnabled := "disabled"
-	if output, err := shared.RunCommand("spctl", "--status"); err == nil {
+	if output, err := shared.RunCommandContext(ctx, "spctl", "--status"); err == nil {
 		if strings.Contains(strings.ToLower(output), "assessments enabled") {
 			gkEnabled = "enabled"
 		}
@@ -361,8 +362,8 @@ func collectAV() []shared.AntivirusProduct {
 }
 
 // collectFirewallProfiles queries the macOS Application Firewall state.
-func collectFirewallProfiles() []shared.FirewallProfile {
-	output, err := shared.RunCommand("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+func collectFirewallProfiles(ctx context.Context) []shared.FirewallProfile {
+	output, err := shared.RunCommandContext(ctx, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err != nil {
 		return nil
 	}
@@ -371,15 +372,15 @@ func collectFirewallProfiles() []shared.FirewallProfile {
 	return []shared.FirewallProfile{{Name: "Application Firewall", Enabled: enabled}}
 }
 
-func collectCoreIsolation() shared.CoreIsolationInfo {
+func collectCoreIsolation(ctx context.Context) shared.CoreIsolationInfo {
 	return shared.CoreIsolationInfo{
-		SIPEnabled: collectSIP(),
+		SIPEnabled: collectSIP(ctx),
 	}
 }
 
 // collectSIP reports the System Integrity Protection state via csrutil.
-func collectSIP() string {
-	output, err := shared.RunCommand("csrutil", "status")
+func collectSIP(ctx context.Context) string {
+	output, err := shared.RunCommandContext(ctx, "csrutil", "status")
 	if err != nil {
 		return "unknown"
 	}
@@ -396,8 +397,8 @@ func collectSIP() string {
 // collectSecureBoot infers Secure Boot state from the iBridge/T2 data type.
 // On T2 and Apple Silicon, Secure Boot is always present; the active security
 // policy ("Full Security", "Reduced Security", "No Security") determines enforcement.
-func collectSecureBoot() string {
-	output, err := shared.RunCommand("system_profiler", "SPiBridgeDataType")
+func collectSecureBoot(ctx context.Context) string {
+	output, err := shared.RunCommandContext(ctx, "system_profiler", "SPiBridgeDataType")
 	if err != nil {
 		return "unknown"
 	}
@@ -420,11 +421,11 @@ func collectSecureBoot() string {
 // plist and report the allowUSBRestricted policy directly. On unmanaged devices,
 // a loaded IOUSBMassStorageClass kext confirms mass storage is active; otherwise
 // the state cannot be determined without root or MDM access.
-func collectUSBMassStorage() string {
-	if state := usbStateFromMDM(); state != "" {
+func collectUSBMassStorage(ctx context.Context) string {
+	if state := usbStateFromMDM(ctx); state != "" {
 		return state
 	}
-	if kstat, err := shared.RunCommand("kextstat"); err == nil {
+	if kstat, err := shared.RunCommandContext(ctx, "kextstat"); err == nil {
 		if strings.Contains(kstat, "IOUSBMassStorageClass") {
 			return "enabled"
 		}
@@ -435,8 +436,8 @@ func collectUSBMassStorage() string {
 // usbStateFromMDM reads the allowUSBRestricted key from the MDM-managed
 // applicationaccess preference plist. Returns "" when the plist is absent,
 // unreadable, or does not contain the key.
-func usbStateFromMDM() string {
-	out, err := shared.RunCommand("plutil", "-convert", "json", "-o", "-",
+func usbStateFromMDM(ctx context.Context) string {
+	out, err := shared.RunCommandContext(ctx, "plutil", "-convert", "json", "-o", "-",
 		"/Library/Managed Preferences/com.apple.applicationaccess.plist")
 	if err != nil {
 		return ""

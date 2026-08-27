@@ -1,6 +1,19 @@
 # 06 — Observations on Existing Code
 
-**Nothing in this document has been changed. Every item requires explicit approval before anyone edits the subsystem.**
+**Originally: findings only.** Items 1, 2, 4 and 5 have since been approved and
+implemented; each is marked below with what was done. The remaining items are
+still findings and still require approval before the subsystem is edited.
+
+| Item | Status |
+|---|---|
+| 1. Software collection cadence | **Done** — 6h collect gate, 24h resend, `LastOpened` and `FirstSeenAt` removed from the fingerprint |
+| 2. `audit_log_queue` unbounded | **Done** — three-axis bounds, severity-aware eviction, durable drop counters |
+| 3. Duplicate and wasteful collection | Open |
+| 4. Context cancellation debt | **Done (partially)** — `osinfo.CollectContext`, security collector fully context-aware, no more abandoned goroutines. Remaining collectors are gated, not interrupted |
+| 5. Credentials in plaintext | **Done (Windows)** — DPAPI at machine scope; Linux/macOS remain documented gaps. Documentation corrected |
+| 6. Latent bugs and dead fields | Open |
+| 7. Legacy fingerprint migration | Open — deliberately last |
+| 8. Stale documentation | **Done** — `process_flow.md` and the telemetry README corrected |
 
 The telemetry layer is additive by design: the existing scheduler, collectors, stores, transport, authentication, software/services pipelines and audit-logging pipeline are treated as stable foundations. The findings below were surfaced during the analysis and are recorded so they are not lost — not because they are in scope.
 

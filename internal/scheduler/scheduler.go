@@ -549,9 +549,8 @@ func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 }
 
 // collectTimeout caps the entire agent-info-update cycle (osinfo + RPC).
-// osinfo.Collect is synchronous and has no context parameter; without this
-// bound, a hung gopsutil call would leave task.Running=true indefinitely and
-// silently block every subsequent periodic tick.
+// Without this bound, a hung collector would leave task.Running=true
+// indefinitely and silently block every subsequent periodic tick.
 const collectTimeout = 90 * time.Second
 
 func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
@@ -568,16 +567,15 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 	tctx, cancel := context.WithTimeout(ctx, collectTimeout)
 	defer cancel()
 
-	type result struct{ info *shared.SystemInfo }
-	ch := make(chan result, 1)
-	go func() { ch <- result{osinfo.Collect()} }()
-
-	var sysInfo *shared.SystemInfo
-	select {
-	case <-tctx.Done():
-		return fmt.Errorf("osinfo.Collect timed out after %v", collectTimeout)
-	case r := <-ch:
-		sysInfo = r.info
+	// Called directly, not in an abandoned goroutine. The previous form ran
+	// osinfo.Collect in a goroutine and returned on timeout without it —
+	// which stopped the scheduler waiting but stopped nothing else: the
+	// collectors kept running, their subprocesses kept running, and the next
+	// tick added more. CollectContext observes tctx, so the deadline now ends
+	// the work rather than just the waiting.
+	sysInfo, err := osinfo.CollectContext(tctx)
+	if err != nil {
+		return fmt.Errorf("osinfo collection cancelled after %v: %w", collectTimeout, err)
 	}
 
 	if sysInfo == nil {

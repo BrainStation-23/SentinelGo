@@ -1,6 +1,7 @@
 package osinfo
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -25,8 +26,55 @@ import (
 	userspkg "sentinelgo/internal/osinfo/users"
 )
 
-// Collect gathers comprehensive system information including OS, CPU, memory, disk, and network details.
+// Collect gathers comprehensive system information including OS, CPU, memory,
+// disk, and network details.
+//
+// It is retained unchanged for callers that genuinely have no context — the
+// debug CLI commands. Anything running on a scheduler tick should use
+// CollectContext so its deadline actually reaches the collectors.
 func Collect() *shared.SystemInfo {
+	info, _ := CollectContext(context.Background())
+	return info
+}
+
+// CollectContext is Collect with cancellation.
+//
+// # The problem it solves
+//
+// Collect has no context, so the scheduler bounded it by running it in a
+// goroutine and abandoning that goroutine on timeout. Abandoning a goroutine
+// does not stop it: every collector still ran to completion and every
+// subprocess it had spawned kept going, on top of the ones the NEXT cycle
+// started. A hung collector therefore leaked a goroutine and a process tree on
+// every tick, and adding subprocess-based collectors made it worse.
+//
+// # What cancellation actually reaches
+//
+// Two different degrees, and the difference is worth stating plainly rather
+// than implying the stronger one everywhere:
+//
+//   - security is fully context-aware: its subprocesses are killed when ctx is
+//     done. It is migrated first because it dominates the cycle — roughly 20
+//     PowerShell invocations at 350–900 ms cold on Windows.
+//   - every other collector is GATED, not interrupted: ctx is checked before
+//     each one starts, so cancellation stops the cycle from starting further
+//     work, but a collector already running finishes. Each is separately bounded
+//     by the 30-second timeout inside shared.RunCommand, so the worst case is
+//     one in-flight subprocess outliving the deadline by up to that long —
+//     against the previous behaviour of every remaining collector running.
+//
+// Migrating the rest is tracked in docs/telemetry/06-existing-code-observations.md
+// item 4; each one is a change to a working collector on three platforms and is
+// deliberately incremental.
+//
+// On cancellation it returns (nil, ctx.Err()): a partially-filled SystemInfo
+// would be fingerprinted and uploaded as though it were the machine's real
+// state, which would report hardware as having disappeared.
+func CollectContext(ctx context.Context) (*shared.SystemInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	cfg, err := config.Load("")
 	if err != nil {
 		cfg = &config.Config{}
@@ -34,7 +82,7 @@ func Collect() *shared.SystemInfo {
 
 	hInfo, err := host.Info()
 	if err != nil || hInfo == nil {
-		return nil
+		return nil, nil
 	}
 
 	cpuResult := cpupkg.Get()
@@ -91,8 +139,39 @@ func Collect() *shared.SystemInfo {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	firmwareType, firmwareVendor, firmwareVersion := systempkg.GetFirmwareInfo()
 	osInformation := systempkg.GetOSInformation()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// The expensive collectors, each preceded by a cancellation check so an
+	// expired deadline stops the cycle here instead of paying for all of them.
+	// securityInfo is the only one that also cancels its own subprocesses.
+	disks := diskpkg.Get()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	gpus := gpupkg.Get()
+	displays := displaypkg.Get()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	peripherals := peripheralspkg.Get()
+	printers := printerspkg.Get()
+	audioDevices := audiopkg.Get()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	securityInfo := securitypkg.CollectContext(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	return &shared.SystemInfo{
 		Timestamp:        time.Now().UTC(),
@@ -112,20 +191,20 @@ func Collect() *shared.SystemInfo {
 		FQDN:             systempkg.GetFQDN(),
 		ChassisType:      systempkg.GetChassisType(),
 		KernelVersion:    osInformation.OSVersion,
-		GPUs:             gpupkg.Get(),
+		GPUs:             gpus,
 		RAMs:             rampkg.Get(),
-		Disks:            diskpkg.Get(),
+		Disks:            disks,
 		FirmwareType:     firmwareType,
 		FirmwareVendor:   firmwareVendor,
 		FirmwareVersion:  firmwareVersion,
 		TPMVersion:       systempkg.GetTPMVersion(),
 		NetworkAdapters:  networkpkg.Get(),
-		Peripherals:      peripheralspkg.Get(),
-		Displays:         displaypkg.Get(),
+		Peripherals:      peripherals,
+		Displays:         displays,
 		CPUInfoDetailed:  cpuResult.Detailed,
-		AudioDevices:     audiopkg.Get(),
-		Printers:         printerspkg.Get(),
+		AudioDevices:     audioDevices,
+		Printers:         printers,
 		OSInformation:    osInformation,
-		SecurityInfo:     securitypkg.Collect(),
-	}
+		SecurityInfo:     securityInfo,
+	}, nil
 }

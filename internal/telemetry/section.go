@@ -18,10 +18,16 @@ const (
 	SectionOS             = "os"
 	SectionVolumes        = "volumes"
 	SectionNetwork        = "network"
-	SectionSessions       = "sessions"
-	SectionSecurityPost   = "security_posture"
-	SectionEncryption     = "encryption"
-	SectionSecureBoot     = "secure_boot"
+	// SectionRoutes is the routing table. It is separate from SectionNetwork
+	// because it is the volatile half of network state — a VPN connecting or
+	// DHCP renewing rewrites it — and folding it into the fingerprinted
+	// network section would re-upload every adapter, MTU and DNS server each
+	// time a route moved. Off by default behind collect_routing_table.
+	SectionRoutes       = "routes"
+	SectionSessions     = "sessions"
+	SectionSecurityPost = "security_posture"
+	SectionEncryption   = "encryption"
+	SectionSecureBoot   = "secure_boot"
 	// SectionProtection carries the endpoint-protection controls whose loss
 	// leaves a device exposed immediately: firewall state, real-time
 	// protection, tamper protection. It is separate from SectionSecurityPost
@@ -78,6 +84,10 @@ func DefaultSections() []SectionSpec {
 		{SectionOS, ClassInventory, 1, 1 * h, 24 * h, false},
 		{SectionVolumes, ClassInventory, 1, 1 * h, 24 * h, false},
 		{SectionNetwork, ClassInventory, 1, 1 * h, 24 * h, false},
+		// Routes collect more often than the rest of dynamic inventory and are
+		// chunked: a split-tunnel VPN or a container host can produce hundreds
+		// of entries, and the section must batch rather than truncate.
+		{SectionRoutes, ClassInventory, 1, 1 * h, 12 * h, true},
 		// Directory join can change independently of a reboot (a device can be
 		// joined or unjoined at any time), so it collects on the same cadence as
 		// other dynamic inventory rather than the 6h static-hardware bucket.

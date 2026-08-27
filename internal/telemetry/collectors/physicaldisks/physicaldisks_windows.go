@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"sentinelgo/internal/osinfo/shared"
+	tel "sentinelgo/internal/telemetry"
 )
 
 // diskScript combines Get-PhysicalDisk with Get-StorageReliabilityCounter in
@@ -57,4 +58,20 @@ func platformDisks(_ context.Context) signal {
 	// CollectorResult. ", " keeps the two cmdlet names as separate,
 	// sub-32-character tokens.
 	return signal{Disks: disks, Source: "powershell:Get-PhysicalDisk, Get-StorageReliabilityCounter"}
+}
+
+// smartCapability reports SMART as readable on every supported Windows build.
+//
+// Get-StorageReliabilityCounter is part of the in-box Storage module (Windows 8
+// / Server 2012 and later), so the mechanism is always present — there is
+// nothing to probe for, and launching PowerShell purely to confirm the existence
+// of a built-in cmdlet would cost a 350-900 ms process launch every cycle to
+// learn nothing.
+//
+// Per-disk gaps are a different thing and are already handled: the query uses
+// -ErrorAction SilentlyContinue because USB enclosures and virtual disks
+// commonly expose no reliability counters, and those become nil fields on that
+// disk rather than a capability-level failure.
+func smartCapability(context.Context) tel.CapabilityState {
+	return tel.CapSupported
 }

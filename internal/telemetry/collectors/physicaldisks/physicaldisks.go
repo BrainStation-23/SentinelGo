@@ -84,6 +84,28 @@ func (c *Collector) Capability(context.Context, tel.CollectorConfig) (string, te
 	return "", tel.CapSupported
 }
 
+// SubCapabilities reports whether this host can read SMART at all.
+//
+// It exists because the manifest and the payload disagreed without it. This
+// collector genuinely gathers SMART attributes — temperature, power-on hours,
+// wear — but nothing claimed CapKeyStorageSMART, so the key kept the manifest
+// default and the backend was told "this build ships no collector for it"
+// while the section it belongs to carried the data. An operator reading that
+// would conclude SMART was unavailable on a fleet that was reporting it.
+//
+// It is a SUB-capability rather than this collector's primary one for the
+// reason Capability describes: a non-supported state returned from Capability
+// makes RunAll skip Collect entirely, so gating on smartctl's presence would
+// throw away the disk list itself on a host that merely lacks that one tool.
+// This is the same split the processes collector uses for processes.cmdline.
+//
+// The state describes the MECHANISM, not the result. A disk that reports no
+// wear percentage — a spinning HDD, a USB enclosure, a virtual disk — is a nil
+// field within a supported capability, not a capability failure.
+func (c *Collector) SubCapabilities(ctx context.Context, _ tel.CollectorConfig) map[string]tel.CapabilityState {
+	return map[string]tel.CapabilityState{tel.CapKeyStorageSMART: smartCapability(ctx)}
+}
+
 // Collect gathers physical disk inventory.
 func (c *Collector) Collect(ctx context.Context, _ tel.CollectorConfig) (any, tel.CollectorResult) {
 	res, done := tel.NewResult(c.Name(), c.Section())

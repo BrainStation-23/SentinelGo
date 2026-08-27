@@ -5,6 +5,7 @@ import (
 	"log"
 	"os/exec"
 	"runtime"
+	"sentinelgo/internal/config"
 	"strconv"
 	"time"
 
@@ -30,6 +31,26 @@ func HandleStatus() {
 		fmt.Printf("Error showing status: %v\n", err)
 	}
 	fmt.Printf("Config checkpoint path: %s\n", getCheckpointPath())
+	showCredentialProtection()
+}
+
+// showCredentialProtection reports how this endpoint stores its credentials at
+// rest.
+//
+// It exists so the answer comes from the running code rather than from
+// documentation. The gap this reports on was created by a document asserting a
+// protection that was never implemented; a status line that asks the binary
+// what it actually does cannot drift the same way.
+//
+// It prints the mechanism name only — never a credential, and never anything
+// derived from one.
+func showCredentialProtection() {
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Printf("Credential protection: unknown (config unreadable: %v)\n", err)
+		return
+	}
+	fmt.Printf("Credential protection: %s\n", cfg.CredentialProtectionMechanism())
 }
 
 func stopSentinelGoProcesses() error {

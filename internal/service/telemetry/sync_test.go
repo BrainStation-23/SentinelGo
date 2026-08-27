@@ -543,3 +543,69 @@ func TestFlushEmptyQueueIsNoOp(t *testing.T) {
 		t.Errorf("an empty queue must not produce requests: delivered=%d calls=%d", res.Delivered, calls.Load())
 	}
 }
+
+// ── transient-failure budget ─────────────────────────────────────────────────
+
+// TestBackendOutageDoesNotStrandAMessage is the "retained for retry" guarantee
+// for transient failures.
+//
+// The per-message attempt budget exists to bound REJECTIONS — a payload the
+// backend keeps refusing is a defect to investigate, so it is dead-lettered and
+// retained rather than retried forever. A backend outage is a different thing
+// entirely: the payload is fine and the only correct action is to try again
+// later. If an outage consumes the same budget, the oldest queued messages pass
+// the threshold during the outage and are then skipped by the poison safety net
+// in deliverBatch — never delivered, never dead-lettered, and visible only as a
+// Poisoned counter. That is silent loss of collected telemetry caused by
+// nothing worse than the backend being down for a while.
+func TestBackendOutageDoesNotStrandAMessage(t *testing.T) {
+	var outage atomic.Bool
+	outage.Store(true)
+
+	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		if outage.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	seedSectionState(t, svc, "identity")
+	enqueueTestMessage(t, svc, "identity", `{"payload":{}}`)
+
+	// Ride out an outage longer than the attempt budget. Each flush gets a short
+	// deadline so the backoff inside the retry policy does not stall the test.
+	for i := 0; i < maxDeliveryAttempts+2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		_, err := svc.Flush(ctx)
+		cancel()
+		if err == nil {
+			t.Fatalf("flush %d during outage: expected a transient error", i)
+		}
+		if depth, _ := svc.queueStore.Depth(); depth != 1 {
+			t.Fatalf("flush %d during outage: queue depth = %d, want 1", i, depth)
+		}
+		if dead, _ := svc.queueStore.DeadLetterDepth(); dead != 0 {
+			t.Fatalf("flush %d during outage: %d message(s) dead-lettered — an "+
+				"unreachable backend is not a rejected payload", i, dead)
+		}
+	}
+
+	// The backend comes back.
+	outage.Store(false)
+
+	res, err := svc.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("flush after recovery: %v", err)
+	}
+	if res.Poisoned != 0 {
+		t.Errorf("Poisoned = %d, want 0 — an outage must not poison a valid message", res.Poisoned)
+	}
+	if res.Delivered != 1 {
+		t.Fatalf("delivered = %d, want 1 — the message was stranded by the outage "+
+			"instead of being retried once the backend recovered", res.Delivered)
+	}
+	if depth, _ := svc.queueStore.Depth(); depth != 0 {
+		t.Errorf("queue depth = %d, want 0 after successful delivery", depth)
+	}
+}
