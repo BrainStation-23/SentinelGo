@@ -56,3 +56,4 @@ sentinelgo_*.db-wal
 sentinelgo_*.db-shm
 /.puku
 sentinelgo
+coverage
