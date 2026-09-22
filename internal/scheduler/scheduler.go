@@ -2,13 +2,13 @@ package scheduler
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"crypto/rand"
-	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"

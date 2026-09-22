@@ -2,11 +2,11 @@ package updater
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
-	"crypto/rand"
-	"encoding/binary"
 	"net"
 	"net/http"
 	"net/url"
