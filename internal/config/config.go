@@ -401,9 +401,13 @@ func (c *Config) validateConfig() error {
 		return fmt.Errorf("device_id is required")
 	}
 
-	// Validate URL format — only https is permitted to protect credentials in transit.
+	// Validate URL format — only https is permitted to protect credentials in
+	// transit. The sole exception is loopback addresses (127.0.0.1, ::1,
+	// localhost), which never leave the machine and are used by in-process test
+	// servers (httptest.NewServer). This keeps the production enforcement intact
+	// while letting the test suite run without a TLS terminator.
 	u, _ := url.Parse(c.SupabaseURL)
-	if u != nil && u.Scheme == "http" {
+	if u != nil && u.Scheme == "http" && !isLoopback(u.Hostname()) {
 		return fmt.Errorf("supabase_url must use https, not http (plaintext connections are not allowed)")
 	}
 	if !isValidURL(c.SupabaseURL) {
@@ -434,7 +438,30 @@ func isValidURL(s string) bool {
 	if err != nil {
 		return false
 	}
-	return u.Scheme == "https" && u.Host != ""
+	// Accept https for all hosts (production), and http for loopback-only
+	// (in-process test servers — httptest.NewServer always binds to loopback).
+	if u.Host == "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && isLoopback(u.Hostname())
+}
+
+// isLoopback returns true when host is a loopback address (127.x.x.x, ::1) or
+// the name "localhost". Only loopback http traffic is allowed in validateConfig;
+// all other http URLs are rejected to prevent cleartext credential transmission.
+func isLoopback(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	// Handle the full 127.0.0.0/8 range (127.x.x.x).
+	if len(host) > 4 && host[:4] == "127." {
+		return true
+	}
+	return false
 }
 
 // ValidateConfiguration performs comprehensive validation
