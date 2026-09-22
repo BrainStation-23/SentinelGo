@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.25.11'
+  GO_VERSION: '1.26.0'
   CGO_ENABLED: '0'
 
 jobs:
@@ -20,9 +20,9 @@ jobs:
     name: Static Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
 
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -56,9 +56,9 @@ jobs:
       matrix:
         goos: [linux, darwin, windows]
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
 
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -69,7 +69,7 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9.2.1
+        uses: golangci/golangci-lint-action@v9.3.0
         env:
           GOOS: ${{ matrix.goos }}
         with:
@@ -83,11 +83,11 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -111,7 +111,7 @@ jobs:
           category: gosec
 
       - name: Run govulncheck
-        uses: golang/govulncheck-action@v1.0.4
+        uses: golang/govulncheck-action@v1.1.0
 
       - name: Run Trivy
         uses: aquasecurity/trivy-action@v0.36.0
@@ -135,9 +135,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
 
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -177,11 +177,11 @@ jobs:
           - goos: windows
             goarch: arm64
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -202,7 +202,7 @@ jobs:
     needs: test
     if: github.event_name != 'workflow_call'
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
