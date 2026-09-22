@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -72,6 +73,24 @@ func (ls *linuxService) Install() error {
 
 	if out, err := exec.Command("systemctl", "enable", linuxUnitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable: %w: %s", err, out)
+	}
+
+	// Harden the install directory and binary so that unprivileged users
+	// cannot replace the executable and gain root via the service.
+	//
+	// Security model (mirrors install.sh):
+	//   - root owns everything; the sentinelgo group can read/execute.
+	//   - 0750 on the directory: others cannot list or traverse it.
+	//   - 0750 on the binary: others cannot read or execute it directly.
+	//
+	// Running as root (required for service installation) means os.Chmod and
+	// os.Chown succeed without additional privilege escalation.
+	installDir := filepath.Dir(exePath)
+	if err := os.Chmod(installDir, 0750); err != nil {
+		log.Printf("warning: failed to set permissions on install directory %s: %v", installDir, err)
+	}
+	if err := os.Chmod(exePath, 0750); err != nil {
+		log.Printf("warning: failed to set permissions on agent binary %s: %v", exePath, err)
 	}
 
 	return nil

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+
+	"sentinelgo/internal/winsec"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -77,6 +80,19 @@ func (ws *windowsService) Install() error {
 	_ = s.Close()
 
 	_ = eventlog.InstallAsEventCreate(ws.name, eventlog.Error|eventlog.Warning|eventlog.Info)
+
+	// Harden the install directory and binary so that standard (non-admin)
+	// users cannot replace sentinelgo.exe and pivot to SYSTEM via the service.
+	// The restrictive DACL — SYSTEM + Administrators full control only — mirrors
+	// what winsec.SecurePath already applies to the config directory and file.
+	installDir := filepath.Dir(exePath)
+	if err := winsec.SecurePath(installDir); err != nil {
+		log.Printf("warning: failed to secure install directory %s: %v", installDir, err)
+	}
+	if err := winsec.SecurePath(exePath); err != nil {
+		log.Printf("warning: failed to secure agent binary %s: %v", exePath, err)
+	}
+
 	return nil
 }
 

@@ -117,6 +117,18 @@ if not exist "%CONFIG_DIR%" (
     mkdir "%CONFIG_DIR%"
     echo [SUCCESS] Created %CONFIG_DIR%
 )
+
+REM Harden directory permissions: remove inherited ACEs, grant SYSTEM and
+REM Administrators full control only. This prevents low-privilege users from
+REM replacing sentinelgo.exe (binary planting / local privilege escalation).
+echo [INFO] Hardening directory permissions...
+icacls "%INSTALL_DIR%" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo [SUCCESS] Directory permissions hardened - standard users cannot modify %INSTALL_DIR%
+) else (
+    echo [WARNING] Failed to harden directory permissions - installation may be vulnerable to binary replacement
+    echo [INFO] Manually run: icacls "%INSTALL_DIR%" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F"
+)
 echo.
 
 REM Step 4: Deploy Configuration File
@@ -175,6 +187,16 @@ if %errorLevel% equ 0 (
     echo [ERROR] Failed to deploy binary
     pause
     exit /b 1
+)
+
+REM Explicitly lock the binary itself in case it was written before the
+REM directory ACL was applied (e.g. re-install over an existing directory
+REM whose permissions had drifted).
+icacls "%INSTALL_DIR%\%BINARY_NAME%" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:F" /grant:r "BUILTIN\Administrators:F" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo [SUCCESS] Binary permissions hardened
+) else (
+    echo [WARNING] Failed to harden binary permissions
 )
 echo.
 
@@ -347,6 +369,14 @@ if %errorLevel% equ 0 (
     echo [ERROR] Failed to update binary
     pause
     exit /b 1
+)
+
+REM Re-apply hardened permissions after binary replacement.
+icacls "%INSTALL_DIR%\%BINARY_NAME%" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:F" /grant:r "BUILTIN\Administrators:F" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo [SUCCESS] Binary permissions hardened
+) else (
+    echo [WARNING] Failed to harden binary permissions after update
 )
 
 echo [INFO] Starting service...
