@@ -1,0 +1,100 @@
+name: 💡 Feature Request
+description: Suggest a new feature or improvement
+title: "feat: <short description>"
+labels: ["enhancement", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement!
+        Please search [existing issues](https://github.com/BrainStation-23/SentinelGo/issues) first to see if this has already been discussed.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of SentinelGo does this relate to?
+      options:
+        - Agent core / scheduler
+        - Authentication & JWT
+        - Hardware & system metrics (osinfo)
+        - Software inventory
+        - Audit log collection
+        - Task execution (script runner)
+        - Self-update / updater
+        - Configuration
+        - CLI / flags
+        - Service management (systemd / launchd / Windows Service)
+        - CI/CD & build
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform relevance
+      options:
+        - All platforms
+        - Linux only
+        - macOS only
+        - Windows only
+        - Linux + macOS
+        - Linux + Windows
+        - macOS + Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve? A clear description of the gap or pain point.
+      placeholder: "Currently, when I do X, I have to Y manually because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you would like to see.
+      placeholder: "It would be great if SentinelGo could..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you have thought about or tried.
+
+  - type: dropdown
+    id: willing_to_implement
+    attributes:
+      label: Are you willing to implement this?
+      options:
+        - "Yes — I plan to open a PR"
+        - "Maybe — I could contribute with guidance"
+        - "No — I am just suggesting"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, links, references, or anything else useful.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: This request respects the CGO_ENABLED=0 constraint (no C dependencies)
+          required: true

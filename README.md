@@ -364,6 +364,8 @@ make release VERSION=vX.Y.Z
 | [`docs/audit-logs-architecture.md`](docs/audit-logs-architecture.md) | Audit-log pipeline end-to-end |
 | [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md) | Per-OS install steps |
 | [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and security architecture |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev workflow, commit style, PR checklist |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community standards |
 
 <br/>
 
@@ -378,6 +380,23 @@ make release VERSION=vX.Y.Z
 - Release binaries include a `SHA256SUMS` file. Verify before running: `sha256sum -c SHA256SUMS`.
 
 📖 Full security policy and architecture: [`SECURITY.md`](SECURITY.md)
+
+<br/>
+
+---
+
+## 🙌 Contributing
+
+Contributions of all kinds are welcome — bug fixes, new features, documentation improvements, and platform-specific work.
+
+| | |
+|---|---|
+| 🐛 **Bug report** | [Open a bug report](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml) |
+| 💡 **Feature request** | [Open a feature request](https://github.com/BrainStation-23/SentinelGo/issues/new?template=feature_request.yml) |
+| 🔐 **Security issue** | See [SECURITY.md](SECURITY.md) — do not open a public issue |
+| 💬 **Question** | [Start a discussion](https://github.com/BrainStation-23/SentinelGo/discussions) |
+| 📖 **Contributing guide** | [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, commit style, PR checklist |
+| 💚 **Code of Conduct** | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 
 <br/>
 
@@ -427,6 +446,6 @@ Distributed under the **Apache 2.0** License. See [`LICENSE`](LICENSE) for detai
 
 <div align="center">
 
-Made with ❤️ by the SentinelGo team &nbsp;·&nbsp; [Report a bug](https://github.com/BrainStation-23/SentinelGo/issues) &nbsp;·&nbsp; [Security policy](SECURITY.md)
+Made with ❤️ by the SentinelGo team &nbsp;·&nbsp; [Contribute](CONTRIBUTING.md) &nbsp;·&nbsp; [Report a bug](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml) &nbsp;·&nbsp; [Security policy](SECURITY.md) &nbsp;·&nbsp; [Code of Conduct](CODE_OF_CONDUCT.md)
 
 </div>
