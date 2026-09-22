@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"sync"
 	"time"
+
+	"sentinelgo/internal/paths"
 )
 
 // Duration is a wrapper around time.Duration for JSON marshaling
@@ -44,33 +47,29 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).String())
 }
 
-// Platform-specific config paths
-const (
-	// Windows: ProgramData folder for system-wide configuration
-	WindowsConfigPath = `C:\SentinelGo\.sentinelgo\config.json`
-	// Linux: /etc/opt for system-wide configuration
-	LinuxConfigPath = `/opt/sentinelgo/.sentinelgo/config.json`
-	// macOS: /Library/Application Support for system-wide configuration
-	MacConfigPath = `/opt/sentinelgo/.sentinelgo/config.json`
-)
-
-// GetDefaultConfigPath returns the platform-specific default config path
+// GetDefaultConfigPath returns the config path for this platform.
+//
+// Locations now live in internal/paths; the per-OS constants that used to sit
+// here were one of several copies scattered across the tree, and the Windows one
+// pointed at C:\SentinelGo, whose inherited ACL made the install directory
+// writable by any standard user.
+//
+// If the current-layout config is absent but a pre-relocation one exists, the
+// legacy path is returned. That fallback is load-bearing: a relocated binary can
+// start before migration has moved the file, and without it Load would find no
+// config, generate a fresh device_id and agent_id, and the host would re-register
+// as a brand-new agent -- losing its identity and its history.
 func GetDefaultConfigPath() string {
-	switch runtime.GOOS {
-	case "windows":
-		return WindowsConfigPath
-	case "linux":
-		return LinuxConfigPath
-	case "darwin":
-		return MacConfigPath
-	default:
-		// Fallback to home directory for unsupported platforms
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "/opt/sentinelgo/.sentinelgo/config.json"
-		}
-		return filepath.Join(home, ".sentinelgo", "config.json")
+	current := paths.ConfigPath()
+	if _, err := os.Stat(current); err == nil {
+		return current
 	}
+	if legacy := paths.LegacyConfigPath(); legacy != "" {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return current
 }
 
 // Version is injected at build time via -ldflags "-X sentinelgo/internal/config.Version=...".
@@ -252,19 +251,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if path == "" {
-		// Use platform-specific fixed config path
 		cfg.Path = GetDefaultConfigPath()
-		// Ensure config directory exists
-		configDir := filepath.Dir(cfg.Path)
-		if err := os.MkdirAll(configDir, 0700); err != nil {
-			return nil, fmt.Errorf("failed to create config directory: %v", err)
-		}
-		// Harden the directory holding the agent's secrets (SYSTEM/Admins-only
-		// DACL on Windows; 0700 on Unix). Best-effort: log-and-continue so a
-		// permissions failure doesn't prevent the agent from starting.
-		if err := secureDir(configDir); err != nil {
-			log.Printf("warning: failed to secure config directory %s: %v", configDir, err)
-		}
 	}
 
 	// Validate and sanitize config path to prevent path traversal
@@ -280,6 +267,10 @@ func Load(path string) (*Config, error) {
 			cleanPath = absPath
 		}
 		cfg.Path = cleanPath
+	}
+
+	if err := hardenConfigLocation(cfg.Path); err != nil {
+		return nil, err
 	}
 
 	if _, err := os.Stat(cfg.Path); err == nil {
@@ -314,6 +305,63 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// hardenConfigLocation creates the directory holding path and restricts access
+// to it (SYSTEM/Administrators-only DACL on Windows, 0700/0600 on Unix).
+//
+// This deliberately runs for every managed path rather than only when Load was
+// called with no argument. The service is registered with an explicit
+// "-config <path>" argument, so under the previous `path == ""` guard the
+// hardening never executed in the configuration that actually ships -- the file
+// kept whatever ACL it inherited from the installer.
+//
+// The IsManagedPath gate is not optional. Load is also called by tests with
+// temporary directories and by CLI subcommands with an arbitrary -config value,
+// and the DACL applied here grants access to SYSTEM and Administrators only.
+// Applying it to a developer's temp directory would lock the calling process out
+// of its own fixtures.
+//
+// Failures are logged rather than fatal: a permissions problem must not stop a
+// monitoring agent from starting. Startup self-defense reports the condition
+// separately.
+func hardenConfigLocation(path string) error {
+	configDir := filepath.Dir(path)
+	if !paths.IsManagedPath(configDir) {
+		return nil
+	}
+
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return fmt.Errorf("failed to create config directory: %v", err)
+	}
+	if err := secureDir(configDir); err != nil {
+		log.Printf("warning: failed to secure config directory %s: %v", configDir, err)
+	}
+	// Harden an existing file too. The installer copies config.json into place
+	// with inherited permissions, and before this the file only got a restrictive
+	// DACL on the first successful token save.
+	if _, err := os.Stat(path); err == nil {
+		secureManagedFile(path)
+	}
+	return nil
+}
+
+// secureManagedFile restricts access to a config file the agent owns, and does
+// nothing for any other path.
+//
+// The gate matters because Save and SaveAtomic are called from tests and from
+// CLI subcommands pointed at arbitrary locations. Applying a
+// SYSTEM/Administrators-only DACL to a developer's temp file is both wrong and
+// noisy -- it cannot succeed for an unprivileged owner, so it produced a warning
+// on every save during test runs, which is exactly how a real warning gets
+// ignored.
+func secureManagedFile(path string) {
+	if !paths.IsManagedPath(filepath.Dir(path)) {
+		return
+	}
+	if err := secureConfigFile(path); err != nil {
+		log.Printf("warning: failed to secure config file %s: %v", path, err)
+	}
+}
+
 func generateDeviceID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
@@ -342,7 +390,16 @@ func (c *Config) Save() error {
 	}
 
 	// Save with secure permissions (0600 for sensitive config)
-	return os.WriteFile(c.Path, data, 0600)
+	if err := os.WriteFile(c.Path, data, 0600); err != nil {
+		return err
+	}
+
+	// Mode 0600 only toggles the read-only bit on Windows; the real access
+	// control is the DACL. Without this the file keeps whatever it inherited,
+	// which under C:\ meant readable by every local user. SaveAtomic already
+	// applies this -- Save did not.
+	secureManagedFile(c.Path)
+	return nil
 }
 
 // SaveAtomic saves config atomically to prevent corruption. It serialises with
@@ -406,9 +463,7 @@ func (c *Config) SaveAtomic() error {
 
 	// Harden on-disk permissions for the secrets file (no-op on Unix where the
 	// 0600 mode already applies; sets an explicit DACL on Windows).
-	if err := secureConfigFile(c.Path); err != nil {
-		log.Printf("warning: failed to secure config file permissions: %v", err)
-	}
+	secureManagedFile(c.Path)
 
 	return nil
 }
@@ -427,9 +482,13 @@ func (c *Config) validateConfig() error {
 		return fmt.Errorf("device_id is required")
 	}
 
-	// Validate URL format
+	// Validate URL format and scheme. See isValidURL: http:// is rejected for
+	// non-loopback hosts so agent credentials never travel in cleartext.
 	if !isValidURL(c.SupabaseURL) {
-		return fmt.Errorf("supabase_url is not a valid URL")
+		return fmt.Errorf(
+			"supabase_url must be an https:// URL with a host (got %q); "+
+				"http:// is permitted only for loopback addresses",
+			c.SupabaseURL)
 	}
 
 	// Validate intervals
@@ -448,13 +507,40 @@ func (c *Config) validateConfig() error {
 	return nil
 }
 
-// isValidURL validates that s is a parseable http/https URL with a host.
+// isValidURL validates that s is a parseable https URL with a host.
+//
+// http:// is rejected. Every call the agent makes carries its access token, and
+// the bootstrap call carries agent_id + agent_secret, so a plaintext scheme puts
+// the agent's full identity on the wire for any network-position attacker to
+// replay (CyberStation PT-2026-001 finding #3). Nothing downstream re-checks the
+// scheme, so this is the only place it can be enforced.
+//
+// Loopback is the one exception: it never leaves the host, and local development
+// and the test suite depend on it.
 func isValidURL(s string) bool {
 	u, err := url.Parse(s)
-	if err != nil {
+	if err != nil || u.Host == "" {
 		return false
 	}
-	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		return isLoopbackHost(u.Hostname())
+	default:
+		return false
+	}
+}
+
+// isLoopbackHost reports whether host refers to the local machine.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // ValidateConfiguration performs comprehensive validation

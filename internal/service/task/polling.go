@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/network"
+	"sentinelgo/internal/service/auth"
 	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/taskstore"
@@ -201,8 +201,11 @@ func (s *TaskPollingService) getTasksWithRetry(ctx context.Context) (*taskstore.
 		return resp, nil
 	}
 
-	// Check if error is 401 authentication failed
-	if s.tokenRefresher != nil && strings.Contains(err.Error(), "authentication failed: status 401") {
+	// Use the shared classifier rather than matching one literal string. The
+	// taskstore client is only one of three layers that can surface a 401, and
+	// each phrases it differently; a local match here silently stops recovering
+	// the moment that one wording changes.
+	if s.tokenRefresher != nil && auth.IsUnauthorized(err) {
 		log.Printf("TaskPolling: Got 401, attempting token refresh...")
 		newToken, refreshErr := s.tokenRefresher.RefreshToken(ctx)
 		if refreshErr != nil {

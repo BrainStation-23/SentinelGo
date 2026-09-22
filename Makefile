@@ -151,6 +151,12 @@ check-no-cgo:
 # (e.g. the audit log collectors) are type-checked on every run, not just the
 # host platform's. Catches a broken Linux/macOS/Windows file from any dev machine.
 # Uses explicit per-target recipes instead of a shell loop to stay shell-agnostic.
+#
+# The `go vet` pass is not redundant with `go build`: build ignores _test.go
+# files, so a Windows-only test (internal/winsec) was never type-checked from a
+# Linux or macOS machine, and vice versa. vet does compile them, which is what
+# makes a signature drift between winsec_windows.go and winsec_other.go fail
+# here rather than on whichever CI runner happens to hit it first.
 verify-cross:
 	@echo "Type-checking linux/amd64..."
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build ./...
@@ -162,6 +168,10 @@ verify-cross:
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build ./...
 	@echo "Type-checking windows/amd64..."
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+	@echo "Type-checking test files for each OS..."
+	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go vet ./...
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go vet ./...
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go vet ./...
 	@echo "✅ all release targets compile with CGO_ENABLED=0"
 
 # Code quality checks

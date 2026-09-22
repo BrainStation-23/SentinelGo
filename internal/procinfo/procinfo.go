@@ -2,12 +2,13 @@ package procinfo
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/paths"
 )
 
 // ProcessInfo contains information about a running SentinelGo process
@@ -18,20 +19,9 @@ type ProcessInfo struct {
 	Status  string
 }
 
-// GetCheckpointPath returns the path for checkpoint storage
+// GetCheckpointPath returns the path for audit-log checkpoint storage.
 func GetCheckpointPath() string {
-	switch runtime.GOOS {
-	case "windows":
-		return `C:\SentinelGo\.sentinelgo\audit_checkpoint.json`
-	case "linux", "darwin":
-		return "/opt/sentinelgo/.sentinelgo/audit_checkpoint.json"
-	default:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "/tmp/sentinelgo_audit_checkpoint.json"
-		}
-		return fmt.Sprintf("%s/.sentinelgo/audit_checkpoint.json", home)
-	}
+	return paths.CheckpointPath()
 }
 
 // ExtractVersionFromCmd tries to extract version from command line arguments

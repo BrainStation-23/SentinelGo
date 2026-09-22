@@ -7,6 +7,7 @@
 package httpx
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"time"
@@ -27,6 +28,13 @@ func NewClient(timeout time.Duration) *http.Client {
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
+		// Floor the negotiated version. Go's own default is already TLS 1.2 for
+		// clients, but stating it here means a future Go release cannot quietly
+		// lower it, and it documents that every agent call is expected to be
+		// TLS-protected (config validation rejects non-loopback http:// URLs).
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 	return &http.Client{
 		Timeout:   timeout,

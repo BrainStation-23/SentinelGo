@@ -12,18 +12,18 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo/system"
+	"sentinelgo/internal/paths"
 	"sentinelgo/internal/sanitize"
 	tasksvc "sentinelgo/internal/service/task"
 )
 
 // HandleAgentTaskPolling polls for tasks once and stores them locally.
 func HandleAgentTaskPolling(cfg *config.Config) {
-	configDir := system.GetConfigDir()
-	if err := os.MkdirAll(configDir, 0750); err != nil {
-		log.Fatalf("Error: Failed to create task storage directory %s: %v. Try running with sudo or check permissions.", configDir, err)
+	dbPath := paths.TaskDBPath()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
+		log.Fatalf("Error: Failed to create task storage directory %s: %v. Try running with sudo or check permissions.", filepath.Dir(dbPath), err)
 	}
 
-	dbPath := filepath.Join(configDir, "tasks.sqlite")
 	log.Printf("Polling: Using database path: %s", sanitize.ForLog(dbPath))
 
 	agentTaskPollingService, err := tasksvc.NewTaskPollingService(cfg, dbPath)

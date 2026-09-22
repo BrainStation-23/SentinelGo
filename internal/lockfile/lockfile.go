@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/paths"
 )
 
 // LockFile represents a process lock file
@@ -17,34 +18,24 @@ type LockFile struct {
 	acquired bool
 }
 
-// NewLockFile creates a new lock file instance
+// NewLockFile creates a new lock file instance.
+//
+// The lock lives in the agent's data directory alongside the rest of its state.
+// It previously used %USERPROFILE%, which for a LocalSystem service resolves to
+// C:\Windows\System32\config\systemprofile -- making it the only piece of agent
+// state outside the directory the permission hardening knows about, and moving
+// it whenever the service account changed.
 func NewLockFile(name string) *LockFile {
-	var lockDir string
-	switch runtime.GOOS {
-	case "windows":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "C:\\SentinelGo"
-		}
-		lockDir = filepath.Join(home, ".sentinelgo")
-	case "linux", "darwin":
-		lockDir = "/opt/sentinelgo/.sentinelgo"
-	default:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "/tmp"
-		}
-		lockDir = filepath.Join(home, ".sentinelgo")
-	}
+	lockPath := paths.LockPath(name)
 
-	if err := os.MkdirAll(lockDir, 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
 		// Continue even if we can't create the directory
 		// The lock file creation will fail later if needed
 		_ = err // Explicitly ignore the error
 	}
 
 	return &LockFile{
-		path: filepath.Join(lockDir, name+".lock"),
+		path: lockPath,
 	}
 }
 

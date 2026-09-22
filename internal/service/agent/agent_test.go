@@ -63,7 +63,6 @@ func mockSysInfo() *shared.SystemInfo {
 		FirmwareType:     "BIOS",
 		FirmwareVendor:   "TestVendor",
 		FirmwareVersion:  "1.0.0",
-		TPMVersion:       "2.0",
 		NetworkAdapters:  []shared.NetAdapter{},
 		Peripherals:      []shared.PeripheralDevice{},
 		Displays:         []shared.Display{},

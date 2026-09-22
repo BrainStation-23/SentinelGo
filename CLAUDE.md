@@ -30,34 +30,49 @@ internal/
   lockfile/            file-based process locking and PID tracking
   osinfo/              cross-platform hardware metrics (platform-specific files)
   service/             JWT auth (authService.go), agent info (agentService.go)
-  updater/             GitHub release check, binary download, atomic replace, restart
+  updater/             Supabase release check, signed download, binary swap, restart
   auditlogs/           audit log collection and forwarding
   logging/             logging utilities
   models/              shared data models
-  constants/           shared constants
+  paths/               single source of truth for install/data locations
+  winsec/              Windows ACL application and auditing (no-op elsewhere)
+  selfdefense/         start-time integrity check of install and config locations
+  migrate/             relocation of pre-%ProgramFiles% installations
 
-supabase/              Edge functions (TypeScript)
 scripts/               Release, diagnostics, and pre-release checks
 release/               Compiled binaries (never edit directly)
 ```
+
+The Supabase edge functions (`agent-login`) live in a separate backend repo, not
+here. This repo only calls them.
 
 ## Runtime Flow
 
 1. Load config -> acquire lockfile -> init services
 2. Authenticate via Supabase edge function (agent-login) -> store JWT
 3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
-4. Daily GitHub release check -> download -> stop -> replace binary -> restart
+4. Daily release check (Supabase RPC) -> signed download -> replace binary -> restart
 
 ## Key Conventions
 
 - Go module: `sentinelgo`, requires Go 1.25+
 - Standard Go layout: `cmd/` for entrypoints, `internal/` for private packages
 - Config format is JSON only (not YAML, not TOML)
-- Config paths: `/opt/sentinelgo/.sentinelgo/config.json` (Linux/macOS), `C:\sentinelgo\.sentinelgo\config.json` (Windows)
+- Paths come from `internal/paths` -- never hardcode them:
+  - Windows: binary `%ProgramFiles%\SentinelGo\`, state `%ProgramData%\SentinelGo\`
+  - Linux/macOS: binary `/opt/sentinelgo/`, state `/opt/sentinelgo/.sentinelgo/`
+  - `C:\SentinelGo` is the pre-relocation layout, kept only for migration. A
+    directory created directly under `C:\` inherits the drive root's
+    `Authenticated Users:(OI)(CI)(IO)(M)` ACE, which made the agent binary
+    writable by any standard user (CyberStation PT-2026-001 finding #1).
 - Never hardcode Supabase credentials or API keys
 - Never modify `release/` directory directly; use `make release`
-- Service lifecycle managed by `github.com/kardianos/service`
-- System metrics collected via `github.com/shirou/gopsutil/v3`
+- Service lifecycle is hand-rolled on `golang.org/x/sys/windows/svc` (Windows),
+  systemd units (Linux) and launchd plists (macOS) -- `kardianos/service` is not used
+- System metrics collected via `github.com/shirou/gopsutil/v4`
+- `supabase_url` must be `https`; only loopback may use `http` (see `config.isValidURL`)
+- Anything holding credentials or executable update artifacts gets an explicit
+  protected DACL via `internal/winsec`; on Unix, root-owned `0600`/`0700`
 
 ## Rules
 

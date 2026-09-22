@@ -1,11 +1,11 @@
 package osinfo_test
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
 	"sentinelgo/internal/osinfo/system"
+	"sentinelgo/internal/paths"
 )
 
 func TestGetConfigDir(t *testing.T) {
@@ -14,16 +14,13 @@ func TestGetConfigDir(t *testing.T) {
 		t.Error("GetConfigDir() returned empty string")
 	}
 
-	// Verify it returns platform-specific paths
-	switch runtime.GOOS {
-	case "windows":
-		if dir != `C:\SentinelGo\.sentinelgo` {
-			t.Errorf("GetConfigDir() on Windows should return 'C:\\SentinelGo\\.sentinelgo', got: %s", dir)
-		}
-	case "linux", "darwin":
-		if dir != `/opt/sentinelgo/.sentinelgo` {
-			t.Errorf("GetConfigDir() on Unix should return '/opt/sentinelgo/.sentinelgo', got: %s", dir)
-		}
+	// GetConfigDir must agree with internal/paths rather than carry its own copy
+	// of the layout. It used to hardcode the platform paths itself, so the task
+	// database could be created in a different directory from the config file it
+	// was meant to sit beside -- and on Windows it named the location whose
+	// inherited ACL left the install directory writable by any standard user.
+	if want := paths.DataDir(); dir != want {
+		t.Errorf("GetConfigDir() = %q, want %q (must match internal/paths)", dir, want)
 	}
 }
 

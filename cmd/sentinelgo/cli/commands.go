@@ -146,7 +146,10 @@ func HandleAgentInfoUpdate(cfg *config.Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.AccessToken)
+	// Second argument is the anon apikey, not a bearer token: it populates the
+	// "apikey" header that gates the Supabase gateway. Passing the access token
+	// here sent a JWT in that header and left the client without the anon key.
+	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.SupabaseKey)
 	agentSvc := agentsvc.NewAgentService()
 
 	if cfg.RefreshToken != "" {

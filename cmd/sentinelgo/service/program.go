@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"sentinelgo/internal"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/lockfile"
+	"sentinelgo/internal/migrate"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/selfdefense"
 )
 
 // Program implements the service start/stop lifecycle. It is constructed in
@@ -39,6 +42,26 @@ func (p *Program) Start(_ AgentService) error {
 			log.Printf("FATAL: Failed to load config: %v", err)
 			return fmt.Errorf("failed to load config: %w", err)
 		}
+	}
+
+	// Relocate a legacy installation before anything else. Running first is what
+	// serialises migration against the updater: no lock is held, no subsystem is
+	// up, and no update can be in flight while files are moving.
+	if result := migrate.Run(); result.RestartRequired {
+		if err := logger.Info("SentinelGo relocated to the current layout; exiting for restart"); err != nil {
+			fmt.Printf("Warning: failed to log migration message: %v\n", err)
+		}
+		// Exit non-zero so the service manager's failure actions restart the
+		// service, which now points at the relocated binary.
+		os.Exit(1)
+	}
+
+	// Verify we are running from a location a standard user cannot tamper with,
+	// before acquiring the lock or starting any subsystem. Running this first
+	// means the decision to disable updates and task execution is made before
+	// MainIntegration can launch either of them.
+	if result := selfdefense.Check(p.Cfg.Path); result.Fatal {
+		return fmt.Errorf("integrity check failed: %s", result.Reason)
 	}
 
 	version := agentVersion

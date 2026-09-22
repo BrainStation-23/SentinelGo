@@ -12,6 +12,7 @@ import (
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
+	"sentinelgo/internal/selfdefense"
 	authsvc "sentinelgo/internal/service/auth"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
@@ -124,6 +125,14 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 	if !mi.cfg.AutoUpdate {
 		return
 	}
+	// An update downloads and then executes a new binary as LocalSystem. If we
+	// could not verify that the install location is protected, that is exactly
+	// the operation not to perform: the staged binary would land in a directory
+	// something else can write.
+	if selfdefense.Degraded() {
+		log.Printf("Auto-update suppressed: %s", selfdefense.Reason())
+		return
+	}
 	log.Println("Auto-update is enabled, performing startup update check...")
 	go func() {
 		if err := updater.StartupUpdateCheck(ctx, mi.cfg); err != nil {
@@ -162,7 +171,11 @@ func (mi *MainIntegration) configureScheduledTasks() error {
 	for i := range tasks {
 		switch tasks[i].Name {
 		case "auto-update":
-			tasks[i].Enabled = mi.cfg.AutoUpdate
+			// Disabled in degraded mode for the same reason as the startup
+			// check: an update fetches and executes a new binary as LocalSystem,
+			// and the recurring task would otherwise reinstate exactly what the
+			// startup path just declined to do.
+			tasks[i].Enabled = mi.cfg.AutoUpdate && !selfdefense.Degraded()
 			tasks[i].Interval = mi.cfg.GetAutoUpdateInterval()
 		case "agent-info-update":
 			tasks[i].Interval = mi.cfg.GetAgentInfoUpdateInterval()
@@ -350,6 +363,14 @@ func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 // polling is enabled. Initialization failures are logged but non-fatal.
 func (mi *MainIntegration) startTaskManager(ctx context.Context) {
 	if !mi.cfg.EnableTaskPolling {
+		return
+	}
+	// Task execution downloads scripts and runs them as LocalSystem, and the
+	// control plane it trusts is named by supabase_url in a config file we could
+	// not confirm is protected. Suppress it rather than execute whatever that
+	// config points at. Reporting continues, so the host stays visible.
+	if selfdefense.Degraded() {
+		log.Printf("Task polling suppressed: %s", selfdefense.Reason())
 		return
 	}
 

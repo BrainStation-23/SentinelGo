@@ -187,12 +187,26 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 		if err != nil {
 			lastErr = err
 			log.Printf("Auth: refresh attempt %d failed: %v", attempt+1, err)
+
+			// Only re-send the refresh token when the failure proves it was
+			// never delivered. Supabase rotates on every successful exchange,
+			// so after an ambiguous failure (timeout, reset, EOF) the token we
+			// hold may already be spent — re-sending it cannot succeed, and
+			// under refresh-token reuse detection it reads as a replay and
+			// revokes the session family. Give up instead and let the caller
+			// fall back to agent-login, which is the designed bootstrap.
+			if !isRefreshTokenUnused(err) {
+				return fmt.Errorf("token refresh failed, not retrying "+
+					"(refresh token may already be rotated server-side): %w", err)
+			}
 			continue
 		}
 
 		// Update in-memory config first so concurrent waiters see the new token.
-		cfg.AccessToken = session.AccessToken
-		cfg.RefreshToken = session.RefreshToken
+		// Go through SetTokens: it takes config.tokenMu, which every reader of
+		// GetAccessToken/GetRefreshToken holds. Assigning the fields directly
+		// races the heartbeat, software-sync and upload goroutines.
+		cfg.SetTokens(session.AccessToken, session.RefreshToken)
 
 		// Swap the internal client to use the new access token.
 		if err := s.SetSession(session.AccessToken, session.RefreshToken); err != nil {

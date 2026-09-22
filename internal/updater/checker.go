@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,11 +34,6 @@ type LatestRelease struct {
 }
 
 var updateMutex sync.Mutex
-
-// windowsServiceName is the SCM service name registered at install time
-// (see cmd/sentinelgo/main.go). The Windows update path restarts via SCM
-// because a running .exe cannot be replaced in place.
-const windowsServiceName = "SentinelGo"
 
 // rpcTimeout caps the release-discovery RPC so a hung connection cannot block
 // the update path indefinitely while holding updateMutex.
@@ -196,33 +192,99 @@ func fetchLatestRelease(ctx context.Context, cfg *config.Config) (*LatestRelease
 	return &rows[0], nil
 }
 
-// CheckInternetConnectivity checks if the network is up by TCP-dialing the
-// Supabase host first, then falling back to well-known public endpoints.
+// connectivityProbeTimeout caps each individual connectivity probe.
+const connectivityProbeTimeout = 5 * time.Second
+
+// connectivityProbe is one endpoint to test, with the name to validate its
+// certificate against.
+type connectivityProbe struct {
+	address    string
+	serverName string
+	tls        bool
+}
+
+// CheckInternetConnectivity reports whether the network is up, preferring the
+// Supabase host and falling back to well-known public endpoints.
+//
+// Probes complete a verified TLS handshake rather than only opening a socket.
+// A bare TCP connect proves only that something accepted a connection on that
+// port, which a captive portal or transparent proxy satisfies trivially, and
+// this result gates the update path. Requiring a valid certificate for the
+// expected name means a positive answer identifies the host we intend to reach.
+//
+// The port comes from the configured URL instead of a hardcoded 443, so a
+// backend on a non-default port is probed correctly rather than reported down.
 func CheckInternetConnectivity(supabaseURL string) bool {
-	endpoints := []string{
-		"google.com:443",
-		"cloudflare.com:443",
+	probes := []connectivityProbe{
+		{address: "google.com:443", serverName: "google.com", tls: true},
+		{address: "cloudflare.com:443", serverName: "cloudflare.com", tls: true},
 	}
 
 	// Prefer checking the Supabase host directly.
-	if u, err := url.Parse(supabaseURL); err == nil && u.Host != "" {
+	if u, err := url.Parse(supabaseURL); err == nil && u.Hostname() != "" {
 		host := u.Hostname()
-		endpoints = append([]string{host + ":443"}, endpoints...)
+		// Config validation restricts http:// to loopback (see config.isValidURL),
+		// where there is no TLS to handshake; probe those with a plain dial.
+		probes = append([]connectivityProbe{{
+			address:    net.JoinHostPort(host, schemePort(u)),
+			serverName: host,
+			tls:        u.Scheme != "http",
+		}}, probes...)
 	}
 
-	for _, endpoint := range endpoints {
-		conn, err := net.DialTimeout("tcp", endpoint, 5*time.Second)
-		if err == nil {
-			if closeErr := conn.Close(); closeErr != nil {
-				log.Printf("Error closing connection to %s: %v", endpoint, closeErr)
-			}
-			log.Printf("Internet connectivity confirmed via %s", endpoint)
-			return true
+	for _, p := range probes {
+		if err := probeEndpoint(p); err != nil {
+			log.Printf("Connectivity probe to %s failed: %v", p.address, err)
+			continue
 		}
+		log.Printf("Internet connectivity confirmed via %s", p.address)
+		return true
 	}
 
 	log.Printf("No internet connectivity detected")
 	return false
+}
+
+// schemePort returns the explicit port in u, or the default for its scheme.
+func schemePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if u.Scheme == "http" {
+		return "80"
+	}
+	return "443"
+}
+
+// probeEndpoint opens and immediately closes a connection to p, completing a
+// verified TLS handshake unless p is a plaintext loopback endpoint.
+func probeEndpoint(p connectivityProbe) error {
+	ctx, cancel := context.WithTimeout(context.Background(), connectivityProbeTimeout)
+	defer cancel()
+
+	var (
+		conn net.Conn
+		err  error
+	)
+	if p.tls {
+		dialer := &tls.Dialer{
+			NetDialer: &net.Dialer{Timeout: connectivityProbeTimeout},
+			Config: &tls.Config{
+				ServerName: p.serverName,
+				MinVersion: tls.VersionTLS12,
+			},
+		}
+		conn, err = dialer.DialContext(ctx, "tcp", p.address)
+	} else {
+		conn, err = (&net.Dialer{Timeout: connectivityProbeTimeout}).DialContext(ctx, "tcp", p.address)
+	}
+	if err != nil {
+		return err
+	}
+	if closeErr := conn.Close(); closeErr != nil {
+		log.Printf("Error closing connection to %s: %v", p.address, closeErr)
+	}
+	return nil
 }
 
 // CheckInternetWithHTTP verifies connectivity by issuing a GET to the Supabase

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/paths"
 )
 
 // TestConfigLoadWindowsPath tests that config fields load correctly from a file.
@@ -165,9 +166,16 @@ func TestConfigLoadDefaultPath(t *testing.T) {
 		t.Error("Expected config path to be set, got empty string")
 	}
 
-	// Path should include .sentinelgo directory
-	if filepath.Base(filepath.Dir(cfg.Path)) != ".sentinelgo" {
-		t.Errorf("Expected config path to include .sentinelgo directory, got '%s'", cfg.Path)
+	// The resolved path must be one of the two locations the agent recognises:
+	// the current layout (%ProgramData%\SentinelGo), or the pre-relocation one
+	// when migration has not run yet. Anything else means Load would read or
+	// create a config somewhere nothing else looks, and the agent would generate
+	// a fresh identity instead of finding its own.
+	current := paths.ConfigPath()
+	legacy := paths.LegacyConfigPath()
+	if cfg.Path != current && cfg.Path != legacy {
+		t.Errorf("config path = %q, want either the current layout %q or the legacy %q",
+			cfg.Path, current, legacy)
 	}
 }
 

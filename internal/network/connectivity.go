@@ -54,6 +54,11 @@ func (c *ConnectivityChecker) CheckInternet(ctx context.Context) error {
 
 // checkHTTP performs an HTTP HEAD request. Any response (including 5xx) means
 // the network path to the server is open.
+//
+// Peer identity is established by the TLS layer, not here: the client comes from
+// httpx (certificate verification on, TLS 1.2 floor) and config validation
+// restricts supabase_url to https for non-loopback hosts, so reaching the
+// response stage at all means the certificate chain validated.
 func (c *ConnectivityChecker) checkHTTP(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.checkURL, nil)
 	if err != nil {
@@ -75,6 +80,12 @@ func (c *ConnectivityChecker) checkHTTP(ctx context.Context) error {
 
 // CheckInternetQuick performs a quick internet connectivity check using a TCP
 // connection. The caller's context controls the deadline.
+//
+// This proves only that something accepted a TCP connection at that address. It
+// establishes nothing about the peer's identity -- a captive portal or any
+// transparent proxy satisfies it -- so it must not be used to gate a
+// security-relevant action. Where a probe guards such an action, complete a
+// verified TLS handshake instead; see updater.CheckInternetConnectivity.
 func CheckInternetQuick(ctx context.Context, host string, port string) error {
 	address := net.JoinHostPort(host, port)
 

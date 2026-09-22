@@ -1,31 +1,22 @@
 package system
 
 import (
-	"os"
-	"path/filepath"
+	"github.com/shirou/gopsutil/v4/host"
 	"runtime"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/host"
-
 	"sentinelgo/internal/osinfo/shared"
+	"sentinelgo/internal/paths"
 )
 
-// GetConfigDir returns the platform-specific config directory.
-// Has a default: case so it remains in the cross-platform file.
+// GetConfigDir returns the directory holding configuration and agent state.
+//
+// Deprecated: call paths.DataDir directly. This wrapper remains only so existing
+// callers keep working; it used to carry its own copy of the platform paths,
+// which is how the task database could end up in a different directory from the
+// config file it was supposed to sit beside.
 func GetConfigDir() string {
-	switch runtime.GOOS {
-	case "windows":
-		return `C:\SentinelGo\.sentinelgo`
-	case "linux", "darwin":
-		return `/opt/sentinelgo/.sentinelgo`
-	default:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "/opt/sentinelgo/.sentinelgo"
-		}
-		return filepath.Join(home, ".sentinelgo")
-	}
+	return paths.DataDir()
 }
 
 // GetOSQueryVersion detects the installed osquery version.

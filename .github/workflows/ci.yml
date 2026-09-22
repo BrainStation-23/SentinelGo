@@ -144,6 +144,12 @@ jobs:
 
       - name: Run tests
         shell: bash
+        env:
+          # The Windows ACL hardening tests skip without an elevated token. The
+          # hosted windows runner is elevated, so make an unexpected loss of
+          # elevation fail the build rather than silently skip the tests that
+          # prove the privilege-escalation fix.
+          SENTINELGO_REQUIRE_ELEVATED_TESTS: ${{ runner.os == 'Windows' && '1' || '' }}
         run: go test -timeout=5m -coverprofile=coverage.out -coverpkg=./... -short ./...
 
       - name: Show coverage summary

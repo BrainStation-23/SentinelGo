@@ -122,6 +122,52 @@ create_service_user() {
     fi
 }
 
+# Apply the agent's on-disk permission model.
+#
+# The service runs as root (systemd User=root, launchd UserName=root), so the
+# install tree is root-owned: any account that can write the binary executes code
+# as root the next time the service starts. Previously this tree was chowned to
+# the unprivileged "$SERVICE_USER" account, which handed that account exactly
+# that escalation primitive.
+#
+# config.json holds agent_secret, access_token and refresh_token in cleartext, so
+# it is 0600 inside a 0700 directory.
+#
+# Never use "chmod -R" across this tree. A recursive mode set on $INSTALL_DIR also
+# lands on $CONFIG_DIR/config.json and publishes those credentials to every local
+# user -- that was CyberStation PT-2026-001 finding #2 in its Linux/macOS form,
+# reachable with no privilege escalation at all.
+harden_permissions() {
+    local os
+    os=$(detect_os)
+    if [[ "$os" == "windows" ]]; then
+        return 0
+    fi
+
+    local root_group="root"
+    if [[ "$os" == "macos" ]]; then
+        root_group="wheel"
+    fi
+
+    # Ownership first, then modes: the recursive chown covers $CONFIG_DIR too,
+    # and the tighter modes below are applied on top of it.
+    chown -R "root:${root_group}" "$INSTALL_DIR" 2>/dev/null || true
+
+    chmod 755 "$INSTALL_DIR"
+    if [[ -f "$INSTALL_DIR/$BINARY_NAME" ]]; then
+        chmod 755 "$INSTALL_DIR/$BINARY_NAME"
+    fi
+
+    if [[ -d "$CONFIG_DIR" ]]; then
+        chmod 700 "$CONFIG_DIR"
+        if [[ -f "$CONFIG_DIR/config.json" ]]; then
+            chmod 600 "$CONFIG_DIR/config.json"
+        fi
+    fi
+
+    return 0
+}
+
 # Install directories and permissions
 setup_directories() {
     print_status "Setting up directories and permissions"
@@ -129,11 +175,16 @@ setup_directories() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$CONFIG_DIR"
-    
+    # Restrict the secrets directory before anything is written into it.
+    chmod 700 "$CONFIG_DIR"
+
     # Check for config.json in current directory and move it
     if [[ -f "./config.json" ]]; then
         print_status "Found config.json in current directory, moving to config location"
         cp "./config.json" "$CONFIG_DIR/config.json"
+        # Immediately, not at the end of the function: this file carries
+        # agent_secret and both tokens in cleartext.
+        chmod 600 "$CONFIG_DIR/config.json"
         print_success "config.json moved to $CONFIG_DIR/config.json"
         print_status "Original config.json preserved in current directory"
     else
@@ -166,34 +217,21 @@ setup_directories() {
     fi
     
     # Set permissions
-    chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    local os
+    os=$(detect_os)
 
-    local os=$(detect_os)
+    harden_permissions
 
-    # Set permissions based on OS
     if [[ "$os" == "macos" ]]; then
-        # macOS: Use chown with proper group handling
-        chown -R "$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
         # Remove download quarantine flag and register with Gatekeeper so macOS does
         # not block the daemon with "cannot be verified for malware" on first run.
         xattr -d com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         spctl --add "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
     elif [[ "$os" == "windows" ]]; then
-        # Windows: Skip ownership change
         echo "[INFO] Skipping ownership change on Windows"
-    else
-        # Linux: Standard permissions with proper user/group format
-        if id "$SERVICE_USER" &>/dev/null 2>&1; then
-            chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        else
-            # User exists but group might not, try with just user
-            chown -R "$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        fi
-        chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
     fi
-    
+
     print_success "Directories and permissions set"
 }
 
@@ -457,22 +495,17 @@ fix_service() {
     
     # Check and fix permissions
     print_status "Fixing permissions..."
-    if [[ "$os" != "windows" ]]; then
-        chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-        chmod +x "$INSTALL_DIR/$BINARY_NAME"
-    fi
+    harden_permissions
     
     # Check config
     print_status "Checking config..."
     if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
         print_status "Creating default config..."
         mkdir -p "$CONFIG_DIR"
+        chmod 700 "$CONFIG_DIR"
         echo '{"heartbeat_interval":"5m0s","auto_update":false}' > "$CONFIG_DIR/config.json"
-        if [[ "$os" == "macos" ]]; then
-            chown -R "$(whoami)" "$CONFIG_DIR"
-        elif [[ "$os" != "windows" ]]; then
-            chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR"
-        fi
+        chmod 600 "$CONFIG_DIR/config.json"
+        harden_permissions
         print_success "Default config created at $CONFIG_DIR/config.json"
     else
         print_status "Config file already exists at $CONFIG_DIR/config.json"
@@ -521,13 +554,11 @@ fix_service() {
             # Copy current binary if available
             if [[ -f "./sentinelgo-linux-amd64" ]]; then
                 cp "./sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
-                chmod +x "$INSTALL_DIR/$BINARY_NAME"
-                chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
+                harden_permissions
                 print_status "Binary installed, trying again..."
             elif [[ -f "./build/linux/sentinelgo-linux-amd64" ]]; then
                 cp "./build/linux/sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
-                chmod +x "$INSTALL_DIR/$BINARY_NAME"
-                chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
+                harden_permissions
                 print_status "Binary installed from build/, trying again..."
             else
                 print_error "No binary found to install"

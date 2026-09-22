@@ -488,3 +488,49 @@ func TestConfig_ValidateConfiguration_EmptyHost(t *testing.T) {
 		t.Error("expected error for URL with valid scheme but empty host, got nil")
 	}
 }
+
+// TestConfig_ValidateConfiguration_RequiresHTTPS covers CyberStation
+// PT-2026-001 finding #3. The agent sends its access token on every call and
+// agent_id + agent_secret on the bootstrap call, and no code path downstream of
+// validateConfig re-checks the scheme, so a plaintext supabase_url puts the
+// agent's whole identity on the wire. Loopback stays permitted because it never
+// leaves the host and httptest-based tests depend on it.
+func TestConfig_ValidateConfiguration_RequiresHTTPS(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "https accepted", url: "https://db.example.com", wantErr: false},
+		{name: "https with port", url: "https://db.example.com:8443", wantErr: false},
+
+		// The finding: this exact value was accepted before the fix.
+		{name: "plaintext http rejected", url: "http://db.example.com", wantErr: true},
+		{name: "plaintext http with port rejected", url: "http://db.example.com:8000", wantErr: true},
+		{name: "uppercase scheme rejected", url: "HTTP://db.example.com", wantErr: true},
+
+		// Loopback exception, in the spellings httptest and local dev produce.
+		{name: "http loopback v4 accepted", url: "http://127.0.0.1:54321", wantErr: false},
+		{name: "http loopback name accepted", url: "http://localhost:54321", wantErr: false},
+		{name: "http loopback v6 accepted", url: "http://[::1]:54321", wantErr: false},
+
+		// A hostname that merely looks local is not loopback.
+		{name: "http localhost-lookalike rejected", url: "http://localhost.evil.com", wantErr: true},
+
+		{name: "non-http scheme rejected", url: "ftp://db.example.com", wantErr: true},
+		{name: "scheme-less rejected", url: "db.example.com", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := minimalTestConfig(t)
+			cfg.SupabaseURL = tt.url
+
+			err := cfg.ValidateConfiguration()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateConfiguration() with supabase_url=%q error = %v, wantErr %v",
+					tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}

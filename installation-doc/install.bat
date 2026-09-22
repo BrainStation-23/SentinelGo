@@ -13,24 +13,37 @@ REM Force working directory to script location (fixes Run as Administrator)
 cd /d "%~dp0"
 
 REM Configuration
+REM
+REM The binary lives under %ProgramFiles% and mutable state under %ProgramData%.
+REM The agent used to install into C:\SentinelGo, and a directory created directly
+REM under the drive root inherits C:\'s "Authenticated Users:(OI)(CI)(IO)(M)" ACE
+REM -- an inherit-only Modify grant that propagates to every child. That made
+REM sentinelgo.exe writable by any standard user while the service ran it as
+REM LocalSystem (CyberStation PT-2026-001 finding #1). %ProgramFiles% denies
+REM non-administrator writes by default; %ProgramData% does not, which is why both
+REM are given an explicit protected ACL below.
 set SERVICE_NAME=SentinelGo
 set BINARY_NAME=sentinelgo.exe
-set INSTALL_DIR=C:\SentinelGo
-set CONFIG_DIR=%INSTALL_DIR%\.sentinelgo
+set INSTALL_DIR=%ProgramFiles%\SentinelGo
+set CONFIG_DIR=%ProgramData%\SentinelGo
+set LEGACY_DIR=C:\SentinelGo
+set LEGACY_CONFIG=%LEGACY_DIR%\.sentinelgo\config.json
 set REQUIRED_BINARY=sentinelgo-windows-amd64.exe
 
-REM Check administrator privileges and auto-elevate if needed
+REM Check administrator privileges
+REM
+REM This used to write a VBScript into %TEMP% and execute it to trigger UAC.
+REM Dropping an executable script into a world-writable directory and then running
+REM it is a poor pattern in an installer that goes on to create a LocalSystem
+REM service, and it reliably trips antivirus and application allowlisting. Ask the
+REM operator to elevate instead.
 net session >nul 2>&1
 if %errorLevel% neq 0 (
-    echo [INFO] Administrator privileges required
-    echo [INFO] Attempting to auto-elevate...
-    
-    REM Try to auto-elevate using VBScript (works from CMD)
-    echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
-    echo UAC.ShellExecute "%~f0", "install", "", "runas", 1 >> "%temp%\getadmin.vbs"
-    "%temp%\getadmin.vbs"
-    del "%temp%\getadmin.vbs" >nul 2>&1
-    exit /b 0
+    echo [ERROR] Administrator privileges are required.
+    echo [INFO] Right-click install.bat and choose "Run as administrator", or run
+    echo [INFO] it from an elevated Command Prompt.
+    pause
+    exit /b 1
 )
 
 REM Get command from parameters
@@ -66,21 +79,14 @@ echo [SUCCESS] Found %REQUIRED_BINARY%
 echo.
 
 REM Step 2: Uninstall existing installation (if present)
+REM
+REM The config is no longer shuffled through %TEMP%. It lives in %ProgramData%,
+REM which this step does not touch, so the agent's identity survives a reinstall
+REM without its credentials ever being copied to a temporary location.
 echo [STEP 2] Checking for existing installation...
-set EXISTING_CONFIG_BACKUP=%TEMP%\sentinelgo_config_backup.json
 sc query "%SERVICE_NAME%" >nul 2>&1
 if %errorLevel% equ 0 (
-    echo [INFO] Existing installation detected - performing clean uninstall first...
-
-    REM Preserve config to TEMP before wiping install directory
-    if exist "%CONFIG_DIR%\config.json" (
-        copy "%CONFIG_DIR%\config.json" "%EXISTING_CONFIG_BACKUP%" /Y >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Preserved existing config to %EXISTING_CONFIG_BACKUP%
-        ) else (
-            echo [WARNING] Failed to preserve existing config - agent identity may be lost
-        )
-    )
+    echo [INFO] Existing installation detected - removing the service first...
 
     echo [INFO] Stopping existing service...
     sc stop "%SERVICE_NAME%" >nul 2>&1
@@ -90,25 +96,27 @@ if %errorLevel% equ 0 (
     sc delete "%SERVICE_NAME%" >nul 2>&1
     timeout /t 2 /nobreak >nul
 
-    echo [INFO] Removing installation directory...
-    if exist "%INSTALL_DIR%" (
-        rmdir /S /Q "%INSTALL_DIR%" >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Installation directory removed
-        ) else (
-            echo [WARNING] Failed to fully remove installation directory
-        )
-    )
-
-    echo [SUCCESS] Existing installation removed
+    echo [SUCCESS] Existing service removed
 ) else (
     echo [INFO] No existing installation found - clean install
-    if exist "%EXISTING_CONFIG_BACKUP%" del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
+)
+
+REM Remove only the binary directory, never the state directory.
+if exist "%INSTALL_DIR%\%BINARY_NAME%" (
+    del /F /Q "%INSTALL_DIR%\%BINARY_NAME%" >nul 2>&1
 )
 echo.
 
-REM Step 3: Prepare Installation Directory
-echo [STEP 3] Preparing installation directory...
+REM Step 3: Prepare and harden the installation directories
+echo [STEP 3] Preparing installation directories...
+
+REM Refuse to install into a junction or symlink. A standard user can create a
+REM directory under %ProgramData% before the installer runs, and a reparse point
+REM there would silently redirect the agent's credentials somewhere of their
+REM choosing.
+dir /AL "%ProgramData%" 2>nul | find /I " SentinelGo" >nul && goto fail_reparse
+dir /AL "%ProgramFiles%" 2>nul | find /I " SentinelGo" >nul && goto fail_reparse
+
 if not exist "%INSTALL_DIR%" (
     mkdir "%INSTALL_DIR%"
     echo [SUCCESS] Created %INSTALL_DIR%
@@ -117,6 +125,24 @@ if not exist "%CONFIG_DIR%" (
     mkdir "%CONFIG_DIR%"
     echo [SUCCESS] Created %CONFIG_DIR%
 )
+
+REM Apply an explicit, protected ACL to both directories BEFORE anything is
+REM copied into them, so every file inherits the correct permissions rather than
+REM being created permissively and fixed afterwards.
+REM
+REM SIDs are used literally because group names are localised: "Administrators"
+REM is "Administratoren" on a German system and the command would silently fail.
+REM   S-1-5-18     = NT AUTHORITY\SYSTEM
+REM   S-1-5-32-544 = BUILTIN\Administrators
+REM
+REM /inheritance:r is the essential part -- it severs inheritance from the parent.
+REM Note there is deliberately no grant for BUILTIN\Users: %CONFIG_DIR% holds
+REM agent_secret and both tokens in cleartext, so read access is precisely what is
+REM being denied.
+call :harden_dir "%INSTALL_DIR%" || goto fail_hardening
+call :harden_dir "%CONFIG_DIR%"  || goto fail_hardening
+
+echo [SUCCESS] Installation directories hardened (SYSTEM and Administrators only)
 echo.
 
 REM Step 4: Deploy Configuration File
@@ -139,6 +165,17 @@ if exist "%EXISTING_CONFIG_BACKUP%" (
             echo [SUCCESS] Configuration deployed to %CONFIG_DIR%\config.json
         ) else (
             echo [ERROR] Failed to deploy configuration
+            pause
+            exit /b 1
+        )
+    ) else if exist "%LEGACY_CONFIG%" (
+        REM Adopt the identity of a pre-relocation installation so the host does
+        REM not re-register as a brand-new agent.
+        copy "%LEGACY_CONFIG%" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
+        if !errorLevel! equ 0 (
+            echo [SUCCESS] Migrated configuration from %LEGACY_CONFIG%
+        ) else (
+            echo [ERROR] Failed to migrate the existing configuration
             pause
             exit /b 1
         )
@@ -180,13 +217,18 @@ echo.
 
 REM Step 6: Install New Service with Auto-Start and Recovery
 echo [STEP 6] Installing Windows service with auto-start...
-sc create "%SERVICE_NAME%" binPath= "%INSTALL_DIR%\%BINARY_NAME%" start= auto DisplayName= "SentinelGo Agent" >nul 2>&1
+REM The binary path MUST be quoted: %ProgramFiles% contains a space, and an
+REM unquoted service path is the textbook escalation -- the SCM would try
+REM C:\Program.exe first. obj= is stated explicitly rather than relying on the
+REM LocalSystem default.
+sc create "%SERVICE_NAME%" binPath= "\"%INSTALL_DIR%\%BINARY_NAME%\" -config \"%CONFIG_DIR%\config.json\"" start= auto obj= "LocalSystem" DisplayName= "SentinelGo Agent" >nul 2>&1
 if %errorLevel% equ 0 (
     echo [SUCCESS] Service created with auto-start enabled
 ) else (
     echo [ERROR] Failed to create service (error code: %errorLevel%)
     echo [INFO] Continuing with installation - you can create the service manually later
-    echo [INFO] Manual service creation: sc create "%SERVICE_NAME%" binPath= "%INSTALL_DIR%\%BINARY_NAME%" start= auto DisplayName= "SentinelGo Agent"
+    echo [INFO] Manual service creation (note the quoting - the path contains a space):
+    echo [INFO]   sc create "%SERVICE_NAME%" binPath= "\"%INSTALL_DIR%\%BINARY_NAME%\" -config \"%CONFIG_DIR%\config.json\"" start= auto obj= "LocalSystem" DisplayName= "SentinelGo Agent"
 )
 
 echo [INFO] Configuring service recovery (restart on failure)...
@@ -472,6 +514,47 @@ echo   - disable-autostart: Service must be started manually
 echo   - Default on install: Manual start (use enable-autostart to change)
 echo.
 goto end
+
+:harden_dir
+REM Apply the protected ACL to the directory named by %~1.
+REM Returns a non-zero exit code on failure so the caller can abort.
+REM
+REM %~1 strips the caller's quotes so the path can be re-quoted safely; using %1
+REM directly would produce "C:\Program Files\SentinelGo"\* for the wildcard below.
+set "_HD_DIR=%~1"
+
+REM Take ownership first. An owner holds implicit WRITE_DAC regardless of the
+REM DACL, so if a standard user pre-created the directory, a restrictive ACL
+REM alone would not stop them from simply rewriting it.
+icacls "%_HD_DIR%" /setowner "*S-1-5-32-544" /T /C /Q >nul 2>&1
+
+icacls "%_HD_DIR%" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" /Q >nul 2>&1
+if %errorLevel% neq 0 (
+    set "_HD_DIR="
+    exit /b 1
+)
+
+REM Force any pre-existing children to drop explicit ACEs and inherit the above.
+REM The wildcard matters: /reset on the directory itself would re-enable
+REM inheritance from its parent and pull the vulnerable ACE straight back in.
+icacls "%_HD_DIR%\*" /reset /T /C /Q >nul 2>&1
+
+set "_HD_DIR="
+exit /b 0
+
+:fail_reparse
+echo [ERROR] An existing SentinelGo directory is a junction or symbolic link.
+echo [ERROR] Refusing to install: the agent's files could be redirected elsewhere.
+echo [INFO] Remove the link and run the installer again.
+pause
+exit /b 1
+
+:fail_hardening
+echo [ERROR] Failed to apply directory permissions.
+echo [ERROR] Refusing to install: the agent runs as LocalSystem, and installing it
+echo [ERROR] into a directory writable by standard users is a privilege escalation.
+pause
+exit /b 1
 
 :unknown
 echo [ERROR] Unknown command: %COMMAND%

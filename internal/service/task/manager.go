@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"sentinelgo/internal/config"
-	"sentinelgo/internal/osinfo/system"
+	"sentinelgo/internal/paths"
 )
 
 // TokenRefresher is the interface for refreshing authentication tokens.
@@ -32,11 +33,11 @@ func NewTaskManager(cfg *config.Config) (*TaskManager, error) {
 	if cfg.TaskDBPath != "" {
 		dbPath = cfg.TaskDBPath
 	} else {
-		configDir := system.GetConfigDir()
-		if err := os.MkdirAll(configDir, 0750); err != nil {
-			return nil, fmt.Errorf("failed to create task storage directory %s: %w", configDir, err)
+		dbPath = paths.TaskDBPath()
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
+			return nil, fmt.Errorf("failed to create task storage directory %s: %w",
+				filepath.Dir(dbPath), err)
 		}
-		dbPath = fmt.Sprintf("%s/tasks.sqlite", configDir)
 	}
 	log.Printf("TaskManager: Using database path: %s", dbPath)
 

@@ -10,11 +10,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/paths"
 	"sentinelgo/internal/winsec"
 )
 
@@ -36,6 +38,15 @@ func storageURL(supabaseURL, bucket, assetPath string) string {
 // key — the agent-releases bucket has RLS that allows any authenticated user
 // to download.
 func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string) (string, string, error) {
+	// Fail closed before doing any work. verifySignature rejects an empty
+	// sigAssetPath too, but only after the binary has been downloaded and
+	// written to disk -- so an unsigned release still caused a multi-megabyte
+	// transfer and left a staged artifact to clean up. Checking here means an
+	// unsigned release costs nothing and touches nothing.
+	if sigAssetPath == "" {
+		return "", "", fmt.Errorf("refusing to install update: no .sig asset path (fail closed)")
+	}
+
 	binaryURL := storageURL(cfg.SupabaseURL, "agent-releases", assetPath)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binaryURL, nil)
@@ -59,11 +70,33 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 		return "", "", err
 	}
 
-	newPath := selfPath + ".new"
-	// #nosec G302,G304 - New binary needs executable permissions, path is controlled
-	f, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	// Stage into the dedicated staging directory rather than beside the running
+	// binary. It sits on the same volume, so the final swap is still a rename.
+	stagingDir := paths.StagingDir()
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		return "", "", fmt.Errorf("create staging directory: %w", err)
+	}
+	if err := winsec.SecureSystemPath(stagingDir); err != nil {
+		return "", "", fmt.Errorf("refusing to stage update: cannot secure %s: %w",
+			stagingDir, err)
+	}
+
+	newPath := filepath.Join(stagingDir, filepath.Base(selfPath)+".new")
+
+	// A leftover .new would make CreateSecureFile fail, since it refuses to
+	// adopt an existing file rather than truncate it.
+	if err := os.Remove(newPath); err != nil && !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("remove stale staged binary %s: %w", newPath, err)
+	}
+
+	// The descriptor is applied by CreateFile itself, before a single byte is
+	// written. Creating the file and hardening it afterwards left the entire
+	// multi-megabyte download exposed: a local attacker could overwrite an
+	// artifact that a LocalSystem service was about to execute, and the
+	// signature check below would then verify their content instead of ours.
+	f, err := winsec.CreateSecureFile(newPath)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("create staged binary: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -75,12 +108,6 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 	}
 
 	actualChecksum := hex.EncodeToString(hash.Sum(nil))
-
-	// Lock the staged binary down so a standard user cannot swap it between
-	// download and the privileged replace/restart.
-	if err := winsec.SecurePath(newPath); err != nil {
-		fmt.Printf("Warning: failed to secure staged binary ACL: %v\n", err)
-	}
 
 	// Verify ed25519 signature. Fail closed: if there is no .sig asset the
 	// update is rejected.

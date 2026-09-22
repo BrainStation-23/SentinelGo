@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"sentinelgo/internal/paths"
 	"sentinelgo/internal/winsec"
 )
 
@@ -65,14 +66,31 @@ func removeFile(path string) error {
 	return os.Remove(path)
 }
 
-// createBackup copies the running binary to <self>.backup and returns the path.
+// createBackup copies the running binary into the staging directory and returns
+// the path.
+//
+// The copy is a complete, runnable agent binary, so it needs the same protection
+// as the binary itself: it previously sat next to the executable with whatever
+// permissions it inherited, in a directory a standard user could write, while
+// every other update artifact was ACL'd. An attacker-controlled "backup" is a
+// straightforward way to get privileged code executed by an operator following
+// the rollback instructions.
 func createBackup() (string, error) {
 	selfPath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
 
-	backupPath := selfPath + ".backup"
+	stagingDir := paths.StagingDir()
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		return "", fmt.Errorf("create staging directory: %w", err)
+	}
+	if err := winsec.SecureSystemPath(stagingDir); err != nil {
+		return "", fmt.Errorf("refusing to back up: cannot secure staging directory %s: %w",
+			stagingDir, err)
+	}
+
+	backupPath := filepath.Join(stagingDir, filepath.Base(selfPath)+".backup")
 
 	// #nosec G304 - selfPath is a controlled path from os.Executable()
 	src, err := os.Open(selfPath)
@@ -81,10 +99,15 @@ func createBackup() (string, error) {
 	}
 	defer func() { _ = src.Close() }()
 
-	// #nosec G304 - backupPath is a controlled path
-	dst, err := os.Create(backupPath)
+	// A stale backup from a previous update would make CreateSecureFile fail,
+	// since it refuses to adopt an existing file.
+	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("remove stale backup %s: %w", backupPath, err)
+	}
+
+	dst, err := winsec.CreateSecureFile(backupPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create secure backup: %w", err)
 	}
 	defer func() { _ = dst.Close() }()
 
@@ -93,12 +116,6 @@ func createBackup() (string, error) {
 			log.Printf("failed to remove backup file %s: %v", backupPath, removeErr)
 		}
 		return "", err
-	}
-
-	if info, err := os.Stat(selfPath); err == nil {
-		if err := os.Chmod(backupPath, info.Mode()); err != nil {
-			log.Printf("Warning: failed to set permissions on backup: %v", err)
-		}
 	}
 
 	return backupPath, nil
@@ -188,46 +205,36 @@ func restart(newPath string) error {
 	return nil
 }
 
-// restartWindows defers the binary swap to a script because the running .exe is
-// locked. The script waits for this process to exit, replaces the binary with a
-// retry loop (the file unlocks only once we exit), then restarts the service via
-// the SCM. `timeout` is avoided: it fails in non-interactive Session 0 with
-// "Input redirection is not supported"; `ping` provides the delay instead.
+// restartWindows swaps the binary in-process and exits so the SCM restarts the
+// service on the new image.
+//
+// It replaces a generated .bat that was written into the install directory and
+// launched through cmd.exe. See replaceRunningBinary in swap_windows.go for why
+// that artifact was worth removing.
+//
+// Exiting non-zero is what triggers the restart: the SCM applies the service's
+// configured failure actions when the process dies without reporting
+// SERVICE_STOPPED. That makes recovery actions a hard prerequisite, not a nicety
+// -- without them "exit to update" means "exit and stay down". Both installation
+// paths configure them (install.bat via `sc failure`, the Go -install path via
+// SetRecoveryActions).
+//
+// If the swap could only be scheduled for the next reboot, this does NOT exit:
+// the currently-running old binary is still a working agent, and restarting into
+// a binary that has not been replaced yet would just repeat the update on every
+// start.
 func restartWindows(newPath, selfPath string) error {
-	dir := filepath.Dir(selfPath)
-	bat := filepath.Join(dir, "sentinelgo_update.bat")
-
-	script := fmt.Sprintf(`@echo off
-ping -n 3 127.0.0.1 >nul
-:retry
-move /Y "%s" "%s" >nul 2>&1
-if errorlevel 1 (
-  ping -n 2 127.0.0.1 >nul
-  goto retry
-)
-sc start "%s" >nul 2>&1
-del "%s" >nul 2>&1
-`, newPath, selfPath, windowsServiceName, bat)
-
-	// #nosec G306 - the update script must be executable/readable by the system
-	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
-		return fmt.Errorf("write update script: %w", err)
+	outcome, err := replaceRunningBinary(newPath, selfPath)
+	if err != nil {
+		return err
 	}
 
-	// Lock the script down to SYSTEM/Administrators/owner so a standard user
-	// cannot tamper with it during the window before it runs (it executes with
-	// the service's privileges).
-	if err := winsec.SecurePath(bat); err != nil {
-		log.Printf("Updater: warning – failed to secure update script ACL: %v", err)
+	if outcome == swapDeferred {
+		log.Println("Updater: update will be applied on the next reboot; continuing on the current version")
+		return nil
 	}
 
-	// #nosec G204 - bat is a controlled path generated above
-	cmd := exec.Command("cmd", "/c", "start", "/b", "", bat)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("launch update script: %w", err)
-	}
-
-	log.Println("Updater: update staged; exiting so the SCM can restart the service with the new binary")
-	os.Exit(0)
+	log.Println("Updater: binary replaced; exiting so the SCM restarts the service on the new version")
+	os.Exit(1)
 	return nil
 }
