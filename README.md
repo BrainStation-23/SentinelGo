@@ -176,9 +176,9 @@ Local user accounts with group membership — without collecting sensitive crede
 
 | Platform | Architectures | Service model |
 |---|---|---|
-| <img src="https://cdn.simpleicons.org/windows/0078D4" width="16" height="16"/> &nbsp;**Windows** | `amd64` | Windows Service |
-| <img src="https://cdn.simpleicons.org/apple/999999" width="16" height="16"/> &nbsp;**macOS** | `arm64` (Apple Silicon) &nbsp;·&nbsp; `amd64` (Intel) | launchd daemon |
-| <img src="https://cdn.simpleicons.org/linux/FCC624" width="16" height="16"/> &nbsp;**Linux** | `amd64` &nbsp;·&nbsp; `arm64` | systemd unit |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="18" height="18"/> &nbsp;**Windows** | `amd64` | Windows Service |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="18" height="18"/> &nbsp;**macOS** | `arm64` (Apple Silicon) &nbsp;·&nbsp; `amd64` (Intel) | launchd daemon |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="18" height="18"/> &nbsp;**Linux** | `amd64` &nbsp;·&nbsp; `arm64` | systemd unit |
 
 Every target is cross-compiled from a single host into a static binary — no per-platform build farm required.
 
@@ -253,8 +253,8 @@ flowchart TD
 
 | Platform | Path |
 |---|---|
-| <img src="https://cdn.simpleicons.org/linux/FCC624" width="14" height="14"/> Linux &nbsp;/&nbsp; <img src="https://cdn.simpleicons.org/apple/999999" width="14" height="14"/> macOS | `/opt/sentinelgo/` |
-| <img src="https://cdn.simpleicons.org/windows/0078D4" width="14" height="14"/> Windows | `C:\sentinelgo\` |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="16" height="16"/> Linux &nbsp;/&nbsp; <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="16" height="16"/> macOS | `/opt/sentinelgo/` |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="16" height="16"/> Windows | `C:\sentinelgo\` |
 
 **3. Create** a `config.json` (see [Configuration](#%EF%B8%8F-configuration) below).
 
@@ -283,8 +283,8 @@ The agent reads a single JSON file. Default locations:
 
 | OS | Path |
 |---|---|
-| <img src="https://cdn.simpleicons.org/linux/FCC624" width="14" height="14"/> Linux &nbsp;/&nbsp; <img src="https://cdn.simpleicons.org/apple/999999" width="14" height="14"/> macOS | `/opt/sentinelgo/.sentinelgo/config.json` |
-| <img src="https://cdn.simpleicons.org/windows/0078D4" width="14" height="14"/> Windows | `C:\sentinelgo\.sentinelgo\config.json` |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="16" height="16"/> Linux &nbsp;/&nbsp; <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="16" height="16"/> macOS | `/opt/sentinelgo/.sentinelgo/config.json` |
+| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="16" height="16"/> Windows | `C:\sentinelgo\.sentinelgo\config.json` |
 
 Override with `-config <path>`. Common fields:
 
