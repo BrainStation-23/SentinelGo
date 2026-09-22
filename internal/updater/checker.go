@@ -2,10 +2,11 @@ package updater
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -279,7 +280,7 @@ func AutoUpdateChecker(ctx context.Context, cfg *config.Config) {
 			return
 		case <-ticker.C:
 			// Jitter: spread checks across up to 5 minutes.
-			jitter := time.Duration(rand.Intn(5*60)) * time.Second
+			jitter := time.Duration(cryptoIntn(5*60)) * time.Second
 			select {
 			case <-ctx.Done():
 				return
@@ -294,4 +295,18 @@ func AutoUpdateChecker(ctx context.Context, cfg *config.Config) {
 			}
 		}
 	}
+}
+
+// cryptoIntn returns a non-negative random int in [0, n) using crypto/rand.
+// Falls back to n/2 if the system entropy source is unavailable, which is a
+// safe degradation for thundering-herd jitter.
+func cryptoIntn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return n / 2
+	}
+	return int(binary.BigEndian.Uint64(buf[:])>>1) % n
 }

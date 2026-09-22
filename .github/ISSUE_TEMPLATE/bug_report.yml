@@ -1,0 +1,116 @@
+name: 🐛 Bug Report
+description: Report something that is broken or not working as expected
+title: "bug: <short description>"
+labels: ["bug", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report.
+        Please search [existing issues](https://github.com/BrainStation-23/SentinelGo/issues) first to avoid duplicates.
+        For security vulnerabilities, use the process described in [SECURITY.md](https://github.com/BrainStation-23/SentinelGo/blob/main/SECURITY.md) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: SentinelGo version
+      description: Run `sentinelgo -version` and paste the output here.
+      placeholder: "e.g. v1.3.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (amd64)
+        - Linux (arm64)
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / amd64)
+        - Windows (amd64)
+        - Other (describe in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      placeholder: "e.g. Ubuntu 22.04, macOS 14.4, Windows 11 23H2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: run_mode
+    attributes:
+      label: Run mode
+      options:
+        - System service (installed via -install)
+        - Foreground (-run)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: "When I do X, Y happens instead of Z..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The minimal steps needed to trigger the bug.
+      placeholder: |
+        1. Configure agent with ...
+        2. Run `sentinelgo -run`
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: "I expected the agent to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste any relevant logs. Redact credentials, UUIDs, and PII before posting.
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (optional)
+      description: Paste a sanitised excerpt of your config.json if relevant. Remove all secrets.
+      render: json
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — screenshots, network conditions, fleet size, etc.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I am not reporting a security vulnerability (those go to SECURITY.md)
+          required: true
+        - label: I have redacted all credentials and PII from logs and config excerpts
+          required: true

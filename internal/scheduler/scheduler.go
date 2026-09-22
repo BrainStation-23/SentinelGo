@@ -2,12 +2,13 @@ package scheduler
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -329,7 +330,7 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 			tickers[name] = time.NewTicker(task.Interval)
 			log.Printf("Started ticker for task %s with interval %v", name, task.Interval)
 			if name != "token-refresh" {
-				jitter := time.Duration(rand.Int63n(int64(task.Interval)))
+				jitter := time.Duration(cryptoInt63n(int64(task.Interval)))
 				startAfter[name] = now.Add(jitter)
 				log.Printf("Task %s first periodic tick delayed by %v", name, jitter.Round(time.Second))
 			}
@@ -538,7 +539,7 @@ func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsv
 func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
 	// Jitter: spread checks across up to 5 minutes to avoid thundering herd
 	// when many agents start simultaneously.
-	jitter := time.Duration(rand.Intn(5*60)) * time.Second
+	jitter := time.Duration(cryptoIntn(5*60)) * time.Second
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -654,4 +655,32 @@ func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsv
 		}
 	}
 	return sendSoftware()
+}
+
+// cryptoInt63n returns a non-negative random int64 in [0, n) using crypto/rand.
+// Falls back to n/2 if the system entropy source is unavailable, which is a
+// safe degradation for startup-jitter purposes.
+func cryptoInt63n(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return n / 2
+	}
+	return int64(binary.BigEndian.Uint64(buf[:])>>1) % n
+}
+
+// cryptoIntn returns a non-negative random int in [0, n) using crypto/rand.
+// Falls back to n/2 if the system entropy source is unavailable, which is a
+// safe degradation for thundering-herd jitter.
+func cryptoIntn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return n / 2
+	}
+	return int(binary.BigEndian.Uint64(buf[:])>>1) % n
 }
