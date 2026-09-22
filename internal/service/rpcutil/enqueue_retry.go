@@ -2,9 +2,10 @@ package rpcutil
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
-	"math/rand"
 	"time"
 )
 
@@ -66,9 +67,23 @@ func computeEnqueueBackoff(attempt int) time.Duration {
 			break
 		}
 	}
-	jitter := time.Duration(rand.Int63n(int64(d) + 1))
+	jitter := time.Duration(cryptoInt63n(int64(d) + 1))
 	if d+jitter > enqueueRetryMax {
 		return enqueueRetryMax
 	}
 	return d + jitter
+}
+
+// cryptoInt63n returns a non-negative random int64 in [0, n) using crypto/rand.
+// Falls back to n/2 (the midpoint) if the system entropy source is unavailable,
+// which is a safe degradation for backoff jitter.
+func cryptoInt63n(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return n / 2
+	}
+	return int64(binary.BigEndian.Uint64(buf[:])>>1) % n
 }
