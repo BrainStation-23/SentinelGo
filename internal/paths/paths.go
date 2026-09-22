@@ -84,21 +84,6 @@ func CheckpointPath() string { return filepath.Join(dataDir(), checkpointFileNam
 // state outside the directory the hardening logic knows about.
 func LockPath(name string) string { return filepath.Join(dataDir(), name+".lock") }
 
-// LegacyInstallDir returns the pre-relocation install directory, or "" on
-// platforms that were never relocated. Migration code is the only caller.
-func LegacyInstallDir() string { return legacyInstallDir() }
-
-// LegacyConfigPath returns the pre-relocation config path, or "" where there is
-// none. Used so a new binary started before migration finishes can still find
-// the agent's identity.
-func LegacyConfigPath() string {
-	legacy := legacyInstallDir()
-	if legacy == "" {
-		return ""
-	}
-	return filepath.Join(legacy, ".sentinelgo", configFileName)
-}
-
 // IsManagedPath reports whether p lies inside a directory this package owns.
 //
 // It gates the permission hardening applied on config load. That gate is not
@@ -115,12 +100,7 @@ func IsManagedPath(p string) bool {
 		return false
 	}
 
-	roots := []string{installDir(), dataDir()}
-	if legacy := legacyInstallDir(); legacy != "" {
-		roots = append(roots, legacy)
-	}
-
-	for _, root := range roots {
+	for _, root := range []string{installDir(), dataDir()} {
 		if root != "" && isWithin(root, abs) {
 			return true
 		}

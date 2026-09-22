@@ -105,3 +105,36 @@ func moveFile(from, to string, flags uint32) error {
 
 	return windows.MoveFileEx(fromPtr, toPtr, flags)
 }
+
+// restartPlatform swaps the binary in-process and exits so the SCM restarts the
+// service on the new image.
+//
+// It replaces a generated .bat that was written into the install directory and
+// launched through cmd.exe. See replaceRunningBinary for why that artifact was
+// worth removing.
+//
+// Exiting non-zero is what triggers the restart: the SCM applies the service's
+// configured failure actions when the process dies without reporting
+// SERVICE_STOPPED. That makes recovery actions a hard prerequisite, not a nicety
+// -- without them "exit to update" means "exit and stay down". Both installation
+// paths configure them (install.bat via `sc failure`, the Go -install path via
+// SetRecoveryActions).
+//
+// If the swap could only be scheduled for the next reboot this does NOT exit:
+// the running old binary is still a working agent, and restarting into a binary
+// that has not been replaced yet would just repeat the update on every start.
+func restartPlatform(newPath, selfPath string) error {
+	outcome, err := replaceRunningBinary(newPath, selfPath)
+	if err != nil {
+		return err
+	}
+
+	if outcome == swapDeferred {
+		log.Println("Updater: update will be applied on the next reboot; continuing on the current version")
+		return nil
+	}
+
+	log.Println("Updater: binary replaced; exiting so the SCM restarts the service on the new version")
+	os.Exit(1)
+	return nil
+}

@@ -166,16 +166,12 @@ func TestConfigLoadDefaultPath(t *testing.T) {
 		t.Error("Expected config path to be set, got empty string")
 	}
 
-	// The resolved path must be one of the two locations the agent recognises:
-	// the current layout (%ProgramData%\SentinelGo), or the pre-relocation one
-	// when migration has not run yet. Anything else means Load would read or
-	// create a config somewhere nothing else looks, and the agent would generate
-	// a fresh identity instead of finding its own.
-	current := paths.ConfigPath()
-	legacy := paths.LegacyConfigPath()
-	if cfg.Path != current && cfg.Path != legacy {
-		t.Errorf("config path = %q, want either the current layout %q or the legacy %q",
-			cfg.Path, current, legacy)
+	// The resolved path must be exactly the current layout. There is no fallback
+	// to the pre-relocation location: agents are provisioned by clean install, so
+	// a config found at the old path belongs to a decommissioned deployment and
+	// adopting it would point the agent at a backend that no longer exists.
+	if want := paths.ConfigPath(); cfg.Path != want {
+		t.Errorf("config path = %q, want %q", cfg.Path, want)
 	}
 }
 

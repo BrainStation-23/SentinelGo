@@ -54,22 +54,14 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 // pointed at C:\SentinelGo, whose inherited ACL made the install directory
 // writable by any standard user.
 //
-// If the current-layout config is absent but a pre-relocation one exists, the
-// legacy path is returned. That fallback is load-bearing: a relocated binary can
-// start before migration has moved the file, and without it Load would find no
-// config, generate a fresh device_id and agent_id, and the host would re-register
-// as a brand-new agent -- losing its identity and its history.
+// There is deliberately no fallback to the pre-relocation C:\SentinelGo path.
+// Agents are provisioned by clean install against a freshly built backend, so a
+// config left behind at the old location belongs to a decommissioned deployment:
+// adopting it would point the agent at a backend that no longer exists and
+// resurrect an identity that was meant to be retired. An installer that finds the
+// old directory removes it rather than harvesting from it.
 func GetDefaultConfigPath() string {
-	current := paths.ConfigPath()
-	if _, err := os.Stat(current); err == nil {
-		return current
-	}
-	if legacy := paths.LegacyConfigPath(); legacy != "" {
-		if _, err := os.Stat(legacy); err == nil {
-			return legacy
-		}
-	}
-	return current
+	return paths.ConfigPath()
 }
 
 // Version is injected at build time via -ldflags "-X sentinelgo/internal/config.Version=...".

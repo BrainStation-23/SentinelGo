@@ -20,7 +20,3 @@ const (
 func installDir() string { return unixInstallDir }
 
 func dataDir() string { return unixDataDir }
-
-// legacyInstallDir returns "" because Unix was never relocated, which is what
-// tells the migration logic there is nothing to do.
-func legacyInstallDir() string { return "" }

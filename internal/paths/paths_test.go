@@ -116,32 +116,3 @@ func TestIsManagedPathCaseInsensitiveOnWindows(t *testing.T) {
 			"silently skips a path spelled with different casing")
 	}
 }
-
-// TestLegacyPaths documents the platform split: only Windows was relocated, and
-// only Windows therefore has a legacy tree for migration to adopt.
-func TestLegacyPaths(t *testing.T) {
-	legacyDir := paths.LegacyInstallDir()
-	legacyCfg := paths.LegacyConfigPath()
-
-	if runtime.GOOS != "windows" {
-		if legacyDir != "" || legacyCfg != "" {
-			t.Errorf("non-Windows should report no legacy layout, got dir=%q cfg=%q",
-				legacyDir, legacyCfg)
-		}
-		return
-	}
-
-	if legacyDir == "" {
-		t.Fatal("Windows must report a legacy install dir so migration can find it")
-	}
-	if legacyDir == paths.InstallDir() {
-		t.Error("legacy dir equals the new install dir: migration would be a no-op")
-	}
-	if filepath.Dir(filepath.Dir(legacyCfg)) != legacyDir {
-		t.Errorf("LegacyConfigPath %q is not under LegacyInstallDir %q", legacyCfg, legacyDir)
-	}
-	// Migration has to be able to harden the tree it is retiring.
-	if !paths.IsManagedPath(legacyDir) {
-		t.Error("legacy install dir must be managed so it can be secured on the way out")
-	}
-}

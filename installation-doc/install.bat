@@ -26,8 +26,11 @@ set SERVICE_NAME=SentinelGo
 set BINARY_NAME=sentinelgo.exe
 set INSTALL_DIR=%ProgramFiles%\SentinelGo
 set CONFIG_DIR=%ProgramData%\SentinelGo
+REM The pre-relocation install directory. It is removed, never reused: agents are
+REM provisioned by clean install against a freshly built backend, so anything left
+REM there belongs to a decommissioned deployment -- including a config.json holding
+REM credentials for a backend that no longer exists.
 set LEGACY_DIR=C:\SentinelGo
-set LEGACY_CONFIG=%LEGACY_DIR%\.sentinelgo\config.json
 set REQUIRED_BINARY=sentinelgo-windows-amd64.exe
 
 REM Check administrator privileges
@@ -105,6 +108,21 @@ REM Remove only the binary directory, never the state directory.
 if exist "%INSTALL_DIR%\%BINARY_NAME%" (
     del /F /Q "%INSTALL_DIR%\%BINARY_NAME%" >nul 2>&1
 )
+
+REM Remove the pre-relocation tree outright. It is the directory whose inherited
+REM ACL caused the privilege escalation, and it holds a cleartext config for a
+REM decommissioned backend. Hardening it would leave those credentials on disk;
+REM deleting it is both simpler and strictly safer.
+if exist "%LEGACY_DIR%" (
+    echo [INFO] Removing the previous installation at %LEGACY_DIR%...
+    rmdir /S /Q "%LEGACY_DIR%" >nul 2>&1
+    if exist "%LEGACY_DIR%" (
+        echo [WARNING] Could not fully remove %LEGACY_DIR%. It may contain credentials
+        echo [WARNING] for the previous deployment - delete it manually.
+    ) else (
+        echo [SUCCESS] Previous installation removed
+    )
+)
 echo.
 
 REM Step 3: Prepare and harden the installation directories
@@ -147,60 +165,36 @@ echo.
 
 REM Step 4: Deploy Configuration File
 echo [STEP 4] Deploying configuration file...
-if exist "%EXISTING_CONFIG_BACKUP%" (
-    REM Restore preserved config from previous installation (keeps agent identity)
-    copy "%EXISTING_CONFIG_BACKUP%" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
+REM The per-agent config.json ships in the same zip as this installer. It is the
+REM only source of the agent's identity, so there is no fabricated fallback: a
+REM generated default would name a backend this deployment does not use and carry
+REM no credentials, producing an agent that starts, fails to authenticate, and
+REM looks installed while reporting nothing.
+if exist "config.json" (
+    copy "config.json" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
     if !errorLevel! equ 0 (
-        echo [SUCCESS] Restored existing agent configuration (identity preserved)
-        del "%EXISTING_CONFIG_BACKUP%" >nul 2>&1
+        echo [SUCCESS] Configuration deployed to %CONFIG_DIR%\config.json
     ) else (
-        echo [WARNING] Failed to restore existing config - falling back to bundled config
-        goto deploy_bundled_config
+        echo [ERROR] Failed to deploy configuration
+        pause
+        exit /b 1
     )
+) else if exist "%CONFIG_DIR%\config.json" (
+    REM Reinstalling over an existing agent: keep its identity.
+    echo [INFO] Keeping the existing configuration at %CONFIG_DIR%\config.json
 ) else (
-    :deploy_bundled_config
-    if exist "config.json" (
-        copy "config.json" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Configuration deployed to %CONFIG_DIR%\config.json
-        ) else (
-            echo [ERROR] Failed to deploy configuration
-            pause
-            exit /b 1
-        )
-    ) else if exist "%LEGACY_CONFIG%" (
-        REM Adopt the identity of a pre-relocation installation so the host does
-        REM not re-register as a brand-new agent.
-        copy "%LEGACY_CONFIG%" "%CONFIG_DIR%\config.json" /Y >nul 2>&1
-        if !errorLevel! equ 0 (
-            echo [SUCCESS] Migrated configuration from %LEGACY_CONFIG%
-        ) else (
-            echo [ERROR] Failed to migrate the existing configuration
-            pause
-            exit /b 1
-        )
-    ) else (
-        echo [WARNING] No config.json found in current directory
-        echo [INFO] Creating default configuration...
-        (
-            echo {
-            echo   "heartbeat_interval": "5m0s",
-            echo   "github_owner": "habib45",
-            echo   "github_repo": "SentinelGo",
-            echo   "current_version": "v2.1.4",
-            echo   "auto_update": true,
-            echo   "supabase_url": "https://tvoszjyryzlfdampkozd.supabase.co",
-            echo   "device_id": "",
-            echo   "agent_uuid": "",
-            echo   "agent_secret": "",
-            echo   "agent_id": "",
-            echo   "access_token": "",
-            echo   "refresh_token": ""
-            echo }
-        ) > "%CONFIG_DIR%\config.json"
-        echo [SUCCESS] Default configuration created
-    )
+    echo [ERROR] No config.json found next to this installer, and none already
+    echo [ERROR] installed at %CONFIG_DIR%.
+    echo [INFO] config.json is generated per agent and ships in the same zip as
+    echo [INFO] this installer. Extract the whole zip and run install.bat from
+    echo [INFO] inside it.
+    pause
+    exit /b 1
 )
+
+REM Lock the credentials down immediately. The directory ACL already covers this,
+REM but the file is the thing that matters and an explicit grant is cheap.
+icacls "%CONFIG_DIR%\config.json" /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" /Q >nul 2>&1
 echo.
 
 REM Step 5: Deploy Agent Binary

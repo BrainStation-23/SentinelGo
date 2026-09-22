@@ -13,13 +13,6 @@ import (
 // dirName is the folder created under both %ProgramFiles% and %ProgramData%.
 const dirName = "SentinelGo"
 
-// legacyWindowsInstallDir is where the agent installed before the relocation.
-// A directory created directly under C:\ inherits the drive root's inherit-only
-// "Authenticated Users:(OI)(CI)(IO)(M)" ACE, which is what made the binary
-// replaceable by any standard user. Retained only so migration can find, secure
-// and eventually retire the old tree.
-const legacyWindowsInstallDir = `C:\SentinelGo`
-
 // Known-folder lookups go through the shell, so resolve each once.
 var (
 	programFilesOnce sync.Once
@@ -50,8 +43,6 @@ func dataDir() string {
 	})
 	return filepath.Join(programDataRoot, dirName)
 }
-
-func legacyInstallDir() string { return legacyWindowsInstallDir }
 
 // knownFolder resolves a Windows known folder, falling back to an environment
 // variable and then to a fixed default.

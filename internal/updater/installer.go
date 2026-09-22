@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -149,17 +148,6 @@ func rollbackFromBackup(backupPath string) error {
 	return nil
 }
 
-// recodesignForGatekeeper re-signs the binary with an ad-hoc identity and
-// registers its new CDHash with Gatekeeper. Must be called after every atomic
-// replace on macOS: spctl --add stores the CDHash at install time, and the
-// replaced binary has a completely different hash, so without this launchd
-// cannot restart the updated binary (Gatekeeper rejects it silently).
-func recodesignForGatekeeper(selfPath string) {
-	_ = exec.Command("xattr", "-d", "com.apple.quarantine", selfPath).Run()
-	_ = exec.Command("codesign", "--force", "--sign", "-", selfPath).Run()
-	_ = exec.Command("spctl", "--add", selfPath).Run()
-}
-
 // restart hands control to the OS service manager so the new binary runs.
 //
 // On Linux/macOS the binary has ALREADY been replaced in place by atomicReplace
@@ -181,60 +169,5 @@ func restart(newPath string) error {
 	if err != nil {
 		return err
 	}
-
-	if runtime.GOOS == "windows" {
-		return restartWindows(newPath, selfPath)
-	}
-
-	if runtime.GOOS == "darwin" {
-		log.Println("Updater: update applied; exiting for launchd (KeepAlive) to relaunch the new binary")
-		// Re-sign and re-register with Gatekeeper before exit. spctl --add stores
-		// the binary's CDHash in the policy DB; after atomicReplace the CDHash has
-		// changed, so the old install-time entry no longer matches. Without this,
-		// launchd relaunches the new binary but Gatekeeper rejects it and the
-		// daemon silently never comes back up.
-		recodesignForGatekeeper(selfPath)
-		os.Exit(0)
-		return nil
-	}
-
-	// Linux and other systemd-managed platforms: a non-zero exit triggers
-	// Restart=on-failure, relaunching the replaced binary.
-	log.Println("Updater: update applied; exiting for systemd (Restart=on-failure) to relaunch the new binary")
-	os.Exit(1)
-	return nil
-}
-
-// restartWindows swaps the binary in-process and exits so the SCM restarts the
-// service on the new image.
-//
-// It replaces a generated .bat that was written into the install directory and
-// launched through cmd.exe. See replaceRunningBinary in swap_windows.go for why
-// that artifact was worth removing.
-//
-// Exiting non-zero is what triggers the restart: the SCM applies the service's
-// configured failure actions when the process dies without reporting
-// SERVICE_STOPPED. That makes recovery actions a hard prerequisite, not a nicety
-// -- without them "exit to update" means "exit and stay down". Both installation
-// paths configure them (install.bat via `sc failure`, the Go -install path via
-// SetRecoveryActions).
-//
-// If the swap could only be scheduled for the next reboot, this does NOT exit:
-// the currently-running old binary is still a working agent, and restarting into
-// a binary that has not been replaced yet would just repeat the update on every
-// start.
-func restartWindows(newPath, selfPath string) error {
-	outcome, err := replaceRunningBinary(newPath, selfPath)
-	if err != nil {
-		return err
-	}
-
-	if outcome == swapDeferred {
-		log.Println("Updater: update will be applied on the next reboot; continuing on the current version")
-		return nil
-	}
-
-	log.Println("Updater: binary replaced; exiting so the SCM restarts the service on the new version")
-	os.Exit(1)
-	return nil
+	return restartPlatform(newPath, selfPath)
 }

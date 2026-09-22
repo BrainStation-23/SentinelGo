@@ -37,7 +37,6 @@ internal/
   paths/               single source of truth for install/data locations
   winsec/              Windows ACL application and auditing (no-op elsewhere)
   selfdefense/         start-time integrity check of install and config locations
-  migrate/             relocation of pre-%ProgramFiles% installations
 
 scripts/               Release, diagnostics, and pre-release checks
 release/               Compiled binaries (never edit directly)
