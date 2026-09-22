@@ -328,6 +328,16 @@ func TestConfig_ValidateConfiguration(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			// CVE: http:// must be rejected — cleartext would expose tokens in transit.
+			name: "http url rejected",
+			cfg: &config.Config{
+				SupabaseURL: "http://db.example.com",
+				SupabaseKey: validCfg.SupabaseKey,
+				DeviceID:    validCfg.DeviceID,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -486,5 +496,23 @@ func TestConfig_ValidateConfiguration_EmptyHost(t *testing.T) {
 	}
 	if err := cfg.ValidateConfiguration(); err == nil {
 		t.Error("expected error for URL with valid scheme but empty host, got nil")
+	}
+}
+
+// TestConfig_ValidateConfiguration_HTTPRejected verifies that http:// URLs are
+// refused with a message that explicitly names the https requirement, so operators
+// get a clear remediation hint rather than a generic "invalid URL" error.
+func TestConfig_ValidateConfiguration_HTTPRejected(t *testing.T) {
+	cfg := &config.Config{
+		SupabaseURL: "http://db.sentinelops.example.com",
+		SupabaseKey: "test-key",
+		DeviceID:    "test-device-id",
+	}
+	err := cfg.ValidateConfiguration()
+	if err == nil {
+		t.Fatal("expected error for http:// supabase_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("expected error to mention https, got: %v", err)
 	}
 }

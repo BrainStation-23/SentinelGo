@@ -401,7 +401,11 @@ func (c *Config) validateConfig() error {
 		return fmt.Errorf("device_id is required")
 	}
 
-	// Validate URL format
+	// Validate URL format — only https is permitted to protect credentials in transit.
+	u, _ := url.Parse(c.SupabaseURL)
+	if u != nil && u.Scheme == "http" {
+		return fmt.Errorf("supabase_url must use https, not http (plaintext connections are not allowed)")
+	}
 	if !isValidURL(c.SupabaseURL) {
 		return fmt.Errorf("supabase_url is not a valid URL")
 	}
@@ -422,13 +426,15 @@ func (c *Config) validateConfig() error {
 	return nil
 }
 
-// isValidURL validates that s is a parseable http/https URL with a host.
+// isValidURL validates that s is a parseable https URL with a host.
+// Only https is accepted; http is intentionally rejected to prevent cleartext
+// transmission of credentials and sensitive payloads.
 func isValidURL(s string) bool {
 	u, err := url.Parse(s)
 	if err != nil {
 		return false
 	}
-	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+	return u.Scheme == "https" && u.Host != ""
 }
 
 // ValidateConfiguration performs comprehensive validation
