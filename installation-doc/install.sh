@@ -170,28 +170,47 @@ setup_directories() {
 
     local os=$(detect_os)
 
-    # Set permissions based on OS
+    # Harden install directory and binary ownership/permissions.
+    #
+    # Security model: root owns the install directory and binary so that the
+    # service account ($SERVICE_USER) cannot replace its own executable and
+    # escalate to root. chmod 750 on the directory prevents unprivileged users
+    # from listing or traversing it; chmod 750 on the binary allows root to
+    # execute it while denying write access to everyone else. The service user
+    # is added to the sentinelgo group (created below) so it can read the
+    # binary — no world-read or world-write bits are set.
     if [[ "$os" == "macos" ]]; then
-        # macOS: Use chown with proper group handling
-        chown -R "$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
-        # Remove download quarantine flag and register with Gatekeeper so macOS does
-        # not block the daemon with "cannot be verified for malware" on first run.
+        # macOS: root owns install dir and binary; group wheel can read.
+        chown -R root:wheel "$INSTALL_DIR" 2>/dev/null || true
+        chmod 750 "$INSTALL_DIR" 2>/dev/null || true
+        chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        # Config dir is owned by root but accessible to the service group only.
+        chmod 750 "$CONFIG_DIR" 2>/dev/null || true
+        # Remove download quarantine flag and register with Gatekeeper so macOS
+        # does not block the daemon with "cannot be verified for malware" on
+        # first run.
         xattr -d com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         spctl --add "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
     elif [[ "$os" == "windows" ]]; then
-        # Windows: Skip ownership change
+        # Windows: Skip ownership change (handled by install.bat via icacls).
         echo "[INFO] Skipping ownership change on Windows"
     else
-        # Linux: Standard permissions with proper user/group format
-        if id "$SERVICE_USER" &>/dev/null 2>&1; then
-            chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        else
-            # User exists but group might not, try with just user
-            chown -R "$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
+        # Linux: root owns install dir and binary so the service user cannot
+        # replace them. Create a dedicated group for the service account so it
+        # can execute the binary without world-execute permissions.
+        groupadd -f "$SERVICE_USER" 2>/dev/null || true
+        if id "$SERVICE_USER" &>/dev/null; then
+            usermod -aG "$SERVICE_USER" "$SERVICE_USER" 2>/dev/null || true
         fi
-        chmod -R 755 "$INSTALL_DIR" 2>/dev/null || true
+        chown -R root:"$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
+        # 750: root rwx, service group r-x, others ---
+        chmod 750 "$INSTALL_DIR" 2>/dev/null || true
+        chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        # Config dir: root owns it, group readable (agent writes via root
+        # service context; 750 prevents unprivileged reads of secrets).
+        chown -R root:"$SERVICE_USER" "$CONFIG_DIR" 2>/dev/null || true
+        chmod 750 "$CONFIG_DIR" 2>/dev/null || true
     fi
     
     print_success "Directories and permissions set"
@@ -458,8 +477,17 @@ fix_service() {
     # Check and fix permissions
     print_status "Fixing permissions..."
     if [[ "$os" != "windows" ]]; then
-        chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        # Re-assert root ownership and restrictive permissions on the install
+        # directory and binary (mirrors the hardening applied during install).
+        if [[ "$os" == "macos" ]]; then
+            chown -R root:wheel "$INSTALL_DIR" 2>/dev/null || true
+            chmod 750 "$INSTALL_DIR" 2>/dev/null || true
+            chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        else
+            chown -R root:"$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
+            chmod 750 "$INSTALL_DIR" 2>/dev/null || true
+            chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        fi
     fi
     
     # Check config
@@ -521,13 +549,13 @@ fix_service() {
             # Copy current binary if available
             if [[ -f "./sentinelgo-linux-amd64" ]]; then
                 cp "./sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
-                chmod +x "$INSTALL_DIR/$BINARY_NAME"
-                chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
+                chmod 750 "$INSTALL_DIR/$BINARY_NAME"
+                chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed, trying again..."
             elif [[ -f "./build/linux/sentinelgo-linux-amd64" ]]; then
                 cp "./build/linux/sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
-                chmod +x "$INSTALL_DIR/$BINARY_NAME"
-                chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
+                chmod 750 "$INSTALL_DIR/$BINARY_NAME"
+                chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed from build/, trying again..."
             else
                 print_error "No binary found to install"
