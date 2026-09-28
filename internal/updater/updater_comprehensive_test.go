@@ -8,15 +8,6 @@ import (
 	"sentinelgo/internal/updater"
 )
 
-func TestAutoUpdateChecker_NilConfig(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Ticker fires hourly; context cancels long before any RPC call is attempted.
-	go updater.AutoUpdateChecker(ctx, nil)
-	<-ctx.Done()
-}
-
 func TestCheckAndApply_InvalidConfig(t *testing.T) {
 	requireNetwork(t)
 
@@ -41,14 +32,4 @@ func TestCheckAndApplyWithRetry_InvalidConfig(t *testing.T) {
 
 	err := updater.CheckAndApplyWithRetry(ctx, cfg)
 	_ = err
-}
-
-func TestAutoUpdateChecker_InvalidConfig(t *testing.T) {
-	cfg := loadUpdaterTestConfig(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	go updater.AutoUpdateChecker(ctx, cfg)
-	<-ctx.Done()
 }

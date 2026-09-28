@@ -64,14 +64,12 @@ SentinelGo is a cross-platform system monitoring agent designed to run as a back
 **Configuration Structure:**
 ```json
 {
-  "heartbeat_interval": "5m0s",      // String format for time.Duration
-  "auto_update": false,              // Automatic update enabled/disabled
-  "github_owner": "habib45",          // GitHub repository owner
-  "github_repo": "SentinelGo",        // GitHub repository name
-  "current_version": "v1.9.9.0",      // Current agent version
-  "supabase_url": "...",             // Supabase backend URL
-  "supabase_key": "...",              // Supabase API key
-  "device_id": "unique-device-id"     // Auto-generated device identifier
+  "auto_update": true,
+  "auto_update_interval": "1h0m0s",
+  "current_version": "v1.9.9.0",
+  "supabase_url": "...",
+  "supabase_key": "...",
+  "device_id": "unique-device-id"
 }
 ```
 
@@ -121,26 +119,27 @@ SentinelGo is a cross-platform system monitoring agent designed to run as a back
 - Network interface details
 - Process information
 
-### 5. Updater Service (`internal/updater/updater.go`)
+### 5. Updater Service (`internal/updater/`)
 
 **Responsibilities:**
-- Automatic version checking
-- Binary download and verification
+- Automatic version checking via Supabase RPC
+- Signed binary download from Supabase Storage
 - Atomic updates and rollback
 - Update failure recovery
 
 **Update Process:**
-1. Check current version against GitHub releases
-2. Download appropriate binary for platform/architecture
-3. Verify binary integrity and signature
-4. Perform atomic binary replacement
-5. Restart service with new version
+1. Call `get_latest_agent_release` for the current OS/arch
+2. Compare against compiled-in `config.Version` (strictly newer only)
+3. Download binary + `.sig` from Storage bucket `agent-releases`
+4. Verify SHA256 and ed25519 signature
+5. Atomic binary replacement (Unix) or staged swap (Windows)
+6. Exit so the OS service manager relaunches the new binary
 
 **Features:**
-- Semantic versioning support
-- Platform-specific binary selection
-- Rollback capability on failure
-- Configurable update intervals
+- Semantic versioning support (blocks downgrades)
+- Platform/arch selected by the RPC
+- Backup + rollback on Unix replace failure
+- Configurable update intervals via scheduler
 
 ### 6. Lockfile Manager (`internal/lockfile/lockfile.go`)
 
@@ -202,7 +201,7 @@ SentinelGo is a cross-platform system monitoring agent designed to run as a back
                                                         │
                        ┌─────────────────┐            │
                        │ Update Check    │◀───────────┤
-                       │ (GitHub API)    │            │
+                       │ (Supabase RPC)  │            │
                        └─────────────────┘            │
 ```
 

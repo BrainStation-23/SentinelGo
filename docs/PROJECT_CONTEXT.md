@@ -114,7 +114,10 @@ SentinelGo/
 │   │   ├── authService.go    # JWT authentication with Supabase
 │   │   └── agentService.go   # Agent info management and hardware detection
 │   └── updater/           # Automatic update management
-│       └── updater.go    # GitHub releases, binary download, process management
+│       ├── checker.go    # Supabase RPC discovery + apply orchestration
+│       ├── downloader.go # Storage download + SHA256/ed25519 verify
+│       ├── installer.go  # Backup, atomic replace, restart
+│       └── pubkey.go     # Embedded release-signing public key
 ├── docs/                  # Project documentation
 ├── doc/                   # Installation guides
 ├── scripts/               # Build and deployment scripts
@@ -139,9 +142,7 @@ SentinelGo/
 - `AGENT_UUID` - Agent unique identifier for registration
 - `AGENT_SECRET` - Agent secret key for authentication
 - `HEARTBEAT_INTERVAL` - Heartbeat frequency override (default: 5m)
-- `GITHUB_OWNER` - GitHub repository owner (default: habib45)
-- `GITHUB_REPO` - GitHub repository name (default: SentinelGo)
-- `AUTO_UPDATE` - Enable automatic updates (default: false)
+- `AUTO_UPDATE` - Enable automatic updates (default: true in config defaults)
 
 ## 6. API Documentation
 
@@ -276,13 +277,12 @@ CREATE TABLE agent_heartbeats (
 5. Wait for configured interval (default: 5 minutes)
 
 **Automatic Updates**:
-1. Daily check of GitHub releases API
-2. Compare latest release tag with current version
-3. Download appropriate binary for current OS/architecture
-4. Stop existing SentinelGo processes
-5. Replace binary atomically
-6. Restart service with new version
-7. Update configuration with new version
+1. Periodic check via Supabase RPC `get_latest_agent_release` (scheduler cadence)
+2. Compare latest version with compiled-in `config.Version`
+3. Download binary + `.sig` from Storage `agent-releases` for current OS/arch
+4. Verify SHA256 and ed25519 signature
+5. Backup current binary; replace atomically (Unix) or stage swap (Windows)
+6. Exit so the OS service manager relaunches the new binary
 
 **Process Management**:
 1. Create version-specific lock file on startup
@@ -299,9 +299,10 @@ CREATE TABLE agent_heartbeats (
 - **Real-time**: Potential for real-time monitoring dashboards
 
 **GitHub**:
-- **Release Management**: Automatic update detection and download
+- **Release publishing**: GitHub Actions builds, signs, and attaches release assets
 - **Version Control**: Source code and release tagging
 - **CI/CD**: Automated builds and releases via GitHub Actions
+  (agents consume updates from Supabase, not the GitHub Releases API)
 
 **System Services**:
 - **Windows Service API**: Native Windows service integration
@@ -481,9 +482,10 @@ var channels = []eventChannel{
 - **Improvement**: Add comprehensive configuration validation framework
 - **Impact**: Potential runtime configuration errors
 
-**Security**: No binary signature verification for updates
-- **Improvement**: Implement cryptographic binary verification
-- **Impact**: Security vulnerability in update process
+**Security**: Release binaries are verified with SHA256 (manifest) and ed25519
+(detached `.sig`); the public key is embedded in `internal/updater/pubkey.go`.
+- **Improvement**: Document key-rotation runbook for operators
+- **Impact**: Operators need a deliberate process when rotating `SENTINELGO_SIGNING_KEY`
 
 **Monitoring**: No built-in metrics collection or health endpoints
 - **Improvement**: Add Prometheus metrics and health check endpoints
