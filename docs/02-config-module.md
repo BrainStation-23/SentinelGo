@@ -59,9 +59,11 @@ replaced with defaults on the next load.
 }
 ```
 
-`current_version` is the only field that is also baked into the binary
-at build time via `-ldflags "-X sentinelgo/internal/config.Version=..."`
-— see [Building](../01-main-module.md#building).
+`current_version` is reconciled on every `config.Load` to the build-time
+`Version` (`-ldflags "-X sentinelgo/internal/config.Version=..."`) so the
+agent never reports a version it is not actually running — see
+[Building](../01-main-module.md#building). The updater compares
+`config.Version` when deciding whether to apply a release.
 
 ## Field reference
 
@@ -73,11 +75,9 @@ at build time via `-ldflags "-X sentinelgo/internal/config.Version=..."`
 | `agent_secret`              | `string`    | `""`                   | Shared secret used by `agent-login`.                   |
 | `access_token`              | `string`    | `""`                   | JWT issued by `agent-login`.                           |
 | `refresh_token`             | `string`    | `""`                   | JWT used to mint a new `access_token`.                 |
-| `github_owner`              | `string`    | `"BrainStation-23"`    | Used by the updater.                                   |
-| `github_repo`               | `string`    | `"SentinelGo"`         | Used by the updater.                                   |
-| `current_version`           | `string`    | build-time `Version`   | Overridden by `SENTINELGO_VERSION` env var.            |
-| `auto_update`               | `bool`      | `true`                 | Enables the daily release check (see [`docs/07`](07-updater-module.md)). |
-| `auto_update_interval`      | `Duration`  | `"24h0m0s"`            | Cadence of the release check.                          |
+| `current_version`           | `string`    | build-time `Version`   | Overwritten on load from compiled-in `Version`; used for inventory/logging. |
+| `auto_update`               | `bool`      | `true`                 | Enables startup + scheduled release checks (see [`docs/07`](07-updater-module.md)). |
+| `auto_update_interval`      | `Duration`  | `"1h0m0s"`             | Cadence of the scheduler `auto-update` task.           |
 | `update_interval`           | `Duration`  | `"5m0s"`               | Legacy software-sync interval (kept for back-compat).  |
 | `agent_info_update_interval`| `Duration`  | `"1h0m0s"`             | How often `internal/service/agent` pushes inventory.   |
 | `log_flush_interval`        | `Duration`  | `"5m0s"`               | Audit-log batch flush interval.                        |
@@ -89,13 +89,6 @@ at build time via `-ldflags "-X sentinelgo/internal/config.Version=..."`
 | `audit_logs_enabled`        | `bool`      | `true`                 | Enables the audit-log upload service.                  |
 | `software_sync_enabled`     | `bool`      | `true`                 | Enables software-inventory upload.                     |
 | `edge_function_url`         | `string`    | `""`                   | Optional override for the `agent-software` Edge Fn URL. |
-
-> **Note on default-vs-comment drift in source.** The Go struct
-> comments next to `AutoUpdate` and `EnableTaskPolling` say "Disabled
-> by default for safety", but the actual code initialises both to
-> `true`. The doc table reflects the **runtime** default (the code).
-> A future PR should either flip the defaults to `false` or fix the
-> comments.
 
 ## Duration fields
 

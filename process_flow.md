@@ -336,20 +336,18 @@ scheduler → handleAutoUpdate()
   └─ updater.CheckAndApplyWithRetry(ctx, cfg)
         │
         ├─ Attempt 1:
-        │     ├─ fetchLatestRelease() → GitHub API
-        │     ├─ Compare cfg.CurrentVersion vs latest
-        │     ├─ If newer: downloadAndVerify()
-        │     │     ├─ Download binary
-        │     │     ├─ Calculate SHA256 checksum
-        │     │     └─ Verify against release checksums
-        │     ├─ createBackup() → binary.backup
-        │     ├─ Stop old processes
-        │     ├─ atomicReplace() → rename new binary
-        │     ├─ Update cfg.CurrentVersion (SaveAtomic)
-        │     └─ restart() → spawn new process, exit
+        │     ├─ fetchLatestRelease() → Supabase RPC get_latest_agent_release
+        │     ├─ Compare config.Version vs latest.Version (strictly newer)
+        │     ├─ If newer: downloadAndVerify() from Storage agent-releases
+        │     │     ├─ Download binary (+ .sig)
+        │     │     ├─ SHA256 checksum
+        │     │     └─ ed25519 signature verify
+        │     ├─ createBackup() → <exe>.backup
+        │     ├─ atomicReplace() (Unix) or stage .new (Windows)
+        │     └─ restart() → exit; service manager relaunches
         │
         ├─ On failure → retry (up to 3 attempts)
-        │     └─ Backoff: 1s → 2s
+        │     └─ Backoff: 5s → 10s → … (cap 5m)
         │
         └─ On success → new process takes over
 ```
@@ -383,9 +381,7 @@ scheduler → handleAutoUpdate()
   "software_sync_enabled": true,
   "audit_logs_enabled": true,
   "log_flush_interval": "5m0s",
-  "edge_function_url": "https://xxx.supabase.co/functions/v1/upsert-agent-software",
-  "github_owner": "habib45",
-  "github_repo": "SentinelGo"
+  "edge_function_url": "https://xxx.supabase.co/functions/v1/upsert-agent-software"
 }
 ```
 
@@ -492,7 +488,11 @@ SentinelGo/
 │   │   ├── collector_windows.go    # Old Windows collector
 │   │   └── ErrInvalidInput.go      # Error type
 │   ├── updater/
-│   │   └── updater.go              # Auto-update with backup/rollback
+│   │   ├── checker.go              # Release discovery (Supabase RPC), apply orchestration
+│   │   ├── downloader.go           # Storage download + SHA256/ed25519 verify
+│   │   ├── installer.go            # Backup, atomic replace, restart
+│   │   ├── version.go              # Semver compare
+│   │   └── pubkey.go               # Embedded ed25519 public key
 │   ├── osinfo/
 │   │   └── osinfo.go               # System info collection
 │   └── constants/

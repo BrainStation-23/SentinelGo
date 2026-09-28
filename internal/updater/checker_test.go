@@ -193,26 +193,6 @@ func TestBackoffDuration_Caps(t *testing.T) {
 	}
 }
 
-// ── AutoUpdateChecker ─────────────────────────────────────────────────────────
-
-func TestAutoUpdateChecker_CancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel() // already cancelled
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		AutoUpdateChecker(ctx, &config.Config{})
-	}()
-
-	select {
-	case <-done:
-		// OK — returned promptly
-	case <-time.After(5 * time.Second):
-		t.Error("AutoUpdateChecker with cancelled context did not return within 5s")
-	}
-}
-
 // ── CheckInternetConnectivity / CheckInternetWithHTTP (network-gated) ─────────
 
 func requireNetworkInternal(t *testing.T) {

@@ -1,6 +1,6 @@
 # SentinelGo
 
-Cross-platform Go system monitoring agent. Collects OS-level metrics (CPU, memory, disk, network, battery, encryption status) and reports to a Supabase backend via heartbeat loop. Runs as a native service on Linux (systemd), macOS (launchd), and Windows (Service API). Includes automatic self-update from GitHub Releases.
+Cross-platform Go system monitoring agent. Collects OS-level metrics (CPU, memory, disk, network, battery, encryption status) and reports to a Supabase backend via heartbeat loop. Runs as a native service on Linux (systemd), macOS (launchd), and Windows (Service API). Includes automatic self-update from Supabase (signed binaries published by GitHub Actions).
 
 ## Build & Test
 
@@ -30,7 +30,7 @@ internal/
   lockfile/            file-based process locking and PID tracking
   osinfo/              cross-platform hardware metrics (platform-specific files)
   service/             JWT auth (authService.go), agent info (agentService.go)
-  updater/             GitHub release check, binary download, atomic replace, restart
+  updater/             Supabase release check, signed download, atomic replace, restart
   auditlogs/           audit log collection and forwarding
   logging/             logging utilities
   models/              shared data models
@@ -46,7 +46,7 @@ release/               Compiled binaries (never edit directly)
 1. Load config -> acquire lockfile -> init services
 2. Authenticate via Supabase edge function (agent-login) -> store JWT
 3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
-4. Daily GitHub release check -> download -> stop -> replace binary -> restart
+4. Periodic Supabase release check -> download/verify -> replace binary -> service restart
 
 ## Key Conventions
 

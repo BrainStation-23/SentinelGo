@@ -67,7 +67,7 @@ Run the application using the following execution flow and automation rules:
 
    **Task Dependency Chain**:
    ```
-   auto-update (24h)
+   auto-update (1h)
        ↓
    agent-info-update (1h)
        ↓
@@ -79,16 +79,15 @@ Run the application using the following execution flow and automation rules:
    **Task Execution Flow**:
    
    a. **Auto-Update Task** (`handleAutoUpdate`):
-      - Check latest version from GitHub releases API
-      - Compare with current version
-      - Verify update integrity with SHA256 checksums
-      - Download binary for current platform (linux-amd64, darwin-amd64, darwin-arm64, windows-amd64)
-      - Stop all older SentinelGo processes before update
-      - Atomic binary replacement with backup creation
-      - Restart application if update successful
-      - Rollback on failure
-      - Retry policy: max 3 attempts with exponential backoff
-      - Interval: 24 hours (configurable)
+      - Call Supabase RPC `get_latest_agent_release` for current OS/arch
+      - Compare with compiled-in `config.Version` (strictly newer only)
+      - Download binary + `.sig` from Storage bucket `agent-releases`
+      - Verify SHA256 checksum and ed25519 signature
+      - Backup current binary; atomic replace (Unix) or stage `.new` (Windows)
+      - Exit so the OS service manager relaunches the new binary
+      - Rollback on Unix replace failure
+      - Retry policy: max 3 attempts with exponential backoff (5s+)
+      - Interval: 1 hour by default (configurable)
       - Enabled: Based on `auto_update` config flag
 
    b. **Agent Information Update Task** (`handleAgentInfoUpdate`):
@@ -302,7 +301,7 @@ Run the application using the following execution flow and automation rules:
       ↓
     ├─ EnhancedAuth (token management)
     ├─ Scheduler (task coordination)
-    │   ├─ Auto-Update → GitHub API
+    │   ├─ Auto-Update → Supabase get_latest_agent_release + Storage
     │   ├─ Agent Info → agent_push_inventory RPC
     │   ├─ Software Sync → agent_upsert_software RPC
     │   └─ Audit Logs → agent_insert_audit_logs_batch RPC
@@ -325,8 +324,8 @@ Run the application using the following execution flow and automation rules:
     - Config and data files remain for reinstallation
 
 22. **Updates**:
-    - Automatic updates via GitHub releases (if enabled)
+    - Automatic updates via Supabase releases (if `auto_update` enabled)
     - Manual updates: replace binary and restart service
     - Rollback capability via backup creation
-    - Version verification via checksums
+    - Version verification via SHA256 + ed25519 signatures
 

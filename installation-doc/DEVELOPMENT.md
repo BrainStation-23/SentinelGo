@@ -45,9 +45,7 @@ Create a config file with your agent credentials:
   "agent_uuid": "ca33f7b4-05e4-4af7-89fc-73e55c4a8de7",
   "agent_secret": "Bd025171@1234567",
   "heartbeat_interval": "5m",
-  "auto_update": false,
-  "github_owner": "habib45",
-  "github_repo": "SentinelGo"
+  "auto_update": false
 }
 ```
 

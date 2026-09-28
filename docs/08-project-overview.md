@@ -51,8 +51,8 @@ sentinelgo/
 │   │   └── parser/                 Log normalization and severity mapping.
 │   ├── auditlogstore/              SQLite-backed durable queue for audit events.
 │   │
-│   ├── updater/                    GitHub Releases check, asset download, atomic
-│   │                               binary replace, restart orchestration.
+│   ├── updater/                    Supabase release check (RPC + Storage), signed
+│   │                               binary download, atomic replace, restart.
 │   ├── store/                      SQLite store: software inventory + pending sync state.
 │   ├── taskstore/                  SQLite store: assigned tasks + status transitions.
 │   │
@@ -149,5 +149,7 @@ All builds use `CGO_ENABLED=0`. The build is static and cross-compiles from one 
 - **Single instance** — `internal/lockfile` keys the lock on the agent UUID + binary version, so an in-place upgrade can replace the running binary cleanly.
 - **At-least-once uploads** — both audit logs and task results are stored in SQLite before upload; a crash mid-upload replays from the checkpoint.
 - **Auth** — JWT is auto-refreshed; the agent never assumes a token is permanently valid (see `internal/auth/circuit_breaker.go`).
-- **Updates** — see `docs/07-updater-module.md` for the atomic-replace protocol and the GitHub Releases check cadence.
+- **Updates** — see `docs/07-updater-module.md` for the Supabase RPC/Storage
+  discovery path, signature verification, and atomic-replace / service-restart
+  protocol.
 - **Cross-platform** — every change to `osinfo/`, `auditlogs/collector/`, or `service/` must be validated on all three OSes via `make verify-cross`; build tags mean the Linux file is otherwise invisible to a Windows-only dev.
