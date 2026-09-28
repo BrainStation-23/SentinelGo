@@ -91,7 +91,7 @@ type Config struct {
 	CurrentVersion          string   `json:"current_version"`
 	DeviceID                string   `json:"device_id"`                  // persistent unique identifier
 	AutoUpdate              bool     `json:"auto_update"`                // Enable automatic updates
-	AutoUpdateInterval      Duration `json:"auto_update_interval"`       // How often to check for a new release (default 24h)
+	AutoUpdateInterval      Duration `json:"auto_update_interval"`       // How often to check for a new release (default 1h)
 	AgentInfoUpdateInterval Duration `json:"agent_info_update_interval"` // How often to push inventory to Supabase (default 1h)
 	TaskPollingInterval     Duration `json:"task_polling_interval"`      // Task polling interval (supports both "5m0s" and numeric formats)
 	EnableTaskPolling       bool     `json:"enable_task_polling"`        // Enable task polling service

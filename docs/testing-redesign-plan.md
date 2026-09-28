@@ -19,7 +19,7 @@ misleading:
      `t.Skip("requires valid authentication tokens")`
      (`agent_service_test.go`, `audit_log_rpc_test.go`, `software_service_test.go`,
      parts of `audit_log_send_test.go`). These test nothing.
-   - Real external calls — the updater tests hit live GitHub (now gated behind
+   - Real external calls — the updater tests hit live Supabase (gated behind
      `SENTINELGO_UPDATER_NETWORK_TESTS=1` + `-short`).
 
 2. **No platform isolation.** There are **zero build tags** across all 38 test

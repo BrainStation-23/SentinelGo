@@ -2,8 +2,6 @@ package updater
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -267,46 +265,4 @@ func StartupUpdateCheck(ctx context.Context, cfg *config.Config) error {
 
 	log.Println("Startup update check completed successfully")
 	return nil
-}
-
-// AutoUpdateChecker runs automatic update checks in the background every hour.
-func AutoUpdateChecker(ctx context.Context, cfg *config.Config) {
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Jitter: spread checks across up to 5 minutes.
-			jitter := time.Duration(cryptoIntn(5*60)) * time.Second
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(jitter):
-			}
-
-			log.Println("Checking for updates...")
-			if err := CheckAndApplyWithRetry(ctx, cfg); err != nil {
-				log.Printf("Auto-update failed: %v\n", err)
-			} else {
-				log.Println("Auto-update completed successfully")
-			}
-		}
-	}
-}
-
-// cryptoIntn returns a non-negative random int in [0, n) using crypto/rand.
-// Falls back to n/2 if the system entropy source is unavailable, which is a
-// safe degradation for thundering-herd jitter.
-func cryptoIntn(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return n / 2
-	}
-	return int(binary.BigEndian.Uint64(buf[:])>>1) % n
 }
