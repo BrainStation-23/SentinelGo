@@ -1,6 +1,9 @@
 package software
 
-import "time"
+import (
+	"path/filepath"
+	"time"
+)
 
 // collectCmdTimeout bounds every external enumeration command (package managers,
 // system_profiler, PowerShell queries, etc.). A tool that hangs must report
@@ -20,4 +23,14 @@ func (s *SoftwareService) GetSoftwareList() []SoftwareInfo {
 // the stored catalog. Callers that only need the list use GetSoftwareList.
 func (s *SoftwareService) GetSoftwareListWithStatus() ([]SoftwareInfo, bool) {
 	return s.platformSoftware()
+}
+
+// browserExtDirs joins home with each OS-specific relative sub-path to build
+// absolute glob patterns for a browser's extension/profile directories.
+func browserExtDirs(home string, relPaths ...string) []string {
+	globs := make([]string, len(relPaths))
+	for i, rel := range relPaths {
+		globs[i] = filepath.Join(home, rel)
+	}
+	return globs
 }

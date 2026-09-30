@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -192,31 +191,26 @@ func parseFlatpakPackages(output []byte, packages *[]SoftwareInfo) {
 
 // chromeExtDirGlobs returns Chrome extension directory glob patterns on Linux.
 func chromeExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, ".config/google-chrome/Default/Extensions"),
-		filepath.Join(home, ".config/google-chrome/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		".config/google-chrome/Default/Extensions",
+		".config/google-chrome/Profile */Extensions")
 }
 
 // edgeExtDirGlobs returns Edge extension directory glob patterns on Linux.
 func edgeExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, ".config/microsoft-edge/Default/Extensions"),
-		filepath.Join(home, ".config/microsoft-edge/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		".config/microsoft-edge/Default/Extensions",
+		".config/microsoft-edge/Profile */Extensions")
 }
 
 // braveExtDirGlobs returns Brave extension directory glob patterns on Linux.
 func braveExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, ".config/BraveSoftware/Brave-Browser/Default/Extensions"),
-		filepath.Join(home, ".config/BraveSoftware/Brave-Browser/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		".config/BraveSoftware/Brave-Browser/Default/Extensions",
+		".config/BraveSoftware/Brave-Browser/Profile */Extensions")
 }
 
 // firefoxProfileGlobs returns Firefox profile directory glob patterns on Linux.
 func firefoxProfileGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, ".mozilla/firefox/*"),
-	}
+	return browserExtDirs(home, ".mozilla/firefox/*")
 }

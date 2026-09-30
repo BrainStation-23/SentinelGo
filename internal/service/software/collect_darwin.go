@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -252,31 +251,26 @@ func parseHomebrewPackages(output []byte, packages *[]SoftwareInfo, source strin
 
 // chromeExtDirGlobs returns Chrome extension directory glob patterns on macOS.
 func chromeExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, "Library/Application Support/Google/Chrome/Default/Extensions"),
-		filepath.Join(home, "Library/Application Support/Google/Chrome/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		"Library/Application Support/Google/Chrome/Default/Extensions",
+		"Library/Application Support/Google/Chrome/Profile */Extensions")
 }
 
 // edgeExtDirGlobs returns Edge extension directory glob patterns on macOS.
 func edgeExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, "Library/Application Support/Microsoft Edge/Default/Extensions"),
-		filepath.Join(home, "Library/Application Support/Microsoft Edge/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		"Library/Application Support/Microsoft Edge/Default/Extensions",
+		"Library/Application Support/Microsoft Edge/Profile */Extensions")
 }
 
 // braveExtDirGlobs returns Brave extension directory glob patterns on macOS.
 func braveExtDirGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"),
-		filepath.Join(home, "Library/Application Support/BraveSoftware/Brave-Browser/Profile */Extensions"),
-	}
+	return browserExtDirs(home,
+		"Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions",
+		"Library/Application Support/BraveSoftware/Brave-Browser/Profile */Extensions")
 }
 
 // firefoxProfileGlobs returns Firefox profile directory glob patterns on macOS.
 func firefoxProfileGlobs(home string) []string {
-	return []string{
-		filepath.Join(home, "Library/Application Support/Firefox/Profiles/*"),
-	}
+	return browserExtDirs(home, "Library/Application Support/Firefox/Profiles/*")
 }
