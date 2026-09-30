@@ -53,8 +53,8 @@ func TestClassifyListeningPort_NotListeningOrBound(t *testing.T) {
 
 func TestClassifyListeningPort_UDPNotBound(t *testing.T) {
 	conn := gnet.ConnectionStat{
-		Type:   2,
-		Laddr:  gnet.Addr{Port: 0},
+		Type:  2,
+		Laddr: gnet.Addr{Port: 0},
 	}
 	if _, ok := classifyListeningPort(conn); ok {
 		t.Error("expected ok=false for a UDP socket with no bound port")
