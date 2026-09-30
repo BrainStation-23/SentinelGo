@@ -13,7 +13,7 @@ echo "🚀 Creating SentinelGo release: $VERSION"
 # Check if we're on main branch (optional - can be skipped)
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo "📍 Current branch: $CURRENT_BRANCH"
-if [ "$CURRENT_BRANCH" != "main" ]; then
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
     echo "⚠️  Warning: You're not on the main branch"
     echo "   Current branch: $CURRENT_BRANCH"
     read -p "🤔 Do you want to continue anyway? (y/N): " -n 1 -r response
@@ -24,8 +24,8 @@ if [ "$CURRENT_BRANCH" != "main" ]; then
 fi
 
 # Check if working directory is clean
-if [ -n "$(git status --porcelain)" ]; then
-    echo "❌ Error: Working directory is not clean"
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "❌ Error: Working directory is not clean" >&2
     echo "   Please commit or stash your changes first"
     git status --porcelain
     exit 1
