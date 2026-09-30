@@ -7,7 +7,7 @@ import (
 )
 
 func getLocalUsers() []shared.UserWithGroup {
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		`Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" | Select-Object Name,SID | ConvertTo-Json`)
 	if err != nil {
 		return nil
@@ -27,7 +27,7 @@ func getUserGroups(username string) []string {
 	cmd := fmt.Sprintf(
 		`$u="%s"; Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue).Name -like ('*\'+$u) } | Select-Object -ExpandProperty Name`,
 		username)
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command", cmd); err == nil {
+	if output, err := shared.RunPowerShell(cmd); err == nil {
 		return parseWindowsGroupLines(output)
 	}
 	return nil

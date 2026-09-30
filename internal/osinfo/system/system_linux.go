@@ -22,15 +22,23 @@ func getHardwareModel() string {
 	return hostname
 }
 
+// dmiPlaceholderNotSpecified and dmiPlaceholderDefaultString are values some
+// vendors ship in DMI serial-number fields instead of a real serial. Any
+// candidate matching one of these is treated as "not a real serial number".
+const (
+	dmiPlaceholderNotSpecified  = "Not Specified"
+	dmiPlaceholderDefaultString = "Default String"
+)
+
 func getSerialNumber() string {
 	type candidate struct {
 		path    string
 		invalid []string
 	}
 	candidates := []candidate{
-		{"/sys/class/dmi/id/product_serial", []string{"Not Specified", "Default String", "0123456789"}},
-		{"/sys/class/dmi/id/chassis_serial", []string{"Not Specified", "Default String"}},
-		{"/sys/class/dmi/id/board_serial", []string{"Not Specified", "Default String"}},
+		{"/sys/class/dmi/id/product_serial", []string{dmiPlaceholderNotSpecified, dmiPlaceholderDefaultString, "0123456789"}},
+		{"/sys/class/dmi/id/chassis_serial", []string{dmiPlaceholderNotSpecified, dmiPlaceholderDefaultString}},
+		{"/sys/class/dmi/id/board_serial", []string{dmiPlaceholderNotSpecified, dmiPlaceholderDefaultString}},
 		{"/etc/machine-id", nil},
 		{"/var/lib/dbus/machine-id", nil},
 	}
@@ -53,7 +61,7 @@ func getSerialNumber() string {
 	}
 	if output, err := shared.RunCommand("dmidecode", "-s", "system-serial-number"); err == nil {
 		serial := strings.TrimSpace(output)
-		if serial != "" && serial != "Not Specified" && serial != "Default String" {
+		if serial != "" && serial != dmiPlaceholderNotSpecified && serial != dmiPlaceholderDefaultString {
 			return serial
 		}
 	}

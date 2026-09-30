@@ -10,11 +10,14 @@ import (
 	"sentinelgo/internal/models"
 )
 
+// serviceUnitSuffix is the systemd unit-name suffix this collector filters on.
+const serviceUnitSuffix = ".service"
+
 // platformServices collects systemd service units on Linux.
 func (s *ServicesService) platformServices() []models.ServiceInfo {
 	units := make(map[string]models.ServiceInfo)
 
-	if ok := s.collectSystemdUnits(units); !ok {
+	if !s.collectSystemdUnits(units) {
 		log.Printf("services: systemctl list-units failed; service data may be incomplete")
 	}
 	s.mergeUnitFiles(units)
@@ -105,10 +108,10 @@ func parseSystemdUnits(output []byte, units map[string]models.ServiceInfo) {
 
 		// The first field may be a non-ASCII bullet; if so, discard it.
 		idx := 0
-		if !strings.HasSuffix(fields[0], ".service") {
+		if !strings.HasSuffix(fields[0], serviceUnitSuffix) {
 			idx = 1
 		}
-		if idx >= len(fields) || !strings.HasSuffix(fields[idx], ".service") {
+		if idx >= len(fields) || !strings.HasSuffix(fields[idx], serviceUnitSuffix) {
 			continue
 		}
 
@@ -147,7 +150,7 @@ func parseSystemdUnitFiles(output []byte) map[string]string {
 			break
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 2 || !strings.HasSuffix(fields[0], ".service") {
+		if len(fields) < 2 || !strings.HasSuffix(fields[0], serviceUnitSuffix) {
 			continue
 		}
 		result[fields[0]] = normalizeSystemdState(fields[1])

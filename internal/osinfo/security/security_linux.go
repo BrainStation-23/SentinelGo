@@ -9,6 +9,13 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// crowdStrikeFalconService and crowdStrikeFalconName identify CrowdStrike
+// Falcon, which appears in both the AV-service and EDR-detection tables below.
+const (
+	crowdStrikeFalconService = "falcon-sensor"
+	crowdStrikeFalconName    = "CrowdStrike Falcon"
+)
+
 // knownAVServices lists systemd service names for common endpoint-protection products.
 var knownAVServices = []struct {
 	service string
@@ -16,8 +23,8 @@ var knownAVServices = []struct {
 }{
 	{"clamav-daemon", "ClamAV"},
 	{"clamd", "ClamAV"},
-	{"falcon-sensor", "CrowdStrike Falcon"},
-	{"falcond", "CrowdStrike Falcon"},
+	{crowdStrikeFalconService, crowdStrikeFalconName},
+	{"falcond", crowdStrikeFalconName},
 	{"cbsensor", "Carbon Black"},
 	{"ds_agent", "Trend Micro Deep Security"},
 	{"sophos-spl", "Sophos"},
@@ -156,7 +163,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		vendor string
 		proc   string
 	}{
-		{"falcon-sensor", "CrowdStrike Falcon", "CrowdStrike", "falcon-sensor"},
+		{crowdStrikeFalconService, crowdStrikeFalconName, "CrowdStrike", crowdStrikeFalconService},
 		{"sentinelone", "SentinelOne Singularity", "SentinelOne", "sentineld"},
 		{"wazuh-agent", "Wazuh Agent", "Wazuh", "wazuh-agentd"},
 		{"velociraptor", "Velociraptor", "Velociraptor", "velociraptor"},

@@ -15,7 +15,7 @@ func getDisks() []shared.DiskDevice {
 	// underlying uint16 enums to human-readable strings ("SSD", "NVMe", "Healthy", …) in its
 	// object layer, so we do NOT cast MediaType/BusType/HealthStatus to [int] — those casts
 	// would fail. DeviceId is a string digit ("0", "1", …) and is safe to cast to [int].
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		`Get-PhysicalDisk | ForEach-Object { [PSCustomObject]@{ DeviceId=[int]$_.DeviceId; FriendlyName=$_.FriendlyName; SerialNumber=$_.SerialNumber; MediaType=$_.MediaType; HealthStatus=$_.HealthStatus; BusType=$_.BusType; Size=$_.Size } } | ConvertTo-Json`)
 	if err != nil {
 		return disks
@@ -71,7 +71,7 @@ func getDisks() []shared.DiskDevice {
 			cmd := fmt.Sprintf(
 				`Get-Partition -DiskNumber %d | Where-Object { $_.DriveLetter } | ForEach-Object { $dl = [string]$_.DriveLetter; $ld = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${dl}:'"; try { $v = Get-BitLockerVolume -MountPoint "${dl}:" -ErrorAction Stop; [PSCustomObject]@{DriveLetter=$dl; FreeSpace=$ld.FreeSpace; FileSystem=$ld.FileSystem; ProtectionStatus=[int]$v.ProtectionStatus; EncryptionMethod=$v.EncryptionMethod.ToString()} } catch { [PSCustomObject]@{DriveLetter=$dl; FreeSpace=$ld.FreeSpace; FileSystem=$ld.FileSystem; ProtectionStatus=0; EncryptionMethod='None'} } } | Select-Object -First 1 | ConvertTo-Json`,
 				diskIndex)
-			if out, err := shared.RunCommand("powershell", "-NoProfile", "-Command", cmd); err == nil {
+			if out, err := shared.RunPowerShell(cmd); err == nil {
 				var result map[string]any
 				if json.Unmarshal([]byte(strings.TrimSpace(out)), &result) == nil {
 					if dl, ok := result["DriveLetter"].(string); ok {

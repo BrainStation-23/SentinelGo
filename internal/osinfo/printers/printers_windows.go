@@ -11,7 +11,7 @@ func getPrinters() []shared.Printer {
 	var printers []shared.Printer
 	seen := make(map[string]bool)
 
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-Printer | Select-Object Name, DriverName, Type | ConvertTo-Json -Depth 2"); err == nil {
 		printers = append(printers, parseWindowsPrinterJSON(output, seen)...)
 	}

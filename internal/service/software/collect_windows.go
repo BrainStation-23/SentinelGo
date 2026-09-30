@@ -102,7 +102,7 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 	var psOutput []map[string]any
 	if err := json.Unmarshal(output, &psOutput); err != nil {
 		var single map[string]any
-		if err2 := json.Unmarshal(output, &single); err2 != nil {
+		if json.Unmarshal(output, &single) != nil {
 			return false
 		}
 		psOutput = []map[string]any{single}

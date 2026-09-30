@@ -27,6 +27,9 @@ BINARY_NAME="sentinelgo"
 INSTALL_DIR="/opt/sentinelgo"
 CONFIG_DIR="${INSTALL_DIR}/.sentinelgo"
 SERVICE_USER="sentinelgo"
+readonly OS_WINDOWS="windows"
+readonly LAUNCHD_PLIST_PATH="/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+readonly LOCAL_LINUX_BINARY="./sentinelgo-linux-amd64"
 
 # Detect OS
 detect_os() {
@@ -43,7 +46,7 @@ detect_os() {
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         echo "macos"
     elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-        echo "windows"
+        echo "$OS_WINDOWS"
     else
         echo "unknown"
     fi
@@ -63,14 +66,14 @@ print_warning() {
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 # Check if running with appropriate permissions and auto-elevate
 check_permissions() {
     local os=$(detect_os)
     
-    if [[ "$os" == "windows" ]]; then
+    if [[ "$os" == "$OS_WINDOWS" ]]; then
         # Windows: Check if running as administrator
         if ! net session >/dev/null 2>&1; then
             print_error "Please run this script as Administrator on Windows"
@@ -97,7 +100,7 @@ check_permissions() {
 create_service_user() {
     local os=$(detect_os)
     
-    if [[ "$os" == "windows" ]]; then
+    if [[ "$os" == "$OS_WINDOWS" ]]; then
         # Windows doesn't need a special user for this
         return 0
     fi
@@ -144,9 +147,9 @@ setup_directories() {
     if [[ -f "./$BINARY_NAME" ]]; then
         print_status "Installing binary from current directory"
         cp "./$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "./sentinelgo-linux-amd64" ]]; then
+    elif [[ -f "$LOCAL_LINUX_BINARY" ]]; then
         print_status "Installing Linux AMD64 binary"
-        cp "./sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
+        cp "$LOCAL_LINUX_BINARY" "$INSTALL_DIR/$BINARY_NAME"
     elif [[ -f "./sentinelgo-darwin-amd64" ]]; then
         print_status "Installing macOS AMD64 binary"
         cp "./sentinelgo-darwin-amd64" "$INSTALL_DIR/$BINARY_NAME"
@@ -192,7 +195,7 @@ setup_directories() {
         xattr -d com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         spctl --add "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
-    elif [[ "$os" == "windows" ]]; then
+    elif [[ "$os" == "$OS_WINDOWS" ]]; then
         # Windows: Skip ownership change (handled by install.bat via icacls).
         echo "[INFO] Skipping ownership change on Windows"
     else
@@ -278,9 +281,9 @@ EOF
 install_launchd_service() {
     print_status "Installing launchd service"
     
-    local CURRENT_USER=$(whoami)
+    local current_user=$(whoami)
     
-    cat > "/Library/LaunchDaemons/com.sentinelgo.agent.plist" << EOF
+    cat > "$LAUNCHD_PLIST_PATH" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -303,7 +306,7 @@ install_launchd_service() {
     <key>StandardErrorPath</key>
     <string>/var/log/sentinelgo.log</string>
     <key>UserName</key>
-    <string>$CURRENT_USER</string>
+    <string>$current_user</string>
     <key>WorkingDirectory</key>
     <string>$INSTALL_DIR</string>
 </dict>
@@ -311,26 +314,26 @@ install_launchd_service() {
 EOF
     
     # Set permissions for macOS
-    chown root:wheel "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
-    chmod 644 "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+    chown root:wheel "$LAUNCHD_PLIST_PATH"
+    chmod 644 "$LAUNCHD_PLIST_PATH"
     
     # First, try to unload any existing service
     print_status "Checking for existing service..."
     if launchctl print system/com.sentinelgo.agent >/dev/null 2>&1; then
         print_status "Unloading existing service..."
-        launchctl bootout system "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || true
+        launchctl bootout system "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
         sleep 2
     fi
     
     # Try bootstrap first (newer macOS versions)
     print_status "Starting service..."
-    if launchctl bootstrap system "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null; then
+    if launchctl bootstrap system "$LAUNCHD_PLIST_PATH" 2>/dev/null; then
         launchctl kickstart -k system/com.sentinelgo.agent
         sleep 3
     else
         # Fallback to load for older macOS versions
         print_warning "Bootstrap failed, trying load command..."
-        launchctl load -w "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || true
+        launchctl load -w "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
         sleep 3
     fi
     
@@ -340,9 +343,9 @@ EOF
         print_status "Service is running"
     else
         print_warning "Service may not be running, attempting force start..."
-        launchctl bootout system "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || true
+        launchctl bootout system "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
         sleep 2
-        launchctl bootstrap system "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || launchctl load -w "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || true
+        launchctl bootstrap system "$LAUNCHD_PLIST_PATH" 2>/dev/null || launchctl load -w "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
         sleep 2
         launchctl kickstart -k system/com.sentinelgo.agent
         sleep 3
@@ -373,6 +376,9 @@ show_status() {
             launchctl print system/com.sentinelgo.agent 2>/dev/null || echo "Service not loaded"
             print_status "Logs: tail -f /var/log/sentinelgo.log"
             ;;
+        *)
+            print_warning "Status check not implemented for OS: $os"
+            ;;
     esac
 }
 
@@ -392,8 +398,11 @@ uninstall_service() {
             systemctl daemon-reload
             ;;
         macos)
-            launchctl bootout system "/Library/LaunchDaemons/com.sentinelgo.agent.plist" 2>/dev/null || true
-            rm -f "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+            launchctl bootout system "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
+            rm -f "$LAUNCHD_PLIST_PATH"
+            ;;
+        *)
+            print_warning "Uninstall of the OS service is not implemented for OS: $os"
             ;;
     esac
     
@@ -401,7 +410,7 @@ uninstall_service() {
     read -p "Remove all SentinelGo data and user? (y/N): " -n 1 -r response
     if [[ $response =~ ^[Yy]$ ]]; then
         rm -rf "$INSTALL_DIR"
-        if [[ "$os" != "windows" ]]; then
+        if [[ "$os" != "$OS_WINDOWS" ]]; then
             userdel -r "$SERVICE_USER" 2>/dev/null || true
         fi
     fi
@@ -425,16 +434,19 @@ update_service() {
         macos)
             launchctl kill system/com.sentinelgo.agent 2>/dev/null || true
             ;;
+        *)
+            print_warning "Stopping the running process is not implemented for OS: $os"
+            ;;
     esac
-    
+
     # Kill any remaining processes
     pkill -f sentinelgo 2>/dev/null || true
     # Force kill any remaining processes to prevent "Text file busy" error
     pkill -9 -f sentinelgo 2>/dev/null || true
     sleep 3
-    
+
     setup_directories
-    
+
     case "$os" in
         ubuntu|centos|fedora|linux)
             systemctl start sentinelgo
@@ -442,8 +454,11 @@ update_service() {
         macos)
             launchctl start com.sentinelgo.agent
             ;;
+        *)
+            print_warning "Starting the service is not implemented for OS: $os"
+            ;;
     esac
-    
+
     print_success "SentinelGo updated successfully!"
 }
 
@@ -464,8 +479,11 @@ fix_service() {
         macos)
             launchctl kill system/com.sentinelgo.agent 2>/dev/null || true
             ;;
+        *)
+            print_warning "Stopping the service is not implemented for OS: $os"
+            ;;
     esac
-    
+
     # Wait for complete stop
     sleep 3
     
@@ -476,7 +494,7 @@ fix_service() {
     
     # Check and fix permissions
     print_status "Fixing permissions..."
-    if [[ "$os" != "windows" ]]; then
+    if [[ "$os" != "$OS_WINDOWS" ]]; then
         # Re-assert root ownership and restrictive permissions on the install
         # directory and binary (mirrors the hardening applied during install).
         if [[ "$os" == "macos" ]]; then
@@ -498,7 +516,7 @@ fix_service() {
         echo '{"heartbeat_interval":"5m0s","auto_update":false}' > "$CONFIG_DIR/config.json"
         if [[ "$os" == "macos" ]]; then
             chown -R "$(whoami)" "$CONFIG_DIR"
-        elif [[ "$os" != "windows" ]]; then
+        elif [[ "$os" != "$OS_WINDOWS" ]]; then
             chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR"
         fi
         print_success "Default config created at $CONFIG_DIR/config.json"
@@ -509,7 +527,7 @@ fix_service() {
     
     # Test binary
     print_status "Testing binary..."
-    if [[ "$os" != "windows" ]]; then
+    if [[ "$os" != "$OS_WINDOWS" ]]; then
         # Simple test - check if binary exists and is executable
         if [[ -x "$INSTALL_DIR/$BINARY_NAME" ]]; then
             print_status "Binary exists and is executable"
@@ -523,11 +541,14 @@ fix_service() {
                     systemctl start "$SERVICE_NAME"
                     ;;
                 macos)
-                    launchctl bootstrap system "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+                    launchctl bootstrap system "$LAUNCHD_PLIST_PATH"
                     launchctl kickstart -k system/com.sentinelgo.agent
                     ;;
+                *)
+                    print_warning "Restarting the service is not implemented for OS: $os"
+                    ;;
             esac
-            
+
             # Check status
             sleep 3
             case "$os" in
@@ -542,13 +563,16 @@ fix_service() {
                         journalctl -u "$SERVICE_NAME" -n 10 --no-pager
                     fi
                     ;;
+                *)
+                    print_warning "Status check after restart is not implemented for OS: $os"
+                    ;;
             esac
         else
             print_error "Binary not found or not executable"
             print_status "Installing binary first..."
             # Copy current binary if available
-            if [[ -f "./sentinelgo-linux-amd64" ]]; then
-                cp "./sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
+            if [[ -f "$LOCAL_LINUX_BINARY" ]]; then
+                cp "$LOCAL_LINUX_BINARY" "$INSTALL_DIR/$BINARY_NAME"
                 chmod 750 "$INSTALL_DIR/$BINARY_NAME"
                 chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed, trying again..."
@@ -571,8 +595,11 @@ fix_service() {
                 macos)
                     launchctl kickstart -k system/com.sentinelgo.agent
                     ;;
+                *)
+                    print_warning "Starting the service is not implemented for OS: $os"
+                    ;;
             esac
-            
+
             sleep 3
             if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
                 print_success "Service started successfully!"
@@ -640,23 +667,29 @@ install_service() {
         macos)
             launchctl kill system/com.sentinelgo.agent 2>/dev/null || true
             ;;
+        *)
+            print_warning "Stopping the running process is not implemented for OS: $os"
+            ;;
     esac
-    
+
     # Kill any remaining processes
     pkill -f sentinelgo 2>/dev/null || true
     # Force kill any remaining processes to prevent "Text file busy" error
     pkill -9 -f sentinelgo 2>/dev/null || true
     sleep 3
-    
+
     create_service_user
     setup_directories
-    
+
     case "$os" in
         ubuntu|centos|fedora|linux)
             install_systemd_service
             ;;
         macos)
             install_launchd_service
+            ;;
+        *)
+            print_warning "Service installation is not implemented for OS: $os"
             ;;
     esac
     
@@ -684,6 +717,9 @@ install_service() {
                 print_warning "Binary not found, please enable auto-updates manually:"
                 print_status "$INSTALL_DIR/$BINARY_NAME -enable-auto-update"
             fi
+            ;;
+        *)
+            print_warning "Enabling automatic updates is not implemented for OS: $os"
             ;;
     esac
 }

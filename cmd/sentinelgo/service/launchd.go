@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// launchdPlistPath is where the macOS launchd job definition is installed,
+// bootstrapped, booted out, and removed.
+const launchdPlistPath = "/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+
 func createLaunchdPlist() error {
 	version := agentVersion
 	if version == "" {
@@ -49,7 +53,7 @@ func createLaunchdPlist() error {
 	}
 
 	// #nosec G306 - LaunchDaemon plist files need to be readable by launchd
-	if err := os.WriteFile("/Library/LaunchDaemons/com.sentinelgo.agent.plist", []byte(plistContent), 0644); err != nil {
+	if err := os.WriteFile(launchdPlistPath, []byte(plistContent), 0644); err != nil {
 		return fmt.Errorf("write plist file: %w", err)
 	}
 
@@ -59,7 +63,7 @@ func createLaunchdPlist() error {
 
 func loadLaunchdService() error {
 	// launchctl bootstrap is the supported API on macOS 10.15+; launchctl load is deprecated.
-	if err := exec.Command("launchctl", "bootstrap", "system", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
+	if err := exec.Command("launchctl", "bootstrap", "system", launchdPlistPath).Run(); err != nil {
 		return fmt.Errorf("load launchd service: %w", err)
 	}
 	fmt.Println("Loaded launchd service: com.sentinelgo.agent")
@@ -68,7 +72,7 @@ func loadLaunchdService() error {
 
 func unloadLaunchdService() error {
 	// launchctl bootout is the supported API on macOS 10.15+; launchctl unload is deprecated.
-	if err := exec.Command("launchctl", "bootout", "system", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
+	if err := exec.Command("launchctl", "bootout", "system", launchdPlistPath).Run(); err != nil {
 		return fmt.Errorf("unload launchd service: %w", err)
 	}
 	fmt.Println("Unloaded launchd service: com.sentinelgo.agent")
@@ -76,7 +80,7 @@ func unloadLaunchdService() error {
 }
 
 func removeLaunchdPlist() error {
-	if err := os.Remove("/Library/LaunchDaemons/com.sentinelgo.agent.plist"); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(launchdPlistPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove plist file: %w", err)
 	}
 	fmt.Println("Removed launchd plist: /Library/LaunchDaemons/com.sentinelgo.agent.plist")

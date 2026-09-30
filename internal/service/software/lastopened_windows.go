@@ -71,7 +71,7 @@ func parseUserAssist(output []byte, roots map[string]string) []lastOpenedEntry {
 	var records []userAssistRecord
 	if err := json.Unmarshal(output, &records); err != nil {
 		var single userAssistRecord
-		if err2 := json.Unmarshal(output, &single); err2 != nil {
+		if json.Unmarshal(output, &single) != nil {
 			return nil
 		}
 		records = []userAssistRecord{single}

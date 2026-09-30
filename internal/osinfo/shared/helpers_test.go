@@ -3,6 +3,8 @@ package shared_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -91,5 +93,85 @@ func TestReadFileBytes_NotFound(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("ReadFileBytes() on missing file = %v, want nil", got)
+	}
+}
+
+// ── RunCommand / RunCommandOutput / RunPowerShell ───────────────────────────
+//
+// "go" is used as the test subprocess because it's guaranteed present on
+// every CI runner (they need it to run `go test` itself), giving these
+// tests real, deterministic subprocess behavior without hardcoding an
+// OS-specific binary.
+
+func TestRunCommand_Success(t *testing.T) {
+	out, err := shared.RunCommand("go", "version")
+	if err != nil {
+		t.Fatalf("RunCommand: %v", err)
+	}
+	if !strings.Contains(out, "go version") {
+		t.Errorf("output = %q, want it to contain %q", out, "go version")
+	}
+}
+
+func TestRunCommand_CommandNotFound(t *testing.T) {
+	if _, err := shared.RunCommand("sentinelgo-definitely-not-a-real-command-xyz"); err == nil {
+		t.Error("expected an error for a nonexistent command")
+	}
+}
+
+func TestRunCommandOutput_Success(t *testing.T) {
+	out, exitCode, err := shared.RunCommandOutput("go", "version")
+	if err != nil {
+		t.Fatalf("RunCommandOutput: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if !strings.Contains(out, "go version") {
+		t.Errorf("output = %q, want it to contain %q", out, "go version")
+	}
+}
+
+func TestRunCommandOutput_NonZeroExit(t *testing.T) {
+	// A nonexistent package path makes `go build` fail with a real, non-zero
+	// exit rather than failing to start the process at all.
+	_, exitCode, err := shared.RunCommandOutput("go", "build", "./__this_package_does_not_exist_xyz__")
+	if err != nil {
+		t.Fatalf("RunCommandOutput should not error on a non-zero exit, got: %v", err)
+	}
+	if exitCode == 0 {
+		t.Error("expected a non-zero exit code for a nonexistent package path")
+	}
+}
+
+func TestRunCommandOutput_CommandNotFound(t *testing.T) {
+	_, exitCode, err := shared.RunCommandOutput("sentinelgo-definitely-not-a-real-command-xyz")
+	if err == nil {
+		t.Error("expected an error for a nonexistent command")
+	}
+	if exitCode != -1 {
+		t.Errorf("exitCode = %d, want -1 for a command that couldn't start", exitCode)
+	}
+}
+
+func TestRunPowerShell_Success(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell is Windows-only")
+	}
+	out, err := shared.RunPowerShell("Write-Output 'hello-from-test'")
+	if err != nil {
+		t.Fatalf("RunPowerShell: %v", err)
+	}
+	if !strings.Contains(out, "hello-from-test") {
+		t.Errorf("output = %q, want it to contain %q", out, "hello-from-test")
+	}
+}
+
+func TestRunPowerShell_ScriptError(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell is Windows-only")
+	}
+	if _, err := shared.RunPowerShell("exit 1"); err == nil {
+		t.Error("expected an error when the PowerShell script exits non-zero")
 	}
 }

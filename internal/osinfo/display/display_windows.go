@@ -35,7 +35,7 @@ type win32VideoController struct {
 
 func getDisplays() (displays []shared.Display) {
 	defer func() {
-		if r := recover(); r != nil {
+		if recover() != nil {
 			displays = nil
 		}
 	}()

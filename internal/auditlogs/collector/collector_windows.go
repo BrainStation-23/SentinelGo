@@ -74,6 +74,10 @@ func generateSource(channelName string) string {
 	return "windows_" + source
 }
 
+// levelUpTo3Query matches Error/Warning/Info-level events (Level 1-3),
+// shared by several channels that don't need per-event-ID filtering.
+const levelUpTo3Query = "*[System[(Level=1 or Level=2 or Level=3)]]"
+
 // Windows Event Log XPath limits OR conditions to ~22 per expression.
 // The Security channel query is split into three groups (≤12 each) to stay
 // under that limit, using distinct cpKey values for independent checkpoints.
@@ -115,7 +119,7 @@ var channels = []eventChannel{
 	{
 		name:   "Application",
 		source: generateSource("Application"),
-		query:  "*[System[(Level=1 or Level=2 or Level=3)]]",
+		query:  levelUpTo3Query,
 	},
 	{
 		name:   "Microsoft-Windows-Windows Defender/Operational",
@@ -135,7 +139,7 @@ var channels = []eventChannel{
 	{
 		name:   "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
 		source: generateSource("Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"),
-		query:  "*[System[(Level=1 or Level=2 or Level=3)]]",
+		query:  levelUpTo3Query,
 	},
 	{
 		name:   "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational",
@@ -145,25 +149,31 @@ var channels = []eventChannel{
 	{
 		name:   "Microsoft-Windows-GroupPolicy/Operational",
 		source: generateSource("Microsoft-Windows-GroupPolicy/Operational"),
-		query:  "*[System[(Level=1 or Level=2 or Level=3)]]",
+		query:  levelUpTo3Query,
 	},
+}
+
+// eventProvider identifies the source of a rendered Windows event.
+type eventProvider struct {
+	Name string `xml:"Name,attr"`
+}
+
+// eventTimeCreated holds the timestamp of a rendered Windows event.
+type eventTimeCreated struct {
+	SystemTime string `xml:"SystemTime,attr"`
 }
 
 // eventXML represents the XML structure of a rendered Windows event.
 type eventXML struct {
 	XMLName xml.Name `xml:"Event"`
 	System  struct {
-		Provider struct {
-			Name string `xml:"Name,attr"`
-		} `xml:"Provider"`
-		EventID     int `xml:"EventID"`
-		Level       int `xml:"Level"`
-		TimeCreated struct {
-			SystemTime string `xml:"SystemTime,attr"`
-		} `xml:"TimeCreated"`
-		EventRecordID int64  `xml:"EventRecordID"`
-		Channel       string `xml:"Channel"`
-		Computer      string `xml:"Computer"`
+		Provider      eventProvider    `xml:"Provider"`
+		EventID       int              `xml:"EventID"`
+		Level         int              `xml:"Level"`
+		TimeCreated   eventTimeCreated `xml:"TimeCreated"`
+		EventRecordID int64            `xml:"EventRecordID"`
+		Channel       string           `xml:"Channel"`
+		Computer      string           `xml:"Computer"`
 	} `xml:"System"`
 	EventData struct {
 		Data []struct {

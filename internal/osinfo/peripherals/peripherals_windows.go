@@ -78,10 +78,10 @@ func getPeripherals() []shared.PeripheralDevice {
 
 	// HardwareID is a string[] in WMI/PnP; take the first element in PowerShell so
 	// ConvertTo-Json emits a string rather than an array.
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
-		`Get-PnpDevice | Where-Object {$_.Class -in @('Keyboard','Mouse','USB','HIDClass','Media','Bluetooth') -and $_.Status -eq 'OK'} | `+
-			`Select-Object @{N='Type';E={if($_.Class -eq 'Mouse'){'Mouse or other pointing device'} elseif($_.Class -eq 'Keyboard'){'Keyboard'} elseif($_.Class -eq 'HIDClass'){'HID Device'} elseif($_.Class -eq 'Media'){'Audio Device'} elseif($_.Class -eq 'Bluetooth'){'Bluetooth Device'} else {'USB Device'}}}, `+
-			`@{N='Description';E={$_.FriendlyName}}, Manufacturer, `+
+	output, err := shared.RunPowerShell(
+		`Get-PnpDevice | Where-Object {$_.Class -in @('Keyboard','Mouse','USB','HIDClass','Media','Bluetooth') -and $_.Status -eq 'OK'} | ` +
+			`Select-Object @{N='Type';E={if($_.Class -eq 'Mouse'){'Mouse or other pointing device'} elseif($_.Class -eq 'Keyboard'){'Keyboard'} elseif($_.Class -eq 'HIDClass'){'HID Device'} elseif($_.Class -eq 'Media'){'Audio Device'} elseif($_.Class -eq 'Bluetooth'){'Bluetooth Device'} else {'USB Device'}}}, ` +
+			`@{N='Description';E={$_.FriendlyName}}, Manufacturer, ` +
 			`@{N='HardwareID';E={if($_.HardwareID){$_.HardwareID[0]}else{''}}} | ConvertTo-Json -Depth 2`)
 	if err == nil {
 		output = strings.TrimSpace(output)
@@ -97,7 +97,7 @@ func getPeripherals() []shared.PeripheralDevice {
 		}
 	}
 
-	wmiOutput, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	wmiOutput, err := shared.RunPowerShell(
 		`Get-WmiObject Win32_SoundDevice | Select-Object Name, Manufacturer | ConvertTo-Json -Depth 2`)
 	if err == nil {
 		wmiOutput = strings.TrimSpace(wmiOutput)

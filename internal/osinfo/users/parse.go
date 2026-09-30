@@ -122,7 +122,7 @@ func parseWindowsUsersJSON(output string) []shared.UserWithGroup {
 	var rows []map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &rows); err != nil {
 		var single map[string]any
-		if err2 := json.Unmarshal([]byte(strings.TrimSpace(output)), &single); err2 != nil {
+		if json.Unmarshal([]byte(strings.TrimSpace(output)), &single) != nil {
 			return nil
 		}
 		rows = []map[string]any{single}

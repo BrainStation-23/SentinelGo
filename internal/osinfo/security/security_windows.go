@@ -87,7 +87,7 @@ func collectSecurity() shared.SecurityInfo {
 }
 
 func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		"Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,IsTamperProtected,AntivirusSignatureLastUpdated,ControlledFolderAccessEnabled,LastQuickScanTime,LastFullScanTime | ConvertTo-Json -Compress")
 	if err != nil {
 		return nil
@@ -145,7 +145,7 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 			scan.ScanType = "Quick Scan"
 		}
 
-		threatsOutput, threatsErr := shared.RunCommand("powershell", "-NoProfile", "-Command",
+		threatsOutput, threatsErr := shared.RunPowerShell(
 			"Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreatDetection | Select-Object ThreatName,SeverityID,InitialDetectionTime,ActionID | ConvertTo-Json -Compress")
 		if threatsErr == nil && strings.TrimSpace(threatsOutput) != "" {
 			var rawThreats []map[string]interface{}
@@ -364,7 +364,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	var hw shared.HardwareSecurityInfo
 	hw.SecureBootStatus = collectSecureBoot()
 
-	tpmOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	tpmOut, err := shared.RunPowerShell(
 		"Get-CimInstance -Namespace root/CIMV2/Security/MicrosoftTpm -ClassName Win32_Tpm | Select-Object IsEnabled_InitialValue,SpecVersion | ConvertTo-Json -Compress")
 	hw.TPMStatus = "Unsupported"
 	hw.TPMVersion = "None"
@@ -415,7 +415,7 @@ func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.Identity
 	}
 
 	// Query Windows missing Security and Critical updates via COM
-	updOut, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	updOut, err := shared.RunPowerShell(
 		`$Session = New-Object -ComObject Microsoft.Update.Session; $Searcher = $Session.CreateUpdateSearcher(); $Searcher.Search("IsInstalled=0 and Type='Software'").Updates | Where-Object { $_.Categories | Where-Object { $_.Name -eq 'Security Updates' -or $_.Name -eq 'Critical Updates' } } | Measure-Object | Select-Object -ExpandProperty Count`)
 
 	id.PatchComplianceStatus = "Compliant"
@@ -469,7 +469,7 @@ func usbStorStartToState(v int) string {
 
 // collectAV queries Windows Security Center 2 for registered antivirus products.
 func collectAV() []shared.AntivirusProduct {
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		"Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | Select-Object displayName,productState | ConvertTo-Json -Compress")
 	if err != nil || strings.TrimSpace(output) == "" {
 		return nil
@@ -484,7 +484,7 @@ func parseAVProductsJSON(output string) []shared.AntivirusProduct {
 	var raw []map[string]interface{}
 	var single map[string]interface{}
 	if err := json.Unmarshal([]byte(output), &raw); err != nil {
-		if err2 := json.Unmarshal([]byte(output), &single); err2 != nil {
+		if json.Unmarshal([]byte(output), &single) != nil {
 			return nil
 		}
 		raw = []map[string]interface{}{single}
