@@ -8,67 +8,83 @@ import (
 )
 
 func getRAMs() shared.RAMInfo {
-	var rams []shared.RAMStick
-	var totalBytes uint64
-
 	output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer,PartNumber,Capacity,ConfiguredClockSpeed,SerialNumber,SMBIOSMemoryType,FormFactor,DeviceLocator | ConvertTo-Json")
 	if err != nil {
 		return shared.RAMInfo{}
 	}
 
-	output = strings.TrimSpace(output)
-	var arr []map[string]any
-	var obj map[string]any
-
-	parseStick := func(item map[string]any) {
-		ram := shared.RAMStick{}
-		var sizeBytes uint64
-
-		if v, ok := item["Manufacturer"].(string); ok {
-			ram.Manufacturer = normalizeRAMManufacturer(v)
-		}
-		if v, ok := item["PartNumber"].(string); ok {
-			ram.Name = strings.TrimSpace(v)
-		}
-		if v, ok := item["Capacity"].(float64); ok && v > 0 {
-			sizeBytes = uint64(v)
-			ram.Capacity = sizeBytes
-			totalBytes += sizeBytes
-		}
-		if v, ok := item["ConfiguredClockSpeed"].(float64); ok {
-			ram.ClockSpeedMHz = int(v)
-		}
-		if v, ok := item["SerialNumber"].(string); ok {
-			ram.Serial = strings.TrimSpace(v)
-		}
-		// SMBIOSMemoryType is the authoritative DDR generation from SMBIOS table 17
-		if v, ok := item["SMBIOSMemoryType"].(float64); ok {
-			ram.ArchitectureType = smbiosTypeToString(int(v))
-		}
-		if v, ok := item["FormFactor"].(float64); ok {
-			ram.FormFactor = windowsFormFactor(int(v))
-		}
-		if v, ok := item["DeviceLocator"].(string); ok {
-			ram.Slot = strings.TrimSpace(v)
-		}
-		if sizeBytes > 0 {
-			rams = append(rams, ram)
-		}
-	}
-
-	if json.Unmarshal([]byte(output), &arr) == nil && len(arr) > 0 {
-		for _, item := range arr {
-			parseStick(item)
-		}
-	} else if json.Unmarshal([]byte(output), &obj) == nil {
-		parseStick(obj)
-	}
+	rams, totalBytes := parseWindowsMemoryItems(strings.TrimSpace(output))
 
 	return shared.RAMInfo{
 		TotalCapacity: totalBytes,
 		RAMs:          rams,
 	}
+}
+
+// parseWindowsMemoryItems unmarshals the Get-CimInstance JSON output, which
+// PowerShell emits as a single object (one stick) or an array (multiple
+// sticks).
+func parseWindowsMemoryItems(output string) ([]shared.RAMStick, uint64) {
+	var rams []shared.RAMStick
+	var totalBytes uint64
+
+	var arr []map[string]any
+	if json.Unmarshal([]byte(output), &arr) == nil && len(arr) > 0 {
+		for _, item := range arr {
+			if ram, sizeBytes, ok := parseWindowsRAMStick(item); ok {
+				rams = append(rams, ram)
+				totalBytes += sizeBytes
+			}
+		}
+		return rams, totalBytes
+	}
+
+	var obj map[string]any
+	if json.Unmarshal([]byte(output), &obj) == nil {
+		if ram, sizeBytes, ok := parseWindowsRAMStick(obj); ok {
+			rams = append(rams, ram)
+			totalBytes += sizeBytes
+		}
+	}
+
+	return rams, totalBytes
+}
+
+// parseWindowsRAMStick parses one Win32_PhysicalMemory CIM instance into a
+// RAM stick. ok is false when the entry reports no capacity.
+func parseWindowsRAMStick(item map[string]any) (shared.RAMStick, uint64, bool) {
+	ram := shared.RAMStick{}
+	var sizeBytes uint64
+
+	if v, ok := item["Manufacturer"].(string); ok {
+		ram.Manufacturer = normalizeRAMManufacturer(v)
+	}
+	if v, ok := item["PartNumber"].(string); ok {
+		ram.Name = strings.TrimSpace(v)
+	}
+	if v, ok := item["Capacity"].(float64); ok && v > 0 {
+		sizeBytes = uint64(v)
+		ram.Capacity = sizeBytes
+	}
+	if v, ok := item["ConfiguredClockSpeed"].(float64); ok {
+		ram.ClockSpeedMHz = int(v)
+	}
+	if v, ok := item["SerialNumber"].(string); ok {
+		ram.Serial = strings.TrimSpace(v)
+	}
+	// SMBIOSMemoryType is the authoritative DDR generation from SMBIOS table 17
+	if v, ok := item["SMBIOSMemoryType"].(float64); ok {
+		ram.ArchitectureType = smbiosTypeToString(int(v))
+	}
+	if v, ok := item["FormFactor"].(float64); ok {
+		ram.FormFactor = windowsFormFactor(int(v))
+	}
+	if v, ok := item["DeviceLocator"].(string); ok {
+		ram.Slot = strings.TrimSpace(v)
+	}
+
+	return ram, sizeBytes, sizeBytes > 0
 }
 
 // smbiosTypeToString maps SMBIOS table 17 memory type codes to DDR generation strings.
