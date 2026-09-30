@@ -43,6 +43,39 @@ func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallS
 	return f
 }
 
+// isLocalAddress reports whether addr is a loopback address, used to decide
+// whether a listening port counts as publicly bound.
+func isLocalAddress(addr string) bool {
+	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
+}
+
+// remoteAccessProcessKeywords are process-name substrings that indicate a
+// remote-access tool (case-insensitive match against the process name).
+var remoteAccessProcessKeywords = []string{
+	"ssh", "rdp", "vnc", "anydesk", "teamviewer", "remote", "pcanywhere",
+}
+
+// isRemoteAccessPort reports whether p looks like a remote-access service,
+// either by its process name or by listening on a well-known remote-access port.
+func isRemoteAccessPort(p shared.ListeningPort) bool {
+	procLower := strings.ToLower(p.ProcessName)
+	for _, kw := range remoteAccessProcessKeywords {
+		if strings.Contains(procLower, kw) {
+			return true
+		}
+	}
+	return p.Port == 22 || p.Port == 3389 || (p.Port >= 5900 && p.Port <= 5906)
+}
+
+// isAdminPort reports whether port is a well-known administrative service port.
+func isAdminPort(port uint16) bool {
+	switch port {
+	case 21, 22, 23, 139, 445, 3389, 5985, 5986:
+		return true
+	}
+	return port >= 5900 && port <= 5906
+}
+
 func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
 	var info shared.NetworkExposureAccessInfo
 	info.TotalListeningPorts = len(ports)
@@ -51,20 +84,8 @@ func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposure
 	remoteAccessMap := make(map[string]bool)
 	adminPortsMap := make(map[uint16]bool)
 
-	isAdminPort := func(port uint16) bool {
-		switch port {
-		case 21, 22, 23, 139, 445, 3389, 5985, 5986:
-			return true
-		}
-		if port >= 5900 && port <= 5906 {
-			return true
-		}
-		return false
-	}
-
 	for _, p := range ports {
-		isLocalhost := p.Address == "127.0.0.1" || p.Address == "::1" || p.Address == "localhost"
-		if !isLocalhost {
+		if !isLocalAddress(p.Address) {
 			info.PubliclyBoundPorts++
 		}
 
@@ -72,20 +93,7 @@ func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposure
 			activeServicesMap[p.ProcessName] = true
 		}
 
-		procLower := strings.ToLower(p.ProcessName)
-		isRemoteAccess := false
-		if strings.Contains(procLower, "ssh") ||
-			strings.Contains(procLower, "rdp") ||
-			strings.Contains(procLower, "vnc") ||
-			strings.Contains(procLower, "anydesk") ||
-			strings.Contains(procLower, "teamviewer") ||
-			strings.Contains(procLower, "remote") ||
-			strings.Contains(procLower, "pcanywhere") ||
-			p.Port == 22 || p.Port == 3389 || (p.Port >= 5900 && p.Port <= 5906) {
-			isRemoteAccess = true
-		}
-
-		if isRemoteAccess {
+		if isRemoteAccessPort(p) {
 			name := p.ProcessName
 			if name == "" {
 				name = fmt.Sprintf("Unknown service on port %d", p.Port)
@@ -121,74 +129,85 @@ func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposure
 	return info
 }
 
-func generatePostureSummary(
-	fw shared.FirewallSecurityInfo,
-	av shared.AntivirusProtectionInfo,
-	edr shared.EDRXDRDetectionInfo,
-	enc shared.DeviceEncryptionInfo,
-	hw shared.HardwareSecurityInfo,
-	id shared.IdentityAccessControlInfo,
-	net shared.NetworkExposureAccessInfo,
-) shared.SecurityPostureSummary {
-	var summary shared.SecurityPostureSummary
-	var recommendations []string
+// avStatus bundles the antivirus health verdict computed by summarizeAntivirus.
+// Grouping these together keeps downstream function signatures short.
+type avStatus struct {
+	health            string
+	realTimeProtected bool
+	updated           bool
+}
 
-	summary.FirewallStatus = fw.FirewallState
-	summary.EncryptionStatus = enc.EncryptionStatus
-
-	avHealth := "None"
-	realTimeProtected := false
-	avUpdated := false
+// summarizeAntivirus derives an overall AV health verdict from either the
+// generic Products list or, when that's empty, the Windows Defender-specific
+// details. updated defaults to false when no AV is present at all.
+func summarizeAntivirus(av shared.AntivirusProtectionInfo) avStatus {
 	if len(av.Products) > 0 {
-		avHealth = "Healthy"
-		avUpdated = true
-		for _, p := range av.Products {
-			if strings.EqualFold(p.RealTimeProtectionState, "Enabled") {
-				realTimeProtected = true
-			}
-			if strings.EqualFold(p.UpdateStatus, "Out of Date") {
-				avUpdated = false
-			}
-			if strings.EqualFold(p.ServiceStatus, "Stopped") || strings.EqualFold(p.RealTimeProtectionState, "Disabled") {
-				avHealth = "Unhealthy"
-			}
+		return summarizeAVProducts(av.Products)
+	}
+	if av.WindowsDefenderDetails != nil {
+		return summarizeWindowsDefender(av.WindowsDefenderDetails)
+	}
+	return avStatus{health: "None"}
+}
+
+func summarizeAVProducts(products []shared.AntivirusDetails) avStatus {
+	s := avStatus{health: "Healthy", updated: true}
+	for _, p := range products {
+		if strings.EqualFold(p.RealTimeProtectionState, "Enabled") {
+			s.realTimeProtected = true
 		}
-	} else if av.WindowsDefenderDetails != nil {
-		avHealth = "Healthy"
-		avUpdated = true
-		if av.WindowsDefenderDetails.RealTimeProtectionEnabled {
-			realTimeProtected = true
+		if strings.EqualFold(p.UpdateStatus, "Out of Date") {
+			s.updated = false
 		}
-		if !av.WindowsDefenderDetails.RealTimeProtectionEnabled {
-			avHealth = "Unhealthy"
+		if strings.EqualFold(p.ServiceStatus, "Stopped") || strings.EqualFold(p.RealTimeProtectionState, "Disabled") {
+			s.health = "Unhealthy"
 		}
 	}
-	summary.AntivirusHealth = avHealth
+	return s
+}
 
-	edrHealth := "None"
-	edrRunning := false
+func summarizeWindowsDefender(d *shared.WindowsDefenderDetails) avStatus {
+	s := avStatus{health: "Healthy", updated: true, realTimeProtected: d.RealTimeProtectionEnabled}
+	if !d.RealTimeProtectionEnabled {
+		s.health = "Unhealthy"
+	}
+	return s
+}
+
+// summarizeEDR derives an overall EDR/XDR health verdict from the agent list.
+func summarizeEDR(edr shared.EDRXDRDetectionInfo) (health string, running bool) {
+	health = "None"
 	if len(edr.Agents) > 0 {
-		edrHealth = "Healthy"
+		health = "Healthy"
 		for _, agent := range edr.Agents {
 			if agent.Running {
-				edrRunning = true
+				running = true
 			}
 			if agent.Unhealthy || agent.Tampered || agent.Stopped {
-				edrHealth = "Unhealthy"
+				health = "Unhealthy"
 			}
 		}
 	}
-	summary.EDRXDRHealth = edrHealth
+	return health, running
+}
 
-	hwControls := "Weak"
-	if strings.EqualFold(hw.SecureBootStatus, "Enabled") && strings.EqualFold(hw.TPMStatus, "Enabled") {
-		hwControls = "Strong"
-	} else if strings.EqualFold(hw.SecureBootStatus, "Unsupported") || strings.EqualFold(hw.TPMStatus, "Unsupported") {
-		hwControls = "Unsupported"
+// summarizeHardwareControls rates Secure Boot + TPM as Strong (both enabled),
+// Unsupported (either is unsupported by the hardware), or Weak (otherwise).
+func summarizeHardwareControls(hw shared.HardwareSecurityInfo) string {
+	switch {
+	case strings.EqualFold(hw.SecureBootStatus, "Enabled") && strings.EqualFold(hw.TPMStatus, "Enabled"):
+		return "Strong"
+	case strings.EqualFold(hw.SecureBootStatus, "Unsupported") || strings.EqualFold(hw.TPMStatus, "Unsupported"):
+		return "Unsupported"
+	default:
+		return "Weak"
 	}
-	summary.HardwareSecurityControls = hwControls
+}
 
-	idControls := "Configured"
+// summarizeIdentityControls rates identity/access posture and collects the
+// recommendations specific to that assessment (UAC, SSH hardening, patching).
+func summarizeIdentityControls(id shared.IdentityAccessControlInfo) (controls string, recommendations []string) {
+	controls = "Configured"
 	isAtRisk := false
 	if id.UACStatus == "Disabled" {
 		isAtRisk = true
@@ -205,19 +224,47 @@ func generatePostureSummary(
 		recommendations = append(recommendations, "Install pending security updates to maintain system compliance.")
 	}
 	if isAtRisk {
-		idControls = "At Risk"
+		controls = "At Risk"
 	}
-	summary.IdentitySecurityControls = idControls
+	return controls, recommendations
+}
 
-	exposure := "Low"
-	if net.PubliclyBoundPorts > 5 || len(net.OpenAdministrativePorts) > 1 {
-		exposure = "High"
-		recommendations = append(recommendations, "Close or restrict publicly bound administrative ports (e.g., SSH, RDP).")
-	} else if net.PubliclyBoundPorts > 0 {
-		exposure = "Medium"
-		recommendations = append(recommendations, "Ensure listening services bound to public interfaces are protected.")
+// summarizeNetworkExposureLevel rates public exposure and, when elevated,
+// returns the matching recommendation.
+func summarizeNetworkExposureLevel(net shared.NetworkExposureAccessInfo) (level string, recommendations []string) {
+	switch {
+	case net.PubliclyBoundPorts > 5 || len(net.OpenAdministrativePorts) > 1:
+		return "High", []string{"Close or restrict publicly bound administrative ports (e.g., SSH, RDP)."}
+	case net.PubliclyBoundPorts > 0:
+		return "Medium", []string{"Ensure listening services bound to public interfaces are protected."}
+	default:
+		return "Low", nil
 	}
-	summary.NetworkExposureLevel = exposure
+}
+
+// postureRatings bundles the per-category verdicts generatePostureSummary
+// computes before scoring, keeping computePostureScore's signature short.
+type postureRatings struct {
+	avHealth   string
+	edrHealth  string
+	hwControls string
+	idControls string
+	exposure   string
+}
+
+// buildProtectionRecommendations covers the endpoint-protection checks that
+// don't belong to a single sub-score: firewall, AV presence/health, EDR
+// presence/health, encryption, and Secure Boot.
+func buildProtectionRecommendations(
+	fw shared.FirewallSecurityInfo,
+	av shared.AntivirusProtectionInfo,
+	edr shared.EDRXDRDetectionInfo,
+	enc shared.DeviceEncryptionInfo,
+	hw shared.HardwareSecurityInfo,
+	avs avStatus,
+	edrRunning bool,
+) []string {
+	var recommendations []string
 
 	if !strings.EqualFold(fw.FirewallState, "Enabled") {
 		recommendations = append(recommendations, "Enable host firewall protection.")
@@ -225,10 +272,10 @@ func generatePostureSummary(
 	if len(av.Products) == 0 && av.WindowsDefenderDetails == nil {
 		recommendations = append(recommendations, "Install an Antivirus product to protect the endpoint.")
 	} else {
-		if !realTimeProtected {
+		if !avs.realTimeProtected {
 			recommendations = append(recommendations, "Enable Real-Time Protection for Antivirus.")
 		}
-		if !avUpdated && avHealth != "None" {
+		if !avs.updated && avs.health != "None" {
 			recommendations = append(recommendations, "Update Antivirus signature definitions.")
 		}
 	}
@@ -244,34 +291,84 @@ func generatePostureSummary(
 		recommendations = append(recommendations, "Enable UEFI Secure Boot in system firmware.")
 	}
 
-	summary.Recommendations = recommendations
+	return recommendations
+}
 
-	scoreCount := 0
+// computePostureScore counts how many of the 8 independent posture checks
+// are in their "good" state; generatePostureSummary maps the count to a
+// letter-grade-style OverallScore.
+func computePostureScore(
+	fw shared.FirewallSecurityInfo,
+	enc shared.DeviceEncryptionInfo,
+	id shared.IdentityAccessControlInfo,
+	r postureRatings,
+) int {
+	score := 0
 	if strings.EqualFold(fw.FirewallState, "Enabled") {
-		scoreCount++
+		score++
 	}
-	if avHealth == "Healthy" {
-		scoreCount++
+	if r.avHealth == "Healthy" {
+		score++
 	}
-	if edrHealth == "Healthy" {
-		scoreCount++
+	if r.edrHealth == "Healthy" {
+		score++
 	}
 	if strings.EqualFold(enc.EncryptionStatus, "Encrypted") {
-		scoreCount++
+		score++
 	}
-	if hwControls == "Strong" {
-		scoreCount++
+	if r.hwControls == "Strong" {
+		score++
 	}
-	if idControls == "Configured" {
-		scoreCount++
+	if r.idControls == "Configured" {
+		score++
 	}
-	if exposure == "Low" {
-		scoreCount++
+	if r.exposure == "Low" {
+		score++
 	}
 	if strings.EqualFold(id.PatchComplianceStatus, "Compliant") {
-		scoreCount++
+		score++
 	}
+	return score
+}
 
+func generatePostureSummary(
+	fw shared.FirewallSecurityInfo,
+	av shared.AntivirusProtectionInfo,
+	edr shared.EDRXDRDetectionInfo,
+	enc shared.DeviceEncryptionInfo,
+	hw shared.HardwareSecurityInfo,
+	id shared.IdentityAccessControlInfo,
+	net shared.NetworkExposureAccessInfo,
+) shared.SecurityPostureSummary {
+	var summary shared.SecurityPostureSummary
+	summary.FirewallStatus = fw.FirewallState
+	summary.EncryptionStatus = enc.EncryptionStatus
+
+	avs := summarizeAntivirus(av)
+	summary.AntivirusHealth = avs.health
+
+	edrHealth, edrRunning := summarizeEDR(edr)
+	summary.EDRXDRHealth = edrHealth
+
+	hwControls := summarizeHardwareControls(hw)
+	summary.HardwareSecurityControls = hwControls
+
+	idControls, idRecommendations := summarizeIdentityControls(id)
+	summary.IdentitySecurityControls = idControls
+
+	exposure, exposureRecommendations := summarizeNetworkExposureLevel(net)
+	summary.NetworkExposureLevel = exposure
+
+	protectionRecommendations := buildProtectionRecommendations(fw, av, edr, enc, hw, avs, edrRunning)
+
+	var recommendations []string
+	recommendations = append(recommendations, idRecommendations...)
+	recommendations = append(recommendations, exposureRecommendations...)
+	recommendations = append(recommendations, protectionRecommendations...)
+	summary.Recommendations = recommendations
+
+	ratings := postureRatings{avHealth: avs.health, edrHealth: edrHealth, hwControls: hwControls, idControls: idControls, exposure: exposure}
+	scoreCount := computePostureScore(fw, enc, id, ratings)
 	summary.OverallScore = "Poor"
 	if scoreCount >= 7 {
 		summary.OverallScore = "Excellent"
@@ -282,7 +379,7 @@ func generatePostureSummary(
 	}
 
 	summary.EndpointProtectionStatus = "At Risk"
-	if avHealth == "Healthy" || edrHealth == "Healthy" {
+	if avs.health == "Healthy" || edrHealth == "Healthy" {
 		summary.EndpointProtectionStatus = "Protected"
 	}
 

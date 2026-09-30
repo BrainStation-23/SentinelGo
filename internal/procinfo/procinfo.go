@@ -64,49 +64,81 @@ func ExtractVersionFromCmd(cmdLine string) string {
 	return "unknown"
 }
 
+// resolveVersion tries ExtractVersionFromCmd first (fast, no subprocess),
+// falling back to actually invoking the binary with -version.
+func resolveVersion(cmdLine string) string {
+	version := ExtractVersionFromCmd(cmdLine)
+	if version == "unknown" {
+		version = GetBinaryVersion(cmdLine)
+	}
+	return version
+}
+
+// parseWindowsProcessLine parses one line of `tasklist /fo csv /v` output,
+// returning a zero-value ProcessInfo (PID 0) when the line isn't a
+// sentinelgo.exe entry or doesn't have enough CSV fields.
+func parseWindowsProcessLine(line string) ProcessInfo {
+	var info ProcessInfo
+	if !strings.Contains(line, "sentinelgo.exe") {
+		return info
+	}
+	fields := strings.Split(line, ",")
+	if len(fields) < 5 {
+		return info
+	}
+	pid, _ := strconv.Atoi(strings.Trim(fields[1], `"`))
+	info.PID = pid
+	info.CmdLine = strings.Trim(fields[8], `"`)
+	info.Status = "Running"
+	info.Version = resolveVersion(info.CmdLine)
+	return info
+}
+
+// unixProcessLineExclusions filters out `ps aux` lines that merely mention
+// "sentinelgo" incidentally (the grep command itself, or a service manager
+// / log viewer / editor showing it) rather than being the process itself.
+var unixProcessLineExclusions = []string{"grep", "systemctl", "journalctl", "editor"}
+
+// parseUnixProcessLine parses one line of `ps aux` output, returning a
+// zero-value ProcessInfo (PID 0) when the line isn't a real sentinelgo
+// process entry or doesn't have enough whitespace-separated fields.
+func parseUnixProcessLine(line string) ProcessInfo {
+	var info ProcessInfo
+	if !strings.Contains(line, "sentinelgo") {
+		return info
+	}
+	for _, excl := range unixProcessLineExclusions {
+		if strings.Contains(line, excl) {
+			return info
+		}
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 11 {
+		return info
+	}
+	pid, _ := strconv.Atoi(fields[1])
+	info.PID = pid
+	info.CmdLine = strings.Join(fields[10:], " ")
+	info.Status = "Running"
+	info.Version = resolveVersion(info.CmdLine)
+	return info
+}
+
 // ParseProcessOutput parses the output of process listing commands
 func ParseProcessOutput(output string) []ProcessInfo {
 	var processes []ProcessInfo
-	lines := strings.Split(output, "\n")
 
-	for _, line := range lines {
+	for _, line := range strings.Split(output, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
 		var info ProcessInfo
-
 		switch runtime.GOOS {
 		case "windows":
-			if strings.Contains(line, "sentinelgo.exe") {
-				fields := strings.Split(line, ",")
-				if len(fields) >= 5 {
-					pid, _ := strconv.Atoi(strings.Trim(fields[1], `"`))
-					info.PID = pid
-					info.CmdLine = strings.Trim(fields[8], `"`)
-					info.Status = "Running"
-
-					info.Version = ExtractVersionFromCmd(info.CmdLine)
-					if info.Version == "unknown" {
-						info.Version = GetBinaryVersion(info.CmdLine)
-					}
-				}
-			}
+			info = parseWindowsProcessLine(line)
 		case "linux", "darwin":
-			if strings.Contains(line, "sentinelgo") && !strings.Contains(line, "grep") && !strings.Contains(line, "systemctl") && !strings.Contains(line, "journalctl") && !strings.Contains(line, "editor") {
-				fields := strings.Fields(line)
-				if len(fields) >= 11 {
-					pid, _ := strconv.Atoi(fields[1])
-					info.PID = pid
-					info.CmdLine = strings.Join(fields[10:], " ")
-					info.Status = "Running"
-
-					info.Version = ExtractVersionFromCmd(info.CmdLine)
-					if info.Version == "unknown" {
-						info.Version = GetBinaryVersion(info.CmdLine)
-					}
-				}
-			}
+			info = parseUnixProcessLine(line)
 		}
 
 		if info.PID > 0 {
@@ -117,40 +149,56 @@ func ParseProcessOutput(output string) []ProcessInfo {
 	return processes
 }
 
+// resolveBinaryPath extracts the executable from cmdLine's first field,
+// resolving it against PATH when it's a bare name (non-Windows only, since
+// Windows process command lines are already absolute paths).
+func resolveBinaryPath(cmdLine string) string {
+	parts := strings.Fields(cmdLine)
+	if len(parts) == 0 {
+		return ""
+	}
+	binaryPath := parts[0]
+	if !strings.Contains(binaryPath, "/") && runtime.GOOS != "windows" {
+		if path, err := exec.LookPath(binaryPath); err == nil {
+			binaryPath = path
+		}
+	}
+	return binaryPath
+}
+
+// extractVersionFromOutput scans `<binary> -version` output for the first
+// "...version <value>" token pair and returns <value>, or "" if none found.
+func extractVersionFromOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "version") {
+			continue
+		}
+		lineParts := strings.Fields(line)
+		for i, part := range lineParts {
+			if strings.Contains(part, "version") && i+1 < len(lineParts) {
+				return strings.Trim(lineParts[i+1], ",")
+			}
+		}
+	}
+	return ""
+}
+
 // GetBinaryVersion tries to get version from the binary executable
 func GetBinaryVersion(cmdLine string) string {
-	var binaryPath string
-	parts := strings.Fields(cmdLine)
-
-	if len(parts) > 0 {
-		binaryPath = parts[0]
-		if !strings.Contains(binaryPath, "/") && runtime.GOOS != "windows" {
-			if path, err := exec.LookPath(binaryPath); err == nil {
-				binaryPath = path
-			}
-		}
+	binaryPath := resolveBinaryPath(cmdLine)
+	if binaryPath == "" {
+		return "unknown"
 	}
 
-	if binaryPath != "" {
-		// #nosec G204 - binaryPath is a controlled path from self-update process
-		cmd := exec.Command(binaryPath, versionFlag)
-		output, err := cmd.Output()
-		if err == nil {
-			outputStr := string(output)
-			lines := strings.Split(outputStr, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "version:") || strings.Contains(line, "version") {
-					lineParts := strings.Fields(line)
-					for i, part := range lineParts {
-						if strings.Contains(part, "version") && i+1 < len(lineParts) {
-							return strings.Trim(lineParts[i+1], ",")
-						}
-					}
-				}
-			}
-		}
+	// #nosec G204 - binaryPath is a controlled path from self-update process
+	output, err := exec.Command(binaryPath, versionFlag).Output()
+	if err != nil {
+		return "unknown"
 	}
 
+	if version := extractVersionFromOutput(string(output)); version != "" {
+		return version
+	}
 	return "unknown"
 }
 

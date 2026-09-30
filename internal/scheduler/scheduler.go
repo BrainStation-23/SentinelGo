@@ -305,36 +305,95 @@ func (s *Scheduler) runInitialTasks(ctx context.Context, cfg *config.Config, aut
 	}()
 }
 
+// setupPeriodicTickers starts one ticker per enabled task with a positive
+// interval, and computes startAfter: the earliest time each task's first
+// periodic tick should fire. A random jitter of [0, interval) is added so
+// that agents restarted at the same moment (e.g. a fleet-wide deploy) don't
+// all fire in lockstep forever. token-refresh is excluded from jitter: it
+// must stay eager and fire on every tick.
+func (s *Scheduler) setupPeriodicTickers() (tickers map[string]*time.Ticker, startAfter map[string]time.Time) {
+	tickers = make(map[string]*time.Ticker)
+	startAfter = make(map[string]time.Time)
+	now := time.Now()
+	for name, task := range s.tasks {
+		if !task.Enabled || task.Interval <= 0 {
+			continue
+		}
+		tickers[name] = time.NewTicker(task.Interval)
+		log.Printf("Started ticker for task %s with interval %v", name, task.Interval)
+		if name != "token-refresh" {
+			jitter := time.Duration(cryptoInt63n(int64(task.Interval)))
+			startAfter[name] = now.Add(jitter)
+			log.Printf("Task %s first periodic tick delayed by %v", name, jitter.Round(time.Second))
+		}
+	}
+	return tickers, startAfter
+}
+
+// executePeriodicTask runs one periodic tick of task t in its own goroutine,
+// guarded by the task's own trylock so a slow-running handler never overlaps
+// with itself.
+func (s *Scheduler) executePeriodicTask(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service, t *Task, taskName string) {
+	defer s.wg.Done()
+
+	if !t.Running.CompareAndSwap(false, true) {
+		log.Printf("Task %s is already running, skipping this tick", taskName)
+		return
+	}
+	defer t.Running.Store(false)
+
+	log.Printf("Running periodic task: %s", taskName)
+	err := runTaskHandler(ctx, taskName, t.Handler, cfg, authSvc)
+	if err != nil {
+		log.Printf("Periodic task %s failed: %v", taskName, err)
+	} else {
+		log.Printf("Periodic task %s completed successfully", taskName)
+	}
+	observeTaskResult(t, err)
+	// Always update LastRun so dependent tasks are not permanently blocked by
+	// a one-off failure.
+	t.LastRun = time.Now()
+}
+
+// maybeDispatchTask fires task `name` if its ticker ticked this heartbeat,
+// its startup jitter has elapsed, it's still enabled, and its dependencies
+// are satisfied. Skips silently (logging where relevant) otherwise.
+func (s *Scheduler) maybeDispatchTask(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service, name string, ticker *time.Ticker, startAfter map[string]time.Time) {
+	select {
+	case <-ticker.C:
+	default:
+		return
+	}
+
+	// Suppress this tick until the per-task startup jitter has elapsed.
+	if sa, ok := startAfter[name]; ok && time.Now().Before(sa) {
+		return
+	}
+	task := s.tasks[name]
+	if !task.Enabled {
+		return
+	}
+	if !s.checkDependencies(task) {
+		log.Printf("Task %s dependencies not met, skipping this run", name)
+		return
+	}
+
+	s.wg.Add(1)
+	go s.executePeriodicTask(ctx, cfg, authSvc, task, name)
+}
+
 // runPeriodicTasks handles periodic execution of enabled tasks.
 // A 1-second heartbeat ticker gates the inner loop so the goroutine blocks
 // instead of busy-spinning with a short sleep.
 func (s *Scheduler) runPeriodicTasks(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) {
 	defer s.wg.Done()
 
-	tickers := make(map[string]*time.Ticker)
+	tickers, startAfter := s.setupPeriodicTickers()
 	defer func() {
 		for _, ticker := range tickers {
 			ticker.Stop()
 		}
 	}()
-
-	// startAfter holds the earliest time each task's periodic tick should fire.
-	// A random jitter of [0, interval) is added so that agents restarted at the
-	// same moment (e.g. a fleet-wide deploy) don't all fire in lockstep forever.
-	// token-refresh is excluded: it must stay eager and fire on every tick.
-	startAfter := make(map[string]time.Time)
-	now := time.Now()
-	for name, task := range s.tasks {
-		if task.Enabled && task.Interval > 0 {
-			tickers[name] = time.NewTicker(task.Interval)
-			log.Printf("Started ticker for task %s with interval %v", name, task.Interval)
-			if name != "token-refresh" {
-				jitter := time.Duration(cryptoInt63n(int64(task.Interval)))
-				startAfter[name] = now.Add(jitter)
-				log.Printf("Task %s first periodic tick delayed by %v", name, jitter.Round(time.Second))
-			}
-		}
-	}
 
 	heartbeat := time.NewTicker(time.Second)
 	defer heartbeat.Stop()
@@ -346,46 +405,7 @@ func (s *Scheduler) runPeriodicTasks(ctx context.Context, cfg *config.Config, au
 			return
 		case <-heartbeat.C:
 			for name, ticker := range tickers {
-				select {
-				case <-ticker.C:
-					// Suppress this tick until the per-task startup jitter has elapsed.
-					if sa, ok := startAfter[name]; ok && time.Now().Before(sa) {
-						continue
-					}
-					task := s.tasks[name]
-					if !task.Enabled {
-						continue
-					}
-
-					if !s.checkDependencies(task) {
-						log.Printf("Task %s dependencies not met, skipping this run", name)
-						continue
-					}
-
-					s.wg.Add(1)
-					go func(t *Task, taskName string) {
-						defer s.wg.Done()
-
-						if !t.Running.CompareAndSwap(false, true) {
-							log.Printf("Task %s is already running, skipping this tick", taskName)
-							return
-						}
-						defer t.Running.Store(false)
-
-						log.Printf("Running periodic task: %s", taskName)
-						err := runTaskHandler(ctx, taskName, t.Handler, cfg, authSvc)
-						if err != nil {
-							log.Printf("Periodic task %s failed: %v", taskName, err)
-						} else {
-							log.Printf("Periodic task %s completed successfully", taskName)
-						}
-						observeTaskResult(t, err)
-						// Always update LastRun so dependent tasks are not
-						// permanently blocked by a one-off failure.
-						t.LastRun = time.Now()
-					}(task, name)
-				default:
-				}
+				s.maybeDispatchTask(ctx, cfg, authSvc, name, ticker, startAfter)
 			}
 		}
 	}
