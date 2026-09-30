@@ -48,13 +48,103 @@ func windowsGPUArchitecture(vmt int, manufacturer string) string {
 	return "Unknown"
 }
 
+// newUnknownWindowsGPU returns a GPU pre-populated with the same "Unknown"
+// placeholders used before any WMI fields are applied.
+func newUnknownWindowsGPU() shared.GPU {
+	return shared.GPU{
+		Name:          "Unknown",
+		Manufacturer:  "Unknown",
+		Architecture:  "Unknown",
+		Chipset:       "Unknown",
+		DedicatedVRAM: "Unknown",
+		SharedVRAM:    "Unknown",
+		DriverVersion: "Unknown",
+		DriverDate:    "Unknown",
+		HardwareID:    "Unknown",
+		CurrentStatus: "Unknown",
+	}
+}
+
+// parseWindowsGPUJSON decodes the ConvertTo-Json output from
+// Get-CimInstance Win32_VideoController, which PowerShell serializes as a
+// single object (not an array) when there's exactly one video controller.
+func parseWindowsGPUJSON(output string) []map[string]any {
+	var arr []map[string]any
+	if json.Unmarshal([]byte(output), &arr) == nil {
+		return arr
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(output), &obj) == nil {
+		return []map[string]any{obj}
+	}
+	return nil
+}
+
+// applyWindowsGPUStringFields copies the plain string/status fields from a
+// WMI Win32_VideoController record onto g.
+// PNPDeviceID is the correct per-adapter hardware identifier.
+// Status is the WMI device health string ("OK", "Error", "Degraded", etc.).
+func applyWindowsGPUStringFields(g *shared.GPU, item map[string]any) {
+	if v, ok := item["Name"].(string); ok {
+		g.Name = v
+	}
+	if v, ok := item["AdapterCompatibility"].(string); ok {
+		g.Manufacturer = v
+	}
+	if v, ok := item["VideoProcessor"].(string); ok {
+		g.Chipset = v
+	}
+	if v, ok := item["DriverVersion"].(string); ok {
+		g.DriverVersion = v
+	}
+	if v, ok := item["DriverDate"].(string); ok {
+		g.DriverDate = v
+	}
+	if v, ok := item["PNPDeviceID"].(string); ok {
+		g.HardwareID = v
+	}
+	if v, ok := item["Status"].(string); ok && v != "" {
+		g.CurrentStatus = v
+	}
+}
+
+// applyWindowsGPUVRAM sets Dedicated/SharedVRAM from AdapterRAM, which is a
+// uint32 WMI field capped at ~4 GB and may underreport high-VRAM GPUs.
+func applyWindowsGPUVRAM(g *shared.GPU, item map[string]any) {
+	v, ok := item["AdapterRAM"].(float64)
+	if !ok || v <= 0 {
+		if g.Architecture == "Integrated" {
+			g.SharedVRAM = "Shared (dynamic)"
+		}
+		return
+	}
+	vramStr := formatVRAMBytes(int64(v))
+	if g.Architecture == "Integrated" {
+		g.SharedVRAM = vramStr
+	} else {
+		g.DedicatedVRAM = vramStr
+	}
+}
+
+// parseWindowsGPUItem converts one Win32_VideoController JSON record into a GPU.
+func parseWindowsGPUItem(item map[string]any) shared.GPU {
+	g := newUnknownWindowsGPU()
+	applyWindowsGPUStringFields(&g, item)
+
+	// VideoMemoryType: 3=VRAM (dedicated/discrete), 4=DRAM (shared/integrated).
+	var vmt int
+	if v, ok := item["VideoMemoryType"].(float64); ok {
+		vmt = int(v)
+	}
+	g.Architecture = windowsGPUArchitecture(vmt, g.Manufacturer)
+
+	applyWindowsGPUVRAM(&g, item)
+	return g
+}
+
 func getGPUs() []shared.GPU {
 	var gpus []shared.GPU
 
-	// VideoMemoryType: 3=VRAM (dedicated/discrete), 4=DRAM (shared/integrated).
-	// AdapterRAM is a uint32 WMI field, capped at ~4 GB; may underreport high-VRAM GPUs.
-	// PNPDeviceID is the correct per-adapter hardware identifier.
-	// Status is the WMI device health string ("OK", "Error", "Degraded", etc.).
 	output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_VideoController | Select-Object Name,AdapterCompatibility,DriverVersion," +
 			"@{n='DriverDate';e={if($_.DriverDate){$_.DriverDate.ToString('yyyy-MM-dd')}else{''}}}," +
@@ -64,66 +154,8 @@ func getGPUs() []shared.GPU {
 	}
 
 	output = strings.TrimSpace(output)
-	var arr []map[string]any
-	var obj map[string]any
-	if json.Unmarshal([]byte(output), &arr) != nil {
-		if json.Unmarshal([]byte(output), &obj) == nil {
-			arr = []map[string]any{obj}
-		}
-	}
-
-	for _, item := range arr {
-		g := shared.GPU{
-			Name:          "Unknown",
-			Manufacturer:  "Unknown",
-			Architecture:  "Unknown",
-			Chipset:       "Unknown",
-			DedicatedVRAM: "Unknown",
-			SharedVRAM:    "Unknown",
-			DriverVersion: "Unknown",
-			DriverDate:    "Unknown",
-			HardwareID:    "Unknown",
-			CurrentStatus: "Unknown",
-		}
-		if v, ok := item["Name"].(string); ok {
-			g.Name = v
-		}
-		if v, ok := item["AdapterCompatibility"].(string); ok {
-			g.Manufacturer = v
-		}
-		if v, ok := item["VideoProcessor"].(string); ok {
-			g.Chipset = v
-		}
-		if v, ok := item["DriverVersion"].(string); ok {
-			g.DriverVersion = v
-		}
-		if v, ok := item["DriverDate"].(string); ok {
-			g.DriverDate = v
-		}
-		if v, ok := item["PNPDeviceID"].(string); ok {
-			g.HardwareID = v
-		}
-		if v, ok := item["Status"].(string); ok && v != "" {
-			g.CurrentStatus = v
-		}
-
-		var vmt int
-		if v, ok := item["VideoMemoryType"].(float64); ok {
-			vmt = int(v)
-		}
-		g.Architecture = windowsGPUArchitecture(vmt, g.Manufacturer)
-
-		if v, ok := item["AdapterRAM"].(float64); ok && v > 0 {
-			vramStr := formatVRAMBytes(int64(v))
-			if g.Architecture == "Integrated" {
-				g.SharedVRAM = vramStr
-			} else {
-				g.DedicatedVRAM = vramStr
-			}
-		} else if g.Architecture == "Integrated" {
-			g.SharedVRAM = "Shared (dynamic)"
-		}
-
+	for _, item := range parseWindowsGPUJSON(output) {
+		g := parseWindowsGPUItem(item)
 		if g.Name != "Unknown" {
 			gpus = append(gpus, g)
 		}

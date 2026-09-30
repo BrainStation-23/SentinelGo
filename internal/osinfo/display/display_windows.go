@@ -47,66 +47,89 @@ func getDisplays() (displays []shared.Display) {
 
 	var connParams []wmiMonitorConnectionParams
 	_ = wmi.QueryNamespace("SELECT * FROM WmiMonitorConnectionParams", &connParams, `root\wmi`)
-	connByInstance := make(map[string]wmiMonitorConnectionParams, len(connParams))
-	for _, c := range connParams {
-		connByInstance[c.InstanceName] = c
-	}
+	connByInstance := connectionParamsByInstance(connParams)
 
 	var controllers []win32VideoController
 	_ = wmi.Query(
 		"SELECT CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate FROM Win32_VideoController",
 		&controllers,
 	)
-	var refreshRate float64
-	var activeResolution string
-	for _, c := range controllers {
-		if c.CurrentHorizontalResolution > 0 {
-			refreshRate = float64(c.CurrentRefreshRate)
-			activeResolution = formatResolution(c.CurrentHorizontalResolution, c.CurrentVerticalResolution)
-			break
-		}
-	}
+	refreshRate, activeResolution := activeVideoMode(controllers)
 
 	displays = make([]shared.Display, 0, len(monitors))
 	for i, m := range monitors {
-		manufacturer := wmiByteArrayToString(m.ManufacturerName)
-		model := wmiByteArrayToString(m.UserFriendlyName)
-		serial := wmiByteArrayToString(m.SerialNumberID)
-
-		if serial == "" || serial == "0" {
-			serial = instanceSerial(m.InstanceName)
-		}
-
-		conn := connByInstance[m.InstanceName]
-		connType := videoOutputTechToString(conn.VideoOutputTechnology)
-
-		desc := model
-		if desc == "" {
-			if connType != "" && connType != "Unknown" {
-				desc = connType
-			} else {
-				desc = fmt.Sprintf("Display %d", i+1)
-			}
-		}
-
-		d := shared.Display{
-			Description:    desc,
-			Manufacturer:   manufacturer,
-			Model:          model,
-			SerialNumber:   serial,
-			Year:           int(m.YearOfManufacture),
-			RefreshRate:    refreshRate,
-			ConnectionType: connType,
-		}
-		if model != "" {
-			if size := shared.ParseDisplaySizeFromName(model); size > 0 {
-				d.Size = size
-			}
-		}
-		d.Resolution = activeResolution
-		displays = append(displays, d)
+		displays = append(displays, buildWindowsDisplay(i, m, connByInstance, refreshRate, activeResolution))
 	}
 	return displays
+}
+
+// connectionParamsByInstance indexes WmiMonitorConnectionParams by
+// InstanceName for O(1) lookup against a WmiMonitorID entry.
+func connectionParamsByInstance(connParams []wmiMonitorConnectionParams) map[string]wmiMonitorConnectionParams {
+	connByInstance := make(map[string]wmiMonitorConnectionParams, len(connParams))
+	for _, c := range connParams {
+		connByInstance[c.InstanceName] = c
+	}
+	return connByInstance
+}
+
+// activeVideoMode returns the refresh rate and resolution reported by the
+// first Win32_VideoController with an active (non-zero) horizontal resolution.
+func activeVideoMode(controllers []win32VideoController) (refreshRate float64, resolution string) {
+	for _, c := range controllers {
+		if c.CurrentHorizontalResolution > 0 {
+			return float64(c.CurrentRefreshRate), formatResolution(c.CurrentHorizontalResolution, c.CurrentVerticalResolution)
+		}
+	}
+	return 0, ""
+}
+
+// buildWindowsDisplay assembles a shared.Display from one WmiMonitorID entry,
+// enriched with its connection type and the machine-wide active video mode.
+func buildWindowsDisplay(
+	i int,
+	m wmiMonitorID,
+	connByInstance map[string]wmiMonitorConnectionParams,
+	refreshRate float64,
+	activeResolution string,
+) shared.Display {
+	manufacturer := wmiByteArrayToString(m.ManufacturerName)
+	model := wmiByteArrayToString(m.UserFriendlyName)
+	serial := wmiByteArrayToString(m.SerialNumberID)
+	if serial == "" || serial == "0" {
+		serial = instanceSerial(m.InstanceName)
+	}
+
+	connType := videoOutputTechToString(connByInstance[m.InstanceName].VideoOutputTechnology)
+
+	d := shared.Display{
+		Description:    windowsDisplayDescription(model, connType, i),
+		Manufacturer:   manufacturer,
+		Model:          model,
+		SerialNumber:   serial,
+		Year:           int(m.YearOfManufacture),
+		RefreshRate:    refreshRate,
+		ConnectionType: connType,
+		Resolution:     activeResolution,
+	}
+	if model != "" {
+		if size := shared.ParseDisplaySizeFromName(model); size > 0 {
+			d.Size = size
+		}
+	}
+	return d
+}
+
+// windowsDisplayDescription picks a human-friendly description: the model
+// name if known, else the connection type, else a positional fallback.
+func windowsDisplayDescription(model, connType string, index int) string {
+	if model != "" {
+		return model
+	}
+	if connType != "" && connType != "Unknown" {
+		return connType
+	}
+	return fmt.Sprintf("Display %d", index+1)
 }
 
 // formatResolution returns "WxH" or empty string if either dimension is zero.

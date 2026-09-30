@@ -110,32 +110,46 @@ func getWiFiInfo(name string) *shared.WiFiInfo {
 func parseWiFiInfoFromIW(output string) *shared.WiFiInfo {
 	info := &shared.WiFiInfo{}
 	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "SSID:"):
-			info.SSID = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
-		case strings.Contains(line, "signal:"):
-			fields := strings.Fields(line)
-			for i, f := range fields {
-				if f == "signal:" && i+1 < len(fields) {
-					if n, err := strconv.Atoi(fields[i+1]); err == nil {
-						info.SignalStrength = n
-					}
-				}
-			}
-		case strings.Contains(line, "freq:"):
-			fields := strings.Fields(line)
-			for i, f := range fields {
-				if f == "freq:" && i+1 < len(fields) {
-					info.FrequencyBand = freqMHzToBand(fields[i+1])
-				}
-			}
-		}
+		applyIWLine(info, strings.TrimSpace(line))
 	}
 	if info.SSID == "" {
 		return nil
 	}
 	return info
+}
+
+// applyIWLine applies a single line of `iw dev <name> link` output to info.
+func applyIWLine(info *shared.WiFiInfo, line string) {
+	switch {
+	case strings.HasPrefix(line, "SSID:"):
+		info.SSID = strings.TrimSpace(strings.TrimPrefix(line, "SSID:"))
+	case strings.Contains(line, "signal:"):
+		applyIWSignalField(info, line)
+	case strings.Contains(line, "freq:"):
+		applyIWFreqField(info, line)
+	}
+}
+
+// applyIWSignalField extracts the "signal: <dBm>" field from an `iw` line.
+func applyIWSignalField(info *shared.WiFiInfo, line string) {
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if f == "signal:" && i+1 < len(fields) {
+			if n, err := strconv.Atoi(fields[i+1]); err == nil {
+				info.SignalStrength = n
+			}
+		}
+	}
+}
+
+// applyIWFreqField extracts the "freq: <MHz>" field from an `iw` line.
+func applyIWFreqField(info *shared.WiFiInfo, line string) {
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if f == "freq:" && i+1 < len(fields) {
+			info.FrequencyBand = freqMHzToBand(fields[i+1])
+		}
+	}
 }
 
 func freqMHzToBand(mhzStr string) string {

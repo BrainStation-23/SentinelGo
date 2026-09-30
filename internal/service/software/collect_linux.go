@@ -43,6 +43,7 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("dpkg-query"), "-W", "-f=${Package},${Version},${Installed-Size}")
 	output, err := cmd.Output()
 	if err != nil {
@@ -58,6 +59,7 @@ func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("rpm"), "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
 	output, err := cmd.Output()
 	if err != nil {
@@ -73,6 +75,7 @@ func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("snap"), "list", "--color=never")
 	output, err := cmd.Output()
 	if err != nil {
@@ -88,6 +91,7 @@ func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("flatpak"), "list", "--columns=application,name,version,origin")
 	output, err := cmd.Output()
 	if err != nil {

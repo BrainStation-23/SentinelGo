@@ -210,8 +210,10 @@ func FindProcesses() ([]ProcessInfo, error) {
 
 	switch runtime.GOOS {
 	case "windows":
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		cmd = exec.Command(binpath.Resolve("tasklist"), "/fi", "imagename eq sentinelgo.exe", "/fo", "csv", "/v")
 	case "linux", "darwin":
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		cmd = exec.Command(binpath.Resolve("ps"), "aux")
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)

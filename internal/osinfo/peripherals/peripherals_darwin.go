@@ -259,33 +259,51 @@ func parseAudioItems(items []any, peripherals *[]shared.PeripheralDevice) {
 		if !ok {
 			continue
 		}
-		if devices, ok := m["_items"].([]any); ok {
-			for _, device := range devices {
-				if devMap, ok := device.(map[string]any); ok {
-					name, _ := devMap["_name"].(string)
-					manufacturer, _ := devMap["manufacturer"].(string)
-					if name != "" {
-						deviceType := "Audio Device"
-						nameLower := strings.ToLower(name)
-						if strings.Contains(nameLower, "microphone") {
-							deviceType = "Microphone"
-						} else if strings.Contains(nameLower, "speaker") {
-							deviceType = "Speaker"
-						} else if strings.Contains(nameLower, "headphone") {
-							deviceType = "Headphones"
-						}
-						*peripherals = append(*peripherals, shared.PeripheralDevice{
-							Type:           deviceType,
-							Description:    name,
-							Manufacturer:   manufacturer,
-							ConnectionType: "Built-in Audio",
-							IsBuiltIn:      true,
-							Status:         "Connected",
-						})
-					}
-				}
-			}
+		devices, ok := m["_items"].([]any)
+		if !ok {
+			continue
 		}
+		for _, device := range devices {
+			addAudioDeviceItem(device, peripherals)
+		}
+	}
+}
+
+// addAudioDeviceItem appends a single SPAudioDataType device entry, skipping
+// entries with no name.
+func addAudioDeviceItem(device any, peripherals *[]shared.PeripheralDevice) {
+	devMap, ok := device.(map[string]any)
+	if !ok {
+		return
+	}
+	name, _ := devMap["_name"].(string)
+	if name == "" {
+		return
+	}
+	manufacturer, _ := devMap["manufacturer"].(string)
+	*peripherals = append(*peripherals, shared.PeripheralDevice{
+		Type:           classifyAudioDeviceName(name),
+		Description:    name,
+		Manufacturer:   manufacturer,
+		ConnectionType: "Built-in Audio",
+		IsBuiltIn:      true,
+		Status:         "Connected",
+	})
+}
+
+// classifyAudioDeviceName infers an audio device's specific type from its
+// name, falling back to the generic "Audio Device" label.
+func classifyAudioDeviceName(name string) string {
+	nameLower := strings.ToLower(name)
+	switch {
+	case strings.Contains(nameLower, "microphone"):
+		return "Microphone"
+	case strings.Contains(nameLower, "speaker"):
+		return "Speaker"
+	case strings.Contains(nameLower, "headphone"):
+		return "Headphones"
+	default:
+		return "Audio Device"
 	}
 }
 

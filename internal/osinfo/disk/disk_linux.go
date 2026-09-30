@@ -125,18 +125,21 @@ func linuxPartitionInfo(devPath string) (fileSystem, mountPoint string, freeByte
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		var fs, mp string
-		switch len(fields) {
-		case 2:
-			fs, mp = fields[0], fields[1]
-		case 1:
-			// FSTYPE is empty, only MOUNTPOINT present (e.g. "   /boot/efi" → ["/boot/efi"])
-			if strings.HasPrefix(fields[0], "/") {
-				mp = fields[0]
-			}
-		}
+
+	fileSystem, mountPoint = selectPrimaryPartition(out)
+	if mountPoint == "" {
+		return
+	}
+	freeBytes = linuxFreeBytesForMount(mountPoint)
+	return
+}
+
+// selectPrimaryPartition scans lsblk's flat "FSTYPE MOUNTPOINT" listing and picks the
+// primary mounted partition: the first one found, overridden by "/" if present.
+// Unmounted partitions and swap are skipped.
+func selectPrimaryPartition(lsblkOut string) (fileSystem, mountPoint string) {
+	for _, line := range strings.Split(lsblkOut, "\n") {
+		fs, mp := parsePartitionLine(line)
 		if mp == "" || mp == "[SWAP]" {
 			continue
 		}
@@ -149,18 +152,42 @@ func linuxPartitionInfo(devPath string) (fileSystem, mountPoint string, freeByte
 			break
 		}
 	}
-	if mountPoint == "" {
-		return
-	}
-	if dfOut, err := shared.RunCommand("df", "-B1", mountPoint); err == nil {
-		lines := strings.Split(strings.TrimSpace(dfOut), "\n")
-		if len(lines) >= 2 {
-			if f := strings.Fields(lines[1]); len(f) >= 4 {
-				freeBytes, _ = strconv.ParseUint(f[3], 10, 64)
-			}
+	return fileSystem, mountPoint
+}
+
+// parsePartitionLine parses one "FSTYPE MOUNTPOINT" line from `lsblk -nl`. FSTYPE may be
+// empty, in which case only MOUNTPOINT is present (e.g. "   /boot/efi" → ["/boot/efi"]).
+func parsePartitionLine(line string) (fileSystem, mountPoint string) {
+	fields := strings.Fields(line)
+	switch len(fields) {
+	case 2:
+		return fields[0], fields[1]
+	case 1:
+		if strings.HasPrefix(fields[0], "/") {
+			return "", fields[0]
 		}
 	}
-	return
+	return "", ""
+}
+
+// linuxFreeBytesForMount runs `df -B1` against mountPoint and parses the free-bytes
+// column (4th field of the data row). Returns 0 if the command fails or the output
+// doesn't have the expected shape.
+func linuxFreeBytesForMount(mountPoint string) uint64 {
+	dfOut, err := shared.RunCommand("df", "-B1", mountPoint)
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(strings.TrimSpace(dfOut), "\n")
+	if len(lines) < 2 {
+		return 0
+	}
+	fields := strings.Fields(lines[1])
+	if len(fields) < 4 {
+		return 0
+	}
+	freeBytes, _ := strconv.ParseUint(fields[3], 10, 64)
+	return freeBytes
 }
 
 // linuxDriveType classifies a disk as NVMe, SSD, or HDD.

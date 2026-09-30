@@ -116,6 +116,48 @@ func linuxSysfsVRAMBytes(busID string) int64 {
 	return 0
 }
 
+// rocmBusMatches reports whether a "--showbus --csv" line's bus column (the
+// second CSV field) matches busLow, and if so returns the device field (the
+// first CSV field, e.g. "GPU[0]", "card0", "0").
+func rocmBusMatches(line, busLow string) (devField string, ok bool) {
+	parts := strings.SplitN(line, ",", 2)
+	if len(parts) < 2 {
+		return "", false
+	}
+	busPart := strings.ToLower(strings.TrimSpace(parts[1]))
+	// rocm-smi may include the PCI domain ("0000:01:00.0"); lspci omits it ("01:00.0").
+	if busPart != busLow && !strings.HasSuffix(busPart, ":"+busLow) {
+		return "", false
+	}
+	return strings.TrimSpace(parts[0]), true
+}
+
+// firstIntInString extracts the first contiguous run of digits in s and
+// parses it as an int (handles device fields like "GPU[0]", "card0", "0").
+func firstIntInString(s string) (int, bool) {
+	start := -1
+	for i, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			if start == -1 {
+				start = i
+			}
+			continue
+		}
+		if start == -1 {
+			continue
+		}
+		if n, err := strconv.Atoi(s[start:i]); err == nil {
+			return n, true
+		}
+		start = -1
+	}
+	if start == -1 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[start:])
+	return n, err == nil
+}
+
 // findROCmDeviceIndex maps a PCI bus ID (e.g. "01:00.0") to a rocm-smi device
 // index so VRAM can be queried per-GPU rather than from a global dump.
 func findROCmDeviceIndex(busID string) int {
@@ -128,37 +170,279 @@ func findROCmDeviceIndex(busID string) int {
 		if i == 0 || strings.TrimSpace(line) == "" {
 			continue
 		}
-		parts := strings.SplitN(line, ",", 2)
-		if len(parts) < 2 {
+		devField, ok := rocmBusMatches(line, busLow)
+		if !ok {
 			continue
 		}
-		busPart := strings.ToLower(strings.TrimSpace(parts[1]))
-		// rocm-smi may include the PCI domain ("0000:01:00.0"); lspci omits it ("01:00.0").
-		if busPart != busLow && !strings.HasSuffix(busPart, ":"+busLow) {
-			continue
-		}
-		// Extract the first digit sequence from the device field (handles "GPU[0]", "card0", "0").
-		devField := strings.TrimSpace(parts[0])
-		start := -1
-		for j, ch := range devField {
-			if ch >= '0' && ch <= '9' {
-				if start == -1 {
-					start = j
-				}
-			} else if start != -1 {
-				if n, err := strconv.Atoi(devField[start:j]); err == nil {
-					return n
-				}
-				start = -1
-			}
-		}
-		if start != -1 {
-			if n, err := strconv.Atoi(devField[start:]); err == nil {
-				return n
-			}
+		if n, ok := firstIntInString(devField); ok {
+			return n
 		}
 	}
 	return -1
+}
+
+// newUnknownLinuxGPU returns a GPU pre-populated with the same "Unknown"
+// placeholders used before any lspci fields are applied.
+func newUnknownLinuxGPU() shared.GPU {
+	return shared.GPU{
+		Name:          "Unknown",
+		Manufacturer:  "Unknown",
+		Architecture:  "Unknown",
+		Chipset:       "Unknown",
+		DedicatedVRAM: "Unknown",
+		SharedVRAM:    "Unknown",
+		DriverVersion: "Unknown",
+		DriverDate:    "Unknown",
+		HardwareID:    "Unknown",
+		CurrentStatus: "Unknown",
+	}
+}
+
+// isLinuxGPULine reports whether an lspci -nn line describes a graphics
+// device (a VGA, 3D, or generic display controller).
+func isLinuxGPULine(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "vga") ||
+		strings.Contains(lower, "3d controller") ||
+		strings.Contains(lower, "display controller")
+}
+
+// extractLspciHardwareID pulls the last bracketed [vendor:device] pair out of
+// an lspci description, returning the description with that suffix removed.
+func extractLspciHardwareID(desc string) (hwID, rest string, ok bool) {
+	lb := strings.LastIndex(desc, "[")
+	if lb < 0 {
+		return "", desc, false
+	}
+	rb := strings.Index(desc[lb:], "]")
+	if rb <= 0 {
+		return "", desc, false
+	}
+	return desc[lb+1 : lb+rb], strings.TrimSpace(desc[:lb]), true
+}
+
+// stripLspciRevSuffix removes a trailing "(rev XX)" from an lspci description.
+func stripLspciRevSuffix(desc string) string {
+	if i := strings.Index(desc, " (rev "); i > 0 {
+		return strings.TrimSpace(desc[:i])
+	}
+	return desc
+}
+
+// parseLspciLine parses a single lspci -nn line (already confirmed to
+// describe a GPU) into its PCI bus ID and a GPU populated with Name,
+// Chipset, Manufacturer, and HardwareID.
+// lspci -nn format: "01:00.0 VGA compatible controller [0300]: NVIDIA GeForce RTX 3080 [10de:2206] (rev a1)"
+func parseLspciLine(line string) (busID string, g shared.GPU) {
+	g = newUnknownLinuxGPU()
+	busID = strings.Fields(line)[0]
+	parts := strings.SplitN(line, ": ", 2)
+	if len(parts) != 2 {
+		return busID, g
+	}
+	desc := parts[1]
+	if hwID, rest, ok := extractLspciHardwareID(desc); ok {
+		g.HardwareID = hwID
+		desc = rest
+	}
+	desc = stripLspciRevSuffix(desc)
+	g.Name = desc
+	g.Chipset = desc
+	g.Manufacturer = linuxGPUManufacturer(desc)
+	return busID, g
+}
+
+// extractPrefetchableSize returns the "[size=XXX]" value from an lspci -v
+// line describing a prefetchable BAR, which is the VRAM region on discrete GPUs.
+func extractPrefetchableSize(vLine string) (string, bool) {
+	if !strings.Contains(vLine, "prefetchable") || !strings.Contains(vLine, "[size=") {
+		return "", false
+	}
+	i := strings.LastIndex(vLine, "[size=")
+	if i < 0 {
+		return "", false
+	}
+	j := strings.Index(vLine[i:], "]")
+	if j <= 0 {
+		return "", false
+	}
+	return vLine[i+6 : i+j], true
+}
+
+// extractKernelDriver returns the driver name from an lspci -v
+// "Kernel driver in use:" line.
+func extractKernelDriver(vLine string) (string, bool) {
+	if !strings.HasPrefix(vLine, "Kernel driver in use:") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(vLine, "Kernel driver in use:")), true
+}
+
+// queryLinuxPCIDetails runs lspci -v for busID and extracts the largest
+// prefetchable BAR size (VRAM on discrete GPUs) and the in-use kernel driver
+// name, which drives CurrentStatus and the DriverVersion sysfs lookup.
+func queryLinuxPCIDetails(busID string) (dedicatedVRAM, currentStatus, kernelDriver string) {
+	dedicatedVRAM = "Unknown"
+	currentStatus = "Unknown"
+	vOut, vErr := shared.RunCommand("lspci", "-v", "-s", busID)
+	if vErr != nil {
+		return dedicatedVRAM, currentStatus, kernelDriver
+	}
+	var maxVRAMBytes int64
+	for _, vLine := range strings.Split(vOut, "\n") {
+		vLine = strings.TrimSpace(vLine)
+		if sizeStr, ok := extractPrefetchableSize(vLine); ok {
+			if sz := parsePCISize(sizeStr); sz > maxVRAMBytes {
+				maxVRAMBytes = sz
+				dedicatedVRAM = sizeStr
+			}
+		}
+		if driver, ok := extractKernelDriver(vLine); ok {
+			kernelDriver = driver
+			currentStatus = "OK"
+		}
+	}
+	return dedicatedVRAM, currentStatus, kernelDriver
+}
+
+// linuxDriverVersionFromSysfs reads the real driver version from
+// /sys/module/<driver>/version. Built-in kernel modules (i915, amdgpu)
+// typically don't expose this file; NVIDIA's out-of-tree driver does.
+// Returns "" when kernelDriver is empty or the file can't be read.
+func linuxDriverVersionFromSysfs(kernelDriver string) string {
+	if kernelDriver == "" {
+		return ""
+	}
+	versionPath := fmt.Sprintf("/sys/module/%s/version", kernelDriver)
+	vStr, vErr := shared.ReadFileContent(versionPath)
+	if vErr != nil {
+		return ""
+	}
+	return strings.TrimSpace(vStr)
+}
+
+// enrichNvidiaGPU refines Name/Chipset, DedicatedVRAM, and DriverVersion
+// using nvidia-smi, which provides more accurate per-GPU data than lspci.
+// --id accepts the PCI bus ID in 0000:BB:DD.F format.
+func enrichNvidiaGPU(g *shared.GPU, busID string) {
+	nOut, nErr := shared.RunCommand("nvidia-smi",
+		"--query-gpu=name,memory.total,driver_version",
+		"--format=csv,noheader,nounits",
+		"--id=0000:"+busID)
+	if nErr != nil {
+		return
+	}
+	firstLine := strings.TrimSpace(strings.SplitN(nOut, "\n", 2)[0])
+	fields := strings.SplitN(firstLine, ", ", 3)
+	if len(fields) >= 1 && fields[0] != "" {
+		g.Name = fields[0]
+		g.Chipset = fields[0]
+	}
+	if len(fields) >= 2 && fields[1] != "" {
+		g.DedicatedVRAM = fields[1] + " MiB"
+	}
+	if len(fields) >= 3 && fields[2] != "" {
+		g.DriverVersion = fields[2]
+	}
+}
+
+// amdVRAMFromROCm queries rocm-smi for the VRAM size of the device at busID,
+// used as a fallback when the DRM sysfs path doesn't expose VRAM. Only the
+// first data line of the CSV output is considered.
+func amdVRAMFromROCm(busID string) (string, bool) {
+	deviceIdx := findROCmDeviceIndex(busID)
+	if deviceIdx < 0 {
+		return "", false
+	}
+	amdOut, amdErr := shared.RunCommand("rocm-smi", "-d", strconv.Itoa(deviceIdx), "--showmeminfo", "vram", "--csv")
+	if amdErr != nil {
+		return "", false
+	}
+	for i, amdLine := range strings.Split(amdOut, "\n") {
+		amdLine = strings.TrimSpace(amdLine)
+		if i == 0 || amdLine == "" {
+			continue
+		}
+		amdParts := strings.Split(amdLine, ",")
+		if len(amdParts) < 2 {
+			continue
+		}
+		vramStr := strings.TrimSpace(amdParts[len(amdParts)-1])
+		vramBytes, err := strconv.ParseInt(vramStr, 10, 64)
+		if err == nil && vramBytes > 0 {
+			return formatLinuxVRAM(vramBytes), true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// enrichAMDGPU sets DedicatedVRAM for an AMD GPU. It tries the DRM sysfs
+// path first — the amdgpu driver exposes this without any extra tooling —
+// and falls back to rocm-smi for HPC/workstation setups.
+func enrichAMDGPU(g *shared.GPU, busID string) {
+	if vramBytes := linuxSysfsVRAMBytes(busID); vramBytes > 0 {
+		g.DedicatedVRAM = formatLinuxVRAM(vramBytes)
+		return
+	}
+	if vramStr, ok := amdVRAMFromROCm(busID); ok {
+		g.DedicatedVRAM = vramStr
+	}
+}
+
+// enrichIntelGPU sets HardwareID by reading PCI_ID directly from the
+// device's uevent via its bus ID, avoiding the DRM card iteration that could
+// overwrite HardwareID with a different GPU's data.
+func enrichIntelGPU(g *shared.GPU, busID string) {
+	ueventPath := fmt.Sprintf("/sys/bus/pci/devices/0000:%s/uevent", busID)
+	data, err := shared.ReadFileContent(ueventPath)
+	if err != nil {
+		return
+	}
+	for _, l := range strings.Split(data, "\n") {
+		if strings.HasPrefix(l, "PCI_ID=") {
+			g.HardwareID = strings.TrimPrefix(l, "PCI_ID=")
+			return
+		}
+	}
+}
+
+// enrichLinuxGPUByVendor dispatches to the vendor-specific enrichment step
+// that refines a GPU's fields beyond what lspci alone provides.
+func enrichLinuxGPUByVendor(g *shared.GPU, busID string) {
+	switch g.Manufacturer {
+	case "NVIDIA":
+		enrichNvidiaGPU(g, busID)
+	case "AMD":
+		enrichAMDGPU(g, busID)
+	case "Intel":
+		enrichIntelGPU(g, busID)
+	}
+}
+
+// buildLinuxGPU parses one lspci -nn line into a fully enriched GPU. ok is
+// false when the line doesn't describe a graphics device or the parsed GPU
+// has no name.
+func buildLinuxGPU(line string) (shared.GPU, bool) {
+	if !isLinuxGPULine(line) {
+		return shared.GPU{}, false
+	}
+	busID, g := parseLspciLine(line)
+
+	var kernelDriver string
+	g.DedicatedVRAM, g.CurrentStatus, kernelDriver = queryLinuxPCIDetails(busID)
+	if ver := linuxDriverVersionFromSysfs(kernelDriver); ver != "" {
+		g.DriverVersion = ver
+	}
+
+	enrichLinuxGPUByVendor(&g, busID)
+
+	// Architecture is determined after VRAM collection:
+	// - NVIDIA has no integrated desktop/server GPU variants.
+	// - Intel GPUs are integrated unless the name indicates Arc (discrete).
+	// - AMD with detected VRAM is discrete; without, it is an integrated APU.
+	g.Architecture = linuxGPUArchitecture(g.Manufacturer, g.Name, g.DedicatedVRAM != "Unknown")
+	return g, g.Name != "Unknown"
 }
 
 func getGPUs() []shared.GPU {
@@ -174,151 +458,7 @@ func getGPUs() []shared.GPU {
 		if line == "" {
 			continue
 		}
-		lower := strings.ToLower(line)
-		if !strings.Contains(lower, "vga") &&
-			!strings.Contains(lower, "3d controller") &&
-			!strings.Contains(lower, "display controller") {
-			continue
-		}
-		g := shared.GPU{
-			Name:          "Unknown",
-			Manufacturer:  "Unknown",
-			Architecture:  "Unknown",
-			Chipset:       "Unknown",
-			DedicatedVRAM: "Unknown",
-			SharedVRAM:    "Unknown",
-			DriverVersion: "Unknown",
-			DriverDate:    "Unknown",
-			HardwareID:    "Unknown",
-			CurrentStatus: "Unknown",
-		}
-		// lspci -nn format: "01:00.0 VGA compatible controller [0300]: NVIDIA GeForce RTX 3080 [10de:2206] (rev a1)"
-		busID := strings.Fields(line)[0]
-		if parts := strings.SplitN(line, ": ", 2); len(parts) == 2 {
-			desc := parts[1]
-			// Extract [vendor:device] hardware ID — it's the last bracket pair.
-			if lb := strings.LastIndex(desc, "["); lb >= 0 {
-				if rb := strings.Index(desc[lb:], "]"); rb > 0 {
-					g.HardwareID = desc[lb+1 : lb+rb]
-					desc = strings.TrimSpace(desc[:lb])
-				}
-			}
-			// Strip trailing "(rev XX)".
-			if i := strings.Index(desc, " (rev "); i > 0 {
-				desc = strings.TrimSpace(desc[:i])
-			}
-			g.Name = desc
-			g.Chipset = desc
-			g.Manufacturer = linuxGPUManufacturer(desc)
-		}
-
-		// VRAM from lspci -v: use the largest prefetchable BAR, which is the VRAM region
-		// on discrete GPUs. Kernel driver name drives CurrentStatus and DriverVersion lookup.
-		var kernelDriver string
-		if vOut, vErr := shared.RunCommand("lspci", "-v", "-s", busID); vErr == nil {
-			var maxVRAMBytes int64
-			for _, vLine := range strings.Split(vOut, "\n") {
-				vLine = strings.TrimSpace(vLine)
-				if strings.Contains(vLine, "prefetchable") && strings.Contains(vLine, "[size=") {
-					if i := strings.LastIndex(vLine, "[size="); i >= 0 {
-						if j := strings.Index(vLine[i:], "]"); j > 0 {
-							sizeStr := vLine[i+6 : i+j]
-							if sz := parsePCISize(sizeStr); sz > maxVRAMBytes {
-								maxVRAMBytes = sz
-								g.DedicatedVRAM = sizeStr
-							}
-						}
-					}
-				}
-				if strings.HasPrefix(vLine, "Kernel driver in use:") {
-					kernelDriver = strings.TrimSpace(strings.TrimPrefix(vLine, "Kernel driver in use:"))
-					g.CurrentStatus = "OK"
-				}
-			}
-		}
-
-		// Attempt to read the real driver version from sysfs. Built-in kernel modules
-		// (i915, amdgpu) typically don't expose this file; NVIDIA's out-of-tree driver does.
-		if kernelDriver != "" {
-			versionPath := fmt.Sprintf("/sys/module/%s/version", kernelDriver)
-			if vStr, vErr := shared.ReadFileContent(versionPath); vErr == nil {
-				if ver := strings.TrimSpace(vStr); ver != "" {
-					g.DriverVersion = ver
-				}
-			}
-		}
-
-		switch g.Manufacturer {
-		case "NVIDIA":
-			// nvidia-smi provides accurate per-GPU name, VRAM (MiB), and driver version.
-			// --id accepts the PCI bus ID in 0000:BB:DD.F format.
-			nOut, nErr := shared.RunCommand("nvidia-smi",
-				"--query-gpu=name,memory.total,driver_version",
-				"--format=csv,noheader,nounits",
-				"--id=0000:"+busID)
-			if nErr == nil {
-				firstLine := strings.TrimSpace(strings.SplitN(nOut, "\n", 2)[0])
-				fields := strings.SplitN(firstLine, ", ", 3)
-				if len(fields) >= 1 && fields[0] != "" {
-					g.Name = fields[0]
-					g.Chipset = fields[0]
-				}
-				if len(fields) >= 2 && fields[1] != "" {
-					g.DedicatedVRAM = fields[1] + " MiB"
-				}
-				if len(fields) >= 3 && fields[2] != "" {
-					g.DriverVersion = fields[2]
-				}
-			}
-		case "AMD":
-			// Try the DRM sysfs path first — the amdgpu driver exposes this without any
-			// extra tooling. Fall back to rocm-smi for HPC/workstation setups.
-			if vramBytes := linuxSysfsVRAMBytes(busID); vramBytes > 0 {
-				g.DedicatedVRAM = formatLinuxVRAM(vramBytes)
-			} else {
-				deviceIdx := findROCmDeviceIndex(busID)
-				if deviceIdx >= 0 {
-					amdOut, amdErr := shared.RunCommand("rocm-smi", "-d", strconv.Itoa(deviceIdx), "--showmeminfo", "vram", "--csv")
-					if amdErr == nil {
-						for i, amdLine := range strings.Split(amdOut, "\n") {
-							amdLine = strings.TrimSpace(amdLine)
-							if i == 0 || amdLine == "" {
-								continue
-							}
-							amdParts := strings.Split(amdLine, ",")
-							if len(amdParts) < 2 {
-								continue
-							}
-							vramStr := strings.TrimSpace(amdParts[len(amdParts)-1])
-							if vramBytes, err := strconv.ParseInt(vramStr, 10, 64); err == nil && vramBytes > 0 {
-								g.DedicatedVRAM = formatLinuxVRAM(vramBytes)
-							}
-							break
-						}
-					}
-				}
-			}
-		case "Intel":
-			// Read PCI_ID directly from the device's uevent via its bus ID, avoiding the
-			// DRM card iteration that could overwrite HardwareID with a different GPU's data.
-			ueventPath := fmt.Sprintf("/sys/bus/pci/devices/0000:%s/uevent", busID)
-			if data, err := shared.ReadFileContent(ueventPath); err == nil {
-				for _, l := range strings.Split(data, "\n") {
-					if strings.HasPrefix(l, "PCI_ID=") {
-						g.HardwareID = strings.TrimPrefix(l, "PCI_ID=")
-						break
-					}
-				}
-			}
-		}
-
-		// Architecture is determined after VRAM collection:
-		// - NVIDIA has no integrated desktop/server GPU variants.
-		// - Intel GPUs are integrated unless the name indicates Arc (discrete).
-		// - AMD with detected VRAM is discrete; without, it is an integrated APU.
-		g.Architecture = linuxGPUArchitecture(g.Manufacturer, g.Name, g.DedicatedVRAM != "Unknown")
-
-		if g.Name != "Unknown" {
+		if g, ok := buildLinuxGPU(line); ok {
 			gpus = append(gpus, g)
 		}
 	}

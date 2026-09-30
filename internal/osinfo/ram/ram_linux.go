@@ -50,39 +50,52 @@ func fieldValue(line string) (string, bool) {
 func applyDmidecodeField(line string, stick *shared.RAMStick, sizeBytes *uint64) {
 	switch {
 	case strings.HasPrefix(line, "Size:"):
-		if v, ok := fieldValue(line); ok {
-			*sizeBytes = parseMemorySize(v)
-		}
+		applyDmidecodeSize(line, sizeBytes)
 	case strings.HasPrefix(line, "Manufacturer:"):
-		if v, ok := fieldValue(line); ok {
-			stick.Manufacturer = normalizeRAMManufacturer(v)
-		}
+		applyDmidecodeManufacturer(line, stick)
 	case strings.HasPrefix(line, "Part Number:"):
-		if v, ok := fieldValue(line); ok && !isMeaningless(v) {
-			stick.Name = v
-		}
+		applyMeaningfulField(line, &stick.Name)
 	case strings.HasPrefix(line, "Type:"):
-		if v, ok := fieldValue(line); ok && !isMeaningless(v) {
-			stick.ArchitectureType = v
-		}
+		applyMeaningfulField(line, &stick.ArchitectureType)
 	case strings.HasPrefix(line, "Speed:"):
-		if v, ok := fieldValue(line); ok {
-			var speed int
-			_, _ = fmt.Sscanf(v, "%d", &speed)
-			stick.ClockSpeedMHz = speed
-		}
+		applyDmidecodeSpeed(line, stick)
 	case strings.HasPrefix(line, "Serial Number:"):
-		if v, ok := fieldValue(line); ok && !isMeaningless(v) {
-			stick.Serial = v
-		}
+		applyMeaningfulField(line, &stick.Serial)
 	case strings.HasPrefix(line, "Form Factor:"):
-		if v, ok := fieldValue(line); ok && !isMeaningless(v) {
-			stick.FormFactor = v
-		}
+		applyMeaningfulField(line, &stick.FormFactor)
 	case strings.HasPrefix(line, "Locator:") && !strings.HasPrefix(line, "Bank Locator:"):
-		if v, ok := fieldValue(line); ok && !isMeaningless(v) {
-			stick.Slot = v
-		}
+		applyMeaningfulField(line, &stick.Slot)
+	}
+}
+
+// applyDmidecodeSize parses a "Size:" line into sizeBytes.
+func applyDmidecodeSize(line string, sizeBytes *uint64) {
+	if v, ok := fieldValue(line); ok {
+		*sizeBytes = parseMemorySize(v)
+	}
+}
+
+// applyDmidecodeManufacturer parses a "Manufacturer:" line onto stick.
+func applyDmidecodeManufacturer(line string, stick *shared.RAMStick) {
+	if v, ok := fieldValue(line); ok {
+		stick.Manufacturer = normalizeRAMManufacturer(v)
+	}
+}
+
+// applyDmidecodeSpeed parses a "Speed:" line onto stick.
+func applyDmidecodeSpeed(line string, stick *shared.RAMStick) {
+	if v, ok := fieldValue(line); ok {
+		var speed int
+		_, _ = fmt.Sscanf(v, "%d", &speed)
+		stick.ClockSpeedMHz = speed
+	}
+}
+
+// applyMeaningfulField sets *dest from line's value, unless the value is a
+// firmware sentinel carrying no real data (see isMeaningless).
+func applyMeaningfulField(line string, dest *string) {
+	if v, ok := fieldValue(line); ok && !isMeaningless(v) {
+		*dest = v
 	}
 }
 

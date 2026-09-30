@@ -480,15 +480,7 @@ func collectAV() []shared.AntivirusProduct {
 // parseAVProductsJSON decodes ConvertTo-Json output from the SecurityCenter2 query.
 // PowerShell returns a JSON object when there is exactly one product, or an array for multiple.
 func parseAVProductsJSON(output string) []shared.AntivirusProduct {
-	output = strings.TrimSpace(output)
-	var raw []map[string]interface{}
-	var single map[string]interface{}
-	if err := json.Unmarshal([]byte(output), &raw); err != nil {
-		if json.Unmarshal([]byte(output), &single) != nil {
-			return nil
-		}
-		raw = []map[string]interface{}{single}
-	}
+	raw := decodeAVProductsJSON(strings.TrimSpace(output))
 
 	var products []shared.AntivirusProduct
 	for _, item := range raw {
@@ -497,29 +489,10 @@ func parseAVProductsJSON(output string) []shared.AntivirusProduct {
 			continue
 		}
 		var state float64
-		switch v := item["productState"].(type) {
-		case float64:
+		if v, ok := item["productState"].(float64); ok {
 			state = v
 		}
-		productState := int(state)
-
-		// productState bitmask:
-		//   bits 12-15 (masked): 1 = protection enabled
-		//   bits  4-7  (masked): 0 = definitions up-to-date
-		enabled := "unknown"
-		upToDate := "unknown"
-		if productState > 0 {
-			if (productState>>12)&0x0F == 1 {
-				enabled = "enabled"
-			} else {
-				enabled = "disabled"
-			}
-			if (productState>>4)&0x0F == 0 {
-				upToDate = "yes"
-			} else {
-				upToDate = "no"
-			}
-		}
+		enabled, upToDate := avProductStateFlags(int(state))
 		products = append(products, shared.AntivirusProduct{
 			Name:     strings.TrimSpace(name),
 			Enabled:  enabled,
@@ -528,6 +501,44 @@ func parseAVProductsJSON(output string) []shared.AntivirusProduct {
 		})
 	}
 	return products
+}
+
+// decodeAVProductsJSON normalizes ConvertTo-Json output into a slice of raw
+// objects. PowerShell emits a bare JSON object when there is exactly one
+// product, or an array when there are multiple; either shape is accepted.
+func decodeAVProductsJSON(output string) []map[string]interface{} {
+	var raw []map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &raw); err == nil {
+		return raw
+	}
+	var single map[string]interface{}
+	if json.Unmarshal([]byte(output), &single) != nil {
+		return nil
+	}
+	return []map[string]interface{}{single}
+}
+
+// avProductStateFlags decodes the SecurityCenter2 productState bitmask:
+//
+//	bits 12-15 (masked): 1 = protection enabled
+//	bits  4-7  (masked): 0 = definitions up-to-date
+func avProductStateFlags(productState int) (enabled, upToDate string) {
+	enabled = "unknown"
+	upToDate = "unknown"
+	if productState <= 0 {
+		return enabled, upToDate
+	}
+	if (productState>>12)&0x0F == 1 {
+		enabled = "enabled"
+	} else {
+		enabled = "disabled"
+	}
+	if (productState>>4)&0x0F == 0 {
+		upToDate = "yes"
+	} else {
+		upToDate = "no"
+	}
+	return enabled, upToDate
 }
 
 // collectFirewallProfiles parses netsh output for Domain/Private/Public profile states.

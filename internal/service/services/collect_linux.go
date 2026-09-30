@@ -43,6 +43,7 @@ func (s *ServicesService) collectSystemdUnits(units map[string]models.ServiceInf
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("systemctl"), "list-units", "--type=service", "--all", "--no-pager", "--no-legend")
 	output, err := cmd.Output()
 	if err != nil {
@@ -58,6 +59,7 @@ func (s *ServicesService) mergeUnitFiles(units map[string]models.ServiceInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("systemctl"), "list-unit-files", "--type=service", "--no-pager", "--no-legend")
 	output, err := cmd.Output()
 	if err != nil {

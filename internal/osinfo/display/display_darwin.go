@@ -33,36 +33,51 @@ func getDisplays() []shared.Display {
 		if !ok {
 			continue
 		}
-		// GPU-level vendor used as fallback manufacturer for displays that don't
-		// carry their own vendor field (e.g. Apple built-in panels).
-		gpuVendorRaw, _ := gm["spdisplays_vendor"].(string)
-		gpuVendor := cleanMacVendorName(gpuVendorRaw)
+		displays = append(displays, displaysFromGPUEntry(gm)...)
+	}
+	return displays
+}
 
-		// macOS 13+: display items are nested under "spdisplays_ndrvs".
-		// Older format used "_items".
-		items, hasItems := gm["spdisplays_ndrvs"].([]any)
-		if !hasItems {
-			items, hasItems = gm["_items"].([]any)
+// displaysFromGPUEntry extracts the displays attached to a single GPU entry
+// from system_profiler's SPDisplaysDataType output.
+func displaysFromGPUEntry(gm map[string]any) []shared.Display {
+	// GPU-level vendor used as fallback manufacturer for displays that don't
+	// carry their own vendor field (e.g. Apple built-in panels).
+	gpuVendorRaw, _ := gm["spdisplays_vendor"].(string)
+	gpuVendor := cleanMacVendorName(gpuVendorRaw)
+
+	// macOS 13+: display items are nested under "spdisplays_ndrvs".
+	// Older format used "_items".
+	items, hasItems := gm["spdisplays_ndrvs"].([]any)
+	if !hasItems {
+		items, hasItems = gm["_items"].([]any)
+	}
+	if hasItems {
+		return buildMacDisplaysFromItems(items, gpuVendor)
+	}
+
+	// Legacy format: entry itself is the display when it has resolution data.
+	_, hasNewRes := gm["_spdisplays_resolution"]
+	_, hasOldRes := gm["spdisplays_resolution"]
+	if hasNewRes || hasOldRes {
+		if d, ok := buildMacDisplay(gm, gpuVendor); ok {
+			return []shared.Display{d}
 		}
-		if hasItems {
-			for _, item := range items {
-				dm, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				if d, ok := buildMacDisplay(dm, gpuVendor); ok {
-					displays = append(displays, d)
-				}
-			}
+	}
+	return nil
+}
+
+// buildMacDisplaysFromItems converts each nested display item (the modern
+// "spdisplays_ndrvs"/"_items" list) into a shared.Display.
+func buildMacDisplaysFromItems(items []any, gpuVendor string) []shared.Display {
+	var displays []shared.Display
+	for _, item := range items {
+		dm, ok := item.(map[string]any)
+		if !ok {
 			continue
 		}
-		// Legacy format: entry itself is the display when it has resolution data.
-		_, hasNewRes := gm["_spdisplays_resolution"]
-		_, hasOldRes := gm["spdisplays_resolution"]
-		if hasNewRes || hasOldRes {
-			if d, ok := buildMacDisplay(gm, gpuVendor); ok {
-				displays = append(displays, d)
-			}
+		if d, ok := buildMacDisplay(dm, gpuVendor); ok {
+			displays = append(displays, d)
 		}
 	}
 	return displays
@@ -80,64 +95,21 @@ func buildMacDisplay(dm map[string]any, gpuVendor string) (shared.Display, bool)
 		Model:        name,
 	}
 
-	if v, ok := dm["spdisplays_vendor"].(string); ok && v != "" {
-		d.Manufacturer = cleanMacVendorName(v)
-	} else if gpuVendor != "" {
-		d.Manufacturer = gpuVendor
+	if m := macDisplayManufacturer(dm, gpuVendor); m != "" {
+		d.Manufacturer = m
 	}
-
-	// Serial number: modern key is "_spdisplays_display-serial-number"
-	if v, ok := dm["_spdisplays_display-serial-number"].(string); ok && v != "" {
-		d.SerialNumber = v
-	} else if v, ok := dm["spdisplays_serial_number"].(string); ok && v != "" {
-		d.SerialNumber = v
+	if s := macDisplaySerialNumber(dm); s != "" {
+		d.SerialNumber = s
 	}
-
-	// Physical size in inches
-	if v, ok := dm["spdisplays_inches"].(string); ok && v != "" {
-		if sz, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && sz > 0 {
-			d.Size = sz
-		}
-	}
-	if d.Size == 0 {
-		if size := shared.ParseDisplaySizeFromName(name); size > 0 {
-			d.Size = size
-		}
-	}
-
-	// Native (physical) pixel resolution, e.g. "_spdisplays_pixels": "3024 x 1964"
-	if v, ok := dm["_spdisplays_pixels"].(string); ok && v != "" {
-		if res, _ := parseResolutionAndRefreshRate(v); res != "" {
-			d.Resolution = res
-		}
-	}
-
-	// Refresh rate from "_spdisplays_resolution"; also provides logical resolution
-	// as a fallback when native pixels were not available.
-	if v, ok := dm["_spdisplays_resolution"].(string); ok && v != "" {
-		logicalRes, hz := parseResolutionAndRefreshRate(v)
-		d.RefreshRate = hz
-		if d.Resolution == "" {
-			d.Resolution = logicalRes
-		}
-	} else if v, ok := dm["spdisplays_resolution"].(string); ok && v != "" {
-		res, hz := parseResolutionAndRefreshRate(v)
-		if d.Resolution == "" {
-			d.Resolution = res
-		}
-		d.RefreshRate = hz
-	}
+	d.Size = macDisplaySize(dm, name)
+	d.Resolution, d.RefreshRate = macDisplayResolutionAndRefresh(dm)
 
 	if v, ok := dm["spdisplays_connection_type"].(string); ok && v != "" {
 		d.ConnectionType = macDisplayConnectionType(v)
 	}
 
 	// Year: present for external displays; 0 for built-in panels (skip those)
-	if v, ok := dm["_spdisplays_display-year"].(string); ok && v != "" {
-		if yr, err := strconv.Atoi(v); err == nil && yr > 1990 {
-			d.Year = yr
-		}
-	}
+	d.Year = macDisplayYear(dm)
 
 	// Monitor type tags derived from spdisplays_display_type
 	if v, ok := dm["spdisplays_display_type"].(string); ok && v != "" {
@@ -145,6 +117,79 @@ func buildMacDisplay(dm map[string]any, gpuVendor string) (shared.Display, bool)
 	}
 
 	return d, true
+}
+
+// macDisplayManufacturer resolves a display's manufacturer from its own
+// vendor field, falling back to the GPU-level vendor. Returns "" if neither
+// is available (caller keeps its existing default in that case).
+func macDisplayManufacturer(dm map[string]any, gpuVendor string) string {
+	if v, ok := dm["spdisplays_vendor"].(string); ok && v != "" {
+		return cleanMacVendorName(v)
+	}
+	return gpuVendor
+}
+
+// macDisplaySerialNumber reads the serial number, preferring the modern key
+// "_spdisplays_display-serial-number" over the legacy "spdisplays_serial_number".
+func macDisplaySerialNumber(dm map[string]any) string {
+	if v, ok := dm["_spdisplays_display-serial-number"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := dm["spdisplays_serial_number"].(string); ok && v != "" {
+		return v
+	}
+	return ""
+}
+
+// macDisplaySize returns the physical size in inches from "spdisplays_inches",
+// falling back to parsing it out of the display name.
+func macDisplaySize(dm map[string]any, name string) float64 {
+	if v, ok := dm["spdisplays_inches"].(string); ok && v != "" {
+		if sz, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && sz > 0 {
+			return sz
+		}
+	}
+	return shared.ParseDisplaySizeFromName(name)
+}
+
+// macDisplayResolutionAndRefresh derives the resolution and refresh rate from
+// the native pixel count ("_spdisplays_pixels") and the resolution/refresh
+// string ("_spdisplays_resolution" or the legacy "spdisplays_resolution").
+func macDisplayResolutionAndRefresh(dm map[string]any) (resolution string, refreshRate float64) {
+	// Native (physical) pixel resolution, e.g. "_spdisplays_pixels": "3024 x 1964"
+	if v, ok := dm["_spdisplays_pixels"].(string); ok && v != "" {
+		if res, _ := parseResolutionAndRefreshRate(v); res != "" {
+			resolution = res
+		}
+	}
+
+	// Refresh rate from "_spdisplays_resolution"; also provides logical resolution
+	// as a fallback when native pixels were not available.
+	if v, ok := dm["_spdisplays_resolution"].(string); ok && v != "" {
+		logicalRes, hz := parseResolutionAndRefreshRate(v)
+		refreshRate = hz
+		if resolution == "" {
+			resolution = logicalRes
+		}
+	} else if v, ok := dm["spdisplays_resolution"].(string); ok && v != "" {
+		res, hz := parseResolutionAndRefreshRate(v)
+		if resolution == "" {
+			resolution = res
+		}
+		refreshRate = hz
+	}
+	return resolution, refreshRate
+}
+
+// macDisplayYear returns the manufacture year from "_spdisplays_display-year",
+// present for external displays; built-in panels report 0.
+func macDisplayYear(dm map[string]any) int {
+	if v, ok := dm["_spdisplays_display-year"].(string); ok && v != "" {
+		if yr, err := strconv.Atoi(v); err == nil && yr > 1990 {
+			return yr
+		}
+	}
+	return 0
 }
 
 // cleanMacVendorName normalises vendor strings from system_profiler:

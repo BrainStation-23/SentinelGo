@@ -73,61 +73,72 @@ func parsePnpDevices(items []map[string]any) []shared.PeripheralDevice {
 	return peripherals
 }
 
+// pnpDeviceQuery lists input/USB/audio/Bluetooth PnP devices. HardwareID is a
+// string[] in WMI/PnP; take the first element in PowerShell so ConvertTo-Json
+// emits a string rather than an array.
+const pnpDeviceQuery = `Get-PnpDevice | Where-Object {$_.Class -in @('Keyboard','Mouse','USB','HIDClass','Media','Bluetooth') -and $_.Status -eq 'OK'} | ` +
+	`Select-Object @{N='Type';E={if($_.Class -eq 'Mouse'){'Mouse or other pointing device'} elseif($_.Class -eq 'Keyboard'){'Keyboard'} elseif($_.Class -eq 'HIDClass'){'HID Device'} elseif($_.Class -eq 'Media'){'Audio Device'} elseif($_.Class -eq 'Bluetooth'){'Bluetooth Device'} else {'USB Device'}}}, ` +
+	`@{N='Description';E={$_.FriendlyName}}, Manufacturer, ` +
+	`@{N='HardwareID';E={if($_.HardwareID){$_.HardwareID[0]}else{''}}} | ConvertTo-Json -Depth 2`
+
+// soundDeviceQuery lists built-in sound devices via WMI.
+const soundDeviceQuery = `Get-WmiObject Win32_SoundDevice | Select-Object Name, Manufacturer | ConvertTo-Json -Depth 2`
+
 func getPeripherals() []shared.PeripheralDevice {
 	var peripherals []shared.PeripheralDevice
 
-	// HardwareID is a string[] in WMI/PnP; take the first element in PowerShell so
-	// ConvertTo-Json emits a string rather than an array.
-	output, err := shared.RunPowerShell(
-		`Get-PnpDevice | Where-Object {$_.Class -in @('Keyboard','Mouse','USB','HIDClass','Media','Bluetooth') -and $_.Status -eq 'OK'} | ` +
-			`Select-Object @{N='Type';E={if($_.Class -eq 'Mouse'){'Mouse or other pointing device'} elseif($_.Class -eq 'Keyboard'){'Keyboard'} elseif($_.Class -eq 'HIDClass'){'HID Device'} elseif($_.Class -eq 'Media'){'Audio Device'} elseif($_.Class -eq 'Bluetooth'){'Bluetooth Device'} else {'USB Device'}}}, ` +
-			`@{N='Description';E={$_.FriendlyName}}, Manufacturer, ` +
-			`@{N='HardwareID';E={if($_.HardwareID){$_.HardwareID[0]}else{''}}} | ConvertTo-Json -Depth 2`)
-	if err == nil {
-		output = strings.TrimSpace(output)
-		if output != "" {
-			var arr []map[string]any
-			var obj map[string]any
-			if json.Unmarshal([]byte(output), &arr) != nil {
-				if json.Unmarshal([]byte(output), &obj) == nil {
-					arr = []map[string]any{obj}
-				}
-			}
-			peripherals = append(peripherals, parsePnpDevices(arr)...)
-		}
+	if output, err := shared.RunPowerShell(pnpDeviceQuery); err == nil {
+		peripherals = append(peripherals, parsePnpDevices(decodePowerShellJSONItems(output))...)
 	}
 
-	wmiOutput, err := shared.RunPowerShell(
-		`Get-WmiObject Win32_SoundDevice | Select-Object Name, Manufacturer | ConvertTo-Json -Depth 2`)
-	if err == nil {
-		wmiOutput = strings.TrimSpace(wmiOutput)
-		if wmiOutput != "" {
-			var arr []map[string]any
-			var obj map[string]any
-			if json.Unmarshal([]byte(wmiOutput), &arr) != nil {
-				if json.Unmarshal([]byte(wmiOutput), &obj) == nil {
-					arr = []map[string]any{obj}
-				}
-			}
-			for _, item := range arr {
-				p := shared.PeripheralDevice{
-					Type:           "Audio Device",
-					ConnectionType: "Built-in Audio",
-					IsBuiltIn:      true,
-					Status:         "Connected",
-				}
-				if v, ok := item["Name"].(string); ok {
-					p.Description = v
-				}
-				if v, ok := item["Manufacturer"].(string); ok {
-					p.Manufacturer = v
-				}
-				if p.Description != "" {
-					peripherals = append(peripherals, p)
-				}
-			}
-		}
+	if output, err := shared.RunPowerShell(soundDeviceQuery); err == nil {
+		peripherals = append(peripherals, parseSoundDeviceItems(decodePowerShellJSONItems(output))...)
 	}
 
+	return peripherals
+}
+
+// decodePowerShellJSONItems parses ConvertTo-Json output into a slice of
+// items. PowerShell emits a single object (not wrapped in an array) when
+// there is exactly one result, so a failed array decode falls back to
+// decoding a single object and wrapping it. Blank input or output that
+// matches neither shape yields nil.
+func decodePowerShellJSONItems(output string) []map[string]any {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return nil
+	}
+	var arr []map[string]any
+	if json.Unmarshal([]byte(output), &arr) == nil {
+		return arr
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(output), &obj) == nil {
+		return []map[string]any{obj}
+	}
+	return nil
+}
+
+// parseSoundDeviceItems converts raw Win32_SoundDevice JSON items into
+// PeripheralDevice entries, skipping any without a name.
+func parseSoundDeviceItems(items []map[string]any) []shared.PeripheralDevice {
+	var peripherals []shared.PeripheralDevice
+	for _, item := range items {
+		p := shared.PeripheralDevice{
+			Type:           "Audio Device",
+			ConnectionType: "Built-in Audio",
+			IsBuiltIn:      true,
+			Status:         "Connected",
+		}
+		if v, ok := item["Name"].(string); ok {
+			p.Description = v
+		}
+		if v, ok := item["Manufacturer"].(string); ok {
+			p.Manufacturer = v
+		}
+		if p.Description != "" {
+			peripherals = append(peripherals, p)
+		}
+	}
 	return peripherals
 }

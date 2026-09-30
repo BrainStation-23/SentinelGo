@@ -66,24 +66,41 @@ func (c *darwinCollector) Collect(ctx context.Context, checkpoint CheckpointData
 	}
 
 	newCP := make(CheckpointData)
-	for k, v := range checkpoint {
-		newCP[k] = v
-	}
+	mergeCheckpointData(newCP, checkpoint)
 
 	var allEntries []RawLogEntry
+	allEntries = append(allEntries, c.collectOSLogStage(ctx, checkpoint, newCP)...)
+	allEntries = append(allEntries, c.collectFileLogStage(ctx, checkpoint, newCP)...)
+	allEntries = append(allEntries, c.collectCrashReportStage(ctx, checkpoint, newCP)...)
 
-	// 1. Collect from the unified log via `log show`.
-	oslogEntries, oslogCP, err := c.collectOSLog(ctx, checkpoint)
+	return allEntries, newCP, nil
+}
+
+// mergeCheckpointData copies every key/value from src into dst.
+func mergeCheckpointData(dst, src CheckpointData) {
+	for k, v := range src {
+		dst[k] = v
+	}
+}
+
+// collectOSLogStage runs the unified-log collection stage, merging any
+// resulting checkpoint updates into newCP. Returns nil entries on error
+// (logged, not fatal to the overall Collect cycle).
+func (c *darwinCollector) collectOSLogStage(ctx context.Context, checkpoint, newCP CheckpointData) []RawLogEntry {
+	entries, oslogCP, err := c.collectOSLog(ctx, checkpoint)
 	if err != nil {
 		log.Printf("[collector/darwin] OSLog collection error: %v", err)
-	} else {
-		allEntries = append(allEntries, oslogEntries...)
-		for k, v := range oslogCP {
-			newCP[k] = v
-		}
+		return nil
 	}
+	mergeCheckpointData(newCP, oslogCP)
+	return entries
+}
 
-	// 2. Collect from file-based logs.
+// collectFileLogStage runs the classic file-log collection stage across all
+// macLogFiles, merging checkpoint updates into newCP. A per-file error is
+// logged and skipped rather than aborting the remaining files.
+func (c *darwinCollector) collectFileLogStage(ctx context.Context, checkpoint, newCP CheckpointData) []RawLogEntry {
+	var allEntries []RawLogEntry
 	for _, lf := range macLogFiles {
 		if ctx.Err() != nil {
 			break
@@ -94,25 +111,25 @@ func (c *darwinCollector) Collect(ctx context.Context, checkpoint CheckpointData
 			continue
 		}
 		allEntries = append(allEntries, entries...)
-		for k, v := range fileCP {
-			newCP[k] = v
-		}
+		mergeCheckpointData(newCP, fileCP)
 	}
+	return allEntries
+}
 
-	// 3. Collect crash reports.
-	if ctx.Err() == nil {
-		crashEntries, crashCP, err := c.collectCrashReports(ctx, checkpoint)
-		if err != nil {
-			log.Printf("[collector/darwin] crash reports error: %v", err)
-		} else {
-			allEntries = append(allEntries, crashEntries...)
-			for k, v := range crashCP {
-				newCP[k] = v
-			}
-		}
+// collectCrashReportStage runs the crash-report collection stage, merging any
+// resulting checkpoint updates into newCP. Skipped entirely once the context
+// is already done, and errors are logged rather than fatal.
+func (c *darwinCollector) collectCrashReportStage(ctx context.Context, checkpoint, newCP CheckpointData) []RawLogEntry {
+	if ctx.Err() != nil {
+		return nil
 	}
-
-	return allEntries, newCP, nil
+	entries, crashCP, err := c.collectCrashReports(ctx, checkpoint)
+	if err != nil {
+		log.Printf("[collector/darwin] crash reports error: %v", err)
+		return nil
+	}
+	mergeCheckpointData(newCP, crashCP)
+	return entries
 }
 
 // Subscribe has no real-time path on macOS; events are collected via polling in

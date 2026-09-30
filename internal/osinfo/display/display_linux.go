@@ -11,46 +11,25 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// xrandrInfo bundles the per-connector state gathered from `xrandr --query`
+// that buildLinuxDisplay layers on top of EDID data. Grouping these together
+// keeps downstream function signatures short.
+type xrandrInfo struct {
+	connected    map[string]bool
+	resolutions  map[string]string
+	refreshRates map[string]float64
+}
+
 func getDisplays() []shared.Display {
 	var displays []shared.Display
 
-	connectedDisplays := make(map[string]bool)
-	displayRefreshRates := make(map[string]float64)
-	displayResolutions := make(map[string]string)
+	xr := xrandrInfo{
+		connected:    make(map[string]bool),
+		resolutions:  make(map[string]string),
+		refreshRates: make(map[string]float64),
+	}
 	if output, err := shared.RunCommand("xrandr", "--query"); err == nil {
-		for _, line := range strings.Split(output, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.Contains(line, " connected") {
-				parts := strings.Fields(line)
-				if len(parts) > 0 {
-					connectedDisplays[parts[0]] = true
-					for _, part := range parts[1:] {
-						// Geometry token: "NxM+X+Y" — current active mode
-						if plusIdx := strings.Index(part, "+"); plusIdx > 0 {
-							if res := part[:plusIdx]; strings.Contains(res, "x") {
-								halves := strings.SplitN(res, "x", 2)
-								if len(halves) == 2 {
-									if _, e1 := strconv.Atoi(halves[0]); e1 == nil {
-										if _, e2 := strconv.Atoi(halves[1]); e2 == nil {
-											displayResolutions[parts[0]] = res
-										}
-									}
-								}
-							}
-							break
-						}
-						// Refresh rate on mode lines (indented) — won't appear here,
-						// but kept for compatibility with non-standard xrandr output
-						if strings.Contains(part, "*") || strings.Contains(part, "+") {
-							rateStr := strings.TrimSuffix(strings.TrimSuffix(part, "*"), "+")
-							if refreshRate, err := strconv.ParseFloat(rateStr, 64); err == nil {
-								displayRefreshRates[parts[0]] = refreshRate
-							}
-						}
-					}
-				}
-			}
-		}
+		xr.connected, xr.resolutions, xr.refreshRates = parseXrandrQuery(output)
 	}
 
 	drmDirs, err := os.ReadDir("/sys/class/drm")
@@ -59,114 +38,256 @@ func getDisplays() []shared.Display {
 	}
 	for _, dir := range drmDirs {
 		name := dir.Name()
-		if strings.HasPrefix(name, "card") && !strings.Contains(name, "-") {
+		if !isDRMConnectorName(name) {
 			continue
 		}
-		if !strings.Contains(name, "DP-") && !strings.Contains(name, "HDMI-") &&
-			!strings.Contains(name, "VGA-") && !strings.Contains(name, "eDP-") &&
-			!strings.HasSuffix(name, "-") {
-			continue
+		if d, ok := buildLinuxDisplay(name, xr); ok {
+			displays = append(displays, d)
 		}
-
-		connectorName := name
-		if idx := strings.Index(name, "-"); idx >= 0 {
-			connectorName = name[idx+1:]
-		}
-
-		edidPath := fmt.Sprintf("/sys/class/drm/%s/edid", name)
-		edidData, edidErr := shared.ReadFileBytes(edidPath)
-		isConnected := (edidErr == nil && len(edidData) > 16) || connectedDisplays[connectorName] || connectedDisplays[name]
-		if !isConnected {
-			continue
-		}
-
-		display := shared.Display{
-			Description:    connectorName,
-			Manufacturer:   "Unknown",
-			SerialNumber:   "Unknown",
-			Model:          "Unknown",
-			ConnectionType: linuxConnectionType(connectorName),
-		}
-
-		if edidErr == nil && len(edidData) > 16 {
-			display.Manufacturer = parseEDIDManufacturer(edidData)
-			display.SerialNumber = parseEDIDSerial(edidData)
-			display.Model = parseEDIDModel(edidData)
-			display.Size = parseEDIDSize(edidData)
-			display.Year = parseEDIDYear(edidData)
-			if w, h := parseEDIDNativeResolution(edidData); w > 0 && h > 0 {
-				display.Resolution = fmt.Sprintf("%dx%d", w, h)
-			}
-		}
-
-		if display.SerialNumber == "Unknown" || display.SerialNumber == "" || display.Model == "Unknown" {
-			if edidDecodeOutput, err := shared.RunCommand("edid-decode", edidPath); err == nil {
-				for _, line := range strings.Split(edidDecodeOutput, "\n") {
-					if (display.SerialNumber == "Unknown" || display.SerialNumber == "") && strings.Contains(line, "Serial Number:") {
-						parts := strings.SplitN(line, ":", 2)
-						if len(parts) == 2 {
-							serial := strings.TrimSpace(parts[1])
-							if serial != "" && serial != "0" && serial != "Not specified" {
-								display.SerialNumber = serial
-							}
-						}
-					}
-					if display.Model == "Unknown" && (strings.Contains(line, "Monitor Name:") || strings.Contains(line, "Model:")) {
-						parts := strings.SplitN(line, ":", 2)
-						if len(parts) == 2 {
-							model := strings.TrimSpace(parts[1])
-							if model != "" && len(model) > 2 {
-								display.Model = model
-							}
-						}
-					}
-				}
-			}
-		}
-
-		if display.SerialNumber == "Unknown" || display.SerialNumber == "" {
-			if xrandrSerial := getSerialFromXrandrProps(connectorName); xrandrSerial != "" {
-				display.SerialNumber = xrandrSerial
-			}
-		}
-
-		if (display.SerialNumber == "Unknown" || display.SerialNumber == "") && strings.Contains(connectorName, "eDP") {
-			if dmiSerial := getSerialFromDMI(); dmiSerial != "" {
-				display.SerialNumber = dmiSerial
-			}
-		}
-
-		if (display.SerialNumber == "Unknown" || display.SerialNumber == "") && edidErr == nil && len(edidData) > 16 {
-			if edidHash := generateEDIDHash(edidData); edidHash != "" {
-				display.SerialNumber = edidHash
-			}
-		}
-
-		// xrandr current resolution takes priority over EDID native timing
-		if xRes, ok := displayResolutions[connectorName]; ok {
-			display.Resolution = xRes
-		} else if xRes, ok := displayResolutions[name]; ok {
-			display.Resolution = xRes
-		}
-
-		if refreshRate, ok := displayRefreshRates[connectorName]; ok {
-			display.RefreshRate = refreshRate
-		} else if refreshRate, ok := displayRefreshRates[name]; ok {
-			display.RefreshRate = refreshRate
-		}
-
-		if display.Manufacturer == "" {
-			display.Manufacturer = "Unknown"
-		}
-		if display.SerialNumber == "" {
-			display.SerialNumber = "Unknown"
-		}
-		if display.Model == "" {
-			display.Model = "Unknown"
-		}
-		displays = append(displays, display)
 	}
 	return displays
+}
+
+// parseXrandrQuery parses the full output of `xrandr --query` into the
+// connected-connector set plus their current resolution and refresh rate,
+// keyed by connector name (e.g. "DP-1").
+func parseXrandrQuery(output string) (connected map[string]bool, resolutions map[string]string, refreshRates map[string]float64) {
+	connected = make(map[string]bool)
+	resolutions = make(map[string]string)
+	refreshRates = make(map[string]float64)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, " connected") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+		name := parts[0]
+		connected[name] = true
+		res, refresh, refreshSet := parseXrandrConnectedTokens(parts[1:])
+		if res != "" {
+			resolutions[name] = res
+		}
+		if refreshSet {
+			refreshRates[name] = refresh
+		}
+	}
+	return connected, resolutions, refreshRates
+}
+
+// parseXrandrConnectedTokens scans the fields following a connector name on an
+// "xrandr --query" connected line for the active geometry ("NxM+X+Y") and, as
+// a compatibility fallback, a refresh-rate token from mode lines.
+func parseXrandrConnectedTokens(parts []string) (resolution string, refreshRate float64, refreshSet bool) {
+	for _, part := range parts {
+		// Geometry token: "NxM+X+Y" — current active mode
+		if plusIdx := strings.Index(part, "+"); plusIdx > 0 {
+			resolution = parseXrandrGeometry(part[:plusIdx])
+			break
+		}
+		// Refresh rate on mode lines (indented) — won't appear here,
+		// but kept for compatibility with non-standard xrandr output
+		if strings.Contains(part, "*") || strings.Contains(part, "+") {
+			rateStr := strings.TrimSuffix(strings.TrimSuffix(part, "*"), "+")
+			if rate, err := strconv.ParseFloat(rateStr, 64); err == nil {
+				refreshRate = rate
+				refreshSet = true
+			}
+		}
+	}
+	return resolution, refreshRate, refreshSet
+}
+
+// parseXrandrGeometry validates that res looks like "NxM" (both dimensions
+// numeric) before returning it as a resolution string.
+func parseXrandrGeometry(res string) string {
+	if !strings.Contains(res, "x") {
+		return ""
+	}
+	halves := strings.SplitN(res, "x", 2)
+	if len(halves) != 2 {
+		return ""
+	}
+	if _, err := strconv.Atoi(halves[0]); err != nil {
+		return ""
+	}
+	if _, err := strconv.Atoi(halves[1]); err != nil {
+		return ""
+	}
+	return res
+}
+
+// isDRMConnectorName reports whether a /sys/class/drm entry name looks like a
+// display connector (e.g. "card1-DP-1") rather than a bare GPU card node.
+func isDRMConnectorName(name string) bool {
+	if strings.HasPrefix(name, "card") && !strings.Contains(name, "-") {
+		return false
+	}
+	if !strings.Contains(name, "DP-") && !strings.Contains(name, "HDMI-") &&
+		!strings.Contains(name, "VGA-") && !strings.Contains(name, "eDP-") &&
+		!strings.HasSuffix(name, "-") {
+		return false
+	}
+	return true
+}
+
+// drmConnectorName strips the "cardN-" prefix from a /sys/class/drm entry
+// name, leaving the bare connector name (e.g. "DP-1").
+func drmConnectorName(name string) string {
+	if idx := strings.Index(name, "-"); idx >= 0 {
+		return name[idx+1:]
+	}
+	return name
+}
+
+// buildLinuxDisplay builds a shared.Display for one DRM connector, combining
+// EDID data with xrandr's live connection/geometry state. ok is false if the
+// connector has neither a valid EDID nor an xrandr "connected" entry.
+func buildLinuxDisplay(name string, xr xrandrInfo) (shared.Display, bool) {
+	connectorName := drmConnectorName(name)
+
+	edidPath := fmt.Sprintf("/sys/class/drm/%s/edid", name)
+	edidData, edidErr := shared.ReadFileBytes(edidPath)
+	hasEDID := edidErr == nil && len(edidData) > 16
+	if !hasEDID && !xr.connected[connectorName] && !xr.connected[name] {
+		return shared.Display{}, false
+	}
+
+	display := shared.Display{
+		Description:    connectorName,
+		Manufacturer:   "Unknown",
+		SerialNumber:   "Unknown",
+		Model:          "Unknown",
+		ConnectionType: linuxConnectionType(connectorName),
+	}
+
+	if hasEDID {
+		applyEDIDData(&display, edidData)
+	}
+
+	applyEDIDDecodeFallback(&display, edidPath)
+	applyLinuxSerialFallbacks(&display, connectorName, edidData, hasEDID)
+	applyXrandrGeometry(&display, connectorName, name, xr)
+	fillLinuxDisplayDefaults(&display)
+
+	return display, true
+}
+
+// applyEDIDData populates display from a validated EDID blob.
+func applyEDIDData(display *shared.Display, edidData []byte) {
+	display.Manufacturer = parseEDIDManufacturer(edidData)
+	display.SerialNumber = parseEDIDSerial(edidData)
+	display.Model = parseEDIDModel(edidData)
+	display.Size = parseEDIDSize(edidData)
+	display.Year = parseEDIDYear(edidData)
+	if w, h := parseEDIDNativeResolution(edidData); w > 0 && h > 0 {
+		display.Resolution = fmt.Sprintf("%dx%d", w, h)
+	}
+}
+
+// isUnknownOrEmpty reports whether a display field still holds its
+// placeholder default, meaning a better value hasn't been found yet.
+func isUnknownOrEmpty(s string) bool {
+	return s == "" || s == "Unknown"
+}
+
+// applyEDIDDecodeFallback shells out to `edid-decode` to recover a serial
+// number or model name when the raw EDID parse didn't produce one.
+func applyEDIDDecodeFallback(display *shared.Display, edidPath string) {
+	if !isUnknownOrEmpty(display.SerialNumber) && display.Model != "Unknown" {
+		return
+	}
+	edidDecodeOutput, err := shared.RunCommand("edid-decode", edidPath)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(edidDecodeOutput, "\n") {
+		applyEDIDDecodeLine(display, line)
+	}
+}
+
+// applyEDIDDecodeLine inspects one line of `edid-decode` output, filling in
+// the serial number or model on display if that line carries one.
+func applyEDIDDecodeLine(display *shared.Display, line string) {
+	if isUnknownOrEmpty(display.SerialNumber) && strings.Contains(line, "Serial Number:") {
+		if value, ok := edidDecodeFieldValue(line); ok {
+			if value != "" && value != "0" && value != "Not specified" {
+				display.SerialNumber = value
+			}
+		}
+	}
+	if display.Model == "Unknown" && (strings.Contains(line, "Monitor Name:") || strings.Contains(line, "Model:")) {
+		if value, ok := edidDecodeFieldValue(line); ok {
+			if value != "" && len(value) > 2 {
+				display.Model = value
+			}
+		}
+	}
+}
+
+// edidDecodeFieldValue splits an "edid-decode" "Label: value" line and
+// returns the trimmed value.
+func edidDecodeFieldValue(line string) (string, bool) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	return strings.TrimSpace(parts[1]), true
+}
+
+// applyLinuxSerialFallbacks tries, in order, xrandr connector properties, the
+// system DMI product serial (for internal panels only), and finally a hash of
+// the EDID bytes — each only if the serial number is still unset.
+func applyLinuxSerialFallbacks(display *shared.Display, connectorName string, edidData []byte, hasEDID bool) {
+	if isUnknownOrEmpty(display.SerialNumber) {
+		if xrandrSerial := getSerialFromXrandrProps(connectorName); xrandrSerial != "" {
+			display.SerialNumber = xrandrSerial
+		}
+	}
+
+	if isUnknownOrEmpty(display.SerialNumber) && strings.Contains(connectorName, "eDP") {
+		if dmiSerial := getSerialFromDMI(); dmiSerial != "" {
+			display.SerialNumber = dmiSerial
+		}
+	}
+
+	if isUnknownOrEmpty(display.SerialNumber) && hasEDID {
+		if edidHash := generateEDIDHash(edidData); edidHash != "" {
+			display.SerialNumber = edidHash
+		}
+	}
+}
+
+// applyXrandrGeometry overrides the EDID-derived resolution/refresh rate with
+// xrandr's live values, which take priority since they reflect the active mode.
+func applyXrandrGeometry(display *shared.Display, connectorName, name string, xr xrandrInfo) {
+	if xRes, ok := xr.resolutions[connectorName]; ok {
+		display.Resolution = xRes
+	} else if xRes, ok := xr.resolutions[name]; ok {
+		display.Resolution = xRes
+	}
+
+	if refreshRate, ok := xr.refreshRates[connectorName]; ok {
+		display.RefreshRate = refreshRate
+	} else if refreshRate, ok := xr.refreshRates[name]; ok {
+		display.RefreshRate = refreshRate
+	}
+}
+
+// fillLinuxDisplayDefaults restores the "Unknown" placeholder for any field
+// that ended up as an empty string after all the fallback lookups.
+func fillLinuxDisplayDefaults(display *shared.Display) {
+	if display.Manufacturer == "" {
+		display.Manufacturer = "Unknown"
+	}
+	if display.SerialNumber == "" {
+		display.SerialNumber = "Unknown"
+	}
+	if display.Model == "" {
+		display.Model = "Unknown"
+	}
 }
 
 // parseEDIDNativeResolution extracts horizontal and vertical active pixels from
@@ -235,37 +356,67 @@ func parseEDIDSerial(edid []byte) string {
 	if len(edid) < 16 {
 		return ""
 	}
+	if serial := findEDIDDescriptorSerial(edid); serial != "" {
+		return serial
+	}
+	if serial := edidSerialNumberField(edid); serial != "" {
+		return serial
+	}
+	return generateEDIDHash(edid)
+}
+
+// findEDIDDescriptorSerial scans the 18-byte monitor descriptor blocks
+// (offsets 54, 72, 90, 108) for one tagged 0xFF (ASCII serial number) and
+// returns its decoded text, or "" if none is usable.
+func findEDIDDescriptorSerial(edid []byte) string {
 	for i := 54; i < 126; i += 18 {
 		if i+17 >= len(edid) {
 			break
 		}
-		if edid[i+3] == 0xFF {
-			var serialBytes []byte
-			for j := 5; j < 18; j++ {
-				b := edid[i+j]
-				if b == 0x0A || b == 0x20 {
-					if len(serialBytes) > 0 {
-						break
-					}
-					continue
-				}
-				if b >= 0x20 && b <= 0x7E {
-					serialBytes = append(serialBytes, b)
-				}
-			}
-			if len(serialBytes) > 0 {
-				serial := string(serialBytes)
-				if len(serial) > 3 && serial != "0123456789" && serial != "1234567890" {
-					return serial
-				}
-			}
+		if edid[i+3] != 0xFF {
+			continue
+		}
+		if serial := decodeEDIDDescriptorText(edid, i); serial != "" {
+			return serial
 		}
 	}
+	return ""
+}
+
+// decodeEDIDDescriptorText decodes the ASCII text stored in bytes 5-17 of the
+// 18-byte descriptor block at offset i, rejecting empty or placeholder values.
+func decodeEDIDDescriptorText(edid []byte, i int) string {
+	var textBytes []byte
+	for j := 5; j < 18; j++ {
+		b := edid[i+j]
+		if b == 0x0A || b == 0x20 {
+			if len(textBytes) > 0 {
+				break
+			}
+			continue
+		}
+		if b >= 0x20 && b <= 0x7E {
+			textBytes = append(textBytes, b)
+		}
+	}
+	if len(textBytes) == 0 {
+		return ""
+	}
+	serial := string(textBytes)
+	if len(serial) > 3 && serial != "0123456789" && serial != "1234567890" {
+		return serial
+	}
+	return ""
+}
+
+// edidSerialNumberField reads the 32-bit little-endian serial number field
+// (EDID bytes 12-15), treating 0 and 1 as "not set".
+func edidSerialNumberField(edid []byte) string {
 	serial := (int(edid[15]) << 24) | (int(edid[14]) << 16) | (int(edid[13]) << 8) | int(edid[12])
 	if serial != 0 && serial != 1 {
 		return fmt.Sprintf("%d", serial)
 	}
-	return generateEDIDHash(edid)
+	return ""
 }
 
 func generateEDIDHash(edid []byte) string {
@@ -287,30 +438,55 @@ func parseEDIDModel(edid []byte) string {
 	if len(edid) < 126 {
 		return ""
 	}
+	if model := findEDIDDescriptorModel(edid); model != "" {
+		return model
+	}
+	return fallbackEDIDModelName(edid)
+}
+
+// findEDIDDescriptorModel scans the monitor descriptor blocks for one tagged
+// 0xFC (ASCII monitor name) and returns its decoded text.
+func findEDIDDescriptorModel(edid []byte) string {
 	for i := 54; i < 126; i += 18 {
 		if i+17 >= len(edid) {
 			break
 		}
-		if edid[i+3] == 0xFC {
-			var modelBytes []byte
-			for j := 5; j < 18; j++ {
-				b := edid[i+j]
-				if b == 0x0A {
-					break
-				}
-				if b >= 0x20 && b <= 0x7E {
-					modelBytes = append(modelBytes, b)
-				}
-			}
-			if len(modelBytes) > 0 {
-				model := strings.TrimRight(string(modelBytes), " ")
-				if len(model) < 3 {
-					continue
-				}
-				return model
-			}
+		if edid[i+3] != 0xFC {
+			continue
+		}
+		if model := decodeEDIDModelText(edid, i); model != "" {
+			return model
 		}
 	}
+	return ""
+}
+
+// decodeEDIDModelText decodes the ASCII monitor name in bytes 5-17 of the
+// descriptor block at offset i, rejecting names shorter than 3 characters.
+func decodeEDIDModelText(edid []byte, i int) string {
+	var modelBytes []byte
+	for j := 5; j < 18; j++ {
+		b := edid[i+j]
+		if b == 0x0A {
+			break
+		}
+		if b >= 0x20 && b <= 0x7E {
+			modelBytes = append(modelBytes, b)
+		}
+	}
+	if len(modelBytes) == 0 {
+		return ""
+	}
+	model := strings.TrimRight(string(modelBytes), " ")
+	if len(model) < 3 {
+		return ""
+	}
+	return model
+}
+
+// fallbackEDIDModelName synthesizes a model name from the manufacturer and
+// physical size when no descriptor block supplied one.
+func fallbackEDIDModelName(edid []byte) string {
 	manufacturer := parseEDIDManufacturer(edid)
 	size := parseEDIDSize(edid)
 	if manufacturer != "" && size > 0 {
@@ -336,28 +512,54 @@ func getSerialFromXrandrProps(connectorName string) string {
 	currentConnector := ""
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.Contains(line, " connected") || strings.Contains(line, " disconnected") {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				currentConnector = parts[0]
-			}
+		if connector, ok := xrandrConnectorLine(line); ok {
+			currentConnector = connector
 			continue
 		}
-		if currentConnector == connectorName && strings.Contains(line, "EDID:") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				edidHex := strings.ReplaceAll(strings.TrimSpace(parts[1]), "\n", "")
-				edidHex = strings.ReplaceAll(edidHex, " ", "")
-				edidData, err := hex.DecodeString(edidHex)
-				if err == nil && len(edidData) > 16 {
-					if serial := parseEDIDSerial(edidData); serial != "" && serial != "Unknown" {
-						return serial
-					}
-				}
-			}
+		if currentConnector != connectorName {
+			continue
+		}
+		if serial, ok := serialFromXrandrEDIDLine(line); ok {
+			return serial
 		}
 	}
 	return ""
+}
+
+// xrandrConnectorLine reports whether line starts a new connector section in
+// `xrandr --prop --query` output ("<name> connected ..." / "... disconnected ...").
+func xrandrConnectorLine(line string) (connector string, ok bool) {
+	if !strings.Contains(line, " connected") && !strings.Contains(line, " disconnected") {
+		return "", false
+	}
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return "", false
+	}
+	return parts[0], true
+}
+
+// serialFromXrandrEDIDLine decodes an "EDID: <hex>" property line and
+// extracts its serial number, if the EDID blob is long enough and valid.
+func serialFromXrandrEDIDLine(line string) (string, bool) {
+	if !strings.Contains(line, "EDID:") {
+		return "", false
+	}
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	edidHex := strings.ReplaceAll(strings.TrimSpace(parts[1]), "\n", "")
+	edidHex = strings.ReplaceAll(edidHex, " ", "")
+	edidData, err := hex.DecodeString(edidHex)
+	if err != nil || len(edidData) <= 16 {
+		return "", false
+	}
+	serial := parseEDIDSerial(edidData)
+	if serial == "" || serial == "Unknown" {
+		return "", false
+	}
+	return serial, true
 }
 
 func getSerialFromDMI() string {
