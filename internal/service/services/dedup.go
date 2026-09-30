@@ -15,8 +15,9 @@ import (
 )
 
 // svcsForceResendInterval is the maximum time between full services syncs even
-// when the list has not changed.
-const svcsForceResendInterval = 1 * time.Hour
+// when the list has not changed. It is a var (not a const) so tests can shrink
+// it for fast, deterministic runs.
+var svcsForceResendInterval = 1 * time.Hour
 
 var (
 	svcsInProgress atomic.Bool
