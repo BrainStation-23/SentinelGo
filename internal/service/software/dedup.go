@@ -16,7 +16,8 @@ import (
 // swForceResendInterval is the maximum time between full software syncs even
 // when the installed-software list has not changed. This ensures the backend
 // receives a periodic refresh after a manual database fix or first registration.
-const swForceResendInterval = 1 * time.Hour
+// It is a var (not a const) so tests can shrink it for fast, deterministic runs.
+var swForceResendInterval = 1 * time.Hour
 
 var (
 	// swInProgress is a trylock: if the scheduler's periodic task and a

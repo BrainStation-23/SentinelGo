@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-const (
+// enqueueRetryBase and enqueueRetryMax are vars (not consts) so tests can
+// shrink them for fast, deterministic backoff assertions.
+var (
 	enqueueRetryBase = 1 * time.Second
 	enqueueRetryMax  = 5 * time.Minute
 )

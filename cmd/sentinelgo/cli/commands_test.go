@@ -20,19 +20,26 @@ import (
 )
 
 // captureStdout redirects os.Stdout for the duration of fn, returns printed text.
+// The pipe is drained concurrently while fn runs (not just after it returns) so
+// output larger than the OS pipe buffer doesn't deadlock fn's write call.
 func captureStdout(fn func()) string {
 	r, w, _ := os.Pipe()
 	old := os.Stdout
 	os.Stdout = w
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
 
 	fn()
 
 	_ = w.Close()
 	os.Stdout = old
 
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	return buf.String()
+	return <-done
 }
 
 // ── HandleAuditLogsStatus ────────────────────────────────────────────────────

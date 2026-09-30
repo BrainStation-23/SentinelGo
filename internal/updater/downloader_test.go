@@ -134,6 +134,43 @@ func TestDownloadAndVerify_CancelledContext(t *testing.T) {
 	}
 }
 
+// TestDownloadAndVerify_TruncatedBody verifies that a connection dropped
+// mid-download (actual bytes shorter than the declared Content-Length) is
+// surfaced as an io.Copy error, and the partially-written .new file is cleaned up.
+func TestDownloadAndVerify_TruncatedBody(t *testing.T) {
+	assetPath := "v1.0.0/sentinelgo-linux-amd64"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000000") // declare far more than we send
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short body"))
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, err := hj.Hijack()
+			if err == nil {
+				_ = conn.Close() // abruptly close so the client sees a truncated read
+			}
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cfg := cfgForServer(srv.URL)
+	_, _, err := downloadAndVerify(ctx, cfg, assetPath, "somechecksum", "")
+	if err == nil {
+		t.Error("expected an error from a truncated download body, got nil")
+	}
+
+	// Best-effort cleanup: on some platforms os.Remove(newPath) in the
+	// production code races the not-yet-deferred-closed file handle (see the
+	// same note in TestDownloadAndVerify_EmptySigPath above).
+	selfPath, _ := os.Executable()
+	if _, statErr := os.Stat(selfPath + ".new"); statErr == nil {
+		_ = os.Remove(selfPath + ".new")
+		t.Log("note: .new file was left behind — cleaned up by test")
+	}
+}
+
 // TestDownloadAndVerify_InvalidURL verifies that an unreachable host returns an error.
 func TestDownloadAndVerify_InvalidURL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

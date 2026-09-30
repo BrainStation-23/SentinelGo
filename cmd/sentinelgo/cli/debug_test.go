@@ -14,9 +14,9 @@ import (
 // ── debugDump JSON shape ─────────────────────────────────────────────────────
 
 // The dump is marshaled directly (not via captureStdout): a full SystemInfo
-// serializes to more than the OS pipe buffer, and captureStdout only drains
-// after fn returns, so routing it through stdout capture would deadlock. The
-// actual stdout printing is exercised by running the binary.
+// serializes to a large payload, and routing it through a pipe just to
+// re-parse it adds cost with no extra assertion value. The actual stdout
+// printing is exercised by running the binary.
 func TestDebugDump_marshalsValidJSON(t *testing.T) {
 	dump := debugDump{
 		CollectedAt: "2026-06-16T00:00:00Z",
