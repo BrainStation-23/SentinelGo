@@ -386,6 +386,51 @@ func generatePostureSummary(
 	return summary
 }
 
+// processNameForPID best-effort resolves pid's executable name via gopsutil.
+// Returns "" if the process can't be inspected (e.g. it exited, or the
+// lookup requires privileges this process doesn't have).
+func processNameForPID(pid int32) string {
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		return ""
+	}
+	name, err := p.Name()
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// classifyListeningPort converts a gopsutil connection into a ListeningPort,
+// with ok=false for connections that are neither a TCP listener nor a bound
+// UDP socket (SOCK_DGRAM=2), or whose port doesn't fit in a uint16.
+func classifyListeningPort(conn gnet.ConnectionStat) (lp shared.ListeningPort, ok bool) {
+	isTCPListen := conn.Status == "LISTEN"
+	isUDPBound := conn.Type == 2 && conn.Laddr.Port > 0
+	if !isTCPListen && !isUDPBound {
+		return lp, false
+	}
+	if conn.Laddr.Port > math.MaxUint16 {
+		return lp, false
+	}
+
+	proto := "tcp"
+	if conn.Type == 2 {
+		proto = "udp"
+	}
+
+	lp = shared.ListeningPort{
+		Protocol:  proto,
+		Port:      uint16(conn.Laddr.Port),
+		Address:   conn.Laddr.IP,
+		ProcessID: conn.Pid,
+	}
+	if conn.Pid > 0 {
+		lp.ProcessName = processNameForPID(conn.Pid)
+	}
+	return lp, true
+}
+
 // collectListeningPorts enumerates listening TCP ports and bound UDP ports
 // using gopsutil, which works cross-platform without exec calls.
 func collectListeningPorts() []shared.ListeningPort {
@@ -397,33 +442,9 @@ func collectListeningPorts() []shared.ListeningPort {
 
 	var ports []shared.ListeningPort
 	for _, conn := range conns {
-		// TCP: must be in LISTEN state. UDP (SOCK_DGRAM=2): any socket with a bound port.
-		isTCPListen := conn.Status == "LISTEN"
-		isUDPBound := conn.Type == 2 && conn.Laddr.Port > 0
-		if !isTCPListen && !isUDPBound {
+		lp, ok := classifyListeningPort(conn)
+		if !ok {
 			continue
-		}
-		if conn.Laddr.Port > math.MaxUint16 {
-			continue
-		}
-
-		proto := "tcp"
-		if conn.Type == 2 {
-			proto = "udp"
-		}
-
-		lp := shared.ListeningPort{
-			Protocol:  proto,
-			Port:      uint16(conn.Laddr.Port),
-			Address:   conn.Laddr.IP,
-			ProcessID: conn.Pid,
-		}
-		if conn.Pid > 0 {
-			if p, perr := process.NewProcess(conn.Pid); perr == nil {
-				if name, nerr := p.Name(); nerr == nil {
-					lp.ProcessName = name
-				}
-			}
 		}
 
 		ports = append(ports, lp)
