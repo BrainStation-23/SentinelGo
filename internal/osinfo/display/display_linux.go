@@ -211,20 +211,36 @@ func applyEDIDDecodeFallback(display *shared.Display, edidPath string) {
 // applyEDIDDecodeLine inspects one line of `edid-decode` output, filling in
 // the serial number or model on display if that line carries one.
 func applyEDIDDecodeLine(display *shared.Display, line string) {
-	if isUnknownOrEmpty(display.SerialNumber) && strings.Contains(line, "Serial Number:") {
-		if value, ok := edidDecodeFieldValue(line); ok {
-			if value != "" && value != "0" && value != "Not specified" {
-				display.SerialNumber = value
-			}
-		}
+	applySerialFromDecodeLine(display, line)
+	applyModelFromDecodeLine(display, line)
+}
+
+// applySerialFromDecodeLine fills display.SerialNumber from an edid-decode
+// "Serial Number:" line, unless one is already set or the value is a
+// placeholder.
+func applySerialFromDecodeLine(display *shared.Display, line string) {
+	if !isUnknownOrEmpty(display.SerialNumber) || !strings.Contains(line, "Serial Number:") {
+		return
 	}
-	if display.Model == "Unknown" && (strings.Contains(line, "Monitor Name:") || strings.Contains(line, "Model:")) {
-		if value, ok := edidDecodeFieldValue(line); ok {
-			if value != "" && len(value) > 2 {
-				display.Model = value
-			}
-		}
+	value, ok := edidDecodeFieldValue(line)
+	if !ok || value == "" || value == "0" || value == "Not specified" {
+		return
 	}
+	display.SerialNumber = value
+}
+
+// applyModelFromDecodeLine fills display.Model from an edid-decode
+// "Monitor Name:"/"Model:" line, unless one is already set or the value is
+// too short to be meaningful.
+func applyModelFromDecodeLine(display *shared.Display, line string) {
+	if display.Model != "Unknown" || (!strings.Contains(line, "Monitor Name:") && !strings.Contains(line, "Model:")) {
+		return
+	}
+	value, ok := edidDecodeFieldValue(line)
+	if !ok || value == "" || len(value) <= 2 {
+		return
+	}
+	display.Model = value
 }
 
 // edidDecodeFieldValue splits an "edid-decode" "Label: value" line and

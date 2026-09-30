@@ -139,31 +139,26 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 
 // chromeExtDirGlobs returns Chrome extension directory glob patterns on Windows.
 func chromeExtDirGlobs(home string) []string {
-	return []string{
-		home + `\AppData\Local\Google\Chrome\User Data\Default\Extensions`,
-		home + `\AppData\Local\Google\Chrome\User Data\Profile *\Extensions`,
-	}
+	return browserExtDirs(home,
+		`AppData\Local\Google\Chrome\User Data\Default\Extensions`,
+		`AppData\Local\Google\Chrome\User Data\Profile *\Extensions`)
 }
 
 // edgeExtDirGlobs returns Edge extension directory glob patterns on Windows.
 func edgeExtDirGlobs(home string) []string {
-	return []string{
-		home + `\AppData\Local\Microsoft\Edge\User Data\Default\Extensions`,
-		home + `\AppData\Local\Microsoft\Edge\User Data\Profile *\Extensions`,
-	}
+	return browserExtDirs(home,
+		`AppData\Local\Microsoft\Edge\User Data\Default\Extensions`,
+		`AppData\Local\Microsoft\Edge\User Data\Profile *\Extensions`)
 }
 
 // braveExtDirGlobs returns Brave extension directory glob patterns on Windows.
 func braveExtDirGlobs(home string) []string {
-	return []string{
-		home + `\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Extensions`,
-		home + `\AppData\Local\BraveSoftware\Brave-Browser\User Data\Profile *\Extensions`,
-	}
+	return browserExtDirs(home,
+		`AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Extensions`,
+		`AppData\Local\BraveSoftware\Brave-Browser\User Data\Profile *\Extensions`)
 }
 
 // firefoxProfileGlobs returns Firefox profile directory glob patterns on Windows.
 func firefoxProfileGlobs(home string) []string {
-	return []string{
-		home + `\AppData\Roaming\Mozilla\Firefox\Profiles\*`,
-	}
+	return browserExtDirs(home, `AppData\Roaming\Mozilla\Firefox\Profiles\*`)
 }

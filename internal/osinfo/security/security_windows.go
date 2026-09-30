@@ -94,119 +94,171 @@ func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
 	}
 	var details shared.WindowsDefenderDetails
 	var raw map[string]interface{}
-	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) == nil {
-		rtEnabled, _ := raw["RealTimeProtectionEnabled"].(bool)
-		tamper, _ := raw["IsTamperProtected"].(bool)
-
-		cfaVal := raw["ControlledFolderAccessEnabled"]
-		if cfaBool, ok := cfaVal.(bool); ok {
-			details.ControlledFolderAccess = cfaBool
-		} else if cfaNum, ok := cfaVal.(float64); ok {
-			details.ControlledFolderAccess = cfaNum != 0
-		}
-
-		details.RealTimeProtectionEnabled = rtEnabled
-		details.TamperProtectionEnabled = tamper
-
-		sigTime, _ := raw["AntivirusSignatureLastUpdated"].(string)
-		details.SignatureLastUpdated = sigTime
-
-		details.SmartScreenEnabled = queryRegistryBool(
-			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer`,
-			"SmartScreenEnabled") || queryRegistryBool(
-			`HKLM\SOFTWARE\Policies\Microsoft\Windows\System`,
-			"EnableSmartScreen")
-
-		asrOutput, asrErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules`)
-		if asrErr == nil {
-			lines := strings.Split(asrOutput, "\n")
-			count := 0
-			for _, l := range lines {
-				if strings.Contains(l, "REG_SZ") {
-					count++
-				}
-			}
-			details.ASRRulesCount = count
-		}
-
-		var scan shared.SecurityScanInfo
-		scan.LastScanTime = "Unknown"
-		scan.ScanType = "Unknown"
-		scan.ScanResult = "Clean"
-
-		lastQuick, _ := raw["LastQuickScanTime"].(string)
-		lastFull, _ := raw["LastFullScanTime"].(string)
-
-		if lastFull != "" && !strings.Contains(lastFull, "1601") {
-			scan.LastScanTime = lastFull
-			scan.ScanType = "Full Scan"
-		} else if lastQuick != "" && !strings.Contains(lastQuick, "1601") {
-			scan.LastScanTime = lastQuick
-			scan.ScanType = "Quick Scan"
-		}
-
-		threatsOutput, threatsErr := shared.RunPowerShell(
-			"Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreatDetection | Select-Object ThreatName,SeverityID,InitialDetectionTime,ActionID | ConvertTo-Json -Compress")
-		if threatsErr == nil && strings.TrimSpace(threatsOutput) != "" {
-			var rawThreats []map[string]interface{}
-			var singleThreat map[string]interface{}
-			if json.Unmarshal([]byte(threatsOutput), &rawThreats) != nil {
-				if json.Unmarshal([]byte(threatsOutput), &singleThreat) == nil {
-					rawThreats = []map[string]interface{}{singleThreat}
-				}
-			}
-			for _, rt := range rawThreats {
-				name, _ := rt["ThreatName"].(string)
-				if name == "" {
-					continue
-				}
-				var severityVal float64
-				if sev, ok := rt["SeverityID"].(float64); ok {
-					severityVal = sev
-				}
-				var actionVal float64
-				if act, ok := rt["ActionID"].(float64); ok {
-					actionVal = act
-				}
-				detTime, _ := rt["InitialDetectionTime"].(string)
-
-				severity := "Unknown"
-				switch int(severityVal) {
-				case 1:
-					severity = "Low"
-				case 2:
-					severity = "Medium"
-				case 4:
-					severity = "High"
-				case 5:
-					severity = "Critical"
-				}
-
-				action := "Detected"
-				switch int(actionVal) {
-				case 1:
-					action = "Cleaned"
-				case 2:
-					action = "Quarantined"
-				case 3:
-					action = "Removed"
-				case 6:
-					action = "Allowed"
-				}
-
-				scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
-					ThreatName:    name,
-					Severity:      severity,
-					FilePath:      "Unknown",
-					ActionTaken:   action,
-					DetectionTime: detTime,
-				})
-				scan.ScanResult = "Threats Detected"
-			}
-		}
-		details.ScanInfo = &scan
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &raw) != nil {
+		return &details
 	}
+
+	applyDefenderBasicFields(&details, raw)
+	details.ASRRulesCount = countASRRules()
+	details.ScanInfo = collectDefenderScanInfo(raw)
+
 	return &details
+}
+
+// applyDefenderBasicFields fills the simple, non-scan fields of details from
+// the Get-MpComputerStatus JSON output.
+func applyDefenderBasicFields(details *shared.WindowsDefenderDetails, raw map[string]interface{}) {
+	rtEnabled, _ := raw["RealTimeProtectionEnabled"].(bool)
+	tamper, _ := raw["IsTamperProtected"].(bool)
+	details.RealTimeProtectionEnabled = rtEnabled
+	details.TamperProtectionEnabled = tamper
+	details.ControlledFolderAccess = controlledFolderAccessFromRaw(raw)
+
+	sigTime, _ := raw["AntivirusSignatureLastUpdated"].(string)
+	details.SignatureLastUpdated = sigTime
+
+	details.SmartScreenEnabled = queryRegistryBool(
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer`,
+		"SmartScreenEnabled") || queryRegistryBool(
+		`HKLM\SOFTWARE\Policies\Microsoft\Windows\System`,
+		"EnableSmartScreen")
+}
+
+// controlledFolderAccessFromRaw reads ControlledFolderAccessEnabled, which
+// PowerShell's ConvertTo-Json can emit as either a JSON bool or a number.
+func controlledFolderAccessFromRaw(raw map[string]interface{}) bool {
+	cfaVal := raw["ControlledFolderAccessEnabled"]
+	if cfaBool, ok := cfaVal.(bool); ok {
+		return cfaBool
+	}
+	if cfaNum, ok := cfaVal.(float64); ok {
+		return cfaNum != 0
+	}
+	return false
+}
+
+// countASRRules counts configured Attack Surface Reduction rules via their
+// registry policy values.
+func countASRRules() int {
+	asrOutput, asrErr := shared.RunCommand("reg", "query", `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Windows Defender Exploit Guard\ASR\Rules`)
+	if asrErr != nil {
+		return 0
+	}
+	count := 0
+	for _, l := range strings.Split(asrOutput, "\n") {
+		if strings.Contains(l, "REG_SZ") {
+			count++
+		}
+	}
+	return count
+}
+
+// collectDefenderScanInfo builds the scan-time and recent-threats portion of
+// the Windows Defender details.
+func collectDefenderScanInfo(raw map[string]interface{}) *shared.SecurityScanInfo {
+	var scan shared.SecurityScanInfo
+	scan.LastScanTime = "Unknown"
+	scan.ScanType = "Unknown"
+	scan.ScanResult = "Clean"
+
+	applyDefenderScanTimes(&scan, raw)
+	scan.RecentThreats = collectRecentThreats(&scan)
+
+	return &scan
+}
+
+// applyDefenderScanTimes prefers the last full scan time, falling back to the
+// last quick scan time; "1601" marks .NET's zero DateTime, meaning no scan
+// has run yet.
+func applyDefenderScanTimes(scan *shared.SecurityScanInfo, raw map[string]interface{}) {
+	lastQuick, _ := raw["LastQuickScanTime"].(string)
+	lastFull, _ := raw["LastFullScanTime"].(string)
+
+	if lastFull != "" && !strings.Contains(lastFull, "1601") {
+		scan.LastScanTime = lastFull
+		scan.ScanType = "Full Scan"
+	} else if lastQuick != "" && !strings.Contains(lastQuick, "1601") {
+		scan.LastScanTime = lastQuick
+		scan.ScanType = "Quick Scan"
+	}
+}
+
+// collectRecentThreats queries recently detected Defender threats and marks
+// scan.ScanResult when any are found.
+func collectRecentThreats(scan *shared.SecurityScanInfo) []shared.ThreatDetails {
+	threatsOutput, threatsErr := shared.RunPowerShell(
+		"Get-CimInstance -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpThreatDetection | Select-Object ThreatName,SeverityID,InitialDetectionTime,ActionID | ConvertTo-Json -Compress")
+	if threatsErr != nil || strings.TrimSpace(threatsOutput) == "" {
+		return nil
+	}
+
+	var threats []shared.ThreatDetails
+	for _, rt := range decodeAVProductsJSON(threatsOutput) {
+		threat, ok := buildThreatDetails(rt)
+		if !ok {
+			continue
+		}
+		threats = append(threats, threat)
+		scan.ScanResult = "Threats Detected"
+	}
+	return threats
+}
+
+// buildThreatDetails converts one MSFT_MpThreatDetection record into a
+// ThreatDetails entry. ok is false when the record has no threat name.
+func buildThreatDetails(rt map[string]interface{}) (shared.ThreatDetails, bool) {
+	name, _ := rt["ThreatName"].(string)
+	if name == "" {
+		return shared.ThreatDetails{}, false
+	}
+	var severityVal, actionVal float64
+	if sev, ok := rt["SeverityID"].(float64); ok {
+		severityVal = sev
+	}
+	if act, ok := rt["ActionID"].(float64); ok {
+		actionVal = act
+	}
+	detTime, _ := rt["InitialDetectionTime"].(string)
+
+	return shared.ThreatDetails{
+		ThreatName:    name,
+		Severity:      threatSeverityLabel(int(severityVal)),
+		FilePath:      "Unknown",
+		ActionTaken:   threatActionLabel(int(actionVal)),
+		DetectionTime: detTime,
+	}, true
+}
+
+// threatSeverityLabel maps MSFT_MpThreatDetection's SeverityID to a label.
+func threatSeverityLabel(v int) string {
+	switch v {
+	case 1:
+		return "Low"
+	case 2:
+		return "Medium"
+	case 4:
+		return "High"
+	case 5:
+		return "Critical"
+	default:
+		return "Unknown"
+	}
+}
+
+// threatActionLabel maps MSFT_MpThreatDetection's ActionID to a label.
+func threatActionLabel(v int) string {
+	switch v {
+	case 1:
+		return "Cleaned"
+	case 2:
+		return "Quarantined"
+	case 3:
+		return "Removed"
+	case 6:
+		return "Allowed"
+	default:
+		return "Detected"
+	}
 }
 
 func queryServiceStatus(svcName string) (exists bool, status string, startup string) {
