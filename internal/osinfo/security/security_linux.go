@@ -35,13 +35,7 @@ var knownAVServices = []struct {
 
 func collectSecurity() shared.SecurityInfo {
 	profiles := collectFirewallProfiles()
-	fwEnabled := false
-	for _, p := range profiles {
-		if p.Enabled {
-			fwEnabled = true
-			break
-		}
-	}
+	fwEnabled := anyFirewallEnabled(profiles)
 
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
@@ -50,73 +44,7 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
-
-	var avProtection shared.AntivirusProtectionInfo
-	for _, av := range avProducts {
-		details := shared.AntivirusDetails{
-			ProductName:             av.Name,
-			Vendor:                  "Unknown",
-			Version:                 "Unknown",
-			RealTimeProtectionState: "Unknown",
-			ServiceStatus:           "Unknown",
-			UpdateStatus:            "Unknown",
-		}
-		if strings.EqualFold(av.Enabled, "enabled") {
-			details.RealTimeProtectionState = "Enabled"
-			details.ServiceStatus = "Running"
-		} else if strings.EqualFold(av.Enabled, "disabled") {
-			details.RealTimeProtectionState = "Disabled"
-			details.ServiceStatus = "Stopped"
-		}
-
-		if strings.Contains(strings.ToLower(av.Name), "clamav") {
-			var scan shared.SecurityScanInfo
-			scan.LastScanTime = "Unknown"
-			scan.ScanType = "Scheduled/On-Demand"
-			scan.ScanResult = "Clean"
-
-			if logData, err := os.ReadFile("/var/log/clamav/clamav.log"); err == nil {
-				lines := strings.Split(string(logData), "\n")
-				for i := len(lines) - 1; i >= 0; i-- {
-					line := strings.TrimSpace(lines[i])
-					if strings.Contains(line, "SCAN SUMMARY") {
-						if len(line) > 24 {
-							scan.LastScanTime = line[:20]
-						}
-					}
-					if strings.Contains(line, "Scanned files:") {
-						parts := strings.Split(line, ":")
-						if len(parts) >= 2 {
-							var scannedCount int
-							if _, errSc := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &scannedCount); errSc == nil {
-								scan.ScannedFilesCount = int64(scannedCount)
-							}
-						}
-					}
-					if strings.Contains(line, "Infected files:") {
-						parts := strings.Split(line, ":")
-						if len(parts) >= 2 {
-							var infectedCount int
-							if _, errSc := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &infectedCount); errSc == nil {
-								if infectedCount > 0 {
-									scan.ScanResult = "Threats Detected"
-									scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
-										ThreatName:    "Infected File",
-										Severity:      "High",
-										FilePath:      "Check /var/log/clamav/clamav.log",
-										ActionTaken:   "Detected",
-										DetectionTime: scan.LastScanTime,
-									})
-								}
-							}
-						}
-					}
-				}
-			}
-			details.ScanInfo = &scan
-		}
-		avProtection.Products = append(avProtection.Products, details)
-	}
+	avProtection := buildAVProtection(avProducts)
 
 	edrXdr := collectEDRInfo()
 	kernelHard := shared.KernelHardeningInfo{
@@ -155,14 +83,123 @@ func collectSecurity() shared.SecurityInfo {
 	}
 }
 
+// anyFirewallEnabled reports whether at least one firewall profile is enabled.
+func anyFirewallEnabled(profiles []shared.FirewallProfile) bool {
+	for _, p := range profiles {
+		if p.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// buildAVProtection converts detected AV products into the AntivirusProtection
+// summary, attaching ClamAV scan details when the product is ClamAV.
+func buildAVProtection(avProducts []shared.AntivirusProduct) shared.AntivirusProtectionInfo {
+	var avProtection shared.AntivirusProtectionInfo
+	for _, av := range avProducts {
+		details := shared.AntivirusDetails{
+			ProductName:             av.Name,
+			Vendor:                  "Unknown",
+			Version:                 "Unknown",
+			RealTimeProtectionState: "Unknown",
+			ServiceStatus:           "Unknown",
+			UpdateStatus:            "Unknown",
+		}
+		applyAVEnabledState(&details, av.Enabled)
+
+		if strings.Contains(strings.ToLower(av.Name), "clamav") {
+			scan := collectClamAVScanInfo()
+			details.ScanInfo = &scan
+		}
+		avProtection.Products = append(avProtection.Products, details)
+	}
+	return avProtection
+}
+
+// applyAVEnabledState maps the raw "enabled"/"disabled" AV state string onto
+// the RealTimeProtectionState and ServiceStatus fields.
+func applyAVEnabledState(details *shared.AntivirusDetails, enabledStr string) {
+	if strings.EqualFold(enabledStr, "enabled") {
+		details.RealTimeProtectionState = "Enabled"
+		details.ServiceStatus = "Running"
+	} else if strings.EqualFold(enabledStr, "disabled") {
+		details.RealTimeProtectionState = "Disabled"
+		details.ServiceStatus = "Stopped"
+	}
+}
+
+// collectClamAVScanInfo reads the ClamAV log for the most recent scan summary
+// time, scanned-file count, and any infected-file detections.
+func collectClamAVScanInfo() shared.SecurityScanInfo {
+	var scan shared.SecurityScanInfo
+	scan.LastScanTime = "Unknown"
+	scan.ScanType = "Scheduled/On-Demand"
+	scan.ScanResult = "Clean"
+
+	logData, err := os.ReadFile("/var/log/clamav/clamav.log")
+	if err != nil {
+		return scan
+	}
+	lines := strings.Split(string(logData), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		parseClamAVLogLine(strings.TrimSpace(lines[i]), &scan)
+	}
+	return scan
+}
+
+// parseClamAVLogLine inspects a single ClamAV log line, updating scan with
+// the scan summary time, scanned-file count, and infected-file details.
+func parseClamAVLogLine(line string, scan *shared.SecurityScanInfo) {
+	if strings.Contains(line, "SCAN SUMMARY") && len(line) > 24 {
+		scan.LastScanTime = line[:20]
+	}
+	if strings.Contains(line, "Scanned files:") {
+		if count, ok := parseClamAVCount(line); ok {
+			scan.ScannedFilesCount = int64(count)
+		}
+	}
+	if strings.Contains(line, "Infected files:") {
+		if count, ok := parseClamAVCount(line); ok && count > 0 {
+			scan.ScanResult = "Threats Detected"
+			scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
+				ThreatName:    "Infected File",
+				Severity:      "High",
+				FilePath:      "Check /var/log/clamav/clamav.log",
+				ActionTaken:   "Detected",
+				DetectionTime: scan.LastScanTime,
+			})
+		}
+	}
+}
+
+// parseClamAVCount extracts the integer count from a "Label: N" style ClamAV
+// log line.
+func parseClamAVCount(line string) (int, bool) {
+	parts := strings.Split(line, ":")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	var count int
+	if _, err := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &count); err != nil {
+		return 0, false
+	}
+	return count, true
+}
+
+// edrCandidate describes a known EDR/XDR product to probe for on Linux: its
+// systemd service name, the process name to look for as a fallback, and the
+// human-facing product/vendor names.
+type edrCandidate struct {
+	svc    string
+	name   string
+	vendor string
+	proc   string
+}
+
 func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	var info shared.EDRXDRDetectionInfo
-	knownEDR := []struct {
-		svc    string
-		name   string
-		vendor string
-		proc   string
-	}{
+	knownEDR := []edrCandidate{
 		{crowdStrikeFalconService, crowdStrikeFalconName, "CrowdStrike", crowdStrikeFalconService},
 		{"sentinelone", "SentinelOne Singularity", "SentinelOne", "sentineld"},
 		{"wazuh-agent", "Wazuh Agent", "Wazuh", "wazuh-agentd"},
@@ -170,74 +207,98 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		{"osqueryd", "Osquery", "Osquery", "osqueryd"},
 	}
 
-	runningProcs := make(map[string]bool)
-	if entries, err := os.ReadDir("/proc"); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			var pid int
-			if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err == nil {
-				if comm, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil {
-					runningProcs[strings.TrimSpace(string(comm))] = true
-				}
-			}
-		}
-	}
+	runningProcs := runningProcNames()
 
 	for _, e := range knownEDR {
-		installed := false
-		status := "Stopped"
-		startup := "Disabled"
-
-		if activeOut, err := shared.RunCommand("systemctl", "is-active", e.svc); err == nil {
-			installed = true
-			if strings.TrimSpace(activeOut) == "active" {
-				status = "Running"
-			}
-		}
-		if enabledOut, err := shared.RunCommand("systemctl", "is-enabled", e.svc); err == nil {
-			installed = true
-			if strings.TrimSpace(enabledOut) == "enabled" {
-				startup = "Auto"
-			}
-		}
-
-		if !installed && runningProcs[e.proc] {
-			installed = true
-			status = "Running"
-			startup = "Manual"
-		}
-
+		installed, status, startup := detectEDRServiceState(e, runningProcs)
 		if !installed {
 			continue
 		}
-
-		agent := shared.EDRXDRAgentDetails{
-			AgentName:              e.name,
-			Vendor:                 e.vendor,
-			AgentVersion:           "Unknown",
-			ServiceStatus:          status,
-			HealthStatus:           "Healthy",
-			ConnectivityStatus:     "Unknown",
-			TamperProtectionStatus: "Unknown",
-			Installed:              true,
-			Running:                status == "Running",
-			Stopped:                status == "Stopped",
-			Disabled:               startup == "Disabled",
-		}
-
-		if status == "Running" {
-			agent.Healthy = true
-		} else {
-			agent.HealthStatus = "Unhealthy"
-			agent.Unhealthy = true
-			agent.Offline = true
-		}
-
-		info.Agents = append(info.Agents, agent)
+		info.Agents = append(info.Agents, buildEDRAgent(e, status, startup))
 	}
 	return info
+}
+
+// runningProcNames returns the set of process comm names currently running,
+// read from /proc/<pid>/comm.
+func runningProcNames() map[string]bool {
+	running := make(map[string]bool)
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return running
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err != nil {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		running[strings.TrimSpace(string(comm))] = true
+	}
+	return running
+}
+
+// detectEDRServiceState probes systemctl (and, as a fallback, the running
+// process table) to determine whether an EDR candidate is installed and its
+// current service status/startup mode.
+func detectEDRServiceState(e edrCandidate, runningProcs map[string]bool) (installed bool, status, startup string) {
+	status = "Stopped"
+	startup = "Disabled"
+
+	if activeOut, err := shared.RunCommand("systemctl", "is-active", e.svc); err == nil {
+		installed = true
+		if strings.TrimSpace(activeOut) == "active" {
+			status = "Running"
+		}
+	}
+	if enabledOut, err := shared.RunCommand("systemctl", "is-enabled", e.svc); err == nil {
+		installed = true
+		if strings.TrimSpace(enabledOut) == "enabled" {
+			startup = "Auto"
+		}
+	}
+
+	if !installed && runningProcs[e.proc] {
+		installed = true
+		status = "Running"
+		startup = "Manual"
+	}
+
+	return installed, status, startup
+}
+
+// buildEDRAgent constructs the agent details for an installed EDR candidate,
+// deriving health from its service status.
+func buildEDRAgent(e edrCandidate, status, startup string) shared.EDRXDRAgentDetails {
+	agent := shared.EDRXDRAgentDetails{
+		AgentName:              e.name,
+		Vendor:                 e.vendor,
+		AgentVersion:           "Unknown",
+		ServiceStatus:          status,
+		HealthStatus:           "Healthy",
+		ConnectivityStatus:     "Unknown",
+		TamperProtectionStatus: "Unknown",
+		Installed:              true,
+		Running:                status == "Running",
+		Stopped:                status == "Stopped",
+		Disabled:               startup == "Disabled",
+	}
+
+	if status == "Running" {
+		agent.Healthy = true
+	} else {
+		agent.HealthStatus = "Unhealthy"
+		agent.Unhealthy = true
+		agent.Offline = true
+	}
+
+	return agent
 }
 
 func collectDeviceEncryption() shared.DeviceEncryptionInfo {
@@ -290,41 +351,59 @@ func parseSSHConfigData(data string) (rootLogin, passwordAuth, pubkeyAuth string
 	passwordAuth = "Unknown"
 	pubkeyAuth = "Unknown"
 	for _, line := range strings.Split(data, "\n") {
-		l := strings.TrimSpace(line)
-		if strings.HasPrefix(l, "#") {
+		key, val, ok := parseSSHConfigLine(line)
+		if !ok {
 			continue
 		}
-		fields := strings.Fields(l)
-		if len(fields) < 2 {
-			continue
-		}
-		key := strings.ToLower(fields[0])
-		val := strings.ToLower(fields[1])
 		switch key {
 		case "permitrootlogin":
-			switch val {
-			case "yes":
-				rootLogin = "Enabled"
-			case "no", "prohibit-password":
-				rootLogin = "Disabled"
+			if s := sshYesNoState(val, "prohibit-password"); s != "" {
+				rootLogin = s
 			}
 		case "passwordauthentication":
-			switch val {
-			case "yes":
-				passwordAuth = "Enabled"
-			case "no":
-				passwordAuth = "Disabled"
+			if s := sshYesNoState(val); s != "" {
+				passwordAuth = s
 			}
 		case "pubkeyauthentication":
-			switch val {
-			case "yes":
-				pubkeyAuth = "Enabled"
-			case "no":
-				pubkeyAuth = "Disabled"
+			if s := sshYesNoState(val); s != "" {
+				pubkeyAuth = s
 			}
 		}
 	}
 	return
+}
+
+// parseSSHConfigLine extracts a lower-cased key/value pair from a single
+// sshd_config line. ok is false for comments and lines without a value.
+func parseSSHConfigLine(line string) (key, val string, ok bool) {
+	l := strings.TrimSpace(line)
+	if strings.HasPrefix(l, "#") {
+		return "", "", false
+	}
+	fields := strings.Fields(l)
+	if len(fields) < 2 {
+		return "", "", false
+	}
+	return strings.ToLower(fields[0]), strings.ToLower(fields[1]), true
+}
+
+// sshYesNoState maps a "yes"/"no" sshd_config value to "Enabled"/"Disabled".
+// extraDisabled lists additional values (e.g. "prohibit-password") that also
+// count as Disabled. Returns "" when val matches none of these, so the caller
+// can leave the field at its existing default.
+func sshYesNoState(val string, extraDisabled ...string) string {
+	if val == "yes" {
+		return "Enabled"
+	}
+	if val == "no" {
+		return "Disabled"
+	}
+	for _, v := range extraDisabled {
+		if val == v {
+			return "Disabled"
+		}
+	}
+	return ""
 }
 
 // countAptSecurityUpdates counts pending security updates from apt-get -s upgrade output.
@@ -359,61 +438,89 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 	id.SSHRootLogin = "Unknown"
 	id.SSHPasswordAuth = "Unknown"
-	id.SudoPrivilege = "Unknown"
 
 	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
 		id.SSHRootLogin, id.SSHPasswordAuth, _ = parseSSHConfigData(string(data))
 	}
 
-	if data, err := os.ReadFile("/etc/group"); err == nil {
-		id.SudoPrivilege = "Configured"
-		hasSudoGroup := false
-		for _, line := range strings.Split(string(data), "\n") {
-			parts := strings.Split(line, ":")
-			if len(parts) >= 4 {
-				gname := parts[0]
-				if gname == "sudo" || gname == "wheel" {
-					hasSudoGroup = true
-				}
-			}
-		}
-		if !hasSudoGroup {
-			id.SudoPrivilege = "Misconfigured"
-		}
-	}
+	id.SudoPrivilege = detectSudoPrivilegeState()
 
-	// Query Linux Pending Security Updates
 	id.PatchComplianceStatus = "Compliant"
-	id.PendingSecurityPatches = 0
-
-	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
-		if out, errRun := shared.RunCommand("/usr/lib/update-notifier/apt-check"); errRun == nil {
-			parts := strings.Split(strings.TrimSpace(out), ";")
-			if len(parts) >= 2 {
-				var sec int
-				if _, errSc := fmt.Sscanf(parts[1], "%d", &sec); errSc == nil {
-					id.PendingSecurityPatches = sec
-				}
-			}
-		}
-	} else if _, errApt := os.Stat("/usr/bin/apt-get"); errApt == nil {
-		if out, errRun := shared.RunCommand("apt-get", "-s", "upgrade"); errRun == nil {
-			id.PendingSecurityPatches = countAptSecurityUpdates(out)
-		}
-	} else if _, errYum := os.Stat("/usr/bin/yum"); errYum == nil {
-		// yum check-update exits 100 when updates are available, 0 when none.
-		// RunCommandOutput captures output for both exit codes.
-		out, exitCode, errRun := shared.RunCommandOutput("yum", "check-update", "--security")
-		if errRun == nil && (exitCode == 0 || exitCode == 100) {
-			id.PendingSecurityPatches = countYumSecurityUpdates(out)
-		}
-	}
-
+	id.PendingSecurityPatches = pendingSecurityPatchCount()
 	if id.PendingSecurityPatches > 0 {
 		id.PatchComplianceStatus = "Non-Compliant"
 	}
 
 	return id
+}
+
+// detectSudoPrivilegeState checks /etc/group for a sudo or wheel group,
+// reporting whether sudo access is configured as expected.
+func detectSudoPrivilegeState() string {
+	data, err := os.ReadFile("/etc/group")
+	if err != nil {
+		return "Unknown"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.Split(line, ":")
+		if len(parts) >= 4 && (parts[0] == "sudo" || parts[0] == "wheel") {
+			return "Configured"
+		}
+	}
+	return "Misconfigured"
+}
+
+// pendingSecurityPatchCount queries the system's package manager for the
+// number of pending security updates, trying apt-check, then apt-get, then
+// yum in turn.
+func pendingSecurityPatchCount() int {
+	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
+		return pendingPatchesFromAptCheck()
+	}
+	if _, err := os.Stat("/usr/bin/apt-get"); err == nil {
+		return pendingPatchesFromAptGet()
+	}
+	if _, err := os.Stat("/usr/bin/yum"); err == nil {
+		return pendingPatchesFromYum()
+	}
+	return 0
+}
+
+// pendingPatchesFromAptCheck parses the "N;M" output of apt-check, where M is
+// the count of pending security updates.
+func pendingPatchesFromAptCheck() int {
+	out, err := shared.RunCommand("/usr/lib/update-notifier/apt-check")
+	if err != nil {
+		return 0
+	}
+	parts := strings.Split(strings.TrimSpace(out), ";")
+	if len(parts) < 2 {
+		return 0
+	}
+	var sec int
+	if _, err := fmt.Sscanf(parts[1], "%d", &sec); err != nil {
+		return 0
+	}
+	return sec
+}
+
+func pendingPatchesFromAptGet() int {
+	out, err := shared.RunCommand("apt-get", "-s", "upgrade")
+	if err != nil {
+		return 0
+	}
+	return countAptSecurityUpdates(out)
+}
+
+// pendingPatchesFromYum runs yum check-update --security, which exits 100
+// when updates are available and 0 when there are none; RunCommandOutput
+// captures output for both exit codes.
+func pendingPatchesFromYum() int {
+	out, exitCode, err := shared.RunCommandOutput("yum", "check-update", "--security")
+	if err != nil || (exitCode != 0 && exitCode != 100) {
+		return 0
+	}
+	return countYumSecurityUpdates(out)
 }
 
 func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAccessControlInfo) shared.NetworkExposureAccessInfo {

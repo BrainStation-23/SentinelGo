@@ -27,13 +27,7 @@ var knownAVApps = []struct {
 
 func collectSecurity() shared.SecurityInfo {
 	profiles := collectFirewallProfiles()
-	fwEnabled := false
-	for _, p := range profiles {
-		if p.Enabled {
-			fwEnabled = true
-			break
-		}
-	}
+	fwEnabled := anyFirewallEnabled(profiles)
 
 	avProducts := collectAV()
 	coreIsolation := collectCoreIsolation()
@@ -43,77 +37,11 @@ func collectSecurity() shared.SecurityInfo {
 
 	fwSec := collectFirewallSecurity(profiles)
 
-	var avProtection shared.AntivirusProtectionInfo
-	for _, av := range avProducts {
-		details := shared.AntivirusDetails{
-			ProductName:             av.Name,
-			Vendor:                  "Unknown",
-			Version:                 "Unknown",
-			RealTimeProtectionState: "Unknown",
-			ServiceStatus:           "Unknown",
-			UpdateStatus:            "Unknown",
-		}
-		if strings.EqualFold(av.Enabled, "enabled") {
-			details.RealTimeProtectionState = "Enabled"
-			details.ServiceStatus = "Running"
-		} else if strings.EqualFold(av.Enabled, "disabled") {
-			details.RealTimeProtectionState = "Disabled"
-			details.ServiceStatus = "Stopped"
-		}
-		avProtection.Products = append(avProtection.Products, details)
-	}
-
-	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
-		avProtection.XProtectVersion = strings.TrimSpace(out)
-	} else if out, err = shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
-		avProtection.XProtectVersion = strings.TrimSpace(out)
-	}
-
-	if _, err := os.Stat("/System/Library/CoreServices/MRT.app"); err == nil {
-		avProtection.MRTInstalled = true
-	} else if _, err = os.Stat("/Library/Apple/System/Library/CoreServices/MRT.app"); err == nil {
-		avProtection.MRTInstalled = true
-	}
-
+	avProtection := buildAVProtection(avProducts)
+	avProtection.XProtectVersion = detectXProtectVersion()
+	avProtection.MRTInstalled = detectMRTInstalled()
 	if avProtection.MRTInstalled {
-		var scan shared.SecurityScanInfo
-		scan.LastScanTime = "Unknown"
-		scan.ScanType = "On-Access"
-		scan.ScanResult = "Clean"
-
-		if mlog, err := os.ReadFile("/var/log/MRT.log"); err == nil {
-			lines := strings.Split(string(mlog), "\n")
-			for i := len(lines) - 1; i >= 0; i-- {
-				line := strings.TrimSpace(lines[i])
-				if line == "" {
-					continue
-				}
-				parts := strings.SplitN(line, " ", 3)
-				if len(parts) >= 2 {
-					scan.LastScanTime = parts[0] + " " + parts[1]
-				}
-				if strings.Contains(strings.ToLower(line), "removing") || strings.Contains(strings.ToLower(line), "removed") {
-					scan.ScanResult = "Threats Detected"
-					scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
-						ThreatName:    "Malware",
-						Severity:      "High",
-						FilePath:      "Check /var/log/MRT.log",
-						ActionTaken:   "Removed",
-						DetectionTime: scan.LastScanTime,
-					})
-				}
-				break
-			}
-		}
-		avProtection.Products = append(avProtection.Products, shared.AntivirusDetails{
-			ProductName:             "Malware Removal Tool",
-			Vendor:                  "Apple",
-			Version:                 "Unknown",
-			RealTimeProtectionState: "Enabled",
-			ServiceStatus:           "Running",
-			UpdateStatus:            "Unknown",
-			ScanInfo:                &scan,
-		})
+		avProtection.Products = append(avProtection.Products, buildMRTDetails())
 	}
 
 	edrXdr := collectEDRInfo()
@@ -148,6 +76,127 @@ func collectSecurity() shared.SecurityInfo {
 		IdentityAccessControl: idAccess,
 		NetworkExposureAccess: netExposure,
 		PostureSummary:        posture,
+	}
+}
+
+// anyFirewallEnabled reports whether at least one firewall profile is enabled.
+func anyFirewallEnabled(profiles []shared.FirewallProfile) bool {
+	for _, p := range profiles {
+		if p.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// buildAVProtection converts detected AV products into the AntivirusProtection
+// summary.
+func buildAVProtection(avProducts []shared.AntivirusProduct) shared.AntivirusProtectionInfo {
+	var avProtection shared.AntivirusProtectionInfo
+	for _, av := range avProducts {
+		details := shared.AntivirusDetails{
+			ProductName:             av.Name,
+			Vendor:                  "Unknown",
+			Version:                 "Unknown",
+			RealTimeProtectionState: "Unknown",
+			ServiceStatus:           "Unknown",
+			UpdateStatus:            "Unknown",
+		}
+		applyAVEnabledState(&details, av.Enabled)
+		avProtection.Products = append(avProtection.Products, details)
+	}
+	return avProtection
+}
+
+// applyAVEnabledState maps the raw "enabled"/"disabled" AV state string onto
+// the RealTimeProtectionState and ServiceStatus fields.
+func applyAVEnabledState(details *shared.AntivirusDetails, enabledStr string) {
+	if strings.EqualFold(enabledStr, "enabled") {
+		details.RealTimeProtectionState = "Enabled"
+		details.ServiceStatus = "Running"
+	} else if strings.EqualFold(enabledStr, "disabled") {
+		details.RealTimeProtectionState = "Disabled"
+		details.ServiceStatus = "Stopped"
+	}
+}
+
+// detectXProtectVersion reads the XProtect bundle version from either of its
+// two known install locations.
+func detectXProtectVersion() string {
+	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+		return strings.TrimSpace(out)
+	}
+	if out, err := shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+		return strings.TrimSpace(out)
+	}
+	return ""
+}
+
+// detectMRTInstalled reports whether Apple's Malware Removal Tool is present
+// at either of its two known install locations.
+func detectMRTInstalled() bool {
+	if _, err := os.Stat("/System/Library/CoreServices/MRT.app"); err == nil {
+		return true
+	}
+	_, err := os.Stat("/Library/Apple/System/Library/CoreServices/MRT.app")
+	return err == nil
+}
+
+// buildMRTDetails builds the Malware Removal Tool antivirus entry, including
+// scan details parsed from its log.
+func buildMRTDetails() shared.AntivirusDetails {
+	scan := collectMRTScanInfo()
+	return shared.AntivirusDetails{
+		ProductName:             "Malware Removal Tool",
+		Vendor:                  "Apple",
+		Version:                 "Unknown",
+		RealTimeProtectionState: "Enabled",
+		ServiceStatus:           "Running",
+		UpdateStatus:            "Unknown",
+		ScanInfo:                &scan,
+	}
+}
+
+// collectMRTScanInfo reads /var/log/MRT.log and reports the timestamp and
+// outcome of the most recent scan, based on the last non-empty log line.
+func collectMRTScanInfo() shared.SecurityScanInfo {
+	var scan shared.SecurityScanInfo
+	scan.LastScanTime = "Unknown"
+	scan.ScanType = "On-Access"
+	scan.ScanResult = "Clean"
+
+	mlog, err := os.ReadFile("/var/log/MRT.log")
+	if err != nil {
+		return scan
+	}
+	lines := strings.Split(string(mlog), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		parseMRTLogLine(line, &scan)
+		break
+	}
+	return scan
+}
+
+// parseMRTLogLine extracts the timestamp from an MRT.log line and flags a
+// threat when the line reports a removal.
+func parseMRTLogLine(line string, scan *shared.SecurityScanInfo) {
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) >= 2 {
+		scan.LastScanTime = parts[0] + " " + parts[1]
+	}
+	if strings.Contains(strings.ToLower(line), "removing") || strings.Contains(strings.ToLower(line), "removed") {
+		scan.ScanResult = "Threats Detected"
+		scan.RecentThreats = append(scan.RecentThreats, shared.ThreatDetails{
+			ThreatName:    "Malware",
+			Severity:      "High",
+			FilePath:      "Check /var/log/MRT.log",
+			ActionTaken:   "Removed",
+			DetectionTime: scan.LastScanTime,
+		})
 	}
 }
 
