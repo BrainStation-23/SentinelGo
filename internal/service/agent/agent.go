@@ -1,12 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -126,34 +123,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 
-	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			return 0, fmt.Errorf("create request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("apikey", anonKey)
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode >= 400 {
-			return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
-		}
-
-		var enqResp rpcutil.EnqueueResponse
-		if err := json.Unmarshal(respBody, &enqResp); err != nil {
-			log.Printf("[inventory] enqueue accepted but response parse failed: %v", err)
-		} else {
-			log.Printf("[inventory] enqueued: msg_id=%d queue=%s", enqResp.MsgID, enqResp.Queue)
-		}
-		return resp.StatusCode, nil
-	})
+	return rpcutil.PostEnqueue(ctx, s.client, url, accessToken, anonKey, body, "inventory")
 }
 
 // SetAgentStatus updates only the agent status column via the PostgREST SDK.

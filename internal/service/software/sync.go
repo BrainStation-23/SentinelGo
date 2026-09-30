@@ -1,13 +1,10 @@
 package software
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -73,35 +70,7 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 
-	err = rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			return 0, fmt.Errorf("create request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("apikey", anonKey)
-
-		resp, err := s.client.Do(req)
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode >= 400 {
-			return resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
-		}
-
-		var enqResp rpcutil.EnqueueResponse
-		if err := json.Unmarshal(respBody, &enqResp); err != nil {
-			log.Printf("[software] enqueue accepted but response parse failed: %v", err)
-		} else {
-			log.Printf("[software] enqueued: msg_id=%d queue=%s", enqResp.MsgID, enqResp.Queue)
-		}
-		return resp.StatusCode, nil
-	})
-	if err != nil {
+	if err := rpcutil.PostEnqueue(ctx, s.client, url, accessToken, anonKey, body, "software"); err != nil {
 		return fmt.Errorf("agent_enqueue_software: %w", err)
 	}
 
