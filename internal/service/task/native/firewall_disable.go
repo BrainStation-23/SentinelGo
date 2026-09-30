@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -44,11 +45,11 @@ func triggerFirewallDisable(ctx context.Context) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.CommandContext(ctx, "ufw", "disable")
+		cmd = exec.CommandContext(ctx, binpath.Resolve("ufw"), "disable")
 	case "darwin":
 		cmd = exec.CommandContext(ctx, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--setglobalstate", "off")
 	case "windows":
-		cmd = exec.CommandContext(ctx, "netsh", "advfirewall", "set", "allprofiles", "state", "off")
+		cmd = exec.CommandContext(ctx, binpath.Resolve("netsh"), "advfirewall", "set", "allprofiles", "state", "off")
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}

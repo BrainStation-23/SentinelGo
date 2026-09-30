@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // platformSoftware collects currently installed software on Linux. It returns
@@ -41,7 +43,7 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package},${Version},${Installed-Size}")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("dpkg-query"), "-W", "-f=${Package},${Version},${Installed-Size}")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
@@ -56,7 +58,7 @@ func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("rpm"), "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: rpm -qa failed: %v", err)
@@ -71,7 +73,7 @@ func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "snap", "list", "--color=never")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("snap"), "list", "--color=never")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: snap list failed: %v", err)
@@ -86,7 +88,7 @@ func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "flatpak", "list", "--columns=application,name,version,origin")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("flatpak"), "list", "--columns=application,name,version,origin")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: flatpak list failed: %v", err)

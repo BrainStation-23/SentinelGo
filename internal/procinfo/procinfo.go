@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // versionFlag is the short-form version flag SentinelGo binaries accept,
@@ -208,9 +210,9 @@ func FindProcesses() ([]ProcessInfo, error) {
 
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("tasklist", "/fi", "imagename eq sentinelgo.exe", "/fo", "csv", "/v")
+		cmd = exec.Command(binpath.Resolve("tasklist"), "/fi", "imagename eq sentinelgo.exe", "/fo", "csv", "/v")
 	case "linux", "darwin":
-		cmd = exec.Command("ps", "aux")
+		cmd = exec.Command(binpath.Resolve("ps"), "aux")
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}

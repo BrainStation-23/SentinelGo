@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"sentinelgo/internal/binpath"
 )
 
 const (
@@ -67,11 +69,11 @@ func (ls *linuxService) Install() error {
 		return fmt.Errorf("write unit file: %w", err)
 	}
 
-	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+	if out, err := exec.Command(binpath.Resolve("systemctl"), "daemon-reload").CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, out)
 	}
 
-	if out, err := exec.Command("systemctl", "enable", linuxUnitName).CombinedOutput(); err != nil {
+	if out, err := exec.Command(binpath.Resolve("systemctl"), "enable", linuxUnitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable: %w: %s", err, out)
 	}
 
@@ -97,21 +99,21 @@ func (ls *linuxService) Install() error {
 }
 
 func (ls *linuxService) Start() error {
-	if out, err := exec.Command("systemctl", "start", linuxUnitName).CombinedOutput(); err != nil {
+	if out, err := exec.Command(binpath.Resolve("systemctl"), "start", linuxUnitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl start: %w: %s", err, out)
 	}
 	return nil
 }
 
 func (ls *linuxService) Uninstall() error {
-	_ = exec.Command("systemctl", "stop", linuxUnitName).Run()
-	_ = exec.Command("systemctl", "disable", linuxUnitName).Run()
+	_ = exec.Command(binpath.Resolve("systemctl"), "stop", linuxUnitName).Run()
+	_ = exec.Command(binpath.Resolve("systemctl"), "disable", linuxUnitName).Run()
 
 	if err := os.Remove(linuxUnitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove unit file: %w", err)
 	}
 
-	_ = exec.Command("systemctl", "daemon-reload").Run()
+	_ = exec.Command(binpath.Resolve("systemctl"), "daemon-reload").Run()
 	return nil
 }
 

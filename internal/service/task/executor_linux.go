@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // executeLocalScript runs the task script on Linux, optionally using sudo for
@@ -36,12 +38,12 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 
 	if needsSudo {
 		var args []string
-		args = append(args, "sudo", "-S")
+		args = append(args, binpath.Resolve("sudo"), "-S")
 		switch ext {
 		case ".sh":
-			args = append(args, "bash", scriptPath, payloadPath)
+			args = append(args, binpath.Resolve("bash"), scriptPath, payloadPath)
 		case ".py":
-			args = append(args, "python3", scriptPath, payloadPath)
+			args = append(args, binpath.Resolve("python3"), scriptPath, payloadPath)
 		default:
 			args = append(args, scriptPath, payloadPath)
 		}
@@ -55,10 +57,10 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		switch ext {
 		case ".sh":
 			// #nosec G204 - scriptPath is a controlled path from task store
-			cmd = exec.CommandContext(ctx, "bash", scriptPath, payloadPath)
+			cmd = exec.CommandContext(ctx, binpath.Resolve("bash"), scriptPath, payloadPath)
 		case ".py":
 			// #nosec G204 - scriptPath is a controlled path from task store
-			cmd = exec.CommandContext(ctx, "python3", scriptPath, payloadPath)
+			cmd = exec.CommandContext(ctx, binpath.Resolve("python3"), scriptPath, payloadPath)
 		default:
 			// #nosec G204 - scriptPath is a controlled path from task store
 			cmd = exec.CommandContext(ctx, scriptPath, payloadPath)

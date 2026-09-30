@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/models"
 )
 
@@ -42,7 +43,7 @@ func (s *ServicesService) collectSystemdUnits(units map[string]models.ServiceInf
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("systemctl"), "list-units", "--type=service", "--all", "--no-pager", "--no-legend")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("services: systemctl list-units failed: %v", err)
@@ -57,7 +58,7 @@ func (s *ServicesService) mergeUnitFiles(units map[string]models.ServiceInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "systemctl", "list-unit-files", "--type=service", "--no-pager", "--no-legend")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("systemctl"), "list-unit-files", "--type=service", "--no-pager", "--no-legend")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("services: systemctl list-unit-files failed: %v", err)

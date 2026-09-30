@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"sentinelgo/internal/binpath"
 )
 
 // launchdPlistPath is where the macOS launchd job definition is installed,
@@ -63,7 +65,7 @@ func createLaunchdPlist() error {
 
 func loadLaunchdService() error {
 	// launchctl bootstrap is the supported API on macOS 10.15+; launchctl load is deprecated.
-	if err := exec.Command("launchctl", "bootstrap", "system", launchdPlistPath).Run(); err != nil {
+	if err := exec.Command(binpath.Resolve("launchctl"), "bootstrap", "system", launchdPlistPath).Run(); err != nil {
 		return fmt.Errorf("load launchd service: %w", err)
 	}
 	fmt.Println("Loaded launchd service: com.sentinelgo.agent")
@@ -72,7 +74,7 @@ func loadLaunchdService() error {
 
 func unloadLaunchdService() error {
 	// launchctl bootout is the supported API on macOS 10.15+; launchctl unload is deprecated.
-	if err := exec.Command("launchctl", "bootout", "system", launchdPlistPath).Run(); err != nil {
+	if err := exec.Command(binpath.Resolve("launchctl"), "bootout", "system", launchdPlistPath).Run(); err != nil {
 		return fmt.Errorf("unload launchd service: %w", err)
 	}
 	fmt.Println("Unloaded launchd service: com.sentinelgo.agent")
@@ -90,7 +92,7 @@ func removeLaunchdPlist() error {
 // CheckLaunchdService prints the launchd status for sentinelgo entries.
 // Called by the cli/process.go HandleStatus command.
 func CheckLaunchdService() error {
-	cmd := exec.Command("sh", "-c", "launchctl list | grep sentinelgo")
+	cmd := exec.Command(binpath.Resolve("sh"), "-c", "launchctl list | grep sentinelgo")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Failed to check launchd service: %v\n", err)

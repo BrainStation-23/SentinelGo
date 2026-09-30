@@ -6,6 +6,8 @@ import (
 	"log"
 	"os/exec"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // platformSoftware collects currently installed software on Windows. It returns
@@ -49,7 +51,7 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	const registryQuery = `$paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 $paths += Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $_.PSPath + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; $_.PSPath + '\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
 Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}} | Sort-Object Name -Unique | ConvertTo-Json`
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", registryQuery)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: registry uninstall query failed: %v", err)
@@ -83,7 +85,7 @@ func (s *SoftwareService) queryAppxPackages(allUsers bool) ([]SoftwareInfo, bool
 		enumerator += " -AllUsers"
 	}
 	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}} | Sort-Object Name -Unique | ConvertTo-Json`
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", query)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
 		if !allUsers {

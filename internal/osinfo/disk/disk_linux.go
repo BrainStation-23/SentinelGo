@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -203,7 +204,7 @@ func linuxHealthStatus(devPath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// #nosec G204 — devPath is constructed from lsblk output, always "/dev/<name>"
-	out, _ := exec.CommandContext(ctx, "smartctl", "-H", devPath).Output()
+	out, _ := exec.CommandContext(ctx, binpath.Resolve("smartctl"), "-H", devPath).Output()
 	if len(out) == 0 {
 		return "Unknown"
 	}

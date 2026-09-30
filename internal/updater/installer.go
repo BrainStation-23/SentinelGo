@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/winsec"
 )
 
@@ -138,9 +139,9 @@ func rollbackFromBackup(backupPath string) error {
 // replaced binary has a completely different hash, so without this launchd
 // cannot restart the updated binary (Gatekeeper rejects it silently).
 func recodesignForGatekeeper(selfPath string) {
-	_ = exec.Command("xattr", "-d", "com.apple.quarantine", selfPath).Run()
-	_ = exec.Command("codesign", "--force", "--sign", "-", selfPath).Run()
-	_ = exec.Command("spctl", "--add", selfPath).Run()
+	_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", selfPath).Run()
+	_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", selfPath).Run()
+	_ = exec.Command(binpath.Resolve("spctl"), "--add", selfPath).Run()
 }
 
 // restart hands control to the OS service manager so the new binary runs.
@@ -222,7 +223,7 @@ del "%s" >nul 2>&1
 	}
 
 	// #nosec G204 - bat is a controlled path generated above
-	cmd := exec.Command("cmd", "/c", "start", "/b", "", bat)
+	cmd := exec.Command(binpath.Resolve("cmd"), "/c", "start", "/b", "", bat)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch update script: %w", err)
 	}
