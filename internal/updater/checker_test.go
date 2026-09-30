@@ -123,6 +123,28 @@ func TestCheckAndApply_NoRelease(t *testing.T) {
 	}
 }
 
+// TestCheckAndApply_NoSHA256 covers the newer-version-found-but-no-checksum
+// fail-closed branch. It temporarily overrides config.Version (normally "dev"
+// in test binaries, which always fails isNewerVersion) so the comparison
+// reaches the SHA256 check — safely, since this branch returns before any
+// backup/download/replace/restart step runs.
+func TestCheckAndApply_NoSHA256(t *testing.T) {
+	prevVersion := config.Version
+	config.Version = "v1.0.0"
+	t.Cleanup(func() { config.Version = prevVersion })
+
+	release := sampleRelease()
+	release.SHA256 = ""
+	srv := newRPCServer(t, []LatestRelease{release}, http.StatusOK)
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	err := CheckAndApply(t.Context(), cfg)
+	if err == nil {
+		t.Fatal("expected an error when the release manifest has no SHA256")
+	}
+}
+
 // TestCheckAndApply_FetchError verifies that an RPC failure is returned as an error.
 func TestCheckAndApply_FetchError(t *testing.T) {
 	srv := newRPCServer(t, nil, http.StatusInternalServerError)
@@ -215,4 +237,40 @@ func TestCheckInternetWithHTTP(t *testing.T) {
 	requireNetworkInternal(t)
 	result := CheckInternetWithHTTP("https://supabase.co")
 	t.Logf("CheckInternetWithHTTP() = %v", result)
+}
+
+// TestCheckInternetWithHTTP_Reachable and _Unreachable below don't need
+// SENTINELGO_UPDATER_NETWORK_TESTS: unlike CheckInternetConnectivity (which
+// hardcodes port 443 on real hosts), CheckInternetWithHTTP takes the full
+// Supabase URL as a parameter, so an httptest.Server gives real, deterministic
+// coverage without touching a live third-party host.
+func TestCheckInternetWithHTTP_Reachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if !CheckInternetWithHTTP(srv.URL) {
+		t.Error("CheckInternetWithHTTP() = false, want true for a reachable server")
+	}
+}
+
+// TestCheckInternetWithHTTP_AnyStatusIsReachable confirms the "any HTTP
+// response means the host is up" semantics documented on the function: even a
+// 404 still means the network path is open.
+func TestCheckInternetWithHTTP_AnyStatusIsReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if !CheckInternetWithHTTP(srv.URL) {
+		t.Error("CheckInternetWithHTTP() = false, want true even for a 404 response")
+	}
+}
+
+func TestCheckInternetWithHTTP_Unreachable(t *testing.T) {
+	if CheckInternetWithHTTP("http://127.0.0.1:1") {
+		t.Error("CheckInternetWithHTTP() = true, want false for an unreachable host")
+	}
 }

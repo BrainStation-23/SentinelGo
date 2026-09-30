@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"sentinelgo/internal/models"
@@ -194,5 +195,39 @@ func TestServicesStore_MigrationIdempotent(t *testing.T) {
 	// Upsert something to confirm the schema is in place.
 	if err := s1.Upsert("agent-1", []models.ServiceInfo{{Name: "x.service", Source: "systemd"}}); err != nil {
 		t.Fatalf("Upsert after first open: %v", err)
+	}
+}
+
+func TestServicesStore_UpsertAfterCloseErrors(t *testing.T) {
+	s := openServicesStoreInMemory(t)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err := s.Upsert("agent-1", []models.ServiceInfo{{Name: "x.service", Source: "systemd"}})
+	if err == nil {
+		t.Error("expected Upsert on a closed store to return an error")
+	}
+}
+
+func TestServicesStore_GetAllAfterCloseErrors(t *testing.T) {
+	s := openServicesStoreInMemory(t)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := s.GetAll("agent-1"); err == nil {
+		t.Error("expected GetAll on a closed store to return an error")
+	}
+}
+
+// TestNewServicesStore_UnwritablePath exercises NewServicesStore's Migrate
+// error branch: SQLite's driver opens lazily, so Open itself succeeds even for
+// a path whose parent directory doesn't exist, but the first real write
+// (inside Migrate) fails.
+func TestNewServicesStore_UnwritablePath(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "missing-parent-dir", "services.db")
+	if _, err := store.NewServicesStore(badPath); err == nil {
+		t.Error("expected NewServicesStore to fail when the parent directory doesn't exist")
 	}
 }
