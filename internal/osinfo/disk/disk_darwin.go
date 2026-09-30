@@ -27,87 +27,133 @@ func getDisks() []shared.DiskDevice {
 		return disks
 	}
 
-	// FileVault and T2/Apple Silicon are system-wide properties — run once outside the loop.
-	encryptionStatus := "unknown"
-	encryptionType := "unknown"
-	if out, err := shared.RunCommand("fdesetup", "status"); err == nil {
-		lower := strings.ToLower(out)
-		if strings.Contains(lower, "filevault is on") {
-			encryptionStatus = "enabled"
-		} else if strings.Contains(lower, "filevault is off") {
-			encryptionStatus = "disabled"
-			encryptionType = "none"
-		}
-	}
-	if encryptionStatus == "enabled" {
-		if out, err := shared.RunCommand("system_profiler", "SPiBridgeDataType", "-json"); err == nil {
-			if strings.Contains(out, "ibridge_model_name") {
-				encryptionType = "hardware"
-			} else {
-				encryptionType = "software"
-			}
-		}
-	}
+	// FileVault and T2/Apple Silicon are system-wide properties — computed once outside the loop.
+	encStatus, encType := macSystemEncryption()
 
 	for _, s := range storageArr {
 		sm, ok := s.(map[string]any)
 		if !ok {
 			continue
 		}
-
-		var description, serial, fileSystem, mountPoint string
-		var totalBytes, freeBytes uint64
-
-		if v, ok := sm["_name"].(string); ok {
-			description = v
-		}
-		if v, ok := sm["size_in_bytes"].(float64); ok {
-			totalBytes = uint64(v)
-		}
-		if v, ok := sm["free_space_in_bytes"].(float64); ok {
-			freeBytes = uint64(v)
-		}
-		if v, ok := sm["file_system"].(string); ok {
-			fileSystem = strings.TrimSpace(v)
-		}
-		if v, ok := sm["mount_point"].(string); ok {
-			mountPoint = strings.TrimSpace(v)
-		}
-
-		driveType := "Unknown"
-		interfaceType := "Unknown"
-		healthStatus := "Unknown"
-
-		if pd, ok := sm["physical_drive"].(map[string]any); ok {
-			if v, ok := pd["device_name"].(string); ok && v != "" {
-				serial = v
-			}
-			mediumType, _ := pd["medium_type"].(string)
-			protocol, _ := pd["protocol"].(string)
-			driveType = macDriveType(mediumType, protocol)
-			interfaceType = macInterfaceType(protocol)
-			if v, ok := pd["smart_status"].(string); ok {
-				healthStatus = macHealthStatus(v)
-			}
-		}
-
-		disks = append(disks, shared.DiskDevice{
-			FreeCapacity:     freeBytes,
-			Description:      description,
-			Type:             "Physical disk drive",
-			Capacity:         totalBytes,
-			EncryptionStatus: encryptionStatus,
-			EncryptionType:   encryptionType,
-			SerialNumber:     serial,
-			Manufacturer:     manufacturerFromModel(description),
-			DriveType:        driveType,
-			HealthStatus:     healthStatus,
-			InterfaceType:    interfaceType,
-			FileSystem:       fileSystem,
-			MountPoint:       mountPoint,
-		})
+		entry := parseMacStorageEntry(sm)
+		pd := parseMacPhysicalDrive(sm)
+		disks = append(disks, buildMacDiskDevice(entry, pd, encStatus, encType))
 	}
 	return deduplicateBySerial(disks)
+}
+
+// macSystemEncryption reports FileVault status and, when enabled, whether the
+// encryption is hardware- or software-backed. FileVault and T2/Apple Silicon are
+// system-wide properties, so this is queried once rather than per storage entry.
+func macSystemEncryption() (status, encType string) {
+	status, encType = "unknown", "unknown"
+	out, err := shared.RunCommand("fdesetup", "status")
+	if err != nil {
+		return status, encType
+	}
+
+	lower := strings.ToLower(out)
+	switch {
+	case strings.Contains(lower, "filevault is on"):
+		status = "enabled"
+	case strings.Contains(lower, "filevault is off"):
+		status = "disabled"
+		encType = "none"
+	}
+	if status != "enabled" {
+		return status, encType
+	}
+
+	if ibridgeOut, err := shared.RunCommand("system_profiler", "SPiBridgeDataType", "-json"); err == nil {
+		if strings.Contains(ibridgeOut, "ibridge_model_name") {
+			encType = "hardware"
+		} else {
+			encType = "software"
+		}
+	}
+	return status, encType
+}
+
+// macStorageEntry bundles the basic fields parsed from one SPStorageDataType entry.
+type macStorageEntry struct {
+	description string
+	fileSystem  string
+	mountPoint  string
+	totalBytes  uint64
+	freeBytes   uint64
+}
+
+// parseMacStorageEntry extracts the volume-level fields of one SPStorageDataType entry.
+func parseMacStorageEntry(sm map[string]any) macStorageEntry {
+	var entry macStorageEntry
+	if v, ok := sm["_name"].(string); ok {
+		entry.description = v
+	}
+	if v, ok := sm["size_in_bytes"].(float64); ok {
+		entry.totalBytes = uint64(v)
+	}
+	if v, ok := sm["free_space_in_bytes"].(float64); ok {
+		entry.freeBytes = uint64(v)
+	}
+	if v, ok := sm["file_system"].(string); ok {
+		entry.fileSystem = strings.TrimSpace(v)
+	}
+	if v, ok := sm["mount_point"].(string); ok {
+		entry.mountPoint = strings.TrimSpace(v)
+	}
+	return entry
+}
+
+// macPhysicalDriveInfo bundles the fields derived from an SPStorageDataType entry's
+// nested physical_drive object.
+type macPhysicalDriveInfo struct {
+	serial        string
+	driveType     string
+	interfaceType string
+	healthStatus  string
+}
+
+// parseMacPhysicalDrive extracts serial number, drive type, interface, and health from
+// an SPStorageDataType entry's physical_drive object. Absent that object, it returns
+// the "Unknown" defaults and an empty serial.
+func parseMacPhysicalDrive(sm map[string]any) macPhysicalDriveInfo {
+	info := macPhysicalDriveInfo{driveType: "Unknown", interfaceType: "Unknown", healthStatus: "Unknown"}
+	pd, ok := sm["physical_drive"].(map[string]any)
+	if !ok {
+		return info
+	}
+
+	if v, ok := pd["device_name"].(string); ok && v != "" {
+		info.serial = v
+	}
+	mediumType, _ := pd["medium_type"].(string)
+	protocol, _ := pd["protocol"].(string)
+	info.driveType = macDriveType(mediumType, protocol)
+	info.interfaceType = macInterfaceType(protocol)
+	if v, ok := pd["smart_status"].(string); ok {
+		info.healthStatus = macHealthStatus(v)
+	}
+	return info
+}
+
+// buildMacDiskDevice assembles a shared.DiskDevice from one SPStorageDataType entry's
+// parsed volume and physical-drive details plus the system-wide encryption status.
+func buildMacDiskDevice(entry macStorageEntry, pd macPhysicalDriveInfo, encStatus, encType string) shared.DiskDevice {
+	return shared.DiskDevice{
+		FreeCapacity:     entry.freeBytes,
+		Description:      entry.description,
+		Type:             "Physical disk drive",
+		Capacity:         entry.totalBytes,
+		EncryptionStatus: encStatus,
+		EncryptionType:   encType,
+		SerialNumber:     pd.serial,
+		Manufacturer:     manufacturerFromModel(entry.description),
+		DriveType:        pd.driveType,
+		HealthStatus:     pd.healthStatus,
+		InterfaceType:    pd.interfaceType,
+		FileSystem:       entry.fileSystem,
+		MountPoint:       entry.mountPoint,
+	}
 }
 
 // deduplicateBySerial collapses APFS volume entries that share the same physical
