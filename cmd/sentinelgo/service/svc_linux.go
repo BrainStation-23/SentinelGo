@@ -69,10 +69,12 @@ func (ls *linuxService) Install() error {
 		return fmt.Errorf("write unit file: %w", err)
 	}
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	if out, err := exec.Command(binpath.Resolve("systemctl"), "daemon-reload").CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, out)
 	}
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	if out, err := exec.Command(binpath.Resolve("systemctl"), "enable", linuxUnitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable: %w: %s", err, out)
 	}
@@ -99,6 +101,7 @@ func (ls *linuxService) Install() error {
 }
 
 func (ls *linuxService) Start() error {
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	if out, err := exec.Command(binpath.Resolve("systemctl"), "start", linuxUnitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl start: %w: %s", err, out)
 	}
@@ -106,13 +109,16 @@ func (ls *linuxService) Start() error {
 }
 
 func (ls *linuxService) Uninstall() error {
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("systemctl"), "stop", linuxUnitName).Run()
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("systemctl"), "disable", linuxUnitName).Run()
 
 	if err := os.Remove(linuxUnitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove unit file: %w", err)
 	}
 
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("systemctl"), "daemon-reload").Run()
 	return nil
 }

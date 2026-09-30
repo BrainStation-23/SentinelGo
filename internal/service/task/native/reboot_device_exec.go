@@ -18,8 +18,10 @@ func triggerReboot() error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux", "darwin":
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		cmd = exec.Command(binpath.Resolve("shutdown"), "-r", "now")
 	case "windows":
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		cmd = exec.Command(binpath.Resolve("shutdown"), "/r", "/t", "0")
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)

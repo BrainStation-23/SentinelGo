@@ -28,8 +28,11 @@ func HandleInstall(svc AgentService) {
 		// without prompting the user to approve "unidentified developer" software.
 		// spctl --add registers the binary in the Gatekeeper allowlist.
 		const binaryPath = "/opt/sentinelgo/sentinelgo"
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", binaryPath).Run()
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", binaryPath).Run()
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		_ = exec.Command(binpath.Resolve("spctl"), "--add", binaryPath).Run()
 
 		if err := createLaunchdPlist(); err != nil {
@@ -40,6 +43,7 @@ func HandleInstall(svc AgentService) {
 			log.Fatalf("Failed to load launchd service: %v", err)
 		}
 
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		startCmd := exec.Command(binpath.Resolve("launchctl"), "start", "com.sentinelgo.agent")
 		if err := startCmd.Run(); err != nil {
 			log.Printf("Warning: launchctl start failed (service may already be running): %v", err)

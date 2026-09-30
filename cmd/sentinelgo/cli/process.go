@@ -35,15 +35,18 @@ func HandleStatus() {
 
 func stopSentinelGoProcesses() error {
 	if runtime.GOOS == "linux" {
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		if err := exec.Command(binpath.Resolve("systemctl"), "stop", "sentinelgo").Run(); err != nil {
 			log.Printf("Warning: failed to stop systemd service: %v", err)
 		}
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		if err := exec.Command(binpath.Resolve("systemctl"), "disable", "sentinelgo").Run(); err != nil {
 			log.Printf("Warning: failed to disable systemd service: %v", err)
 		}
 	}
 
 	if runtime.GOOS == "darwin" {
+		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 		if err := exec.Command(binpath.Resolve("launchctl"), "unload", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
 			log.Printf("Warning: failed to unload launchd service: %v", err)
 		}

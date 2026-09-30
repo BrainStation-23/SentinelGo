@@ -27,8 +27,11 @@ import (
 // replaced binary has a completely different hash, so without this launchd
 // cannot restart the updated binary (Gatekeeper rejects it silently).
 func recodesignForGatekeeper(selfPath string) {
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", selfPath).Run()
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", selfPath).Run()
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	_ = exec.Command(binpath.Resolve("spctl"), "--add", selfPath).Run()
 }
 
