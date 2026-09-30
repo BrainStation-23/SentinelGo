@@ -4,8 +4,81 @@ import (
 	"encoding/json"
 	"testing"
 
+	gnet "github.com/shirou/gopsutil/v4/net"
+
 	"sentinelgo/internal/osinfo/shared"
 )
+
+func TestClassifyListeningPort_TCPListen(t *testing.T) {
+	conn := gnet.ConnectionStat{
+		Type:   1,
+		Status: "LISTEN",
+		Laddr:  gnet.Addr{IP: "0.0.0.0", Port: 8080},
+		Pid:    0,
+	}
+	lp, ok := classifyListeningPort(conn)
+	if !ok {
+		t.Fatal("expected ok=true for a TCP LISTEN connection")
+	}
+	if lp.Protocol != "tcp" || lp.Port != 8080 || lp.Address != "0.0.0.0" {
+		t.Errorf("classifyListeningPort() = %+v, unexpected fields", lp)
+	}
+}
+
+func TestClassifyListeningPort_UDPBound(t *testing.T) {
+	conn := gnet.ConnectionStat{
+		Type:   2,
+		Status: "NONE",
+		Laddr:  gnet.Addr{IP: "127.0.0.1", Port: 53},
+	}
+	lp, ok := classifyListeningPort(conn)
+	if !ok {
+		t.Fatal("expected ok=true for a bound UDP socket")
+	}
+	if lp.Protocol != "udp" || lp.Port != 53 {
+		t.Errorf("classifyListeningPort() = %+v, want udp/53", lp)
+	}
+}
+
+func TestClassifyListeningPort_NotListeningOrBound(t *testing.T) {
+	conn := gnet.ConnectionStat{
+		Type:   1,
+		Status: "ESTABLISHED",
+		Laddr:  gnet.Addr{IP: "10.0.0.5", Port: 443},
+	}
+	if _, ok := classifyListeningPort(conn); ok {
+		t.Error("expected ok=false for an established (non-listening) TCP connection")
+	}
+}
+
+func TestClassifyListeningPort_UDPNotBound(t *testing.T) {
+	conn := gnet.ConnectionStat{
+		Type:   2,
+		Laddr:  gnet.Addr{Port: 0},
+	}
+	if _, ok := classifyListeningPort(conn); ok {
+		t.Error("expected ok=false for a UDP socket with no bound port")
+	}
+}
+
+func TestClassifyListeningPort_PortOutOfUint16Range(t *testing.T) {
+	conn := gnet.ConnectionStat{
+		Type:   1,
+		Status: "LISTEN",
+		Laddr:  gnet.Addr{Port: 70000}, // > math.MaxUint16
+	}
+	if _, ok := classifyListeningPort(conn); ok {
+		t.Error("expected ok=false for a port that doesn't fit in uint16")
+	}
+}
+
+func TestProcessNameForPID_InvalidPID(t *testing.T) {
+	// PID 0 (or a very large, almost-certainly-unused PID) should fail the
+	// lookup and return "" rather than panicking.
+	if name := processNameForPID(999999); name != "" {
+		t.Logf("processNameForPID(999999) = %q (non-fatal: only asserting no panic)", name)
+	}
+}
 
 func TestAnalyzeNetworkExposure(t *testing.T) {
 	ports := []shared.ListeningPort{
