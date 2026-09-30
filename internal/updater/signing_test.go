@@ -5,9 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"sentinelgo/internal/config"
 )
@@ -97,6 +101,74 @@ func TestVerifySignature_EmptySigAssetPath(t *testing.T) {
 	err := verifySignature(context.Background(), &config.Config{}, binaryPath, "", pub)
 	if err == nil {
 		t.Error("expected empty sigAssetPath to return error (fail closed), got nil")
+	}
+}
+
+// TestVerifySignature_NonOKStatus confirms a non-200 response from the
+// signature-download endpoint is treated as an error.
+func TestVerifySignature_NonOKStatus(t *testing.T) {
+	pub, _ := newTestKeypair(t)
+	binaryPath := writeTempBinary(t, []byte("binary"))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := verifySignature(ctx, cfg, binaryPath, "v1.0.0/binary.sig", pub)
+	if err == nil {
+		t.Error("expected error for non-200 signature download status, got nil")
+	}
+}
+
+// TestVerifySignature_MalformedBase64 confirms a signature body that isn't
+// valid base64 is rejected before attempting ed25519 verification.
+func TestVerifySignature_MalformedBase64(t *testing.T) {
+	pub, _ := newTestKeypair(t)
+	binaryPath := writeTempBinary(t, []byte("binary"))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not-valid-base64!!!"))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := verifySignature(ctx, cfg, binaryPath, "v1.0.0/binary.sig", pub)
+	if err == nil || !strings.Contains(err.Error(), "decode signature") {
+		t.Errorf("err = %v, want a signature-decode error", err)
+	}
+}
+
+// TestVerifySignature_FullRoundTrip exercises verifySignature end-to-end: a
+// fake Supabase Storage server serves a real ed25519 signature over the
+// staged binary's actual on-disk bytes, and verification must succeed.
+func TestVerifySignature_FullRoundTrip(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	content := []byte("fake sentinelgo release binary content")
+	binaryPath := writeTempBinary(t, content)
+
+	sig := ed25519.Sign(priv, content)
+	encoded := base64.StdEncoding.EncodeToString(sig)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(encoded + "\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	cfg.SetTokens("test-jwt", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := verifySignature(ctx, cfg, binaryPath, "v1.0.0/binary.sig", pub); err != nil {
+		t.Errorf("expected a valid signature to verify successfully, got: %v", err)
 	}
 }
 

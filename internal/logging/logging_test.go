@@ -7,6 +7,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/logging"
+	authsvc "sentinelgo/internal/service/auth"
 )
 
 func TestNewLoggingIntegration(t *testing.T) {
@@ -29,6 +30,23 @@ func TestNewLoggingIntegration(t *testing.T) {
 	if err == nil {
 		t.Error("NewLoggingIntegration() should fail with nil config")
 	}
+}
+
+func TestLoggingIntegration_SetAuth(t *testing.T) {
+	cfg := &config.Config{
+		DeviceID:         "test-device-id",
+		LogFlushInterval: config.Duration(5 * time.Minute),
+		Path:             "/tmp/test-config.json",
+	}
+	li, err := logging.NewLoggingIntegration(cfg)
+	if err != nil {
+		t.Fatalf("NewLoggingIntegration: %v", err)
+	}
+
+	// *authsvc.Service satisfies the uploader's unexported authRetrier
+	// interface; SetAuth just needs to accept it without panicking.
+	svc := authsvc.NewService("https://test.supabase.co", "test-anon-key")
+	li.SetAuth(svc)
 }
 
 func TestLoggingIntegration_Start_Stop(t *testing.T) {

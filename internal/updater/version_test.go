@@ -18,6 +18,11 @@ func TestIsNewerVersion(t *testing.T) {
 		{"v2.2", "v2.1.9", true, false},       // missing patch defaults to 0
 		{"dev", "v2.1.5", false, true},        // unparseable candidate
 		{"v2.1.6", "dev", false, true},        // unparseable current (dev build)
+		{"1.2.3.4", "v2.1.5", false, true},    // too many components
+		{"V2.1.6", "v2.1.5", true, false},     // uppercase V prefix
+		{"v2.1.6+build.5", "v2.1.5", true, false}, // build metadata suffix ignored
+		{"v2", "v1.9.9", true, false},          // missing minor+patch default to 0
+		{"", "v2.1.5", false, true},             // empty candidate
 	}
 
 	for _, tc := range cases {

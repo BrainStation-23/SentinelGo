@@ -88,6 +88,17 @@ func TestCheckpointStore_UpdateMergesAndOverwrites(t *testing.T) {
 	}
 }
 
+func TestCheckpointStore_SaveMarshalError(t *testing.T) {
+	s := NewCheckpointStore(t.TempDir())
+	// A channel value cannot be marshaled to JSON, forcing Save's
+	// json.MarshalIndent error branch.
+	s.Update(CheckpointData{"bad": make(chan int)})
+
+	if err := s.Save(); err == nil {
+		t.Fatal("expected an error when checkpoint data cannot be marshaled to JSON")
+	}
+}
+
 func TestCheckpointStore_SaveCreatesMissingDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "checkpoint-dir")
 	s := NewCheckpointStore(dir)
