@@ -45,11 +45,7 @@ func batchMdlsLastOpened(paths []string) map[string]string {
 // parseMdlsOutput parses the output of `mdls -name kMDItemLastUsedDate path1 path2 ...`.
 // Each file block starts with the path followed by a colon, then the attribute line.
 func parseMdlsOutput(output string, paths []string, result map[string]string) {
-	// Build a quick lookup so we can match path headers back to original paths.
-	pathSet := make(map[string]string, len(paths))
-	for _, p := range paths {
-		pathSet[p+":"] = p
-	}
+	pathSet := buildMdlsPathSet(paths)
 
 	var currentPath string
 	for _, line := range strings.Split(output, "\n") {
@@ -59,34 +55,57 @@ func parseMdlsOutput(output string, paths []string, result map[string]string) {
 		}
 		// Path header: "/Applications/Safari.app:"
 		if strings.HasSuffix(line, ":") {
-			if orig, ok := pathSet[line]; ok {
-				currentPath = orig
-			} else {
-				currentPath = ""
-			}
+			currentPath = resolveMdlsPathHeader(line, pathSet)
 			continue
 		}
 		if currentPath == "" {
 			continue
 		}
-		// Attribute line: "kMDItemLastUsedDate = 2025-06-10 08:42:11 +0000" or "(null)"
-		if !strings.HasPrefix(line, "kMDItemLastUsedDate") {
-			continue
+		if ts, ok := parseMdlsLastUsedLine(line); ok {
+			result[currentPath] = ts
 		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		val := strings.TrimSpace(parts[1])
-		if val == "(null)" || val == "" {
-			continue
-		}
-		t, err := time.Parse("2006-01-02 15:04:05 +0000", val)
-		if err != nil {
-			continue
-		}
-		result[currentPath] = t.UTC().Format(time.RFC3339)
 	}
+}
+
+// buildMdlsPathSet builds a quick lookup so path headers in `mdls` output can
+// be matched back to the original queried paths.
+func buildMdlsPathSet(paths []string) map[string]string {
+	pathSet := make(map[string]string, len(paths))
+	for _, p := range paths {
+		pathSet[p+":"] = p
+	}
+	return pathSet
+}
+
+// resolveMdlsPathHeader resolves a path-header line (e.g. "/Applications/Safari.app:")
+// back to the original path, or "" if it doesn't match one we queried.
+func resolveMdlsPathHeader(line string, pathSet map[string]string) string {
+	if orig, ok := pathSet[line]; ok {
+		return orig
+	}
+	return ""
+}
+
+// parseMdlsLastUsedLine parses an attribute line such as
+// "kMDItemLastUsedDate = 2025-06-10 08:42:11 +0000" (or "(null)") into an
+// RFC3339 timestamp. ok is false for non-matching, empty, or unparsable lines.
+func parseMdlsLastUsedLine(line string) (string, bool) {
+	if !strings.HasPrefix(line, "kMDItemLastUsedDate") {
+		return "", false
+	}
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	val := strings.TrimSpace(parts[1])
+	if val == "(null)" || val == "" {
+		return "", false
+	}
+	t, err := time.Parse("2006-01-02 15:04:05 +0000", val)
+	if err != nil {
+		return "", false
+	}
+	return t.UTC().Format(time.RFC3339), true
 }
 
 // platformSoftware collects currently installed software on macOS. It returns

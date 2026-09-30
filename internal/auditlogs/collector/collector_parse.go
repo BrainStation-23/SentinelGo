@@ -110,35 +110,52 @@ func parseJournalTimestamp(s string) time.Time {
 // Falls back to current time if parsing fails.
 func parseSyslogTimestamp(line string) time.Time {
 	// Standard syslog format: "Mon Jan  2 15:04:05"
-	if len(line) >= 15 {
-		layouts := []string{
-			"Jan  2 15:04:05",
-			"Jan 2 15:04:05",
-			"2006-01-02T15:04:05",
-			time.RFC3339,
-		}
-		for _, layout := range layouts {
-			end := len(layout)
-			if end > len(line) {
-				end = len(line)
-			}
-			// Parse in the local zone: syslog "Jan  2 15:04:05" timestamps carry
-			// no zone, and time.Parse would assume UTC — making every entry look
-			// hours off (and, combined with downstream time filters, risk being
-			// mis-ordered). ParseInLocation respects an explicit zone when present.
-			if t, err := time.ParseInLocation(layout, line[:end], time.Local); err == nil {
-				// Syslog doesn't include year -- use current year
-				if t.Year() == 0 {
-					t = t.AddDate(time.Now().Year(), 0, 0)
-					if t.After(time.Now()) {
-						t = t.AddDate(-1, 0, 0)
-					}
-				}
-				return t
-			}
+	if len(line) < 15 {
+		return time.Now()
+	}
+	layouts := []string{
+		"Jan  2 15:04:05",
+		"Jan 2 15:04:05",
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		if t, ok := tryParseSyslogLayout(line, layout); ok {
+			return t
 		}
 	}
 	return time.Now()
+}
+
+// tryParseSyslogLayout attempts to parse line's leading prefix (sized to
+// layout) against layout, in the local zone: syslog "Jan  2 15:04:05"
+// timestamps carry no zone, and time.Parse would assume UTC — making every
+// entry look hours off (and, combined with downstream time filters, risk
+// being mis-ordered). ParseInLocation respects an explicit zone when present.
+func tryParseSyslogLayout(line, layout string) (time.Time, bool) {
+	end := len(layout)
+	if end > len(line) {
+		end = len(line)
+	}
+	t, err := time.ParseInLocation(layout, line[:end], time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fillMissingSyslogYear(t), true
+}
+
+// fillMissingSyslogYear fills in the year for a syslog timestamp, which
+// doesn't include one, using the current year (or the previous year, if that
+// would place the timestamp in the future).
+func fillMissingSyslogYear(t time.Time) time.Time {
+	if t.Year() != 0 {
+		return t
+	}
+	t = t.AddDate(time.Now().Year(), 0, 0)
+	if t.After(time.Now()) {
+		t = t.AddDate(-1, 0, 0)
+	}
+	return t
 }
 
 // inferSyslogSeverity guesses severity from keywords in a syslog/file log line.

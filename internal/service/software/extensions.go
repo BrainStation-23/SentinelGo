@@ -173,70 +173,100 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 // by reading the extension's locale messages.json files. Returns the resolved
 // name or the fallbackID if resolution fails.
 func resolveI18nName(manifestPath, msgKey, fallbackID string) string {
-	// Extract key from __MSG_key__ format
-	key := strings.TrimPrefix(msgKey, "__MSG_")
-	key = strings.TrimSuffix(key, "__")
+	key := normalizeI18nKey(msgKey)
 	if key == "" {
 		return fallbackID
 	}
 
-	// Chrome extension locale files typically use lowercase keys
-	// Try both the original case and lowercase versions
+	// Chrome extension locale files typically use lowercase keys.
+	// Try both the original case and lowercase versions.
 	keyVariants := []string{key, strings.ToLower(key)}
 
-	// For Chrome extensions, _locales is in the version directory (same dir as manifest.json)
-	// For Firefox extensions, _locales is in the extension root
-	manifestDir := filepath.Dir(manifestPath)
-
-	// First try: _locales in the same directory as manifest.json (Chrome-style)
-	localesDir := filepath.Join(manifestDir, "_locales")
-	entries, err := os.ReadDir(localesDir)
-	if err != nil {
-		// Second try: _locales in parent directory (Firefox-style or alternative Chrome structure)
-		localesDir = filepath.Join(filepath.Dir(manifestDir), "_locales")
-		entries, err = os.ReadDir(localesDir)
-		if err != nil {
-			return fallbackID
-		}
+	localesDir, entries, ok := findExtensionLocalesDir(manifestPath)
+	if !ok {
+		return fallbackID
 	}
 
-	// Preferred locales to try (in order)
+	// Preferred locales to try first (in order).
 	preferredLocales := []string{"en", "en_US", "en_GB", "en_CA"}
+	if name, ok := tryLocaleVariants(localesDir, preferredLocales, keyVariants); ok {
+		return name
+	}
 
-	// First try preferred locales with all key variants
-	for _, locale := range preferredLocales {
+	// Then try any remaining available locale.
+	otherLocales := otherLocaleNames(entries, preferredLocales)
+	if name, ok := tryLocaleVariants(localesDir, otherLocales, keyVariants); ok {
+		return name
+	}
+
+	return fallbackID
+}
+
+// normalizeI18nKey extracts key from the "__MSG_key__" format.
+func normalizeI18nKey(msgKey string) string {
+	key := strings.TrimPrefix(msgKey, "__MSG_")
+	key = strings.TrimSuffix(key, "__")
+	return key
+}
+
+// findExtensionLocalesDir locates the "_locales" directory for an extension.
+// For Chrome extensions, _locales is in the version directory (same dir as
+// manifest.json). For Firefox extensions, _locales is in the extension root.
+func findExtensionLocalesDir(manifestPath string) (string, []os.DirEntry, bool) {
+	manifestDir := filepath.Dir(manifestPath)
+
+	// First try: _locales in the same directory as manifest.json (Chrome-style).
+	localesDir := filepath.Join(manifestDir, "_locales")
+	if entries, err := os.ReadDir(localesDir); err == nil {
+		return localesDir, entries, true
+	}
+
+	// Second try: _locales in parent directory (Firefox-style or alternative Chrome structure).
+	localesDir = filepath.Join(filepath.Dir(manifestDir), "_locales")
+	entries, err := os.ReadDir(localesDir)
+	if err != nil {
+		return "", nil, false
+	}
+	return localesDir, entries, true
+}
+
+// tryLocaleVariants attempts to read a message for each locale/key-variant
+// combination, returning the first non-empty result found.
+func tryLocaleVariants(localesDir string, locales, keyVariants []string) (string, bool) {
+	for _, locale := range locales {
 		for _, keyVariant := range keyVariants {
 			if name := readLocaleMessage(localesDir, locale, keyVariant); name != "" {
-				return name
+				return name, true
 			}
 		}
 	}
+	return "", false
+}
 
-	// Then try any available locale with all key variants
+// otherLocaleNames returns the directory-entry locale names from entries that
+// are not already present in preferredLocales.
+func otherLocaleNames(entries []os.DirEntry, preferredLocales []string) []string {
+	var locales []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		locale := entry.Name()
-		// Skip if already tried
-		skip := false
-		for _, pref := range preferredLocales {
-			if locale == pref {
-				skip = true
-				break
-			}
-		}
-		if skip {
+		if isPreferredLocale(locale, preferredLocales) {
 			continue
 		}
-		for _, keyVariant := range keyVariants {
-			if name := readLocaleMessage(localesDir, locale, keyVariant); name != "" {
-				return name
-			}
+		locales = append(locales, locale)
+	}
+	return locales
+}
+
+func isPreferredLocale(locale string, preferredLocales []string) bool {
+	for _, pref := range preferredLocales {
+		if locale == pref {
+			return true
 		}
 	}
-
-	return fallbackID
+	return false
 }
 
 // readLocaleMessage reads a specific locale's messages.json and returns the

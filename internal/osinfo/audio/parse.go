@@ -16,25 +16,16 @@ import (
 // Device blocks are detected as section headers: a trimmed line that ends with
 // ":" and contains no ": " (which would make it a key-value property). Each
 // block's Manufacturer, Input Source, and Output Source keys populate the struct.
-func parseDarwinAudioOutput(output string) []shared.AudioDevice {
-	var devices []shared.AudioDevice
-	seen := make(map[string]bool)
-	var cur *shared.AudioDevice
+// darwinAudioParseState accumulates parsed devices while walking the
+// `system_profiler SPAudioDataType` text output line by line.
+type darwinAudioParseState struct {
+	devices []shared.AudioDevice
+	seen    map[string]bool
+	cur     *shared.AudioDevice
+}
 
-	flush := func() {
-		if cur == nil || cur.Description == "" {
-			return
-		}
-		if cur.Manufacturer == "" {
-			cur.Manufacturer = inferManufacturer(cur.Description)
-		}
-		key := cur.Description + "|" + cur.Manufacturer
-		if !seen[key] {
-			devices = append(devices, *cur)
-			seen[key] = true
-		}
-		cur = nil
-	}
+func parseDarwinAudioOutput(output string) []shared.AudioDevice {
+	state := &darwinAudioParseState{seen: make(map[string]bool)}
 
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -44,55 +35,94 @@ func parseDarwinAudioOutput(output string) []shared.AudioDevice {
 
 		// Property line: "Key: Value"
 		if idx := strings.Index(trimmed, ": "); idx > 0 {
-			if cur == nil {
-				continue
-			}
-			key := trimmed[:idx]
-			value := trimmed[idx+2:]
-			switch key {
-			case "Manufacturer":
-				cur.Manufacturer = value
-			case "Input Source":
-				_ = value
-				switch cur.Type {
-				case "output":
-					cur.Type = "input/output"
-				case "":
-					cur.Type = "input"
-				}
-			case "Output Source":
-				_ = value
-				switch cur.Type {
-				case "input":
-					cur.Type = "input/output"
-				case "":
-					cur.Type = "output"
-				}
-			}
+			state.applyPropertyLine(trimmed[:idx], trimmed[idx+2:])
 			continue
 		}
 
 		// Section header: trimmed line ends with ":" and has no ": " inside.
 		if strings.HasSuffix(trimmed, ":") {
-			name := strings.TrimSuffix(trimmed, ":")
-			// Skip known non-device section headers.
-			if name == "Audio" || name == "Devices" {
-				continue
-			}
-			// system_profiler indents device names at 8 spaces and property keys
-			// at 10+ spaces. An empty-value property ("Manufacturer:") sits at
-			// deep indent and must not be mistaken for a new device block.
-			indent := len(line) - len(strings.TrimLeft(line, " \t"))
-			if cur != nil && indent >= 10 {
-				continue
-			}
-			flush()
-			cur = &shared.AudioDevice{Description: name}
+			state.applySectionHeader(line, trimmed)
 		}
 	}
-	flush()
+	state.flush()
 
-	return devices
+	return state.devices
+}
+
+// applyPropertyLine applies a single "Key: Value" property line to the
+// current device block, if any.
+func (s *darwinAudioParseState) applyPropertyLine(key, value string) {
+	if s.cur == nil {
+		return
+	}
+	switch key {
+	case "Manufacturer":
+		s.cur.Manufacturer = value
+	case "Input Source":
+		applyInputSourceType(s.cur)
+	case "Output Source":
+		applyOutputSourceType(s.cur)
+	}
+}
+
+// applyInputSourceType marks the current device as capable of input, upgrading
+// an existing "output" classification to "input/output".
+func applyInputSourceType(cur *shared.AudioDevice) {
+	switch cur.Type {
+	case "output":
+		cur.Type = "input/output"
+	case "":
+		cur.Type = "input"
+	}
+}
+
+// applyOutputSourceType marks the current device as capable of output, upgrading
+// an existing "input" classification to "input/output".
+func applyOutputSourceType(cur *shared.AudioDevice) {
+	switch cur.Type {
+	case "input":
+		cur.Type = "input/output"
+	case "":
+		cur.Type = "output"
+	}
+}
+
+// applySectionHeader handles a line that looks like a device section header
+// ("Description:"), flushing the previous device block and starting a new
+// one — unless it's a known non-device header or an empty-value property line
+// mistaken for one (see indent comment below).
+func (s *darwinAudioParseState) applySectionHeader(rawLine, trimmed string) {
+	name := strings.TrimSuffix(trimmed, ":")
+	// Skip known non-device section headers.
+	if name == "Audio" || name == "Devices" {
+		return
+	}
+	// system_profiler indents device names at 8 spaces and property keys
+	// at 10+ spaces. An empty-value property ("Manufacturer:") sits at
+	// deep indent and must not be mistaken for a new device block.
+	indent := len(rawLine) - len(strings.TrimLeft(rawLine, " \t"))
+	if s.cur != nil && indent >= 10 {
+		return
+	}
+	s.flush()
+	s.cur = &shared.AudioDevice{Description: name}
+}
+
+// flush finalizes the in-progress device block (if any), deduplicates it
+// against devices already seen, and appends it to the result.
+func (s *darwinAudioParseState) flush() {
+	if s.cur == nil || s.cur.Description == "" {
+		return
+	}
+	if s.cur.Manufacturer == "" {
+		s.cur.Manufacturer = inferManufacturer(s.cur.Description)
+	}
+	key := s.cur.Description + "|" + s.cur.Manufacturer
+	if !s.seen[key] {
+		s.devices = append(s.devices, *s.cur)
+		s.seen[key] = true
+	}
+	s.cur = nil
 }
 
 // parseLinuxLspciOutput parses `lspci -nn` output for audio/multimedia devices.
