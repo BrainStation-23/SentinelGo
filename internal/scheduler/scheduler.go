@@ -118,7 +118,6 @@ type TaskHandler func(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 type Scheduler struct {
 	tasks     map[string]*Task
 	taskOrder []string // Execution order based on dependencies
-	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	mu        sync.RWMutex
@@ -127,12 +126,9 @@ type Scheduler struct {
 
 // NewScheduler creates a new task scheduler
 func NewScheduler() *Scheduler {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		tasks:     make(map[string]*Task),
 		taskOrder: []string{},
-		ctx:       ctx,
-		cancel:    cancel,
 	}
 }
 
@@ -212,12 +208,15 @@ func (s *Scheduler) Start(cfg *config.Config, authSvc *authsvc.Service) error {
 
 	log.Printf("Starting task scheduler with %d tasks", len(s.tasks))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+
 	// Run initial tasks in dependency order
-	s.runInitialTasks(cfg, authSvc)
+	s.runInitialTasks(ctx, cfg, authSvc)
 
 	// Start periodic execution
 	s.wg.Add(1)
-	go s.runPeriodicTasks(cfg, authSvc)
+	go s.runPeriodicTasks(ctx, cfg, authSvc)
 
 	return nil
 }
@@ -266,7 +265,7 @@ func observeTaskResult(t *Task, err error) {
 // single background goroutine so the ordering is respected without blocking
 // Scheduler.Start. If a task fails its LastRun is still recorded so dependent
 // tasks are not permanently blocked by a one-off failure.
-func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service) {
+func (s *Scheduler) runInitialTasks(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -274,7 +273,7 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 
 		for _, taskName := range s.taskOrder {
 			select {
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 			}
@@ -291,7 +290,7 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 			}
 
 			log.Printf("Running initial task: %s", taskName)
-			err := runTaskHandler(s.ctx, taskName, task.Handler, cfg, authSvc)
+			err := runTaskHandler(ctx, taskName, task.Handler, cfg, authSvc)
 			if err != nil {
 				log.Printf("Initial task %s failed: %v", taskName, err)
 			} else {
@@ -309,7 +308,7 @@ func (s *Scheduler) runInitialTasks(cfg *config.Config, authSvc *authsvc.Service
 // runPeriodicTasks handles periodic execution of enabled tasks.
 // A 1-second heartbeat ticker gates the inner loop so the goroutine blocks
 // instead of busy-spinning with a short sleep.
-func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Service) {
+func (s *Scheduler) runPeriodicTasks(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) {
 	defer s.wg.Done()
 
 	tickers := make(map[string]*time.Ticker)
@@ -342,7 +341,7 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			log.Printf("Scheduler stopping, shutting down all tasks")
 			return
 		case <-heartbeat.C:
@@ -374,7 +373,7 @@ func (s *Scheduler) runPeriodicTasks(cfg *config.Config, authSvc *authsvc.Servic
 						defer t.Running.Store(false)
 
 						log.Printf("Running periodic task: %s", taskName)
-						err := runTaskHandler(s.ctx, taskName, t.Handler, cfg, authSvc)
+						err := runTaskHandler(ctx, taskName, t.Handler, cfg, authSvc)
 						if err != nil {
 							log.Printf("Periodic task %s failed: %v", taskName, err)
 						} else {

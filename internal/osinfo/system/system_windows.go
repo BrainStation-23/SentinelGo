@@ -10,13 +10,13 @@ import (
 )
 
 func getHardwareModel() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model"); err == nil {
 		if model := strings.TrimSpace(output); model != "" {
 			return model
 		}
 	}
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer"); err == nil {
 		if manufacturer := strings.TrimSpace(output); manufacturer != "" {
 			return manufacturer
@@ -26,6 +26,14 @@ func getHardwareModel() string {
 	return hostname
 }
 
+// oemPlaceholderSerial and genericPlaceholderSerial are values some OEMs ship
+// in the BIOS/motherboard SerialNumber fields instead of a real serial. Any
+// candidate matching one of these is treated as "not a real serial number".
+const (
+	oemPlaceholderSerial     = "To be filled by O.E.M."
+	genericPlaceholderSerial = "Default string"
+)
+
 func getSerialNumber() string {
 	type candidate struct {
 		cmd     string
@@ -34,19 +42,19 @@ func getSerialNumber() string {
 	candidates := []candidate{
 		{
 			"Get-CimInstance -ClassName Win32_BIOS | Select-Object -ExpandProperty SerialNumber",
-			[]string{"To be filled by O.E.M.", "Default string", "System Serial Number"},
+			[]string{oemPlaceholderSerial, genericPlaceholderSerial, "System Serial Number"},
 		},
 		{
 			"Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty IdentifyingNumber",
-			[]string{"To be filled by O.E.M.", "Default string"},
+			[]string{oemPlaceholderSerial, genericPlaceholderSerial},
 		},
 		{
 			"Get-CimInstance -ClassName Win32_BaseBoard | Select-Object -ExpandProperty SerialNumber",
-			[]string{"To be filled by O.E.M.", "Default string"},
+			[]string{oemPlaceholderSerial, genericPlaceholderSerial},
 		},
 	}
 	for _, c := range candidates {
-		output, err := shared.RunCommand("powershell", "-NoProfile", "-Command", c.cmd)
+		output, err := shared.RunPowerShell(c.cmd)
 		if err != nil {
 			continue
 		}
@@ -67,7 +75,7 @@ func getSerialNumber() string {
 }
 
 func getBatteryCondition() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-CimInstance -ClassName Win32_Battery | Select-Object -ExpandProperty BatteryStatus"); err == nil {
 		if status := parseBatteryStatusCode(output); status != "" {
 			return status
@@ -77,7 +85,7 @@ func getBatteryCondition() string {
 }
 
 func getFQDN() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"[System.Net.Dns]::GetHostEntry('').HostName"); err == nil {
 		if fqdn := strings.TrimSpace(output); fqdn != "" {
 			return fqdn
@@ -88,7 +96,7 @@ func getFQDN() string {
 }
 
 func getChassisType() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_SystemEnclosure | Select-Object -ExpandProperty ChassisTypes"); err == nil {
 		val := strings.Trim(strings.TrimSpace(output), "{} \r\n")
 		parts := strings.Fields(val)
@@ -123,7 +131,7 @@ func getOSInformation() shared.OSInformation {
 		`TimeZoneOffset=[int]$tz.BaseUtcOffset.TotalMinutes` +
 		`} | ConvertTo-Json -Compress`
 
-	if out, err := shared.RunCommand("powershell", "-NoProfile", "-Command", ps); err == nil {
+	if out, err := shared.RunPowerShell(ps); err == nil {
 		name, version, displayVer, locale, language, tzID, tzOffset :=
 			parseWindowsOSInfoExtendedJSON(out)
 		if name != "" {
@@ -156,7 +164,7 @@ func getOSInformation() shared.OSInformation {
 
 func getFirmwareInfo() (firmwareType, vendor, version string) {
 	firmwareType = "UEFI"
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_BIOS | Select-Object SMBIOSBIOSVersion,Manufacturer | ConvertTo-Json")
 	if err != nil {
 		return
@@ -181,7 +189,7 @@ func getFirmwareInfo() (firmwareType, vendor, version string) {
 }
 
 func getTPMVersion() string {
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-CimInstance -Namespace root/cimv2/security/microsofttpm Win32_Tpm | Select-Object -ExpandProperty SpecVersion"); err == nil {
 		if v := strings.TrimSpace(output); v != "" {
 			return v

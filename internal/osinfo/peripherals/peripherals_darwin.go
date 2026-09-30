@@ -8,6 +8,10 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// hidDeviceType is the generic device-type label used when a peripheral is
+// only identifiable as a HID device (no more specific type is available).
+const hidDeviceType = "HID Device"
+
 func getPeripherals() []shared.PeripheralDevice {
 	var peripherals []shared.PeripheralDevice
 
@@ -320,7 +324,7 @@ func addHIDDeviceFromMap(deviceMap map[string]string, peripherals *[]shared.Peri
 	if name != "" {
 		deviceType := determineDeviceType(name, strings.ToLower(name))
 		if deviceType == "" {
-			deviceType = "HID Device"
+			deviceType = hidDeviceType
 		}
 		*peripherals = append(*peripherals, shared.PeripheralDevice{
 			Type:           deviceType,
@@ -362,11 +366,11 @@ func determineBluetoothDeviceType(majorType, minorType string) string {
 	case strings.Contains(majorLower, "audio"):
 		return "Audio Device"
 	case majorLower == "hid" || strings.HasPrefix(majorLower, "hid "):
-		return "HID Device"
+		return hidDeviceType
 	case strings.Contains(majorLower, "peripheral"):
 		return "Peripheral Device"
 	case strings.Contains(majorLower, "hid"):
-		return "HID Device"
+		return hidDeviceType
 	}
 	return "Bluetooth Device"
 }

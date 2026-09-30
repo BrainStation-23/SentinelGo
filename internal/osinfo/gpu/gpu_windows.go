@@ -55,7 +55,7 @@ func getGPUs() []shared.GPU {
 	// AdapterRAM is a uint32 WMI field, capped at ~4 GB; may underreport high-VRAM GPUs.
 	// PNPDeviceID is the correct per-adapter hardware identifier.
 	// Status is the WMI device health string ("OK", "Error", "Degraded", etc.).
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_VideoController | Select-Object Name,AdapterCompatibility,DriverVersion,"+
 			"@{n='DriverDate';e={if($_.DriverDate){$_.DriverDate.ToString('yyyy-MM-dd')}else{''}}},"+
 			"VideoProcessor,AdapterRAM,PNPDeviceID,VideoMemoryType,Status | ConvertTo-Json")

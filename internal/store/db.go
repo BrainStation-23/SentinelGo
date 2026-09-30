@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // registers the "sqlite" driver used by sql.Open below
 )
 
 // Open opens (or creates) a SQLite database at path with WAL mode and a 5-second busy timeout.

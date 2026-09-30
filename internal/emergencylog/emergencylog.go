@@ -28,6 +28,14 @@ import (
 // retainDays is how many distinct daily files to keep (today + previous 2).
 const retainDays = 3
 
+// dayFormat is the daily-rotation date layout, and logFilePrefix/logFileExt
+// are the "emergency-<date>.log" filename parts shared by writing and pruning.
+const (
+	dayFormat     = "2006-01-02"
+	logFilePrefix = "emergency-"
+	logFileExt    = ".log"
+)
+
 var (
 	mu      sync.Mutex
 	dir     string // "" => not initialized => Record echoes to standard log only
@@ -49,7 +57,7 @@ func Init(d string) error {
 	dir = d
 	now := time.Now().UTC()
 	prune(now)
-	lastDay = now.Format("2006-01-02")
+	lastDay = now.Format(dayFormat)
 	return nil
 }
 
@@ -72,14 +80,14 @@ func Record(category, format string, args ...any) {
 	}
 
 	now := time.Now().UTC()
-	day := now.Format("2006-01-02")
+	day := now.Format(dayFormat)
 	if day != lastDay {
 		prune(now)
 		lastDay = day
 	}
 
 	line := fmt.Sprintf("%s EMERGENCY [%s] %s\n", now.Format(time.RFC3339), category, msg)
-	path := filepath.Join(dir, "emergency-"+day+".log")
+	path := filepath.Join(dir, logFilePrefix+day+logFileExt)
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // diagnostics file, readable by operators; carries no secrets
 	if err != nil {
@@ -105,11 +113,11 @@ func prune(now time.Time) {
 	cutoff := now.AddDate(0, 0, -(retainDays - 1)).Truncate(24 * time.Hour)
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, "emergency-") || !strings.HasSuffix(name, ".log") {
+		if !strings.HasPrefix(name, logFilePrefix) || !strings.HasSuffix(name, logFileExt) {
 			continue
 		}
-		datePart := strings.TrimSuffix(strings.TrimPrefix(name, "emergency-"), ".log")
-		d, perr := time.Parse("2006-01-02", datePart)
+		datePart := strings.TrimSuffix(strings.TrimPrefix(name, logFilePrefix), logFileExt)
+		d, perr := time.Parse(dayFormat, datePart)
 		if perr != nil {
 			continue
 		}

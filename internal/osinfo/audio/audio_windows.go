@@ -16,12 +16,12 @@ func getAudioDevices() []shared.AudioDevice {
 		}
 	}
 
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-PnpDevice | Where-Object {$_.Class -eq 'AudioEndpoint'} | Select-Object FriendlyName, Manufacturer | ConvertTo-Json"); err == nil {
 		add(parseWindowsPnpJSON(output))
 	}
 
-	if output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	if output, err := shared.RunPowerShell(
 		"Get-WmiObject Win32_SoundDevice | Select-Object Name, Manufacturer | ConvertTo-Json"); err == nil {
 		add(parseWindowsWmiJSON(output))
 	}

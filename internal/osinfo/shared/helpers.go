@@ -25,6 +25,14 @@ func ReadFileBytes(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// RunPowerShell runs script via a non-interactive, profile-less PowerShell
+// invocation. This exact flag combination ("-NoProfile", "-Command") is
+// shared by every Windows collector, so it's centralized here rather than
+// repeated at each call site.
+func RunPowerShell(script string) (string, error) {
+	return RunCommand("powershell", "-NoProfile", "-Command", script)
+}
+
 func RunCommand(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

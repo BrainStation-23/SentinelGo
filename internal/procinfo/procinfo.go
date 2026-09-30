@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// versionFlag is the short-form version flag SentinelGo binaries accept,
+// checked both when parsing another process's command line and when probing
+// a binary directly.
+const versionFlag = "-version"
+
 // ProcessInfo contains information about a running SentinelGo process
 type ProcessInfo struct {
 	PID     int
@@ -46,11 +51,11 @@ func ExtractVersionFromCmd(cmdLine string) string {
 	}
 
 	// Look for version flag as separate argument
-	if strings.Contains(cmdLine, "-version") || strings.Contains(cmdLine, "--version") {
+	if strings.Contains(cmdLine, versionFlag) || strings.Contains(cmdLine, "--version") {
 		// Try to find version after the flag
 		parts := strings.Fields(cmdLine)
 		for i, part := range parts {
-			if (part == "-version" || part == "--version") && i+1 < len(parts) {
+			if (part == versionFlag || part == "--version") && i+1 < len(parts) {
 				return strings.Trim(parts[i+1], `"`)
 			}
 		}
@@ -128,7 +133,7 @@ func GetBinaryVersion(cmdLine string) string {
 
 	if binaryPath != "" {
 		// #nosec G204 - binaryPath is a controlled path from self-update process
-		cmd := exec.Command(binaryPath, "-version")
+		cmd := exec.Command(binaryPath, versionFlag)
 		output, err := cmd.Output()
 		if err == nil {
 			outputStr := string(output)

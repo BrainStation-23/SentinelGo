@@ -46,7 +46,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	if handled := dispatchConfigFlags(f, cfg); handled {
+	if dispatchConfigFlags(f, cfg) {
 		return
 	}
 

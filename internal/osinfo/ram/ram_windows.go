@@ -11,7 +11,7 @@ func getRAMs() shared.RAMInfo {
 	var rams []shared.RAMStick
 	var totalBytes uint64
 
-	output, err := shared.RunCommand("powershell", "-NoProfile", "-Command",
+	output, err := shared.RunPowerShell(
 		"Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer,PartNumber,Capacity,ConfiguredClockSpeed,SerialNumber,SMBIOSMemoryType,FormFactor,DeviceLocator | ConvertTo-Json")
 	if err != nil {
 		return shared.RAMInfo{}

@@ -236,7 +236,7 @@ func parseWindowsJSON(output, nameKey, mfrKey string) []shared.AudioDevice {
 	if err := json.Unmarshal([]byte(output), &rows); err != nil {
 		// PowerShell returns a single object when there is exactly one device.
 		var single map[string]any
-		if err2 := json.Unmarshal([]byte(output), &single); err2 != nil {
+		if json.Unmarshal([]byte(output), &single) != nil {
 			return devices
 		}
 		rows = []map[string]any{single}

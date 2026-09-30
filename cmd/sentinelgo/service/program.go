@@ -17,7 +17,6 @@ type Program struct {
 	Cfg             *config.Config
 	lockFile        *lockfile.LockFile
 	mainIntegration *internal.MainIntegration
-	ctx             context.Context
 	cancel          context.CancelFunc
 }
 
@@ -69,7 +68,8 @@ func (p *Program) Start(_ AgentService) error {
 	}
 	p.lockFile = lf
 
-	p.ctx, p.cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
 	p.mainIntegration = internal.NewMainIntegration(p.Cfg)
 
 	// Run startup synchronously so an initialization failure (config validation,
@@ -78,7 +78,7 @@ func (p *Program) Start(_ AgentService) error {
 	// instead of the previous behaviour where the service reported "running"
 	// while the agent was actually dead. Start kicks off the long-running loops
 	// in their own goroutines and returns promptly.
-	if err := p.mainIntegration.Start(p.ctx); err != nil {
+	if err := p.mainIntegration.Start(ctx); err != nil {
 		log.Printf("FATAL: main integration failed to start: %v", err)
 		// Release the lock we just acquired so a restart isn't blocked by a
 		// stale lock held by this failed start.
