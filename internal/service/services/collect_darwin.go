@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/models"
 )
 
@@ -24,7 +25,7 @@ func (s *ServicesService) getLaunchdServices() ([]models.ServiceInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "launchctl", "list")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("launchctl"), "list")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("services: launchctl list failed: %v", err)

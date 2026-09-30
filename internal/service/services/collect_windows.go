@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/models"
 )
 
@@ -27,7 +28,7 @@ func (s *ServicesService) getWindowsServices() ([]models.ServiceInfo, bool) {
 	query := `Get-CimInstance -ClassName Win32_Service | ` +
 		`Select-Object Name,DisplayName,State,StartMode,Description,ProcessId,StartName | ` +
 		`ConvertTo-Json -Compress`
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", query)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("services: Win32_Service query failed: %v", err)

@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // fileTimeToUnixOffset is the number of 100-nanosecond intervals between the
@@ -51,7 +53,7 @@ func getWindowsLastOpened() []lastOpenedEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", userAssistQuery)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", userAssistQuery)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: UserAssist query failed: %v", err)

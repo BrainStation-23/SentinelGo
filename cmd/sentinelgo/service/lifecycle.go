@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"sentinelgo/internal"
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/lockfile"
 	"sentinelgo/internal/sanitize"
@@ -27,9 +28,9 @@ func HandleInstall(svc AgentService) {
 		// without prompting the user to approve "unidentified developer" software.
 		// spctl --add registers the binary in the Gatekeeper allowlist.
 		const binaryPath = "/opt/sentinelgo/sentinelgo"
-		_ = exec.Command("xattr", "-d", "com.apple.quarantine", binaryPath).Run()
-		_ = exec.Command("codesign", "--force", "--sign", "-", binaryPath).Run()
-		_ = exec.Command("spctl", "--add", binaryPath).Run()
+		_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", binaryPath).Run()
+		_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", binaryPath).Run()
+		_ = exec.Command(binpath.Resolve("spctl"), "--add", binaryPath).Run()
 
 		if err := createLaunchdPlist(); err != nil {
 			log.Fatalf("Failed to create launchd plist: %v", err)
@@ -39,7 +40,7 @@ func HandleInstall(svc AgentService) {
 			log.Fatalf("Failed to load launchd service: %v", err)
 		}
 
-		startCmd := exec.Command("launchctl", "start", "com.sentinelgo.agent")
+		startCmd := exec.Command(binpath.Resolve("launchctl"), "start", "com.sentinelgo.agent")
 		if err := startCmd.Run(); err != nil {
 			log.Printf("Warning: launchctl start failed (service may already be running): %v", err)
 		}

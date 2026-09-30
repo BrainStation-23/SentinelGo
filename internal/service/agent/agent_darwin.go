@@ -3,12 +3,14 @@ package agent
 import (
 	"encoding/json"
 	"os/exec"
+
+	"sentinelgo/internal/binpath"
 )
 
 // getHardwareModel retrieves hardware model on macOS via system_profiler.
 func getHardwareModel() string {
 	// #nosec G204 - fixed command with no user input
-	cmd := exec.Command("system_profiler", "SPHardwareDataType", "-json")
+	cmd := exec.Command(binpath.Resolve("system_profiler"), "SPHardwareDataType", "-json")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

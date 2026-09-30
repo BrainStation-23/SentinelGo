@@ -9,6 +9,7 @@ import (
 	"time"
 
 	svcsub "sentinelgo/cmd/sentinelgo/service"
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/procinfo"
 )
 
@@ -34,16 +35,16 @@ func HandleStatus() {
 
 func stopSentinelGoProcesses() error {
 	if runtime.GOOS == "linux" {
-		if err := exec.Command("systemctl", "stop", "sentinelgo").Run(); err != nil {
+		if err := exec.Command(binpath.Resolve("systemctl"), "stop", "sentinelgo").Run(); err != nil {
 			log.Printf("Warning: failed to stop systemd service: %v", err)
 		}
-		if err := exec.Command("systemctl", "disable", "sentinelgo").Run(); err != nil {
+		if err := exec.Command(binpath.Resolve("systemctl"), "disable", "sentinelgo").Run(); err != nil {
 			log.Printf("Warning: failed to disable systemd service: %v", err)
 		}
 	}
 
 	if runtime.GOOS == "darwin" {
-		if err := exec.Command("launchctl", "unload", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
+		if err := exec.Command(binpath.Resolve("launchctl"), "unload", "-w", "/Library/LaunchDaemons/com.sentinelgo.agent.plist").Run(); err != nil {
 			log.Printf("Warning: failed to unload launchd service: %v", err)
 		}
 	}
@@ -68,7 +69,7 @@ func stopSentinelGoProcesses() error {
 		switch runtime.GOOS {
 		case "windows":
 			// #nosec G204 - taskkill is a system command with controlled arguments
-			if err := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(proc.PID)).Run(); err != nil {
+			if err := exec.Command(binpath.Resolve("taskkill"), "/F", "/PID", strconv.Itoa(proc.PID)).Run(); err != nil {
 				fmt.Printf("Failed to stop PID %d: %v\n", proc.PID, err)
 			} else {
 				fmt.Printf("Stopped PID %d\n", proc.PID)
@@ -76,7 +77,7 @@ func stopSentinelGoProcesses() error {
 		case "linux", "darwin":
 			// #nosec G204 - kill is a system command with controlled arguments
 			// Send SIGTERM first; escalate to SIGKILL only if the process survives.
-			if err := exec.Command("kill", strconv.Itoa(proc.PID)).Run(); err != nil {
+			if err := exec.Command(binpath.Resolve("kill"), strconv.Itoa(proc.PID)).Run(); err != nil {
 				fmt.Printf("Failed to send SIGTERM to PID %d: %v\n", proc.PID, err)
 			} else {
 				fmt.Printf("Sent SIGTERM to PID %d\n", proc.PID)
@@ -99,10 +100,10 @@ func stopSentinelGoProcesses() error {
 			switch runtime.GOOS {
 			case "windows":
 				// #nosec G204
-				_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(proc.PID)).Run()
+				_ = exec.Command(binpath.Resolve("taskkill"), "/F", "/PID", strconv.Itoa(proc.PID)).Run()
 			case "linux", "darwin":
 				// #nosec G204
-				_ = exec.Command("kill", "-9", strconv.Itoa(proc.PID)).Run()
+				_ = exec.Command(binpath.Resolve("kill"), "-9", strconv.Itoa(proc.PID)).Run()
 			}
 		}
 	}

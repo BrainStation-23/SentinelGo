@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"runtime"
 	"time"
 
@@ -48,17 +47,4 @@ func (h *rebootDeviceHandler) Run(ctx context.Context, cfg *config.Config, task 
 
 	log.Printf("Executor: Device reboot initiated for task %s", task.ID)
 	return "Device reboot initiated.", nil
-}
-
-func triggerReboot() error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux", "darwin":
-		cmd = exec.Command("shutdown", "-r", "now")
-	case "windows":
-		cmd = exec.Command("shutdown", "/r", "/t", "0")
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-	return cmd.Run()
 }

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // executeLocalScript runs the task script on macOS.
@@ -21,10 +23,10 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 	switch filepath.Ext(scriptPath) {
 	case ".sh":
 		// #nosec G204 - scriptPath is a controlled path from task store
-		cmd = exec.CommandContext(ctx, "bash", scriptPath, payloadPath)
+		cmd = exec.CommandContext(ctx, binpath.Resolve("bash"), scriptPath, payloadPath)
 	case ".py":
 		// #nosec G204 - scriptPath is a controlled path from task store
-		cmd = exec.CommandContext(ctx, "python3", scriptPath, payloadPath)
+		cmd = exec.CommandContext(ctx, binpath.Resolve("python3"), scriptPath, payloadPath)
 	default:
 		// #nosec G204 - scriptPath is a controlled path from task store
 		cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
