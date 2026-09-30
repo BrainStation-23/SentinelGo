@@ -8,21 +8,21 @@ func TestIsNewerVersion(t *testing.T) {
 		want               bool
 		wantErr            bool
 	}{
-		{"v2.1.6", "v2.1.5", true, false},     // patch bump
-		{"v2.2.0", "v2.1.5", true, false},     // minor bump
-		{"v3.0.0", "v2.9.9", true, false},     // major bump
-		{"v2.1.5", "v2.1.5", false, false},    // equal -> not newer
-		{"v2.1.4", "v2.1.5", false, false},    // older -> downgrade blocked
-		{"2.1.6", "2.1.5", true, false},       // no leading v
-		{"v2.1.6-rc1", "v2.1.5", true, false}, // pre-release suffix ignored
-		{"v2.2", "v2.1.9", true, false},       // missing patch defaults to 0
-		{"dev", "v2.1.5", false, true},        // unparseable candidate
-		{"v2.1.6", "dev", false, true},        // unparseable current (dev build)
-		{"1.2.3.4", "v2.1.5", false, true},    // too many components
-		{"V2.1.6", "v2.1.5", true, false},     // uppercase V prefix
+		{"v2.1.6", "v2.1.5", true, false},         // patch bump
+		{"v2.2.0", "v2.1.5", true, false},         // minor bump
+		{"v3.0.0", "v2.9.9", true, false},         // major bump
+		{"v2.1.5", "v2.1.5", false, false},        // equal -> not newer
+		{"v2.1.4", "v2.1.5", false, false},        // older -> downgrade blocked
+		{"2.1.6", "2.1.5", true, false},           // no leading v
+		{"v2.1.6-rc1", "v2.1.5", true, false},     // pre-release suffix ignored
+		{"v2.2", "v2.1.9", true, false},           // missing patch defaults to 0
+		{"dev", "v2.1.5", false, true},            // unparseable candidate
+		{"v2.1.6", "dev", false, true},            // unparseable current (dev build)
+		{"1.2.3.4", "v2.1.5", false, true},        // too many components
+		{"V2.1.6", "v2.1.5", true, false},         // uppercase V prefix
 		{"v2.1.6+build.5", "v2.1.5", true, false}, // build metadata suffix ignored
-		{"v2", "v1.9.9", true, false},          // missing minor+patch default to 0
-		{"", "v2.1.5", false, true},             // empty candidate
+		{"v2", "v1.9.9", true, false},             // missing minor+patch default to 0
+		{"", "v2.1.5", false, true},               // empty candidate
 	}
 
 	for _, tc := range cases {
