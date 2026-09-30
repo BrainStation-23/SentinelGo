@@ -233,7 +233,7 @@ func applySerialFromDecodeLine(display *shared.Display, line string) {
 // "Monitor Name:"/"Model:" line, unless one is already set or the value is
 // too short to be meaningful.
 func applyModelFromDecodeLine(display *shared.Display, line string) {
-	if display.Model != "Unknown" || !(strings.Contains(line, "Monitor Name:") || strings.Contains(line, "Model:")) {
+	if display.Model != "Unknown" || (!strings.Contains(line, "Monitor Name:") && !strings.Contains(line, "Model:")) {
 		return
 	}
 	value, ok := edidDecodeFieldValue(line)

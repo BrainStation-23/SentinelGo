@@ -59,7 +59,7 @@ func deleteNotIn(db *sql.DB, table, agentID string, activeKeys []string) error {
 		args = append(args, k)
 	}
 
-	// #nosec G201 - table is always a package-internal literal ("services" or "software"), never external input;
+	// #nosec G201,G202 - table is always a package-internal literal ("services" or "software"), never external input;
 	// only the placeholder count is dynamic, every value is passed as a parameterized arg below.
 	query := fmt.Sprintf("DELETE FROM %s WHERE agent_id = ? AND (name || char(0) || source) NOT IN (", table) +
 		strings.Join(placeholders, ",") + ")"
