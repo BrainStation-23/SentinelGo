@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"sentinelgo/internal/models"
@@ -152,24 +151,7 @@ func (s *ServicesStore) GetAll(agentID string) ([]models.ServiceInfo, error) {
 // activeKeys. activeKeys entries are "<name>\x00<source>". This prunes stale
 // entries after a full scan.
 func (s *ServicesStore) DeleteNotIn(agentID string, activeKeys []string) error {
-	if len(activeKeys) == 0 {
-		_, err := s.db.Exec("DELETE FROM services WHERE agent_id = ?", agentID)
-		return err
-	}
-
-	// Build parameterised IN clause.
-	placeholders := make([]string, len(activeKeys))
-	args := make([]any, 0, len(activeKeys)+1)
-	args = append(args, agentID)
-	for i, k := range activeKeys {
-		placeholders[i] = "?"
-		args = append(args, k)
-	}
-
-	const base = "DELETE FROM services WHERE agent_id = ? AND (name || char(0) || source) NOT IN ("
-	query := base + strings.Join(placeholders, ",") + ")"
-	_, err := s.db.Exec(query, args...)
-	return err
+	return deleteNotIn(s.db, "services", agentID, activeKeys)
 }
 
 // Close releases the database connection.

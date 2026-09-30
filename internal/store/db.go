@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver used by sql.Open below
@@ -36,4 +38,31 @@ func parseTime(data []byte) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// deleteNotIn removes rows from table for agentID whose (name, source) key is
+// not in activeKeys. activeKeys entries are "<name>\x00<source>". table is
+// always a package-internal literal ("services" or "software"), never
+// external input, so it is safe to interpolate directly.
+func deleteNotIn(db *sql.DB, table, agentID string, activeKeys []string) error {
+	if len(activeKeys) == 0 {
+		// #nosec G201 - table is always a package-internal literal ("services" or "software"), never external input
+		_, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE agent_id = ?", table), agentID)
+		return err
+	}
+
+	placeholders := make([]string, len(activeKeys))
+	args := make([]any, 0, len(activeKeys)+1)
+	args = append(args, agentID)
+	for i, k := range activeKeys {
+		placeholders[i] = "?"
+		args = append(args, k)
+	}
+
+	// #nosec G201 - table is always a package-internal literal ("services" or "software"), never external input;
+	// only the placeholder count is dynamic, every value is passed as a parameterized arg below.
+	query := fmt.Sprintf("DELETE FROM %s WHERE agent_id = ? AND (name || char(0) || source) NOT IN (", table) +
+		strings.Join(placeholders, ",") + ")"
+	_, err := db.Exec(query, args...)
+	return err
 }
