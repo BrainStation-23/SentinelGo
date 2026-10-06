@@ -18,6 +18,7 @@ encryption status, and tamper-evident audit logs, streamed to your backend in re
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white)](#-build-from-source)
 [![CGO Free](https://img.shields.io/badge/CGO__ENABLED-0%20%C2%B7%20static%20binary-22c55e?style=flat-square&logo=go&logoColor=white)](#-build-from-source)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green?style=flat-square&logo=apache&logoColor=white)](#-license)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge)](https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo)
 
 <br/>
 
