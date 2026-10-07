@@ -57,6 +57,15 @@ audit-config-sample.json
 sentinelgo_*.db
 sentinelgo_*.db-wal
 sentinelgo_*.db-shm
+tasks.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Stray build/test outputs (e.g. `go build -o /dev/null` on Windows creates a
+# real file; `go test -coverprofile=<name>` with a typo'd flag value)
+/dev/
+/internal-only
+*.out
 /.puku
 /sentinelgo
 coverage
