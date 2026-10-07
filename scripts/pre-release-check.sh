@@ -49,7 +49,13 @@ if grep -rln 'import "C"' --include='*.go' .; then
 fi
 echo "ok"
 
-# 5. Cross-platform build
+# 5. Dependency licenses
+echo ""
+echo "5. Dependency licenses"
+go run ./scripts/licenses -check
+echo "ok"
+
+# 6. Cross-platform build
 echo ""
 echo "5. Cross-platform build (CGO_ENABLED=0)"
 for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows amd64"; do
@@ -59,9 +65,9 @@ for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows
     echo "ok"
 done
 
-# 6. Tests
+# 7. Tests
 echo ""
-echo "6. Tests"
+echo "7. Tests"
 CGO_ENABLED=0 go test -short -timeout 5m ./...
 echo "ok"
 
