@@ -37,7 +37,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list
 
 all: windows linux macos
 
@@ -116,6 +116,19 @@ deps:
 # Run tests (no coverage)
 test:
 	go test ./...
+
+# Fuzz every Go fuzz target that builds on this OS, one at a time (go test -fuzz
+# accepts a single target per package). Override the per-target budget with
+# FUZZTIME=5m, or narrow it with FUZZ_RUN=<regexp>. The seed corpora already run
+# as plain tests under `make test`; this target does the actual mutation.
+FUZZTIME ?= 30s
+FUZZ_RUN ?=
+fuzz:
+	go run ./scripts/fuzz -fuzztime=$(FUZZTIME) -run="$(FUZZ_RUN)"
+
+# List the fuzz targets that build on this OS.
+fuzz-list:
+	@go run ./scripts/fuzz -list
 
 # Run tests with coverage and show per-function report filtered to match
 # sonar.coverage.exclusions (single source of truth in sonar-project.properties).
