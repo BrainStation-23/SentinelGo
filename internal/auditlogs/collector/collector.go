@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 	"time"
 )
@@ -33,7 +34,11 @@ type CheckpointData map[string]interface{}
 
 // CheckpointInt64 returns the checkpoint value for key as an int64, accepting
 // any numeric representation the value may carry (int64, float64, int, json.Number,
-// or a numeric string). ok is false when the key is absent or not numeric.
+// or a numeric string). ok is false when the key is absent or not numeric, or
+// when a float64 is NaN, infinite or outside the int64 range (the conversion
+// would otherwise yield an implementation-defined value). Checkpoints are
+// persisted to disk as JSON, so a corrupted file must not decode into a bogus
+// position.
 func CheckpointInt64(cp CheckpointData, key string) (val int64, ok bool) {
 	v, present := cp[key]
 	if !present {
@@ -43,7 +48,7 @@ func CheckpointInt64(cp CheckpointData, key string) (val int64, ok bool) {
 	case int64:
 		return n, true
 	case float64:
-		return int64(n), true
+		return floatToInt64(n)
 	case int:
 		return int64(n), true
 	case json.Number:
@@ -57,10 +62,29 @@ func CheckpointInt64(cp CheckpointData, key string) (val int64, ok bool) {
 	}
 }
 
+// floatToInt64 converts f to int64, reporting ok=false for NaN, ±Inf and values
+// outside the int64 range. The upper bound is exclusive because float64(MaxInt64)
+// rounds up to 2^63, which does not fit.
+func floatToInt64(f float64) (int64, bool) {
+	if math.IsNaN(f) || f < math.MinInt64 || f >= math.MaxInt64 {
+		return 0, false
+	}
+	return int64(f), true
+}
+
 // CheckpointFloat64 returns the checkpoint value for key as a float64, accepting
 // any numeric representation (float64, int64, int, json.Number, or a numeric
-// string). ok is false when the key is absent or not numeric.
+// string). ok is false when the key is absent or not numeric, or when the value
+// is NaN or infinite (strconv.ParseFloat accepts "NaN" and "Inf").
 func CheckpointFloat64(cp CheckpointData, key string) (val float64, ok bool) {
+	f, ok := checkpointFloat64(cp, key)
+	if !ok || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
+}
+
+func checkpointFloat64(cp CheckpointData, key string) (float64, bool) {
 	v, present := cp[key]
 	if !present {
 		return 0, false
