@@ -76,6 +76,10 @@ func resolveVersion(cmdLine string) string {
 	return version
 }
 
+// tasklistCmdLineField is the index of the command-line column read from a
+// `tasklist /fo csv /v` row, so a row needs at least tasklistCmdLineField+1 fields.
+const tasklistCmdLineField = 8
+
 // parseWindowsProcessLine parses one line of `tasklist /fo csv /v` output,
 // returning a zero-value ProcessInfo (PID 0) when the line isn't a
 // sentinelgo.exe entry or doesn't have enough CSV fields.
@@ -85,12 +89,12 @@ func parseWindowsProcessLine(line string) ProcessInfo {
 		return info
 	}
 	fields := strings.Split(line, ",")
-	if len(fields) < 5 {
+	if len(fields) <= tasklistCmdLineField {
 		return info
 	}
 	pid, _ := strconv.Atoi(strings.Trim(fields[1], `"`))
 	info.PID = pid
-	info.CmdLine = strings.Trim(fields[8], `"`)
+	info.CmdLine = strings.Trim(fields[tasklistCmdLineField], `"`)
 	info.Status = "Running"
 	info.Version = resolveVersion(info.CmdLine)
 	return info
