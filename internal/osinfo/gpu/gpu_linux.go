@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -29,7 +30,8 @@ func parsePCISize(s string) int64 {
 		s = s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
+	// Reject negative sizes and values whose n*mul would overflow int64.
+	if err != nil || n < 0 || n > math.MaxInt64/mul {
 		return 0
 	}
 	return n * mul
@@ -235,7 +237,11 @@ func stripLspciRevSuffix(desc string) string {
 // lspci -nn format: "01:00.0 VGA compatible controller [0300]: NVIDIA GeForce RTX 3080 [10de:2206] (rev a1)"
 func parseLspciLine(line string) (busID string, g shared.GPU) {
 	g = newUnknownLinuxGPU()
-	busID = strings.Fields(line)[0]
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return "", g
+	}
+	busID = fields[0]
 	parts := strings.SplitN(line, ": ", 2)
 	if len(parts) != 2 {
 		return busID, g

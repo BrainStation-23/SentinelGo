@@ -2,6 +2,7 @@ package network
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -56,7 +57,7 @@ func getDefaultGateway(name string) string {
 func parseDefaultGatewayFromIPRoute(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[0] == "default" && fields[1] == "via" {
+		if len(fields) >= 3 && fields[0] == "default" && fields[1] == "via" && isIPAddr(fields[2]) {
 			return fields[2]
 		}
 	}
@@ -74,15 +75,20 @@ func getDNSServers(_ string) []string {
 func parseDNSServersFromResolvConf(content string) []string {
 	var servers []string
 	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "nameserver") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				servers = append(servers, parts[1])
-			}
+		parts := strings.Fields(line)
+		if len(parts) >= 2 && parts[0] == "nameserver" && isIPAddr(parts[1]) {
+			servers = append(servers, parts[1])
 		}
 	}
 	return servers
+}
+
+// isIPAddr reports whether s is an IPv4 or IPv6 address (an IPv6 zone such as
+// "fe80::1%eth0" is allowed), so malformed tool output never reaches the
+// heartbeat as a gateway or DNS server.
+func isIPAddr(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
 }
 
 func getDeviceName(_ string) string {
