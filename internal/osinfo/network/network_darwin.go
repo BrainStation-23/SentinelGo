@@ -87,14 +87,9 @@ func parseSpeedMbpsFromNetworksetup(output string) int64 {
 			val := strings.TrimSpace(strings.TrimPrefix(line, "Link Speed:"))
 			parts := strings.Fields(val)
 			if len(parts) >= 2 {
-				n, err := strconv.ParseInt(parts[0], 10, 64)
-				if err != nil {
-					continue
+				if mbps, ok := linkSpeedMbps(parts[0], parts[1]); ok {
+					return mbps
 				}
-				if strings.HasPrefix(strings.ToLower(parts[1]), "g") {
-					return n * 1000
-				}
-				return n
 			}
 		}
 	}
@@ -113,7 +108,9 @@ func parseDefaultGatewayFromNetstat(output, ifaceName string) string {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		// columns: Destination Gateway Flags Refs Use Netif
-		if len(fields) >= 6 && fields[0] == "default" && fields[5] == ifaceName {
+		// The gateway column can be "link#N" for interface routes; only an
+		// address is a gateway.
+		if len(fields) >= 6 && fields[0] == "default" && fields[5] == ifaceName && isIPAddress(fields[1]) {
 			return fields[1]
 		}
 	}
@@ -137,7 +134,9 @@ func parseDNSServersOutput(output string) []string {
 	var servers []string
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" && !strings.Contains(line, "aren't") && !strings.Contains(line, "There") {
+		// Anything that isn't an address ("There aren't any DNS Servers set
+		// on Wi-Fi.", error text) is skipped.
+		if isIPAddress(line) {
 			servers = append(servers, line)
 		}
 	}
@@ -176,7 +175,8 @@ func parseAirportInfo(output string) *shared.WiFiInfo {
 		case "SSID":
 			info.SSID = val
 		case "agrCtlRSSI", "RSSI":
-			if n, err := strconv.Atoi(val); err == nil {
+			// RSSI is a dBm value; reject anything outside the physical range.
+			if n, err := strconv.Atoi(val); err == nil && n >= -127 && n <= 0 {
 				info.SignalStrength = n
 			}
 		case "channel":

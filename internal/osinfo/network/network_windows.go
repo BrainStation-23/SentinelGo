@@ -51,14 +51,9 @@ func parseSpeedMbps(output string) int64 {
 		if strings.Contains(k, "speed") {
 			parts := strings.Fields(kv[1])
 			if len(parts) >= 2 {
-				n, err := strconv.ParseInt(parts[0], 10, 64)
-				if err != nil {
-					continue
+				if mbps, ok := linkSpeedMbps(parts[0], parts[1]); ok {
+					return mbps
 				}
-				if strings.HasPrefix(strings.ToLower(parts[1]), "g") {
-					return n * 1000
-				}
-				return n
 			}
 		}
 	}
@@ -80,8 +75,7 @@ func parseDefaultGateway(output string) string {
 			continue
 		}
 		if strings.Contains(strings.ToLower(kv[0]), "default gateway") {
-			gw := strings.TrimSpace(kv[1])
-			if gw != "" && gw != "None" {
+			if gw := strings.TrimSpace(kv[1]); isIPAddress(gw) {
 				return gw
 			}
 		}
@@ -164,7 +158,8 @@ func parseWiFiBlock(block string) *shared.WiFiInfo {
 			info.SSID = val
 		case strings.Contains(keyL, "signal"):
 			pct := strings.TrimSuffix(val, "%")
-			if n, err := strconv.Atoi(pct); err == nil {
+			// netsh reports signal quality as 0-100%; anything else is malformed.
+			if n, err := strconv.Atoi(pct); err == nil && n >= 0 && n <= 100 {
 				info.SignalStrength = (n / 2) - 100
 			}
 		case strings.Contains(keyL, "radio type") || strings.Contains(keyL, "band"):
@@ -230,6 +225,8 @@ func bandFromChannel(channelStr string) string {
 		return ""
 	}
 	switch {
+	case ch < 1:
+		return ""
 	case ch <= 14:
 		return "2.4GHz"
 	case ch <= 177:
@@ -237,12 +234,4 @@ func bandFromChannel(channelStr string) string {
 	default:
 		return "6GHz"
 	}
-}
-
-func isIPAddress(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.ContainsAny(s, " \t") {
-		return false
-	}
-	return strings.ContainsAny(s, ".:")
 }

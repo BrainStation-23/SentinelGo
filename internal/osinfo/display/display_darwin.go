@@ -2,8 +2,11 @@ package display
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"sentinelgo/internal/osinfo/shared"
 )
@@ -235,7 +238,10 @@ func parseMacDisplayType(s string) []string {
 		var words []string
 		for _, p := range parts {
 			if p != "" {
-				words = append(words, strings.ToUpper(p[:1])+p[1:])
+				// Capitalise the first rune, not the first byte, so a
+				// multi-byte character isn't split into invalid UTF-8.
+				r, size := utf8.DecodeRuneInString(p)
+				words = append(words, string(unicode.ToUpper(r))+p[size:])
 			}
 		}
 		return []string{strings.Join(words, " ")}
@@ -250,22 +256,30 @@ func parseResolutionAndRefreshRate(s string) (resolution string, refreshRate flo
 	for i := 1; i+1 < len(parts); i++ {
 		if strings.ToLower(parts[i]) == "x" {
 			w, h := parts[i-1], parts[i+1]
-			if _, err := strconv.Atoi(w); err == nil {
-				if _, err := strconv.Atoi(h); err == nil {
-					resolution = w + "x" + h
-				}
+			if isPositiveDecimal(w) && isPositiveDecimal(h) {
+				resolution = w + "x" + h
 			}
 		}
 	}
 	for _, part := range parts {
 		p := strings.TrimPrefix(part, "@")
 		if strings.HasSuffix(p, "Hz") {
-			if rate, err := strconv.ParseFloat(strings.TrimSuffix(p, "Hz"), 64); err == nil {
+			// ParseFloat accepts "NaN" and "Inf", which encoding/json cannot
+			// marshal and would fail the whole heartbeat payload.
+			rate, err := strconv.ParseFloat(strings.TrimSuffix(p, "Hz"), 64)
+			if err == nil && rate > 0 && !math.IsInf(rate, 0) {
 				refreshRate = rate
 			}
 		}
 	}
 	return resolution, refreshRate
+}
+
+// isPositiveDecimal reports whether s is a plain base-10 integer greater than
+// zero (no sign, no spaces), as used for pixel dimensions.
+func isPositiveDecimal(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n > 0 && s[0] != '+'
 }
 
 // macDisplayConnectionType converts system_profiler connection type tokens
