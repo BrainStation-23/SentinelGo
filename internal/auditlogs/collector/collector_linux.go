@@ -179,6 +179,25 @@ func (c *linuxCollector) collectJournal(ctx context.Context, checkpoint Checkpoi
 
 // collectFile reads new lines from a log file starting at the saved offset.
 // Detects log rotation via inode comparison.
+// resumeOffset returns the byte offset to resume reading from, or 0 when the
+// file must be read from the start: no checkpoint yet, the log rotated (inode
+// changed), or the checkpoint is corrupted. Tolerant accessors are used because
+// checkpoint values are float64 after JSON persistence but may be other
+// numeric types in memory between cycles. A negative saved inode can only come
+// from a corrupted checkpoint, so it is treated like a rotation rather than
+// letting the uint64 conversion wrap.
+func resumeOffset(checkpoint CheckpointData, inodeKey, offsetKey string, currentInode uint64) int64 {
+	savedInode, ok := CheckpointInt64(checkpoint, inodeKey)
+	if !ok || savedInode < 0 || uint64(savedInode) != currentInode {
+		return 0
+	}
+	savedOffset, ok := CheckpointInt64(checkpoint, offsetKey)
+	if !ok || savedOffset < 0 {
+		return 0
+	}
+	return savedOffset
+}
+
 func (c *linuxCollector) collectFile(ctx context.Context, path, source string, checkpoint CheckpointData) ([]RawLogEntry, CheckpointData, error) {
 	// #nosec G304 - path is a controlled internal parameter
 	f, err := os.Open(path)
@@ -208,21 +227,7 @@ func (c *linuxCollector) collectFile(ctx context.Context, path, source string, c
 	cpKey := source + "_offset"
 	inodeKey := source + "_inode"
 
-	var offset int64
-
-	// Check for log rotation (inode change). Tolerant accessors are used because
-	// checkpoint values are float64 after JSON persistence but may be other
-	// numeric types in memory between cycles.
-	// A negative saved inode can only come from a corrupted checkpoint; treat
-	// it like a rotation rather than letting the uint64 conversion wrap.
-	if savedInode, ok := CheckpointInt64(checkpoint, inodeKey); ok {
-		if savedInode >= 0 && uint64(savedInode) == currentInode {
-			if savedOffset, ok := CheckpointInt64(checkpoint, cpKey); ok && savedOffset >= 0 {
-				offset = savedOffset
-			}
-		}
-		// Otherwise the log rotated (new inode) -- read from beginning (offset 0).
-	}
+	offset := resumeOffset(checkpoint, inodeKey, cpKey, currentInode)
 
 	// Check for in-place truncation (e.g. logrotate copytruncate): same inode
 	// but the file shrank below our saved offset. Reset to the start so we don't
