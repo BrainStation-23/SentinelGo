@@ -461,3 +461,26 @@ func TestReadExtensionManifest_CaseInsensitiveKey(t *testing.T) {
 		t.Errorf("DisplayName = %q, want 'Chrome Web Store Payments' (case-insensitive match)", info.DisplayName)
 	}
 }
+
+// TestParseLocaleMessage_WithPlaceholders covers real Chrome messages.json
+// files, where some entries carry a "placeholders" object. Decoding the whole
+// file into map[string]map[string]string used to fail on those entries and
+// drop every name, so the extension was reported under its ID.
+func TestParseLocaleMessage_WithPlaceholders(t *testing.T) {
+	data := []byte(`{
+		"appName": {"message": "Password Manager", "description": "Extension name"},
+		"greeting": {
+			"message": "Hello $USER$",
+			"placeholders": {"user": {"content": "$1", "example": "Ana"}}
+		}
+	}`)
+	if got := parseLocaleMessage(data, "appName"); got != "Password Manager" {
+		t.Errorf("appName = %q, want %q", got, "Password Manager")
+	}
+	if got := parseLocaleMessage(data, "greeting"); got != "Hello $USER$" {
+		t.Errorf("greeting = %q, want %q", got, "Hello $USER$")
+	}
+	if got := parseLocaleMessage(data, "missing"); got != "" {
+		t.Errorf("missing key = %q, want empty", got)
+	}
+}

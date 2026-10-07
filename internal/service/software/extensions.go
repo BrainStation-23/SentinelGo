@@ -138,6 +138,34 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 	if err != nil {
 		return nil
 	}
+	name, version := parseExtensionManifest(data, fallbackID)
+
+	// Resolve i18n message keys (e.g., __MSG_extName__)
+	if strings.HasPrefix(name, "__MSG_") {
+		name = resolveI18nName(path, name, fallbackID)
+	}
+
+	firstSeen := time.Now().UTC().Format(time.RFC3339)
+	if fi, err := os.Stat(path); err == nil {
+		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)
+	}
+	return &SoftwareInfo{
+		Name:             fallbackID,
+		DisplayName:      name,
+		InstalledVersion: version,
+		Source:           source,
+		Type:             extType,
+		FilePath:         path,
+		FirstSeenAt:      firstSeen,
+	}
+}
+
+// parseExtensionManifest extracts the name and version from manifest.json
+// bytes. It does no I/O, so it can be fuzzed: manifests are written by the
+// extension itself and are untrusted. The name falls back to fallbackID when
+// the manifest is malformed or has no name; it may still be an unresolved
+// "__MSG_*__" i18n key, which the caller resolves against the locale files.
+func parseExtensionManifest(data []byte, fallbackID string) (name, version string) {
 	var m struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
@@ -148,25 +176,7 @@ func readExtensionManifest(path, source, extType, fallbackID string) *SoftwareIn
 	if m.Name == "" {
 		m.Name = fallbackID
 	}
-
-	// Resolve i18n message keys (e.g., __MSG_extName__)
-	if strings.HasPrefix(m.Name, "__MSG_") {
-		m.Name = resolveI18nName(path, m.Name, fallbackID)
-	}
-
-	firstSeen := time.Now().UTC().Format(time.RFC3339)
-	if fi, err := os.Stat(path); err == nil {
-		firstSeen = fi.ModTime().UTC().Format(time.RFC3339)
-	}
-	return &SoftwareInfo{
-		Name:             fallbackID,
-		DisplayName:      m.Name,
-		InstalledVersion: m.Version,
-		Source:           source,
-		Type:             extType,
-		FilePath:         path,
-		FirstSeenAt:      firstSeen,
-	}
+	return m.Name, m.Version
 }
 
 // resolveI18nName attempts to resolve an i18n message key like "__MSG_extName__"
@@ -278,18 +288,28 @@ func readLocaleMessage(localesDir, locale, key string) string {
 	if err != nil {
 		return ""
 	}
+	return parseLocaleMessage(data, key)
+}
 
-	var messages map[string]map[string]string
+// parseLocaleMessage returns the "message" value for key from messages.json
+// bytes, or "" if it is absent. Only the requested entry is decoded, so other
+// entries with non-string fields (e.g. Chrome's "placeholders" objects) do not
+// make the whole lookup fail. No I/O, so it can be fuzzed.
+func parseLocaleMessage(data []byte, key string) string {
+	var messages map[string]json.RawMessage
 	if err := json.Unmarshal(data, &messages); err != nil {
 		return ""
 	}
-
-	// Chrome Web Store extensions use "message" field
-	if msg, ok := messages[key]; ok {
-		if name, ok := msg["message"]; ok {
-			return name
-		}
+	raw, ok := messages[key]
+	if !ok {
+		return ""
 	}
-
-	return ""
+	// Chrome Web Store extensions use the "message" field.
+	var entry struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return ""
+	}
+	return entry.Message
 }
