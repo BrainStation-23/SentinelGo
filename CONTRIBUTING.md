@@ -62,6 +62,18 @@ make test                   # run the test suite
 make verify-cross           # type-checks linux/darwin/windows in one pass
 ```
 
+**Fuzzing**
+
+Parsers that handle input the agent doesn't control (log lines, extension manifests, EDID blobs, version strings, signatures) have Go fuzz targets (`func FuzzXxx(f *testing.F)` in `*_fuzz_test.go`). Their seed corpora run as ordinary tests under `make test`. To actually fuzz them:
+
+```bash
+make fuzz-list                               # targets that build on this OS
+make fuzz                                    # fuzz each target for 30s, one at a time
+make fuzz FUZZTIME=5m FUZZ_RUN=EDID          # longer, and only targets matching a regexp
+```
+
+CI fuzzes every target nightly (`.github/workflows/fuzz.yml`). When a target fails, Go writes the input to `testdata/fuzz/<FuzzName>/`. Commit that file together with the fix so it stays as a regression seed. New parsers of untrusted input should come with a fuzz target.
+
 ---
 
 ## Development workflow
