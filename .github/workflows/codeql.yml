@@ -9,9 +9,7 @@ on:
     - cron: '0 2 * * 1' # weekly Monday 02:00 UTC — catches new CVEs in unchanged code
 
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 env:
   CGO_ENABLED: '0'
@@ -20,6 +18,10 @@ jobs:
   analyze:
     name: CodeQL Analysis
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 

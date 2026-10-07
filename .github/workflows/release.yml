@@ -5,10 +5,9 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default; jobs that need more request it explicitly.
 permissions:
-  contents: write
-  pull-requests: write
-  models: read
+  contents: read
 
 env:
   GO_VERSION: '1.26.0'
