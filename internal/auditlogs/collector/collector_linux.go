@@ -213,13 +213,15 @@ func (c *linuxCollector) collectFile(ctx context.Context, path, source string, c
 	// Check for log rotation (inode change). Tolerant accessors are used because
 	// checkpoint values are float64 after JSON persistence but may be other
 	// numeric types in memory between cycles.
+	// A negative saved inode can only come from a corrupted checkpoint; treat
+	// it like a rotation rather than letting the uint64 conversion wrap.
 	if savedInode, ok := CheckpointInt64(checkpoint, inodeKey); ok {
-		if uint64(savedInode) != currentInode {
-			// Log rotated (new inode) -- read from beginning
-			offset = 0
-		} else if savedOffset, ok := CheckpointInt64(checkpoint, cpKey); ok {
-			offset = savedOffset
+		if savedInode >= 0 && uint64(savedInode) == currentInode {
+			if savedOffset, ok := CheckpointInt64(checkpoint, cpKey); ok && savedOffset >= 0 {
+				offset = savedOffset
+			}
 		}
+		// Otherwise the log rotated (new inode) -- read from beginning (offset 0).
 	}
 
 	// Check for in-place truncation (e.g. logrotate copytruncate): same inode

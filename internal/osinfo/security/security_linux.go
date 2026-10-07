@@ -744,6 +744,7 @@ func secureBootFromEFIVars(efivarsDir string) string {
 	}
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "SecureBoot-") {
+			// #nosec G304 - path is an entry returned by os.ReadDir(efivarsDir)
 			data, rerr := os.ReadFile(filepath.Join(efivarsDir, e.Name()))
 			if rerr == nil && len(data) >= 5 {
 				if data[4] == 1 {

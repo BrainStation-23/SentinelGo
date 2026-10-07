@@ -33,15 +33,20 @@ on:
         description: 'Explicit version override (e.g. v3.0.0) — leave empty to use bump'
         required: false
 
+permissions:
+  contents: read
+
 jobs:
   create-tag:
     name: Compute version and push tag
     runs-on: ubuntu-latest
+    # The tag push authenticates with RELEASE_PAT (persisted by checkout below),
+    # so GITHUB_TOKEN itself only needs read access.
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           # Use PAT so the subsequent tag push is treated as a real user

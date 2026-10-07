@@ -117,6 +117,38 @@ func TestLinuxCollectFile(t *testing.T) {
 	}
 }
 
+// A corrupted checkpoint (negative inode or offset) must restart from the
+// beginning of the file instead of wrapping the inode or failing the seek.
+func TestLinuxCollectFile_CorruptCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+	if err := os.WriteFile(path, []byte("Jan  2 15:04:05 host sshd[1]: routine message\n"), 0600); err != nil {
+		t.Fatalf("write temp log: %v", err)
+	}
+
+	c := &linuxCollector{}
+	_, good, err := c.collectFile(context.Background(), path, "auth.log", CheckpointData{})
+	if err != nil {
+		t.Fatalf("initial collectFile error: %v", err)
+	}
+
+	cases := map[string]CheckpointData{
+		"negative inode":  {"auth.log_inode": float64(-1), "auth.log_offset": good["auth.log_offset"]},
+		"negative offset": {"auth.log_inode": good["auth.log_inode"], "auth.log_offset": float64(-5)},
+	}
+	for name, cp := range cases {
+		t.Run(name, func(t *testing.T) {
+			entries, _, err := c.collectFile(context.Background(), path, "auth.log", cp)
+			if err != nil {
+				t.Fatalf("collectFile error: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Errorf("got %d entries, want 1 (re-read from start)", len(entries))
+			}
+		})
+	}
+}
+
 func TestLinuxSources(t *testing.T) {
 	sources := NewCollector().Sources()
 	found := false
