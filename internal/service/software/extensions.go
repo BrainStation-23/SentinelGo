@@ -273,6 +273,7 @@ func isPreferredLocale(locale string, preferredLocales []string) bool {
 // value for the given key, or empty string if not found.
 func readLocaleMessage(localesDir, locale, key string) string {
 	messagesPath := filepath.Join(localesDir, locale, "messages.json")
+	// #nosec G304 - locale is an os.ReadDir entry name (no separators) and only messages.json is read
 	data, err := os.ReadFile(messagesPath)
 	if err != nil {
 		return ""

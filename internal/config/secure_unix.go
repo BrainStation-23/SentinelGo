@@ -13,5 +13,6 @@ func secureConfigFile(path string) error {
 
 // secureDir ensures the directory is owner-only (0700) on Unix.
 func secureDir(path string) error {
+	// #nosec G302 - 0700 is owner-only for a directory (needs +x to traverse); the 0600 rule targets files
 	return os.Chmod(path, 0700)
 }

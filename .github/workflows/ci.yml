@@ -100,7 +100,9 @@ jobs:
       - name: Run Gosec
         uses: securego/gosec@v2.27.1
         with:
-          args: -fmt sarif -out gosec-results.sarif ./...
+          # scripts/ holds release/CI tooling that takes paths from argv by design;
+          # it is never shipped in the agent binary.
+          args: -exclude-dir=scripts -fmt sarif -out gosec-results.sarif ./...
         continue-on-error: true
 
       - name: Upload Gosec SARIF

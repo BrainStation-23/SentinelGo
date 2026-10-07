@@ -89,6 +89,7 @@ func Record(category, format string, args ...any) {
 	line := fmt.Sprintf("%s EMERGENCY [%s] %s\n", now.Format(time.RFC3339), category, msg)
 	path := filepath.Join(dir, logFilePrefix+day+logFileExt)
 
+	// #nosec G302 G304 - path is the fixed log dir + date stamp; 0644 so operators can read it (no secrets)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // diagnostics file, readable by operators; carries no secrets
 	if err != nil {
 		log.Printf("emergencylog: write failed: %v", err)

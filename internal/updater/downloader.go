@@ -133,6 +133,7 @@ func verifySignature(ctx context.Context, cfg *config.Config, binaryPath, sigAss
 	}
 
 	// Read staged binary for verification (binaries are 10–30 MB; acceptable).
+	// #nosec G304 - binaryPath is the updater's own staging file; its contents are signature-verified below
 	binaryBytes, err := os.ReadFile(binaryPath)
 	if err != nil {
 		return fmt.Errorf("read staged binary for verification: %w", err)
