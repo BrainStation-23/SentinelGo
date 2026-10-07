@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"go/build"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -95,13 +97,31 @@ func main() {
 }
 
 // runTarget fuzzes a single target, streaming go test's output.
+//
+// The Go fuzzer can end with "context deadline exceeded" when -fuzztime runs
+// out while a slow input is still executing. That is not a finding (a real
+// failure always prints "Failing input written to ..."), so it is reported as
+// a warning instead of an error.
 func runTarget(t target, fuzztime string) error {
+	var out bytes.Buffer
 	// #nosec G204 - arguments are fuzz target names discovered from this repo's own source
 	cmd := exec.Command("go", "test", "-run=^$", "-fuzz=^"+t.Target+"$", "-fuzztime="+fuzztime, t.Pkg)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(os.Stdout, &out)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &out)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	return cmd.Run()
+	err := cmd.Run()
+	if err != nil && isDeadlineOnly(out.String()) {
+		fmt.Fprintf(os.Stderr, "warning: %s hit its deadline mid-input without a failing input; treating as a pass\n", t.Target)
+		return nil
+	}
+	return err
+}
+
+// isDeadlineOnly reports whether go test output shows the fuzzer's deadline
+// quirk rather than an actual failing input.
+func isDeadlineOnly(output string) bool {
+	return strings.Contains(output, "context deadline exceeded") &&
+		!strings.Contains(output, "Failing input written to")
 }
 
 // printMatrix emits one entry per (target, OS). A target whose file builds on
