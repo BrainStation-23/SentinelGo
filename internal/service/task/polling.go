@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/network"
+	"sentinelgo/internal/service/auth"
 	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/taskstore"
@@ -42,7 +42,7 @@ type TaskPollingService struct {
 
 // NewTaskPollingService creates a new task polling service.
 func NewTaskPollingService(cfg *config.Config, dbPath string) (*TaskPollingService, error) {
-	client := taskstore.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
+	client := taskstore.NewClientWithTokenSource(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken)
 
 	taskStore, err := store.NewTaskStore(dbPath)
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
 		for _, t := range retryable {
 			note := fmt.Sprintf("Attempt %d of %d failed; retrying.",
 				t.AttemptCount+1, store.MaxRetryAttempts+1)
-			if err := s.client.UpdateTask(ctx, t.ID, "retrying", note); err != nil {
+			if err := s.updateTask(ctx, t.ID, "retrying", note); err != nil {
 				log.Printf("TaskPolling: Failed to report retrying status for task %s: %v", t.ID, err)
 			}
 		}
@@ -201,20 +201,37 @@ func (s *TaskPollingService) getTasksWithRetry(ctx context.Context) (*taskstore.
 		return resp, nil
 	}
 
-	// Check if error is 401 authentication failed
-	if s.tokenRefresher != nil && strings.Contains(err.Error(), "authentication failed: status 401") {
-		log.Printf("TaskPolling: Got 401, attempting token refresh...")
-		newToken, refreshErr := s.tokenRefresher.RefreshToken(ctx)
-		if refreshErr != nil {
-			log.Printf("TaskPolling: Token refresh failed: %v", refreshErr)
-			return nil, err // Return original error
-		}
-		log.Printf("TaskPolling: Token refresh successful, updating client and retrying...")
-		s.client.UpdateToken(newToken)
-		return s.client.GetTasks(ctx)
+	if !s.recoverAfter401(ctx, err) {
+		return nil, err
 	}
+	return s.client.GetTasks(ctx)
+}
 
-	return nil, err
+// updateTask reports a task status, recovering the session and retrying once
+// if the token was rejected (the same policy as getTasksWithRetry).
+func (s *TaskPollingService) updateTask(ctx context.Context, taskID, status, note string) error {
+	err := s.client.UpdateTask(ctx, taskID, status, note)
+	if err == nil || !s.recoverAfter401(ctx, err) {
+		return err
+	}
+	return s.client.UpdateTask(ctx, taskID, status, note)
+}
+
+// recoverAfter401 reports whether err is a rejected token that was recovered,
+// meaning the caller should retry once.
+func (s *TaskPollingService) recoverAfter401(ctx context.Context, err error) bool {
+	if s.tokenRefresher == nil || !auth.IsUnauthorized(err) {
+		return false
+	}
+	log.Printf("TaskPolling: Got 401, attempting session recovery...")
+	newToken, refreshErr := s.tokenRefresher.RefreshToken(ctx)
+	if refreshErr != nil {
+		log.Printf("TaskPolling: Session recovery failed: %v", refreshErr)
+		return false
+	}
+	log.Printf("TaskPolling: Session recovered, retrying...")
+	s.client.UpdateToken(newToken)
+	return true
 }
 
 // GetLocalTasks returns tasks stored locally (for crash recovery).
@@ -226,7 +243,7 @@ func (s *TaskPollingService) GetLocalTasks() ([]taskstore.Task, error) {
 func (s *TaskPollingService) ReportTaskStatus(ctx context.Context, taskID, status, note string) error {
 	isSynced := false
 
-	err := s.client.UpdateTask(ctx, taskID, status, note)
+	err := s.updateTask(ctx, taskID, status, note)
 	if err == nil {
 		isSynced = true
 	} else {
@@ -255,7 +272,7 @@ func (s *TaskPollingService) SyncPendingTasks(ctx context.Context) error {
 
 	for _, task := range tasks {
 		log.Printf("TaskPolling: Syncing task %s...", task.ID)
-		if err := s.client.UpdateTask(ctx, task.ID, task.Status, task.Note); err != nil {
+		if err := s.updateTask(ctx, task.ID, task.Status, task.Note); err != nil {
 			log.Printf("TaskPolling: Failed to sync task %s: %v", task.ID, err)
 			continue
 		}

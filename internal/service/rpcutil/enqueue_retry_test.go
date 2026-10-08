@@ -5,13 +5,20 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"sentinelgo/internal/supabase"
 )
+
+// statusErr is the error a Supabase RPC returns for an HTTP status.
+func statusErr(status int, msg string) error {
+	return &supabase.APIError{Status: status, Message: msg, Method: "POST", Path: "/rest/v1/rpc/agent_enqueue_test"}
+}
 
 func TestWithEnqueueRetry_Success(t *testing.T) {
 	calls := 0
-	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++
-		return 200, nil
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -22,11 +29,11 @@ func TestWithEnqueueRetry_Success(t *testing.T) {
 }
 
 func TestWithEnqueueRetry_401Propagates(t *testing.T) {
-	sentinel := errors.New("unauthorized")
+	sentinel := statusErr(401, "unauthorized")
 	calls := 0
-	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++
-		return 401, sentinel
+		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want wrapping %v", err, sentinel)
@@ -38,9 +45,9 @@ func TestWithEnqueueRetry_401Propagates(t *testing.T) {
 
 func TestWithEnqueueRetry_Other4xxDropped(t *testing.T) {
 	calls := 0
-	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++
-		return 422, errors.New("unprocessable")
+		return statusErr(422, "unprocessable")
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil (4xx payload rejections are dropped)", err)
@@ -57,12 +64,12 @@ func TestWithEnqueueRetry_5xxThenSuccess(t *testing.T) {
 	t.Cleanup(func() { enqueueRetryBase, enqueueRetryMax = prevBase, prevMax })
 
 	calls := 0
-	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++
 		if calls < 3 {
-			return 503, errors.New("service unavailable")
+			return statusErr(503, "service unavailable")
 		}
-		return 200, nil
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -79,12 +86,12 @@ func TestWithEnqueueRetry_NetworkErrorRetries(t *testing.T) {
 	t.Cleanup(func() { enqueueRetryBase, enqueueRetryMax = prevBase, prevMax })
 
 	calls := 0
-	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++
 		if calls < 2 {
-			return 0, errors.New("dial tcp: connection refused")
+			return errors.New("dial tcp: connection refused")
 		}
-		return 200, nil
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -99,9 +106,9 @@ func TestWithEnqueueRetry_ContextCancelledBeforeCall(t *testing.T) {
 	cancel()
 
 	calls := 0
-	err := WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
+	err := WithEnqueueRetry(ctx, func(ctx context.Context) error {
 		calls++
-		return 200, nil
+		return nil
 	})
 	if err == nil {
 		t.Fatal("expected context-cancellation error, got nil")
@@ -124,8 +131,8 @@ func TestWithEnqueueRetry_ContextCancelledDuringBackoff(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
-		return 500, errors.New("boom")
+	err := WithEnqueueRetry(ctx, func(ctx context.Context) error {
+		return statusErr(500, "boom")
 	})
 	if err == nil {
 		t.Fatal("expected error when ctx is cancelled mid-backoff")

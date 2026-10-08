@@ -22,10 +22,10 @@ func (c *Client) StorageURL(bucket, objectPath string, authenticatedPrefix bool)
 }
 
 // Download streams a Storage object into w and returns the number of bytes
-// written. A response larger than max bytes (when max > 0) fails with
-// ErrTooLarge after writing at most max bytes; the caller must discard what
+// written. A response larger than limit bytes (when limit > 0) fails with
+// ErrTooLarge after writing at most limit bytes; the caller must discard what
 // was written. A non-200 response returns an *APIError.
-func (c *Client) Download(ctx context.Context, bucket, objectPath string, authenticatedPrefix bool, w io.Writer, max int64) (int64, error) {
+func (c *Client) Download(ctx context.Context, bucket, objectPath string, authenticatedPrefix bool, w io.Writer, limit int64) (int64, error) {
 	url := c.StorageURL(bucket, objectPath, authenticatedPrefix)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -44,18 +44,18 @@ func (c *Client) Download(ctx context.Context, bucket, objectPath string, authen
 		return 0, parseAPIError(http.MethodGet, req.URL.Path, resp.StatusCode, body)
 	}
 
-	if max <= 0 {
+	if limit <= 0 {
 		n, err := io.Copy(w, resp.Body)
 		if err != nil {
 			return n, fmt.Errorf("GET %s: %w", req.URL.Path, err)
 		}
 		return n, nil
 	}
-	lw := &limitedWriter{w: w, remaining: max}
+	lw := &limitedWriter{w: w, remaining: limit}
 	n, err := io.Copy(lw, resp.Body)
 	if err != nil {
 		if lw.exceeded {
-			return n, fmt.Errorf("GET %s: %w (limit %d bytes)", req.URL.Path, ErrTooLarge, max)
+			return n, fmt.Errorf("GET %s: %w (limit %d bytes)", req.URL.Path, ErrTooLarge, limit)
 		}
 		return n, fmt.Errorf("GET %s: %w", req.URL.Path, err)
 	}

@@ -36,8 +36,10 @@ func (c *Client) newJSONRequest(ctx context.Context, path string, body []byte) (
 }
 
 // doJSON sends req and, on a 2xx response, decodes the body into out (when
-// out is non-nil and the body is not empty). A non-2xx response becomes an
-// *APIError; transport failures are wrapped with the method and path.
+// out is non-nil and the body is not empty). If out is a *[]byte it receives
+// the raw body undecoded, so a caller can treat an unparseable success body as
+// non-fatal. A non-2xx response becomes an *APIError; transport failures are
+// wrapped with the method and path.
 func doJSON(hc *http.Client, req *http.Request, out any) error {
 	method, path := req.Method, req.URL.Path
 	resp, err := hc.Do(req)
@@ -55,6 +57,10 @@ func doJSON(hc *http.Client, req *http.Request, out any) error {
 	if err != nil {
 		return fmt.Errorf("%s %s: read response: %w", method, path, err)
 	}
+	if raw, ok := out.(*[]byte); ok {
+		*raw = body
+		return nil
+	}
 	if out == nil || len(bytes.TrimSpace(body)) == 0 {
 		return nil
 	}
@@ -64,13 +70,13 @@ func doJSON(hc *http.Client, req *http.Request, out any) error {
 	return nil
 }
 
-// readLimited reads all of r, failing with ErrTooLarge beyond max bytes.
-func readLimited(r io.Reader, max int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r, max+1))
+// readLimited reads all of r, failing with ErrTooLarge beyond limit bytes.
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) > max {
+	if int64(len(b)) > limit {
 		return nil, ErrTooLarge
 	}
 	return b, nil

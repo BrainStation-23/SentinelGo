@@ -539,7 +539,7 @@ func handleTokenRefresh(ctx context.Context, cfg *config.Config, authSvc *authsv
 	if authSvc == nil {
 		return nil
 	}
-	if !authsvc.ShouldRefresh(cfg.AccessToken, tokenRefreshSkew) {
+	if !authsvc.ShouldRefresh(cfg.GetAccessToken(), tokenRefreshSkew) {
 		return nil
 	}
 	if authSvc.NeedsReprovision() {

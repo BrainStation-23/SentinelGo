@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"sentinelgo/internal/supabase"
 )
 
 // enqueueRetryBase and enqueueRetryMax are vars (not consts) so tests can
@@ -17,40 +19,35 @@ var (
 )
 
 // WithEnqueueRetry applies the agent-enqueue retry policy to fn:
-//   - 2xx                  → nil (success; response parsing is best-effort)
-//   - 401                  → error propagated (caller's DoWithAuthRetry handles it)
-//   - other 4xx            → logged and dropped (server rejected the payload; retrying won't help)
-//   - 5xx or network (0)   → exponential backoff + jitter (1 s initial, 5 min max delay),
+//   - nil                 → success
+//   - 401 / expired JWT   → error propagated (caller's DoWithAuthRetry handles it)
+//   - other 4xx           → logged and dropped (server rejected the payload; retrying won't help)
+//   - 5xx or network      → exponential backoff + jitter (1 s initial, 5 min max delay),
 //     retried until ctx is cancelled
 //
-// fn must return (httpStatusCode int, err error). Pass 0 as status for network-level
-// errors where no HTTP response was received.
-func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) (int, error)) error {
+// The HTTP status is read from the *supabase.APIError in fn's error chain; an
+// error without one (network failure, timeout) counts as transient.
+func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) error) error {
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-
-		status, err := fn(ctx)
-
+		err := fn(ctx)
 		if err == nil {
 			return nil
 		}
-
-		if status == 401 {
+		status := supabase.StatusCode(err)
+		if status == 401 || supabase.IsUnauthorized(err) {
 			return err
 		}
-
 		if status >= 400 && status < 500 {
 			log.Printf("[enqueue] server rejected payload (HTTP %d), dropping: %v", status, err)
 			return nil
 		}
-
 		// 5xx or network error (status == 0): backoff and retry.
 		delay := computeEnqueueBackoff(attempt)
 		log.Printf("[enqueue] transient error (HTTP %d), retrying in %s: %v",
 			status, delay.Round(time.Millisecond), err)
-
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("enqueue retry cancelled: %w", ctx.Err())
