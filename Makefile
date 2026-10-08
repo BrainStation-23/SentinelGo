@@ -37,7 +37,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom
 
 all: windows linux macos
 
@@ -71,6 +71,7 @@ release: pre-release clean all
 	@cp build/linux/sentinelgo-linux-arm64 release/
 	@cp build/darwin/sentinelgo-darwin-amd64 release/
 	@cp build/darwin/sentinelgo-darwin-arm64 release/
+	@go run ./scripts/licenses -notices release/THIRD_PARTY_NOTICES.txt -sbom release
 	@$(MAKE) sign
 	@echo "\nRelease packages ready in release/ directory:"
 	@ls -la release/
@@ -160,6 +161,23 @@ check-no-cgo:
 	fi
 	@echo "✅ no cgo usage detected"
 
+# Fail if any dependency (on any release GOOS/GOARCH) uses a license outside the
+# permissive allow-list in scripts/licenses (GPL/AGPL/unknown need a decision).
+license-check:
+	go run ./scripts/licenses -check
+
+# Write the attribution file that must ship next to the binaries: every linked
+# module's LICENSE/NOTICE text, verbatim (BSD/MIT/Apache redistribution terms).
+NOTICES_OUT ?= THIRD_PARTY_NOTICES.txt
+notices:
+	go run ./scripts/licenses -notices $(NOTICES_OUT)
+
+# CycloneDX SBOM per release binary (<binary>.cdx.json), each generated for the
+# GOOS/GOARCH that binary is built for, so it lists exactly what is linked in.
+SBOM_DIR ?= build/sbom
+sbom:
+	go run ./scripts/licenses -sbom $(SBOM_DIR)
+
 # Compile every release target with CGO_ENABLED=0 so platform-specific files
 # (e.g. the audit log collectors) are type-checked on every run, not just the
 # host platform's. Catches a broken Linux/macOS/Windows file from any dev machine.
@@ -207,11 +225,11 @@ setup:
 packages: release
 	@echo "Creating distribution packages..."
 	@cd release && \
-		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe INSTALLATION.md install.bat && \
-		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md install.sh install.command && \
-		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md install.sh install.command
+		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe INSTALLATION.md THIRD_PARTY_NOTICES.txt install.bat && \
+		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command && \
+		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command
 	@echo "Packages created:"
 	@ls -la release/*.tar.gz
 

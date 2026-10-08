@@ -44,6 +44,11 @@ jobs:
             exit 1
           fi
 
+      # Every linked dependency, on every release GOOS/GOARCH, must use an
+      # allow-listed permissive license (see scripts/licenses).
+      - name: Dependency license check
+        run: go run ./scripts/licenses -check
+
   # ── per-GOOS lint: catches issues in platform-specific files ─────────────────
   lint:
     name: Lint (${{ matrix.goos }})
