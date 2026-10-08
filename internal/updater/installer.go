@@ -88,13 +88,18 @@ func createBackup() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = dst.Close() }()
-
-	if _, err := io.Copy(dst, src); err != nil {
+	_, copyErr := io.Copy(dst, src)
+	// Close before any removal: Windows refuses to delete a file that is still
+	// open. A failed close can also mean the backup was not fully written.
+	closeErr := dst.Close()
+	if copyErr != nil || closeErr != nil {
 		if removeErr := os.Remove(backupPath); removeErr != nil {
 			log.Printf("failed to remove backup file %s: %v", backupPath, removeErr)
 		}
-		return "", err
+		if copyErr != nil {
+			return "", copyErr
+		}
+		return "", closeErr
 	}
 
 	if info, err := os.Stat(selfPath); err == nil {
