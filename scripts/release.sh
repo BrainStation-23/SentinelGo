@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_OWNER="habib45"
+GITHUB_OWNER="BrainStation-23"
 GITHUB_REPO="SentinelGo"
 
 # Function to print colored output
@@ -96,15 +96,37 @@ create_github_release() {
         fi
     fi
     
-    # Create release and upload assets
+    # Create the release and upload the signed assets from release/ (make
+    # release signs them and then empties build/). This is the same set the
+    # release workflow publishes: binaries, installers, their .sig files,
+    # SHA256SUMS, SBOMs and the third-party notices. --repo pins the target so a
+    # clone with a different remote cannot publish elsewhere.
+    local assets=(
+        release/sentinelgo-windows-amd64.exe
+        release/sentinelgo-linux-amd64
+        release/sentinelgo-linux-arm64
+        release/sentinelgo-darwin-amd64
+        release/sentinelgo-darwin-arm64
+        release/install.sh
+        release/install.command
+        release/install.bat
+        release/sentinelgo-install.desktop
+        release/SHA256SUMS
+        release/THIRD_PARTY_NOTICES.txt
+        release/INSTALLATION.md
+    )
+    local f
+    for f in "${assets[@]}"; do
+        if [[ ! -f "$f" ]]; then
+            print_error "Missing release asset: $f (run make release first)"
+            exit 1
+        fi
+    done
     gh release create "$version" \
-        build/windows/sentinelgo-windows-amd64.exe \
-        build/linux/sentinelgo-linux-amd64 \
-        build/linux/sentinelgo-linux-arm64 \
-        build/darwin/sentinelgo-darwin-amd64 \
-        build/darwin/sentinelgo-darwin-arm64 \
-        installation-doc/install.bat\
-        installation-doc/install.sh\
+        --repo "$GITHUB_OWNER/$GITHUB_REPO" \
+        "${assets[@]}" \
+        release/*.sig \
+        release/*.cdx.json \
         --title "SentinelGo $version" \
         --notes "$release_notes" \
         --latest

@@ -44,6 +44,8 @@ gh attestation verify sentinelgo-linux-amd64 --repo BrainStation-23/SentinelGo
 
 If a check fails, do not run the file. Download it again from the official release page.
 
+The installers also check the binary themselves. `install.sh` and `install.bat` verify the SentinelGo binary against `SHA256SUMS` before installing it, and abort on a mismatch or on a binary that is not a published release asset. Keep `SHA256SUMS` in the same folder: without it they install with a warning and skip the check. `install.sh` also picks the binary that matches your OS and CPU (for example `sentinelgo-darwin-arm64` on Apple Silicon), so a full release download installs the right file.
+
 ## 🚀 Quick Installation (One Command)
 
 After downloading (and verifying) the release from GitHub, simply run:
@@ -202,7 +204,7 @@ If you see "sentinelgo was blocked because it is not from an identified develope
 ### Option 1: Using Installation Script (Recommended)
 ```bash
 # Download Linux binary from GitHub Releases
-# https://github.com/habib45/SentinelGo/releases/latest
+# https://github.com/BrainStation-23/SentinelGo/releases/latest
 
 # Run as root
 sudo ./install.sh install
@@ -213,7 +215,7 @@ sudo ./install.sh install
 #### 1. Download the Binary
 Download the latest Linux binary from GitHub Releases:
 ```
-https://github.com/habib45/SentinelGo/releases/latest
+https://github.com/BrainStation-23/SentinelGo/releases/latest
 ```
 Choose file named `sentinelgo-linux-amd64` (or `-arm64` for ARM).
 
@@ -322,7 +324,7 @@ sudo chmod +x /opt/sentinelgo/sentinelgo
 #### Option 1: Using Installation Script (Recommended)
 ```cmd
 # Download the Windows binary from GitHub Releases
-# https://github.com/habib45/SentinelGo/releases/latest
+# https://github.com/BrainStation-23/SentinelGo/releases/latest
 
 # Run as Administrator
 install.bat install

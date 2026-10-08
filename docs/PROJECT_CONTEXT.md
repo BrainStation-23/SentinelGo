@@ -336,7 +336,7 @@ CREATE TABLE agent_heartbeats (
 **Local Development**:
 ```bash
 # Clone repository
-git clone https://github.com/habib45/SentinelGo.git
+git clone https://github.com/BrainStation-23/SentinelGo.git
 cd SentinelGo
 
 # Install dependencies
