@@ -64,8 +64,8 @@ func TestCheckDependencies_DepHasRun(t *testing.T) {
 	dep := &Task{
 		Name:    "dep",
 		Enabled: true,
-		LastRun: time.Now().Add(-1 * time.Second), // ran 1 second ago
 	}
+	dep.recordRun(time.Now().Add(-1 * time.Second)) // ran 1 second ago
 	target := &Task{
 		Name:         "target",
 		Dependencies: []string{"dep"},

@@ -99,8 +99,13 @@ type Task struct {
 	Dependencies []string
 	Handler      TaskHandler
 	Running      atomic.Bool
-	LastRun      time.Time
 	Enabled      bool
+
+	// lastRun is the completion time of the most recent run as Unix nanoseconds
+	// (0 = never run). It is written by task goroutines and read by
+	// GetTaskStatus and dependency checks on other goroutines, so it is atomic
+	// like Running. Use LastRun to read it.
+	lastRun atomic.Int64
 
 	// consecutiveFailures counts back-to-back handler failures; it resets to 0 on
 	// the first success. alerted gates emergency logging so a sustained outage
@@ -109,6 +114,25 @@ type Task struct {
 	// per-tick goroutines (which never overlap for one task, see runTaskHandler).
 	consecutiveFailures atomic.Int32
 	alerted             atomic.Bool
+}
+
+// LastRun returns when the task last finished running (successfully or not),
+// or the zero time if it has never run. Safe for concurrent use.
+func (t *Task) LastRun() time.Time {
+	ns := t.lastRun.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// recordRun stores ts as the task's last run time. The zero time clears it.
+func (t *Task) recordRun(ts time.Time) {
+	if ts.IsZero() {
+		t.lastRun.Store(0)
+		return
+	}
+	t.lastRun.Store(ts.UnixNano())
 }
 
 // TaskHandler defines the interface for task execution
@@ -122,6 +146,10 @@ type Scheduler struct {
 	wg        sync.WaitGroup
 	mu        sync.RWMutex
 	running   atomic.Bool
+	// started is set (under mu) by the first Start and never cleared. Once set,
+	// tasks and taskOrder are frozen: the scheduler goroutines read them without
+	// the lock, so AddTask rejects further additions.
+	started bool
 }
 
 // NewScheduler creates a new task scheduler
@@ -132,10 +160,16 @@ func NewScheduler() *Scheduler {
 	}
 }
 
-// AddTask adds a task to the scheduler
+// AddTask adds a task to the scheduler. Tasks must be added before Start; once
+// the scheduler has been started (even if later stopped) AddTask returns an
+// error, because the running goroutines read the task set without locking.
 func (s *Scheduler) AddTask(task *Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.started {
+		return fmt.Errorf("cannot add task %s: scheduler already started", task.Name)
+	}
 
 	if _, exists := s.tasks[task.Name]; exists {
 		return fmt.Errorf("task %s already exists", task.Name)
@@ -206,7 +240,14 @@ func (s *Scheduler) Start(cfg *config.Config, authSvc *authsvc.Service) error {
 		return fmt.Errorf("scheduler is already running")
 	}
 
-	log.Printf("Starting task scheduler with %d tasks", len(s.tasks))
+	// Freeze the task set. Taking mu here orders every prior AddTask before the
+	// goroutines below, which then read tasks/taskOrder without the lock.
+	s.mu.Lock()
+	s.started = true
+	numTasks := len(s.tasks)
+	s.mu.Unlock()
+
+	log.Printf("Starting task scheduler with %d tasks", numTasks)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -299,7 +340,7 @@ func (s *Scheduler) runInitialTasks(ctx context.Context, cfg *config.Config, aut
 			observeTaskResult(task, err)
 			// Always record LastRun so dependent tasks are not permanently
 			// blocked by a failure in this dependency.
-			task.LastRun = time.Now()
+			task.recordRun(time.Now())
 			task.Running.Store(false)
 		}
 	}()
@@ -352,7 +393,7 @@ func (s *Scheduler) executePeriodicTask(ctx context.Context, cfg *config.Config,
 	observeTaskResult(t, err)
 	// Always update LastRun so dependent tasks are not permanently blocked by
 	// a one-off failure.
-	t.LastRun = time.Now()
+	t.recordRun(time.Now())
 }
 
 // maybeDispatchTask fires task `name` if its ticker ticked this heartbeat,
@@ -421,7 +462,7 @@ func (s *Scheduler) checkDependencies(task *Task) bool {
 		}
 
 		// Check if dependency has run at least once
-		if depTask.LastRun.IsZero() {
+		if depTask.LastRun().IsZero() {
 			log.Printf("Dependency task %s has not run yet for task %s", depName, task.Name)
 			return false
 		}
@@ -466,7 +507,7 @@ func (s *Scheduler) GetTaskStatus() map[string]TaskStatus {
 			Name:     name,
 			Enabled:  task.Enabled,
 			Running:  task.Running.Load(),
-			LastRun:  task.LastRun,
+			LastRun:  task.LastRun(),
 			Interval: task.Interval,
 		}
 	}
