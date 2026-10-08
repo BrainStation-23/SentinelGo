@@ -19,6 +19,7 @@ encryption status, and tamper-evident audit logs, streamed to your backend in re
 [![CGO Free](https://img.shields.io/badge/CGO__ENABLED-0%20%C2%B7%20static%20binary-22c55e?style=flat-square&logo=go&logoColor=white)](#-build-from-source)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green?style=flat-square&logo=apache&logoColor=white)](#-license)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge)](https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo?ref=badge_shield)
 
 <br/>
 
@@ -450,3 +451,6 @@ Distributed under the **Apache 2.0** License. See [`LICENSE`](LICENSE) for detai
 Made with ❤️ by the SentinelGo team &nbsp;·&nbsp; [Contribute](CONTRIBUTING.md) &nbsp;·&nbsp; [Report a bug](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml) &nbsp;·&nbsp; [Security policy](SECURITY.md) &nbsp;·&nbsp; [Code of Conduct](CODE_OF_CONDUCT.md)
 
 </div>
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo?ref=badge_large)
