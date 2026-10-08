@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -8,24 +9,22 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"sentinelgo/internal/config"
-	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/winsec"
 )
 
-// downloadClient has a generous timeout for large binary downloads (~18 MB+).
-var downloadClient = httpx.NewClient(10 * time.Minute)
+// Size limits for release assets. Agent binaries are ~18-30 MB; a body beyond
+// the limit is rejected (supabase.ErrTooLarge) rather than truncated.
+const (
+	maxBinaryBytes    = 256 << 20
+	maxSignatureBytes = 4 << 10
+)
 
-// storageBase constructs the Supabase Storage authenticated download URL for a
-// given bucket and asset path.
-func storageURL(supabaseURL, bucket, assetPath string) string {
-	return supabaseURL + "/storage/v1/object/" + bucket + "/" + assetPath
-}
+const releasesBucket = "agent-releases"
 
 // downloadAndVerify downloads the release binary and its detached ed25519
 // signature from Supabase Storage, verifies the SHA256 checksum (integrity)
@@ -36,24 +35,6 @@ func storageURL(supabaseURL, bucket, assetPath string) string {
 // key — the agent-releases bucket has RLS that allows any authenticated user
 // to download.
 func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string) (string, string, error) {
-	binaryURL := storageURL(cfg.SupabaseURL, "agent-releases", assetPath)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binaryURL, nil)
-	if err != nil {
-		return "", "", err
-	}
-	addAuthHeaders(req, cfg)
-
-	resp, err := downloadClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("binary download status %d", resp.StatusCode)
-	}
-
 	selfPath, err := os.Executable()
 	if err != nil {
 		return "", "", err
@@ -65,13 +46,28 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { _ = f.Close() }()
 
-	// Stream to disk and compute SHA256 simultaneously.
+	// Stream to disk and compute SHA256 simultaneously. An expired token
+	// (Storage answers 400 InvalidJWT) is recovered via the AuthRetrier; the
+	// file and hash are reset before each attempt.
 	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, hash), resp.Body); err != nil {
+	c := supabase.FromConfig(cfg)
+	err = withAuthRetry(ctx, cfg, func() error {
+		if err := resetStaging(f); err != nil {
+			return err
+		}
+		hash.Reset()
+		_, err := c.Download(ctx, releasesBucket, assetPath, false, io.MultiWriter(f, hash), maxBinaryBytes)
+		return err
+	})
+	closeErr := f.Close()
+	if err != nil {
 		_ = os.Remove(newPath)
-		return "", "", err
+		return "", "", fmt.Errorf("download binary: %w", err)
+	}
+	if closeErr != nil {
+		_ = os.Remove(newPath)
+		return "", "", fmt.Errorf("close staged binary: %w", closeErr)
 	}
 
 	actualChecksum := hex.EncodeToString(hash.Sum(nil))
@@ -92,10 +88,13 @@ func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expec
 	return newPath, actualChecksum, nil
 }
 
-// addAuthHeaders sets the Authorization (Bearer JWT) and apikey headers on req.
-func addAuthHeaders(req *http.Request, cfg *config.Config) {
-	req.Header.Set("Authorization", "Bearer "+cfg.GetAccessToken())
-	req.Header.Set("apikey", cfg.SupabaseKey)
+// resetStaging empties the staging file before a (re)try.
+func resetStaging(f *os.File) error {
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	_, err := f.Seek(0, io.SeekStart)
+	return err
 }
 
 // verifySignature downloads the detached .sig file from Supabase Storage and
@@ -106,28 +105,17 @@ func verifySignature(ctx context.Context, cfg *config.Config, binaryPath, sigAss
 		return fmt.Errorf("refusing to install update: no .sig asset path (fail closed)")
 	}
 
-	sigURL := storageURL(cfg.SupabaseURL, "agent-releases", sigAssetPath)
-
-	sigReq, err := http.NewRequestWithContext(ctx, http.MethodGet, sigURL, nil)
-	if err != nil {
-		return fmt.Errorf("build sig request: %w", err)
-	}
-	addAuthHeaders(sigReq, cfg)
-
-	sigResp, err := downloadClient.Do(sigReq)
+	var sigBody bytes.Buffer
+	c := supabase.FromConfig(cfg)
+	err := withAuthRetry(ctx, cfg, func() error {
+		sigBody.Reset()
+		_, err := c.Download(ctx, releasesBucket, sigAssetPath, false, &sigBody, maxSignatureBytes)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("download signature: %w", err)
 	}
-	defer func() { _ = sigResp.Body.Close() }()
-	if sigResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("signature download status %d", sigResp.StatusCode)
-	}
-
-	sigBody, err := io.ReadAll(sigResp.Body)
-	if err != nil {
-		return fmt.Errorf("read signature body: %w", err)
-	}
-	sigBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigBody)))
+	sigBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(sigBody.String()))
 	if err != nil {
 		return fmt.Errorf("decode signature (expected base64): %w", err)
 	}
