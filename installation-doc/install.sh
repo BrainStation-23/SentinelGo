@@ -29,7 +29,6 @@ CONFIG_DIR="${INSTALL_DIR}/.sentinelgo"
 SERVICE_USER="sentinelgo"
 readonly OS_WINDOWS="windows"
 readonly LAUNCHD_PLIST_PATH="/Library/LaunchDaemons/com.sentinelgo.agent.plist"
-readonly LOCAL_LINUX_BINARY="./sentinelgo-linux-amd64"
 
 # Detect OS
 detect_os() {
@@ -50,6 +49,89 @@ detect_os() {
     else
         echo "unknown"
     fi
+}
+
+# Detect the CPU architecture in release-asset form (amd64 / arm64).
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "amd64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *) uname -m ;;
+    esac
+}
+
+# select_binary prints the path of the binary to install from the current
+# directory: a plain ./sentinelgo if present, otherwise the release asset that
+# matches this machine's OS and CPU (sentinelgo-<os>-<arch>). Prints nothing if
+# there is none. Choosing by OS/arch matters: a full release download contains
+# every platform's binary, and installing the wrong one breaks the service.
+select_binary() {
+    if [[ -f "./$BINARY_NAME" ]]; then
+        echo "./$BINARY_NAME"
+        return
+    fi
+    local goos
+    case "$(detect_os)" in
+        ubuntu|centos|fedora|linux) goos="linux" ;;
+        macos) goos="darwin" ;;
+        "$OS_WINDOWS") goos="windows" ;;
+        *) return ;;
+    esac
+    local candidate="./sentinelgo-${goos}-$(detect_arch)"
+    [[ "$goos" == "windows" ]] && candidate="${candidate}.exe"
+    if [[ -f "$candidate" ]]; then
+        echo "$candidate"
+    fi
+}
+
+# sha256_of prints the SHA-256 of a file using whichever tool the OS has.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# verify_binary checks a binary against the SHA256SUMS published with the
+# release before it is installed as root. A mismatch, or a binary that is not
+# listed, aborts the install. If SHA256SUMS is not next to the installer the
+# install continues with a warning (some download bundles do not include it).
+verify_binary() {
+    local file="$1"
+    local sums="./SHA256SUMS"
+    if [[ ! -f "$sums" ]]; then
+        print_warning "SHA256SUMS not found next to the installer; installing $(basename "$file") WITHOUT checksum verification"
+        print_warning "Download SHA256SUMS from the release page to have the binary verified"
+        return 0
+    fi
+
+    local actual
+    if ! actual=$(sha256_of "$file"); then
+        print_error "No sha256sum or shasum available; cannot verify $(basename "$file")"
+        exit 1
+    fi
+
+    local name expected
+    name=$(basename "$file")
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n {print $1; exit}' "$sums")
+    if [[ -n "$expected" ]]; then
+        if [[ "$actual" != "$expected" ]]; then
+            print_error "Checksum mismatch for $name"
+            print_error "  expected: $expected"
+            print_error "  actual:   $actual"
+            print_error "The file is corrupted or has been tampered with. Download it again from the official release."
+            exit 1
+        fi
+    elif ! awk '{print $1}' "$sums" | grep -qx "$actual"; then
+        # A renamed binary (e.g. ./sentinelgo) is accepted if its hash is a
+        # published release asset.
+        print_error "$name is not a published release asset (its SHA-256 is not in SHA256SUMS)"
+        exit 1
+    fi
+    print_success "Verified $name against SHA256SUMS"
 }
 
 # Print colored output
@@ -143,29 +225,20 @@ setup_directories() {
         print_status "No config.json found in current directory"
     fi
     
-    # Copy binary if it exists in current directory
-    if [[ -f "./$BINARY_NAME" ]]; then
-        print_status "Installing binary from current directory"
-        cp "./$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "$LOCAL_LINUX_BINARY" ]]; then
-        print_status "Installing Linux AMD64 binary"
-        cp "$LOCAL_LINUX_BINARY" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "./sentinelgo-darwin-amd64" ]]; then
-        print_status "Installing macOS AMD64 binary"
-        cp "./sentinelgo-darwin-amd64" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "./sentinelgo-linux-arm64" ]]; then
-        print_status "Installing Linux ARM64 binary"
-        cp "./sentinelgo-linux-arm64" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "./sentinelgo-darwin-arm64" ]]; then
-        print_status "Installing macOS ARM64 binary"
-        cp "./sentinelgo-darwin-arm64" "$INSTALL_DIR/$BINARY_NAME"
-    elif [[ -f "./sentinelgo-windows-amd64.exe" ]]; then
-        print_status "Installing Windows AMD64 binary"
-        cp "./sentinelgo-windows-amd64.exe" "$INSTALL_DIR/$BINARY_NAME.exe"
-    else
-        print_error "No SentinelGo binary found in current directory"
-        print_error "Please download: binary for your OS from GitHub releases and place it in the same directory as this script"
+    # Pick the binary for this OS/CPU and verify it before installing as root.
+    local src
+    src=$(select_binary)
+    if [[ -z "$src" ]]; then
+        print_error "No SentinelGo binary for $(detect_os)/$(detect_arch) found in the current directory"
+        print_error "Download the binary for your OS and CPU from https://github.com/BrainStation-23/SentinelGo/releases and place it next to this script"
         exit 1
+    fi
+    verify_binary "$src"
+    print_status "Installing $(basename "$src")"
+    if [[ "$src" == *.exe ]]; then
+        cp "$src" "$INSTALL_DIR/$BINARY_NAME.exe"
+    else
+        cp "$src" "$INSTALL_DIR/$BINARY_NAME"
     fi
     
     # Set permissions
@@ -570,9 +643,12 @@ fix_service() {
         else
             print_error "Binary not found or not executable"
             print_status "Installing binary first..."
-            # Copy current binary if available
-            if [[ -f "$LOCAL_LINUX_BINARY" ]]; then
-                cp "$LOCAL_LINUX_BINARY" "$INSTALL_DIR/$BINARY_NAME"
+            # Copy the binary for this OS/CPU if available (verified first).
+            local repair_src
+            repair_src=$(select_binary)
+            if [[ -n "$repair_src" ]]; then
+                verify_binary "$repair_src"
+                cp "$repair_src" "$INSTALL_DIR/$BINARY_NAME"
                 chmod 750 "$INSTALL_DIR/$BINARY_NAME"
                 chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed, trying again..."

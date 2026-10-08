@@ -27,7 +27,10 @@ if %errorLevel% neq 0 (
     
     REM Try to auto-elevate using VBScript (works from CMD)
     echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
-    echo UAC.ShellExecute "%~f0", "install", "", "runas", 1 >> "%temp%\getadmin.vbs"
+    REM Relaunch with the same command (it used to always relaunch as "install").
+    set "ELEVATE_CMD=%~1"
+    if not defined ELEVATE_CMD set "ELEVATE_CMD=install"
+    echo UAC.ShellExecute "%~f0", "!ELEVATE_CMD!", "", "runas", 1 >> "%temp%\getadmin.vbs"
     "%temp%\getadmin.vbs"
     del "%temp%\getadmin.vbs" >nul 2>&1
     exit /b 0
@@ -58,11 +61,17 @@ echo [STEP 1] Locating installation artifacts...
 if not exist "%REQUIRED_BINARY%" (
     echo [ERROR] Required binary not found: %REQUIRED_BINARY%
     echo [INFO] Ensure sentinelgo-windows-amd64.exe is in the same directory as install.bat
-    echo [INFO] Download from: https://github.com/habib45/SentinelGo/releases
+    echo [INFO] Download from: https://github.com/BrainStation-23/SentinelGo/releases
     pause
     exit /b 1
 )
 echo [SUCCESS] Found %REQUIRED_BINARY%
+call :verify_binary
+if errorlevel 1 (
+    echo [ERROR] Refusing to install a binary that failed verification
+    pause
+    exit /b 1
+)
 echo.
 
 REM Step 2: Uninstall existing installation (if present)
@@ -160,9 +169,6 @@ if exist "%EXISTING_CONFIG_BACKUP%" (
         (
             echo {
             echo   "heartbeat_interval": "5m0s",
-            echo   "github_owner": "habib45",
-            echo   "github_repo": "SentinelGo",
-            echo   "current_version": "v2.1.4",
             echo   "auto_update": true,
             echo   "supabase_url": "https://tvoszjyryzlfdampkozd.supabase.co",
             echo   "device_id": "",
@@ -352,7 +358,13 @@ echo.
 REM Check if binary exists
 if not exist "%REQUIRED_BINARY%" (
     echo [ERROR] Update binary not found: %REQUIRED_BINARY%
-    echo [INFO] Download latest version from: https://github.com/habib45/SentinelGo/releases
+    echo [INFO] Download latest version from: https://github.com/BrainStation-23/SentinelGo/releases
+    pause
+    exit /b 1
+)
+call :verify_binary
+if errorlevel 1 (
+    echo [ERROR] Refusing to install a binary that failed verification
     pause
     exit /b 1
 )
@@ -511,3 +523,17 @@ exit /b 1
 
 :end
 pause
+exit /b
+
+REM verify_binary checks %REQUIRED_BINARY% against the SHA256SUMS published
+REM with the release before it is installed as Administrator. A mismatch, or
+REM a binary that is not listed, fails (errorlevel 1). If SHA256SUMS is not next
+REM to the installer it warns and succeeds (some download bundles omit it).
+:verify_binary
+if not exist "SHA256SUMS" (
+    echo [WARNING] SHA256SUMS not found next to install.bat; installing %REQUIRED_BINARY% WITHOUT checksum verification
+    echo [WARNING] Download SHA256SUMS from the release page to have the binary verified
+    exit /b 0
+)
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$f='%REQUIRED_BINARY%'; $a=(Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower(); $e=$null; foreach ($l in Get-Content -LiteralPath 'SHA256SUMS') { $p = $l.Trim() -split '\s+', 2; if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq $f) { $e = $p[0].ToLower(); break } }; if (-not $e) { Write-Host ('[ERROR] ' + $f + ' is not listed in SHA256SUMS'); exit 1 }; if ($a -ne $e) { Write-Host ('[ERROR] Checksum mismatch for ' + $f); Write-Host ('  expected: ' + $e); Write-Host ('  actual:   ' + $a); Write-Host '[ERROR] The file is corrupted or has been tampered with. Download it again from the official release.'; exit 1 }; Write-Host ('[SUCCESS] Verified ' + $f + ' against SHA256SUMS'); exit 0"
+exit /b %errorLevel%
