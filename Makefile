@@ -78,17 +78,22 @@ release: pre-release clean all
 	@echo "\nCleaning build folder files and subdirectories..."
 	@rm -rf build/* || true
 
-# Sign release binaries and generate SHA256SUMS.
+# Sign release binaries and installers, and generate SHA256SUMS. The installers
+# run as root/Administrator, so they get the same .sig + checksum as the binaries.
 # Reads SENTINELGO_SIGNING_KEY from the environment (base64 ed25519 private key).
 # Run `go run ./scripts/keygen` once to generate the keypair if needed.
 sign:
-	@echo "Signing release binaries..."
+	@echo "Signing release binaries and installers..."
 	@go run ./scripts/sign \
 	  release/sentinelgo-linux-amd64 \
 	  release/sentinelgo-linux-arm64 \
 	  release/sentinelgo-darwin-amd64 \
 	  release/sentinelgo-darwin-arm64 \
-	  release/sentinelgo-windows-amd64.exe
+	  release/sentinelgo-windows-amd64.exe \
+	  release/install.sh \
+	  release/install.command \
+	  release/install.bat \
+	  release/sentinelgo-install.desktop
 	@echo "Signatures and SHA256SUMS written to release/"
 
 clean:

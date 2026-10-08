@@ -14,9 +14,39 @@ SentinelGo is a cross-platform monitoring agent that runs as a system service. T
 1. **Automated Scripts** - Recommended for most users
 2. **Manual Installation** - For advanced users and custom setups
 
+## 🔐 Verify Your Download (Recommended)
+
+The installers run as root or Administrator, so check them before you run them. Every release asset — the binaries and the installers (`install.sh`, `install.command`, `install.bat`, `sentinelgo-install.desktop`) — is listed in `SHA256SUMS`, signed with the SentinelGo release key (`<file>.sig`), and has a GitHub build-provenance attestation.
+
+**Checksums** (run in the folder holding the downloaded files):
+
+```bash
+# Linux
+sha256sum -c SHA256SUMS --ignore-missing
+
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+```powershell
+# Windows: compare the output with the matching line in SHA256SUMS
+Get-FileHash .\install.bat -Algorithm SHA256
+Get-FileHash .\sentinelgo-windows-amd64.exe -Algorithm SHA256
+```
+
+**Provenance** (proves the file was built by this repository's release workflow; needs the [GitHub CLI](https://cli.github.com/)):
+
+```bash
+gh attestation verify SHA256SUMS --repo BrainStation-23/SentinelGo   # authenticates the checksum list
+gh attestation verify install.sh --repo BrainStation-23/SentinelGo
+gh attestation verify sentinelgo-linux-amd64 --repo BrainStation-23/SentinelGo
+```
+
+If a check fails, do not run the file. Download it again from the official release page.
+
 ## 🚀 Quick Installation (One Command)
 
-After downloading the release from GitHub, simply run:
+After downloading (and verifying) the release from GitHub, simply run:
 
 ```bash
 # For Linux/macOS
