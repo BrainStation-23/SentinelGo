@@ -13,7 +13,6 @@ import (
 	"sentinelgo/internal/auditlogs/parser"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
-	"sentinelgo/internal/osinfo"
 	"sentinelgo/internal/osinfo/shared"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
@@ -25,6 +24,15 @@ import (
 // which on a busy host can be enormous. The persisted queue is viewable via
 // -logging-stats.
 const maxDebugAuditEntries = 500
+
+// Test seams for the host collectors the debug dump runs. They read the whole
+// machine (installed software, services, audit-log history), which is slow and
+// environment-dependent, so tests substitute canned data.
+var (
+	collectSoftware   = func() []swsvc.SoftwareInfo { return swsvc.NewSoftwareService().GetSoftwareList() }
+	collectServices   = func() []models.ServiceInfo { return servicessvc.NewServicesService().GetServiceList() }
+	newAuditCollector = collector.NewCollector
+)
 
 // debugDump is the combined snapshot printed by -debug-dump. It mirrors exactly
 // what the agent collects (and would send), without uploading or persisting.
@@ -39,7 +47,7 @@ type debugDump struct {
 // loadConfigBestEffort loads the config but never fails: a debug dump must work
 // even on a half-broken install. Returns nil if the config can't be loaded.
 func loadConfigBestEffort() *config.Config {
-	cfg, err := config.Load("")
+	cfg, err := loadDefaultConfig()
 	if err != nil {
 		log.Printf("Warning: Could not load config (audit-log labels will be empty): %v", err)
 		return nil
@@ -97,7 +105,7 @@ func collectAuditLogsLive(ctx context.Context, cfg *config.Config) []models.Audi
 		pc.AgentVersion = cfg.CurrentVersion
 	}
 
-	c := collector.NewCollector()
+	c := newAuditCollector()
 	entries, _, err := c.Collect(ctx, collector.CheckpointData{})
 	if err != nil {
 		log.Printf("Warning: audit log collection error: %v", err)
@@ -123,9 +131,9 @@ func HandleDebugDump() {
 
 	dump := debugDump{
 		CollectedAt: time.Now().UTC().Format(time.RFC3339),
-		OSInfo:      osinfo.Collect(),
-		Software:    swsvc.NewSoftwareService().GetSoftwareList(),
-		Services:    servicessvc.NewServicesService().GetServiceList(),
+		OSInfo:      collectOSInfo(),
+		Software:    collectSoftware(),
+		Services:    collectServices(),
 		AuditLogs:   collectAuditLogsLive(ctx, cfg),
 	}
 	printJSON(dump)
@@ -133,7 +141,7 @@ func HandleDebugDump() {
 
 // HandleOSInfoDump collects OS info and prints it as JSON. No upload.
 func HandleOSInfoDump() {
-	printJSON(osinfo.Collect())
+	printJSON(collectOSInfo())
 }
 
 // HandleAuditLogsDump collects audit logs live and prints them as JSON,

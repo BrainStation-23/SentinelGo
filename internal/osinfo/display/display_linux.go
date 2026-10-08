@@ -11,6 +11,13 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// Test seams: production always runs the real commands against the real
+// sysfs mount; tests swap these for fixture output and a t.TempDir() tree.
+var (
+	displayRunCommand = shared.RunCommand
+	displaySysfsRoot  = "/sys"
+)
+
 // xrandrInfo bundles the per-connector state gathered from `xrandr --query`
 // that buildLinuxDisplay layers on top of EDID data. Grouping these together
 // keeps downstream function signatures short.
@@ -28,11 +35,11 @@ func getDisplays() []shared.Display {
 		resolutions:  make(map[string]string),
 		refreshRates: make(map[string]float64),
 	}
-	if output, err := shared.RunCommand("xrandr", "--query"); err == nil {
+	if output, err := displayRunCommand("xrandr", "--query"); err == nil {
 		xr.connected, xr.resolutions, xr.refreshRates = parseXrandrQuery(output)
 	}
 
-	drmDirs, err := os.ReadDir("/sys/class/drm")
+	drmDirs, err := os.ReadDir(displaySysfsRoot + "/class/drm")
 	if err != nil {
 		return displays
 	}
@@ -148,7 +155,7 @@ func drmConnectorName(name string) string {
 func buildLinuxDisplay(name string, xr xrandrInfo) (shared.Display, bool) {
 	connectorName := drmConnectorName(name)
 
-	edidPath := fmt.Sprintf("/sys/class/drm/%s/edid", name)
+	edidPath := fmt.Sprintf("%s/class/drm/%s/edid", displaySysfsRoot, name)
 	edidData, edidErr := shared.ReadFileBytes(edidPath)
 	hasEDID := edidErr == nil && len(edidData) > 16
 	if !hasEDID && !xr.connected[connectorName] && !xr.connected[name] {
@@ -199,7 +206,7 @@ func applyEDIDDecodeFallback(display *shared.Display, edidPath string) {
 	if !isUnknownOrEmpty(display.SerialNumber) && display.Model != "Unknown" {
 		return
 	}
-	edidDecodeOutput, err := shared.RunCommand("edid-decode", edidPath)
+	edidDecodeOutput, err := displayRunCommand("edid-decode", edidPath)
 	if err != nil {
 		return
 	}
@@ -521,7 +528,7 @@ func parseEDIDSize(edid []byte) float64 {
 }
 
 func getSerialFromXrandrProps(connectorName string) string {
-	output, err := shared.RunCommand("xrandr", "--prop", "--query")
+	output, err := displayRunCommand("xrandr", "--prop", "--query")
 	if err != nil {
 		return ""
 	}
@@ -579,7 +586,7 @@ func serialFromXrandrEDIDLine(line string) (string, bool) {
 }
 
 func getSerialFromDMI() string {
-	serial, err := shared.ReadFileContent("/sys/class/dmi/id/product_serial")
+	serial, err := shared.ReadFileContent(displaySysfsRoot + "/class/dmi/id/product_serial")
 	if err != nil {
 		return ""
 	}

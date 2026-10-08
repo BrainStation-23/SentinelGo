@@ -9,10 +9,15 @@ import (
 	"runtime"
 )
 
+// executablePath resolves the running binary's path. It is a variable so tests
+// can point the install/backup/rollback/staging logic at a file in a temp
+// directory instead of the real test binary.
+var executablePath = os.Executable
+
 // atomicReplace replaces the running binary with newPath using an atomic rename.
 // Not used on Windows (handled via restart batch script).
 func atomicReplace(newPath string) error {
-	selfPath, err := os.Executable()
+	selfPath, err := executablePath()
 	if err != nil {
 		return err
 	}
@@ -64,14 +69,14 @@ func removeFile(path string) error {
 
 // createBackup copies the running binary to <self>.backup and returns the path.
 func createBackup() (string, error) {
-	selfPath, err := os.Executable()
+	selfPath, err := executablePath()
 	if err != nil {
 		return "", err
 	}
 
 	backupPath := selfPath + ".backup"
 
-	// #nosec G304 - selfPath is a controlled path from os.Executable()
+	// #nosec G304 - selfPath is a controlled path from executablePath()
 	src, err := os.Open(selfPath)
 	if err != nil {
 		return "", err
@@ -103,7 +108,7 @@ func createBackup() (string, error) {
 
 // rollbackFromBackup restores the binary from backupPath using an atomic rename.
 func rollbackFromBackup(backupPath string) error {
-	selfPath, err := os.Executable()
+	selfPath, err := executablePath()
 	if err != nil {
 		return err
 	}

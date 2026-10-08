@@ -9,6 +9,16 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// Test seams: production always runs the real commands against the real
+// root filesystem (securityHostRoot is prefixed to every absolute path, so ""
+// leaves them unchanged); tests swap these for fixture output and a
+// t.TempDir() tree.
+var (
+	securityRunCommand       = shared.RunCommand
+	securityRunCommandOutput = shared.RunCommandOutput
+	securityHostRoot         = ""
+)
+
 // crowdStrikeFalconService and crowdStrikeFalconName identify CrowdStrike
 // Falcon, which appears in both the AV-service and EDR-detection tables below.
 const (
@@ -137,7 +147,7 @@ func collectClamAVScanInfo() shared.SecurityScanInfo {
 	scan.ScanType = "Scheduled/On-Demand"
 	scan.ScanResult = "Clean"
 
-	logData, err := os.ReadFile("/var/log/clamav/clamav.log")
+	logData, err := os.ReadFile(securityHostRoot + "/var/log/clamav/clamav.log")
 	if err != nil {
 		return scan
 	}
@@ -223,7 +233,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 // read from /proc/<pid>/comm.
 func runningProcNames() map[string]bool {
 	running := make(map[string]bool)
-	entries, err := os.ReadDir("/proc")
+	entries, err := os.ReadDir(securityHostRoot + "/proc")
 	if err != nil {
 		return running
 	}
@@ -235,7 +245,7 @@ func runningProcNames() map[string]bool {
 		if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err != nil {
 			continue
 		}
-		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		comm, err := os.ReadFile(securityHostRoot + "/proc/" + e.Name() + "/comm")
 		if err != nil {
 			continue
 		}
@@ -251,13 +261,13 @@ func detectEDRServiceState(e edrCandidate, runningProcs map[string]bool) (instal
 	status = "Stopped"
 	startup = "Disabled"
 
-	if activeOut, err := shared.RunCommand("systemctl", "is-active", e.svc); err == nil {
+	if activeOut, err := securityRunCommand("systemctl", "is-active", e.svc); err == nil {
 		installed = true
 		if strings.TrimSpace(activeOut) == "active" {
 			status = "Running"
 		}
 	}
-	if enabledOut, err := shared.RunCommand("systemctl", "is-enabled", e.svc); err == nil {
+	if enabledOut, err := securityRunCommand("systemctl", "is-enabled", e.svc); err == nil {
 		installed = true
 		if strings.TrimSpace(enabledOut) == "enabled" {
 			startup = "Auto"
@@ -308,7 +318,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 	enc.ProtectionStatus = "Disabled"
 	enc.RecoveryKeyBackupStatus = "Unknown"
 
-	if output, err := shared.RunCommand("lsblk", "-o", "NAME,FSTYPE"); err == nil {
+	if output, err := securityRunCommand("lsblk", "-o", "NAME,FSTYPE"); err == nil {
 		if strings.Contains(output, "crypto_LUKS") {
 			enc.EncryptionProvider = "LUKS"
 			enc.EncryptionStatus = "Encrypted"
@@ -326,18 +336,18 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	hw.SecureEnclaveStatus = "Unsupported"
 	hw.ActivationLockStatus = "Unsupported"
 
-	if _, err := os.Stat("/dev/tpm0"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/dev/tpm0"); err == nil {
 		hw.TPMStatus = "Enabled"
 		hw.TPMVersion = "1.2"
 
-		if data, err := os.ReadFile("/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
+		if data, err := os.ReadFile(securityHostRoot + "/sys/class/tpm/tpm0/tpm_version_major"); err == nil {
 			hw.TPMVersion = strings.TrimSpace(string(data)) + ".0"
-		} else if data, err = os.ReadFile("/sys/class/tpm/tpm0/device/description"); err == nil {
+		} else if data, err = os.ReadFile(securityHostRoot + "/sys/class/tpm/tpm0/device/description"); err == nil {
 			if strings.Contains(string(data), "2.0") {
 				hw.TPMVersion = "2.0"
 			}
 		}
-	} else if _, err := os.Stat("/sys/class/tpm"); err == nil {
+	} else if _, err := os.Stat(securityHostRoot + "/sys/class/tpm"); err == nil {
 		hw.TPMStatus = "Disabled"
 	}
 	return hw
@@ -439,7 +449,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	id.SSHRootLogin = "Unknown"
 	id.SSHPasswordAuth = "Unknown"
 
-	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+	if data, err := os.ReadFile(securityHostRoot + "/etc/ssh/sshd_config"); err == nil {
 		id.SSHRootLogin, id.SSHPasswordAuth, _ = parseSSHConfigData(string(data))
 	}
 
@@ -457,7 +467,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 // detectSudoPrivilegeState checks /etc/group for a sudo or wheel group,
 // reporting whether sudo access is configured as expected.
 func detectSudoPrivilegeState() string {
-	data, err := os.ReadFile("/etc/group")
+	data, err := os.ReadFile(securityHostRoot + "/etc/group")
 	if err != nil {
 		return "Unknown"
 	}
@@ -474,13 +484,13 @@ func detectSudoPrivilegeState() string {
 // number of pending security updates, trying apt-check, then apt-get, then
 // yum in turn.
 func pendingSecurityPatchCount() int {
-	if _, err := os.Stat("/usr/lib/update-notifier/apt-check"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/usr/lib/update-notifier/apt-check"); err == nil {
 		return pendingPatchesFromAptCheck()
 	}
-	if _, err := os.Stat("/usr/bin/apt-get"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/usr/bin/apt-get"); err == nil {
 		return pendingPatchesFromAptGet()
 	}
-	if _, err := os.Stat("/usr/bin/yum"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/usr/bin/yum"); err == nil {
 		return pendingPatchesFromYum()
 	}
 	return 0
@@ -489,7 +499,7 @@ func pendingSecurityPatchCount() int {
 // pendingPatchesFromAptCheck parses the "N;M" output of apt-check, where M is
 // the count of pending security updates.
 func pendingPatchesFromAptCheck() int {
-	out, err := shared.RunCommand("/usr/lib/update-notifier/apt-check")
+	out, err := securityRunCommand("/usr/lib/update-notifier/apt-check")
 	if err != nil {
 		return 0
 	}
@@ -505,7 +515,7 @@ func pendingPatchesFromAptCheck() int {
 }
 
 func pendingPatchesFromAptGet() int {
-	out, err := shared.RunCommand("apt-get", "-s", "upgrade")
+	out, err := securityRunCommand("apt-get", "-s", "upgrade")
 	if err != nil {
 		return 0
 	}
@@ -516,7 +526,7 @@ func pendingPatchesFromAptGet() int {
 // when updates are available and 0 when there are none; RunCommandOutput
 // captures output for both exit codes.
 func pendingPatchesFromYum() int {
-	out, exitCode, err := shared.RunCommandOutput("yum", "check-update", "--security")
+	out, exitCode, err := securityRunCommandOutput("yum", "check-update", "--security")
 	if err != nil || (exitCode != 0 && exitCode != 100) {
 		return 0
 	}
@@ -530,7 +540,7 @@ func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAcce
 	info.SSHPasswordAuthStatus = id.SSHPasswordAuth
 
 	info.SSHKeyAuthStatus = "Unknown"
-	if data, err := os.ReadFile("/etc/ssh/sshd_config"); err == nil {
+	if data, err := os.ReadFile(securityHostRoot + "/etc/ssh/sshd_config"); err == nil {
 		_, _, info.SSHKeyAuthStatus = parseSSHConfigData(string(data))
 	}
 	return info
@@ -544,10 +554,10 @@ func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAcce
 // "unknown" is returned when the module is absent but not explicitly blocked —
 // this is normal when no USB drive is connected on an otherwise unrestricted system.
 func collectUSBMassStorage() string {
-	if _, err := os.Stat("/sys/module/usb_storage"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/sys/module/usb_storage"); err == nil {
 		return "enabled"
 	}
-	if state := usbStorageStateFromModprobeDir("/etc/modprobe.d"); state != "" {
+	if state := usbStorageStateFromModprobeDir(securityHostRoot + "/etc/modprobe.d"); state != "" {
 		return state
 	}
 	return "unknown"
@@ -608,7 +618,7 @@ func collectAV() []shared.AntivirusProduct {
 }
 
 func probeAVService(service, name string) (shared.AntivirusProduct, bool) {
-	output, err := shared.RunCommand("systemctl", "is-active", service)
+	output, err := securityRunCommand("systemctl", "is-active", service)
 	if err != nil {
 		return shared.AntivirusProduct{}, false
 	}
@@ -630,19 +640,19 @@ func probeAVService(service, name string) (shared.AntivirusProduct, bool) {
 
 // collectFirewallProfiles tries ufw, then firewalld, then iptables.
 func collectFirewallProfiles() []shared.FirewallProfile {
-	if output, err := shared.RunCommand("ufw", "status"); err == nil {
+	if output, err := securityRunCommand("ufw", "status"); err == nil {
 		// First line is "Status: active" or "Status: inactive".
 		first := strings.ToLower(strings.SplitN(output, "\n", 2)[0])
 		active := strings.Contains(first, "active") && !strings.Contains(first, "inactive")
 		return []shared.FirewallProfile{{Name: "ufw", Enabled: active}}
 	}
-	if output, err := shared.RunCommand("firewall-cmd", "--state"); err == nil {
+	if output, err := securityRunCommand("firewall-cmd", "--state"); err == nil {
 		running := strings.TrimSpace(strings.ToLower(output)) == "running"
 		return []shared.FirewallProfile{{Name: "firewalld", Enabled: running}}
 	}
 	// iptables is a last resort: report enabled only when DROP/REJECT rules exist.
 	// An empty ACCEPT-all ruleset is not a meaningful firewall.
-	if output, err := shared.RunCommand("iptables", "-L", "-n"); err == nil {
+	if output, err := securityRunCommand("iptables", "-L", "-n"); err == nil {
 		lower := strings.ToLower(output)
 		hasRules := strings.Contains(lower, "drop") || strings.Contains(lower, "reject")
 		return []shared.FirewallProfile{{Name: "iptables", Enabled: hasRules}}
@@ -660,7 +670,7 @@ func collectCoreIsolation() shared.CoreIsolationInfo {
 
 // collectSELinux reads the SELinux enforcement mode from sysfs or sestatus.
 func collectSELinux() string {
-	if data, err := os.ReadFile("/sys/fs/selinux/enforce"); err == nil {
+	if data, err := os.ReadFile(securityHostRoot + "/sys/fs/selinux/enforce"); err == nil {
 		switch strings.TrimSpace(string(data)) {
 		case "1":
 			return "enforcing"
@@ -668,7 +678,7 @@ func collectSELinux() string {
 			return "permissive"
 		}
 	}
-	if output, err := shared.RunCommand("sestatus"); err == nil {
+	if output, err := securityRunCommand("sestatus"); err == nil {
 		if mode := parseSEStatusOutput(output); mode != "" {
 			return mode
 		}
@@ -698,17 +708,17 @@ func parseSEStatusOutput(output string) string {
 
 // collectAppArmor returns true when AppArmor is loaded.
 func collectAppArmor() bool {
-	if _, err := os.Stat("/sys/kernel/security/apparmor"); err == nil {
+	if _, err := os.Stat(securityHostRoot + "/sys/kernel/security/apparmor"); err == nil {
 		return true
 	}
-	_, err := shared.RunCommand("aa-status", "--enabled")
+	_, err := securityRunCommand("aa-status", "--enabled")
 	return err == nil
 }
 
 // collectKernelLockdown reads the active kernel lockdown mode from sysfs.
 // The active mode is enclosed in brackets: "none [integrity] confidentiality"
 func collectKernelLockdown() string {
-	data, err := os.ReadFile("/sys/kernel/security/lockdown")
+	data, err := os.ReadFile(securityHostRoot + "/sys/kernel/security/lockdown")
 	if err != nil {
 		return "unknown"
 	}
@@ -723,7 +733,7 @@ func collectKernelLockdown() string {
 
 // collectSecureBoot checks UEFI Secure Boot state via mokutil or EFI variables.
 func collectSecureBoot() string {
-	if output, err := shared.RunCommand("mokutil", "--sb-state"); err == nil {
+	if output, err := securityRunCommand("mokutil", "--sb-state"); err == nil {
 		lower := strings.ToLower(strings.TrimSpace(output))
 		if strings.Contains(lower, "secureboot enabled") {
 			return "enabled"
@@ -732,7 +742,7 @@ func collectSecureBoot() string {
 			return "disabled"
 		}
 	}
-	return secureBootFromEFIVars("/sys/firmware/efi/efivars")
+	return secureBootFromEFIVars(securityHostRoot + "/sys/firmware/efi/efivars")
 }
 
 // secureBootFromEFIVars reads the SecureBoot EFI variable from efivarsDir.

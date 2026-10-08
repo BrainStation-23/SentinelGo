@@ -7,8 +7,12 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// darwinRunCommand is the command runner used by this file. It is a variable
+// only so tests can substitute canned system_profiler/sysctl output.
+var darwinRunCommand = shared.RunCommand
+
 func getRAMs() shared.RAMInfo {
-	output, err := shared.RunCommand("system_profiler", "SPMemoryDataType", "-json")
+	output, err := darwinRunCommand("system_profiler", "SPMemoryDataType", "-json")
 	if err != nil {
 		return shared.RAMInfo{}
 	}
@@ -153,7 +157,7 @@ func parseAppleSiliconMemory(memMap map[string]any) (shared.RAMStick, uint64, bo
 // sysctl, used when system_profiler's JSON output carries no usable size
 // fields.
 func totalMemoryFromSysctl() uint64 {
-	out, err := shared.RunCommand("sysctl", "-n", "hw.memsize")
+	out, err := darwinRunCommand("sysctl", "-n", "hw.memsize")
 	if err != nil {
 		return 0
 	}

@@ -24,6 +24,17 @@ import (
 // for startup to reuse it instead of minting a fresh session via agent-login.
 const startupTokenSkew = 5 * time.Minute
 
+// Hooks over the side effects Start reaches for (network update check, the
+// default scheduler task set, OS service/software enumeration). Production
+// uses the real implementations; tests swap them so the startup flow and task
+// handlers run hermetically, without network, slow OS scans or binary replacement.
+var (
+	startupUpdateCheck = updater.StartupUpdateCheck
+	defaultTasks       = scheduler.CreateDefaultTasks
+	collectServices    = (*servicessvc.ServicesService).GetServiceList
+	collectSoftware    = (*swsvc.SoftwareService).GetSoftwareListWithStatus
+)
+
 // MainIntegration orchestrates the agent's runtime components (auth, scheduler,
 // logging, task manager) according to EXECUTION_FLOW.md. It wires together
 // collaborators it is given and drives their startup/shutdown ordering; the
@@ -126,7 +137,7 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 	}
 	log.Println("Auto-update is enabled, performing startup update check...")
 	go func() {
-		if err := updater.StartupUpdateCheck(ctx, mi.cfg); err != nil {
+		if err := startupUpdateCheck(ctx, mi.cfg); err != nil {
 			log.Printf("Startup update check failed: %v", err)
 		}
 	}()
@@ -160,7 +171,7 @@ func (mi *MainIntegration) initAuth(ctx context.Context) {
 // configureScheduledTasks builds the default task set, applies config-driven
 // intervals and enable flags, and registers each task with the scheduler.
 func (mi *MainIntegration) configureScheduledTasks() error {
-	tasks := scheduler.CreateDefaultTasks()
+	tasks := defaultTasks()
 
 	for i := range tasks {
 		switch tasks[i].Name {
@@ -233,7 +244,7 @@ func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore)
 		svc := servicessvc.NewServicesService()
 		svc.SetSupabaseURL(cfg.SupabaseURL)
 
-		list := svc.GetServiceList()
+		list := collectServices(svc)
 		if len(list) == 0 {
 			log.Printf("services-collect: no services found this cycle; skipping store")
 			return nil
@@ -302,7 +313,7 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 		svc := swsvc.NewSoftwareService()
 		svc.SetSupabaseURL(cfg.SupabaseURL)
 
-		list, complete := svc.GetSoftwareListWithStatus()
+		list, complete := collectSoftware(svc)
 		if len(list) == 0 {
 			log.Printf("[software] no software found this cycle; skipping store and upload")
 			return nil

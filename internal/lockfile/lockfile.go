@@ -17,6 +17,10 @@ type LockFile struct {
 	acquired bool
 }
 
+// unixLockDir is the lock directory on Linux and macOS. It is a variable only
+// so tests can point it at a temporary directory.
+var unixLockDir = "/opt/sentinelgo/.sentinelgo"
+
 // NewLockFile creates a new lock file instance
 func NewLockFile(name string) *LockFile {
 	var lockDir string
@@ -28,7 +32,7 @@ func NewLockFile(name string) *LockFile {
 		}
 		lockDir = filepath.Join(home, ".sentinelgo")
 	case "linux", "darwin":
-		lockDir = "/opt/sentinelgo/.sentinelgo"
+		lockDir = unixLockDir
 	default:
 		home, err := os.UserHomeDir()
 		if err != nil {

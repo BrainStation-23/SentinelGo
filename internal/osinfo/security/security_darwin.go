@@ -8,6 +8,15 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// Seams for the command runner and filesystem probes used by this file. They
+// are variables only so tests can substitute canned output and a fake
+// filesystem; production always uses the real implementations.
+var (
+	darwinRunCommand = shared.RunCommand
+	darwinStat       = os.Stat
+	darwinReadFile   = os.ReadFile
+)
+
 const avCrowdStrikeFalcon = "CrowdStrike Falcon"
 
 // knownAVApps maps known AV installation paths to product names.
@@ -123,10 +132,10 @@ func applyAVEnabledState(details *shared.AntivirusDetails, enabledStr string) {
 // detectXProtectVersion reads the XProtect bundle version from either of its
 // two known install locations.
 func detectXProtectVersion() string {
-	if out, err := shared.RunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+	if out, err := darwinRunCommand("defaults", "read", "/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		return strings.TrimSpace(out)
 	}
-	if out, err := shared.RunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
+	if out, err := darwinRunCommand("defaults", "read", "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info", "CFBundleShortVersionString"); err == nil {
 		return strings.TrimSpace(out)
 	}
 	return ""
@@ -135,10 +144,10 @@ func detectXProtectVersion() string {
 // detectMRTInstalled reports whether Apple's Malware Removal Tool is present
 // at either of its two known install locations.
 func detectMRTInstalled() bool {
-	if _, err := os.Stat("/System/Library/CoreServices/MRT.app"); err == nil {
+	if _, err := darwinStat("/System/Library/CoreServices/MRT.app"); err == nil {
 		return true
 	}
-	_, err := os.Stat("/Library/Apple/System/Library/CoreServices/MRT.app")
+	_, err := darwinStat("/Library/Apple/System/Library/CoreServices/MRT.app")
 	return err == nil
 }
 
@@ -165,7 +174,7 @@ func collectMRTScanInfo() shared.SecurityScanInfo {
 	scan.ScanType = "On-Access"
 	scan.ScanResult = "Clean"
 
-	mlog, err := os.ReadFile("/var/log/MRT.log")
+	mlog, err := darwinReadFile("/var/log/MRT.log")
 	if err != nil {
 		return scan
 	}
@@ -218,7 +227,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 	}
 
 	runningProcs := make(map[string]bool)
-	if psOut, err := shared.RunCommand("ps", "-axco", "comm"); err == nil {
+	if psOut, err := darwinRunCommand("ps", "-axco", "comm"); err == nil {
 		for _, line := range strings.Split(psOut, "\n") {
 			runningProcs[strings.TrimSpace(line)] = true
 		}
@@ -226,7 +235,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 
 	for _, e := range knownEDR {
 		installed := false
-		if _, err := os.Stat(e.path); err == nil {
+		if _, err := darwinStat(e.path); err == nil {
 			installed = true
 		} else if runningProcs[e.proc] {
 			installed = true
@@ -275,7 +284,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 	enc.ProtectionStatus = "Disabled"
 	enc.RecoveryKeyBackupStatus = "Unknown"
 
-	output, err := shared.RunCommand("fdesetup", "status")
+	output, err := darwinRunCommand("fdesetup", "status")
 	if err == nil {
 		lower := strings.ToLower(output)
 		if strings.Contains(lower, "filevault is on") {
@@ -284,7 +293,7 @@ func collectDeviceEncryption() shared.DeviceEncryptionInfo {
 			enc.ProtectionStatus = "Enabled"
 		}
 
-		keyOut, keyErr := shared.RunCommand("fdesetup", "haspersonalrecoverykey")
+		keyOut, keyErr := darwinRunCommand("fdesetup", "haspersonalrecoverykey")
 		if keyErr == nil && strings.Contains(strings.ToLower(keyOut), "true") {
 			enc.RecoveryKeyBackupStatus = "Backed Up"
 		}
@@ -301,7 +310,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	hw.SecureEnclaveStatus = "Unsupported"
 	hw.ActivationLockStatus = "Unknown"
 
-	hwOut, err := shared.RunCommand("system_profiler", "SPHardwareDataType")
+	hwOut, err := darwinRunCommand("system_profiler", "SPHardwareDataType")
 	if err == nil {
 		lower := strings.ToLower(hwOut)
 		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") || strings.Contains(lower, "t2") {
@@ -324,14 +333,14 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 
 	id.TouchIDStatus = "Disabled"
-	if out, err := shared.RunCommand("bioutil", "-read", "-system"); err == nil {
+	if out, err := darwinRunCommand("bioutil", "-read", "-system"); err == nil {
 		if strings.Contains(strings.ToLower(out), "enabled") {
 			id.TouchIDStatus = "Enabled"
 		}
 	}
 
 	id.BootstrapTokenStatus = "Disabled"
-	if out, err := shared.RunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
+	if out, err := darwinRunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
 		if strings.Contains(strings.ToLower(out), "supported: yes") || strings.Contains(strings.ToLower(out), "escrowed: yes") {
 			id.BootstrapTokenStatus = "Enabled"
 		}
@@ -343,7 +352,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		currentUser = os.Getenv("LOGNAME") // fallback when running as a launchd service
 	}
 	if currentUser != "" {
-		if out, err := shared.RunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
+		if out, err := darwinRunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
 			if strings.Contains(strings.ToLower(out), "is enabled") {
 				id.SecureTokenStatus = "Enabled"
 			} else if strings.Contains(strings.ToLower(out), "is disabled") {
@@ -358,7 +367,7 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	// trigger a false Non-Compliant result.
 	id.PatchComplianceStatus = "Compliant"
 	id.RapidSecurityResponses = "Up to Date"
-	if out, err := shared.RunCommand("softwareupdate", "-l"); err == nil {
+	if out, err := darwinRunCommand("softwareupdate", "-l"); err == nil {
 		lower := strings.ToLower(out)
 		if strings.Contains(lower, "security") {
 			id.PatchComplianceStatus = "Non-Compliant"
@@ -381,7 +390,7 @@ func collectAV() []shared.AntivirusProduct {
 		if seen[app.name] {
 			continue
 		}
-		if _, err := os.Stat(app.path); err == nil {
+		if _, err := darwinStat(app.path); err == nil {
 			seen[app.name] = true
 			products = append(products, shared.AntivirusProduct{
 				Name:     app.name,
@@ -394,7 +403,7 @@ func collectAV() []shared.AntivirusProduct {
 
 	// Gatekeeper: macOS built-in application assessment.
 	gkEnabled := "disabled"
-	if output, err := shared.RunCommand("spctl", "--status"); err == nil {
+	if output, err := darwinRunCommand("spctl", "--status"); err == nil {
 		if strings.Contains(strings.ToLower(output), "assessments enabled") {
 			gkEnabled = "enabled"
 		}
@@ -411,7 +420,7 @@ func collectAV() []shared.AntivirusProduct {
 
 // collectFirewallProfiles queries the macOS Application Firewall state.
 func collectFirewallProfiles() []shared.FirewallProfile {
-	output, err := shared.RunCommand("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+	output, err := darwinRunCommand("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err != nil {
 		return nil
 	}
@@ -428,7 +437,7 @@ func collectCoreIsolation() shared.CoreIsolationInfo {
 
 // collectSIP reports the System Integrity Protection state via csrutil.
 func collectSIP() string {
-	output, err := shared.RunCommand("csrutil", "status")
+	output, err := darwinRunCommand("csrutil", "status")
 	if err != nil {
 		return "unknown"
 	}
@@ -446,7 +455,7 @@ func collectSIP() string {
 // On T2 and Apple Silicon, Secure Boot is always present; the active security
 // policy ("Full Security", "Reduced Security", "No Security") determines enforcement.
 func collectSecureBoot() string {
-	output, err := shared.RunCommand("system_profiler", "SPiBridgeDataType")
+	output, err := darwinRunCommand("system_profiler", "SPiBridgeDataType")
 	if err != nil {
 		return "unknown"
 	}
@@ -473,7 +482,7 @@ func collectUSBMassStorage() string {
 	if state := usbStateFromMDM(); state != "" {
 		return state
 	}
-	if kstat, err := shared.RunCommand("kextstat"); err == nil {
+	if kstat, err := darwinRunCommand("kextstat"); err == nil {
 		if strings.Contains(kstat, "IOUSBMassStorageClass") {
 			return "enabled"
 		}
@@ -485,7 +494,7 @@ func collectUSBMassStorage() string {
 // applicationaccess preference plist. Returns "" when the plist is absent,
 // unreadable, or does not contain the key.
 func usbStateFromMDM() string {
-	out, err := shared.RunCommand("plutil", "-convert", "json", "-o", "-",
+	out, err := darwinRunCommand("plutil", "-convert", "json", "-o", "-",
 		"/Library/Managed Preferences/com.apple.applicationaccess.plist")
 	if err != nil {
 		return ""

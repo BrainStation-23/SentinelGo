@@ -74,6 +74,13 @@ const releaseRPCTimeout = 30 * time.Second
 // connectivityClient is a short-timeout client used only for connectivity probes.
 var connectivityClient = httpx.NewClient(10 * time.Second)
 
+// Test seams: restart exits the process and dialTimeout reaches real hosts on
+// port 443, so tests swap these for fakes.
+var (
+	restartFn   = restart
+	dialTimeout = net.DialTimeout
+)
+
 // CheckAndApply checks for a newer release via Supabase RPC and applies the
 // update if one is available.
 //
@@ -149,7 +156,7 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
 	_ = removeFile(backupPath)
 
-	return restart(newPath)
+	return restartFn(newPath)
 }
 
 // CheckAndApplyWithRetry performs an update check and apply with exponential
@@ -235,7 +242,7 @@ func CheckInternetConnectivity(supabaseURL string) bool {
 	}
 
 	for _, endpoint := range endpoints {
-		conn, err := net.DialTimeout("tcp", endpoint, 5*time.Second)
+		conn, err := dialTimeout("tcp", endpoint, 5*time.Second)
 		if err == nil {
 			if closeErr := conn.Close(); closeErr != nil {
 				log.Printf("Error closing connection to %s: %v", endpoint, closeErr)

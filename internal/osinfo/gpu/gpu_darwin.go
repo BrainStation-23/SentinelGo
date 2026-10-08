@@ -7,6 +7,10 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// darwinRunCommand is the command runner used by this file. It is a variable
+// only so tests can substitute canned system_profiler output.
+var darwinRunCommand = shared.RunCommand
+
 // macGPUVendorFromStr parses a system_profiler spdisplays_vendor string such as
 // "Intel (0x8086)" or "Apple (0x106b)" into a canonical manufacturer and an initial
 // architecture guess. The architecture may be refined later by the VRAM key presence.
@@ -118,7 +122,7 @@ func parseDarwinDisplay(d any) (g shared.GPU, ok bool) {
 func getGPUs() []shared.GPU {
 	var gpus []shared.GPU
 
-	output, err := shared.RunCommand("system_profiler", "SPDisplaysDataType", "-json")
+	output, err := darwinRunCommand("system_profiler", "SPDisplaysDataType", "-json")
 	if err != nil {
 		return gpus
 	}
