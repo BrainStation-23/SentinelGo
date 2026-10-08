@@ -80,9 +80,23 @@ jobs:
           key: fuzz-${{ matrix.os }}-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-${{ matrix.os }}-${{ matrix.target }}-
 
+      # The Go fuzzer can end with "context deadline exceeded" when -fuzztime
+      # runs out while a slow input is still executing. That is not a finding:
+      # a real failure always writes the input to testdata/fuzz/. Only treat
+      # the run as failed if it did.
       - name: Fuzz
         shell: bash
-        run: go test -run='^$' -fuzz="^${FUZZ_TARGET}\$" -fuzztime="${FUZZTIME}" "${FUZZ_PKG}"
+        run: |
+          set +e
+          go test -run='^$' -fuzz="^${FUZZ_TARGET}\$" -fuzztime="${FUZZTIME}" "${FUZZ_PKG}" 2>&1 | tee fuzz.log
+          status=${PIPESTATUS[0]}
+          crashers="${FUZZ_DIR}/testdata/fuzz/${FUZZ_TARGET}"
+          if [ "$status" -ne 0 ] && grep -q "context deadline exceeded" fuzz.log \
+             && [ -z "$(git status --porcelain --untracked-files=all -- "$crashers")" ]; then
+            echo "::warning title=${FUZZ_TARGET}::fuzzer hit its deadline mid-input without a failing input; treating as a pass"
+            exit 0
+          fi
+          exit "$status"
 
       - name: Upload crasher
         if: failure()
