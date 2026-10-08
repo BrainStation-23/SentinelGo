@@ -13,17 +13,12 @@ import (
 // any handle to a terminated process is open, OpenProcess still succeeds, so
 // the result must come from GetExitCodeProcess rather than OpenProcess failing.
 //
-// Exit code 259 equals STILL_ACTIVE and should be caught by the
-// WaitForSingleObject disambiguation. It currently is not: IsProcessRunning
-// opens the handle without SYNCHRONIZE, so the wait fails with "Access is
-// denied" and the fallback reports the exited process as running. The case is
-// skipped until that is fixed.
+// Exit code 259 equals STILL_ACTIVE and must be caught by the
+// WaitForSingleObject disambiguation, which needs SYNCHRONIZE on the handle
+// (regression test for #117).
 func TestIsProcessRunning_ExitedButHandleOpen(t *testing.T) {
 	t.Run("exit_3", func(t *testing.T) { checkExitedWithHandleOpen(t, "3") })
-	t.Run("exit_259", func(t *testing.T) {
-		t.Skip("known bug: OpenProcess lacks SYNCHRONIZE, so exit code 259 reads as running")
-		checkExitedWithHandleOpen(t, "259")
-	})
+	t.Run("exit_259", func(t *testing.T) { checkExitedWithHandleOpen(t, "259") })
 }
 
 func checkExitedWithHandleOpen(t *testing.T, code string) {
