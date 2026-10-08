@@ -138,33 +138,47 @@ func HandleEnableAutoUpdate(cfgPath string) {
 	fmt.Println("Auto-update enabled in config")
 }
 
-// HandleAgentInfoUpdate refreshes auth (if possible) and pushes current system
-// info to the backend.
+// HandleAgentInfoUpdate pushes current system info to the backend using the
+// stored session.
+//
+// The CLI never refreshes tokens: Supabase rotates the refresh token on every
+// refresh, so a refresh from this process would revoke the token family the
+// running service depends on. If there is no stored access token, or it is
+// rejected, the CLI does an agent-login in memory only (nothing is written to
+// disk) and tries once more.
 func HandleAgentInfoUpdate(cfg *config.Config) {
 	fmt.Println("Updating agent information...")
+
+	if cfg.GetAccessToken() == "" && (cfg.AgentID == "" || cfg.AgentSecret == "") {
+		fmt.Println("No tokens or agent credentials in config – please register the agent first")
+		return
+	}
+
+	// Collect first: it can take a while, and must not eat the network budget.
+	sysInfo := osinfo.Collect()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.AccessToken)
+	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.SupabaseKey)
 	agentSvc := agentsvc.NewAgentService()
+	update := func() error { return agentSvc.UpdateAgentInfo(ctx, cfg, sysInfo) }
 
-	if cfg.RefreshToken != "" {
-		fmt.Println("Refreshing authentication token...")
-		if err := authSvc.RefreshToken(ctx, cfg); err != nil {
-			fmt.Printf("Token refresh failed: %v\n", err)
-			fmt.Println("Continuing with stored token – update may fail if it is expired")
-		} else {
-			fmt.Println("Authentication token refreshed successfully")
-		}
-	} else if cfg.AccessToken == "" {
-		fmt.Println("No tokens in config – please register the agent first")
-		return
+	needLogin := cfg.GetAccessToken() == ""
+	var err error
+	if !needLogin {
+		err = update()
+		needLogin = authsvc.IsUnauthorized(err)
 	}
-
-	sysInfo := osinfo.Collect()
-
-	if err := agentSvc.UpdateAgentInfo(ctx, cfg, sysInfo); err != nil {
+	if needLogin {
+		fmt.Println("Logging in for this command only (tokens are not saved)...")
+		if lerr := authSvc.LoginInMemory(ctx, cfg); lerr != nil {
+			fmt.Printf("Agent login failed: %v\n", lerr)
+			return
+		}
+		err = update()
+	}
+	if err != nil {
 		fmt.Printf("Agent info update failed: %v\n", err)
 		return
 	}

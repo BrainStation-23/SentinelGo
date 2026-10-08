@@ -123,42 +123,19 @@ func TestInitSession_WithToken(t *testing.T) {
 	t.Log("✅ InitSession succeeded with stored token")
 }
 
-// ── SetSession ────────────────────────────────────────────────────────────────
+// ── InitSession base URL ─────────────────────────────────────────────────────
 
-func TestSetSession_EmptyBaseURL(t *testing.T) {
+func TestInitSession_EmptyBaseURL(t *testing.T) {
 	svc := auth.NewService("", "") // intentionally empty
+	cfg := newTestConfig(t, validAccessToken, validRefreshToken)
 
-	err := svc.SetSession(validAccessToken, "")
+	err := svc.InitSession(cfg)
 	if err == nil {
 		t.Fatal("expected error for empty base URL, got nil")
 	}
 	if !strings.Contains(err.Error(), "base URL not configured") {
 		t.Errorf("unexpected error message: %v", err)
 	}
-	t.Logf("✅ SetSession correctly rejected empty base URL: %v", err)
-}
-
-func TestSetSession_ValidToken(t *testing.T) {
-	svc := newTestService()
-
-	if err := svc.SetSession(validAccessToken, validRefreshToken); err != nil {
-		t.Fatalf("SetSession failed: %v", err)
-	}
-	t.Log("✅ SetSession succeeded")
-}
-
-func TestSetSession_AfterInitSession(t *testing.T) {
-	svc := newTestService()
-	cfg := newTestConfig(t, validAccessToken, validRefreshToken)
-
-	if err := svc.InitSession(cfg); err != nil {
-		t.Fatalf("InitSession failed: %v", err)
-	}
-
-	if err := svc.SetSession(validAccessToken, "updated-refresh-token"); err != nil {
-		t.Fatalf("SetSession after InitSession failed: %v", err)
-	}
-	t.Log("✅ InitSession → SetSession sequence succeeded")
 }
 
 // ── RefreshToken ──────────────────────────────────────────────────────────────

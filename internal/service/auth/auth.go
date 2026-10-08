@@ -12,8 +12,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/resilience"
-
-	supabase "github.com/supabase-community/supabase-go"
+	"sentinelgo/internal/supabase"
 )
 
 // maxRetries bounds how many times a single refresh or agent-login attempt is
@@ -30,6 +29,20 @@ const (
 	authBreakerResetTimeout = 5 * time.Minute
 )
 
+// recoverCooldown is how long after a successful recovery a new one is
+// refused. Now that refresh works, a token the backend keeps rejecting (clock
+// skew, a revoked key) would otherwise loop 401 -> recover -> 401 and hammer
+// agent-login until it rate-limits. A var so tests can shorten it.
+var recoverCooldown = 60 * time.Second
+
+// ErrRecoveryCooldown is returned by Recover when the session was already
+// recovered within recoverCooldown; the caller keeps its original 401.
+var ErrRecoveryCooldown = errors.New("session recovered recently; not recovering again yet")
+
+// errStill401AfterRecovery is recorded on the breaker when a request still
+// gets a 401 straight after a successful recovery.
+var errStill401AfterRecovery = errors.New("request still unauthorized after session recovery")
+
 // Service manages Supabase authentication state and is the single authority for
 // keeping the session valid.
 //
@@ -40,8 +53,9 @@ const (
 // so concurrent callers reacting to a 401 cannot trigger a login storm.
 type Service struct {
 	baseURL string
-	apiKey  string // Supabase anon key, sent as the apikey header to public endpoints
-	client  *supabase.Client
+	// sb is an unauthenticated client: token refresh and agent-login send only
+	// the anon apikey, never a bearer.
+	sb *supabase.Client
 
 	refreshMu sync.Mutex
 	// refreshCh is non-nil while a refresh is in progress.
@@ -64,54 +78,34 @@ type Service struct {
 	// While set, the session is unrecoverable without operator action and
 	// reporting tasks pause rather than spin on guaranteed-401 requests.
 	needsReprovision atomic.Bool
+	// lastRecovery is the UnixNano time of the last successful recovery (0 if
+	// none); it drives recoverCooldown.
+	lastRecovery atomic.Int64
 }
 
 // NewService creates a new authentication service. apiKey is the Supabase anon
-// key used to initialise the client and to gate calls to the public agent-login
-// endpoint.
+// key: it is the apikey header on token refresh and agent-login, which carry
+// no bearer.
 func NewService(baseURL, apiKey string) *Service {
-	s := &Service{
+	return &Service{
 		baseURL: baseURL,
-		apiKey:  apiKey,
+		sb:      supabase.New(baseURL, apiKey, nil),
 		breaker: resilience.NewCircuitBreaker("auth-service", authBreakerMaxFailures, authBreakerResetTimeout),
 	}
-	if client, err := supabase.NewClient(baseURL, apiKey, nil); err == nil {
-		s.client = client
-	}
-	return s
 }
 
-// InitSession configures the Supabase client using tokens already stored in
-// cfg. No network call is made. Call this once at startup instead of Login.
+// InitSession checks that cfg holds a stored session the agent can start
+// with. No network call is made: every request reads the current token from
+// cfg, so there is no client state to prime. Call this at startup instead of
+// Login when the stored token is still valid.
 func (s *Service) InitSession(cfg *config.Config) error {
-	if cfg.AccessToken == "" {
+	if cfg.GetAccessToken() == "" {
 		return fmt.Errorf("no access token in config – agent must be registered before first run")
 	}
-	if err := s.SetSession(cfg.AccessToken, cfg.RefreshToken); err != nil {
-		return err
-	}
-	log.Printf("Auth: session initialised from stored tokens")
-	return nil
-}
-
-// SetSession swaps the internal Supabase client for one authenticated with
-// accessToken. Equivalent to supabase.auth.setSession() in the JS SDK.
-func (s *Service) SetSession(accessToken, refreshToken string) error {
 	if s.baseURL == "" {
 		return fmt.Errorf("base URL not configured")
 	}
-	// The access token serves as both the apikey and the Authorization bearer.
-	client, err := supabase.NewClient(s.baseURL, accessToken, &supabase.ClientOptions{
-		Headers: map[string]string{
-			"Authorization": "Bearer " + accessToken,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("create client with access token: %w", err)
-	}
-	// Keep the gotrue Auth client in sync with the access token.
-	client.Auth = client.Auth.WithToken(accessToken)
-	s.client = client
+	log.Printf("Auth: session initialised from stored tokens")
 	return nil
 }
 
@@ -162,11 +156,12 @@ func (s *Service) RefreshToken(ctx context.Context, cfg *config.Config) error {
 // doRefresh performs the actual network token exchange. Must only be called by
 // the goroutine that created the current refreshCh.
 func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
-	if cfg.RefreshToken == "" {
+	refreshToken := cfg.GetRefreshToken()
+	if refreshToken == "" {
 		return fmt.Errorf("no refresh token available in config")
 	}
-	if s.client == nil {
-		return fmt.Errorf("supabase client not initialised")
+	if s.baseURL == "" {
+		return fmt.Errorf("base URL not configured")
 	}
 
 	var lastErr error
@@ -181,23 +176,21 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 
 		log.Printf("Auth: token refresh attempt %d/%d", attempt+1, maxRetries)
 
-		// RefreshToken on the supabase client returns types.Session directly
-		// and also calls UpdateAuthSession internally to keep the client in sync.
-		session, err := s.client.RefreshToken(cfg.RefreshToken)
+		session, err := s.sb.RefreshSession(ctx, refreshToken)
 		if err != nil {
 			lastErr = err
 			log.Printf("Auth: refresh attempt %d failed: %v", attempt+1, err)
+			// A 4xx (invalid_grant, refresh_token_not_found, already used, rate
+			// limited) will not succeed on retry with the same token: give up
+			// now so recovery falls through to agent-login.
+			if status := supabase.StatusCode(err); status >= 400 && status < 500 {
+				return fmt.Errorf("token refresh rejected: %w", err)
+			}
 			continue
 		}
 
 		// Update in-memory config first so concurrent waiters see the new token.
-		cfg.AccessToken = session.AccessToken
-		cfg.RefreshToken = session.RefreshToken
-
-		// Swap the internal client to use the new access token.
-		if err := s.SetSession(session.AccessToken, session.RefreshToken); err != nil {
-			log.Printf("Auth: warning – failed to update session after refresh: %v", err)
-		}
+		cfg.SetTokens(session.AccessToken, session.RefreshToken)
 
 		// Persist to disk so the rotated tokens survive a restart. Supabase
 		// rotates the refresh token on every refresh, so if we fail to persist
@@ -227,6 +220,10 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 // success it clears that flag.
 func (s *Service) Recover(ctx context.Context, cfg *config.Config) error {
 	s.recoverMu.Lock()
+	if s.recoverCh == nil && s.recoveredRecently() {
+		s.recoverMu.Unlock()
+		return ErrRecoveryCooldown
+	}
 	if s.recoverCh != nil {
 		ch := s.recoverCh
 		s.recoverMu.Unlock()
@@ -247,6 +244,9 @@ func (s *Service) Recover(ctx context.Context, cfg *config.Config) error {
 	err := s.breaker.Execute(ctx, func() error {
 		return s.doRecover(ctx, cfg)
 	})
+	if err == nil {
+		s.lastRecovery.Store(time.Now().UnixNano())
+	}
 
 	s.recoverMu.Lock()
 	s.recoverErr = err
@@ -260,7 +260,7 @@ func (s *Service) Recover(ctx context.Context, cfg *config.Config) error {
 // only ever called by the single Recover leader, so calling the internal
 // doRefresh/Login directly here cannot race a second recovery.
 func (s *Service) doRecover(ctx context.Context, cfg *config.Config) error {
-	if cfg.RefreshToken != "" {
+	if cfg.GetRefreshToken() != "" {
 		if err := s.doRefresh(ctx, cfg); err == nil {
 			s.needsReprovision.Store(false)
 			return nil
@@ -301,7 +301,20 @@ func (s *Service) DoWithAuthRetry(ctx context.Context, cfg *config.Config, fn fu
 		log.Printf("Auth: recovery after 401 failed: %v", rerr)
 		return err // surface the original 401, not the recovery error
 	}
-	return fn()
+	err = fn()
+	if IsUnauthorized(err) {
+		// The fresh session is rejected too: count it against the breaker so
+		// a persistently rejected token backs off instead of looping.
+		_ = s.breaker.Execute(ctx, func() error { return errStill401AfterRecovery })
+	}
+	return err
+}
+
+// recoveredRecently reports whether the last successful recovery was less
+// than recoverCooldown ago.
+func (s *Service) recoveredRecently() bool {
+	last := s.lastRecovery.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) < recoverCooldown
 }
 
 // Healthy reports whether the agent currently holds (or can recover) a valid

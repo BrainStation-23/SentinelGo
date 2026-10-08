@@ -73,13 +73,7 @@ var allowedLicenses = []string{
 
 // exceptions are modules whose license can't be detected but which have been
 // reviewed. Each entry must say why; remove it as soon as upstream is fixed.
-var exceptions = map[string]string{
-	// Transitive via supabase-go (we only use its gotrue RefreshToken). The
-	// upstream repo has no LICENSE file in any tagged version (checked v0.8.1,
-	// 2026-10). Tracked as a known gap; the clean fix is to drop supabase-go in
-	// favour of gotrue-go directly so storage-go is no longer linked.
-	"github.com/supabase-community/storage-go": "no upstream license file; transitive via supabase-go",
-}
+var exceptions = map[string]string{}
 
 func main() {
 	check := flag.Bool("check", false, "fail if any dependency license is not in the allow-list")
