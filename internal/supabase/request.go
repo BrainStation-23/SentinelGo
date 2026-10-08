@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"sentinelgo/internal/sanitize"
 )
@@ -50,7 +51,7 @@ func doJSON(hc *http.Client, req *http.Request, out any) error {
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return parseAPIError(method, path, resp.StatusCode, body)
+		return responseError(method, path, resp, body)
 	}
 
 	body, err := readLimited(resp.Body, maxResponseBytes)
@@ -80,4 +81,12 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 		return nil, ErrTooLarge
 	}
 	return b, nil
+}
+
+// responseError builds the APIError for a non-2xx response, including the
+// server's Retry-After hint.
+func responseError(method, path string, resp *http.Response, body []byte) *APIError {
+	e := parseAPIError(method, path, resp.StatusCode, body)
+	e.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	return e
 }
