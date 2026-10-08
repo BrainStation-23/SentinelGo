@@ -18,7 +18,6 @@ import (
 type TaskClient interface {
 	GetTasks(ctx context.Context) (*taskstore.AgentTasksResponse, error)
 	UpdateTask(ctx context.Context, taskID, status, note string) error
-	UpdateToken(token string)
 }
 
 // internetChecker gates all outbound calls behind a connectivity check.
@@ -75,11 +74,6 @@ func NewTaskPollingServiceWithClient(cfg *config.Config, dbPath string, client T
 		cfg:                 cfg,
 		connectivityChecker: noopConnectivity{},
 	}, nil
-}
-
-// UpdateToken refreshes the access token in the RPC client.
-func (s *TaskPollingService) UpdateToken(token string) {
-	s.client.UpdateToken(token)
 }
 
 // SetTokenRefresher sets the token refresher for handling 401 errors.
@@ -224,13 +218,13 @@ func (s *TaskPollingService) recoverAfter401(ctx context.Context, err error) boo
 		return false
 	}
 	log.Printf("TaskPolling: Got 401, attempting session recovery...")
-	newToken, refreshErr := s.tokenRefresher.RefreshToken(ctx)
-	if refreshErr != nil {
+	// The client reads the token from the config on every request, so the
+	// recovered token is picked up without being passed along.
+	if _, refreshErr := s.tokenRefresher.RefreshToken(ctx); refreshErr != nil {
 		log.Printf("TaskPolling: Session recovery failed: %v", refreshErr)
 		return false
 	}
 	log.Printf("TaskPolling: Session recovered, retrying...")
-	s.client.UpdateToken(newToken)
 	return true
 }
 

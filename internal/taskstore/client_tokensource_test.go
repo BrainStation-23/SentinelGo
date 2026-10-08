@@ -12,8 +12,8 @@ import (
 )
 
 // The production client reads the token per request, so a refreshed token is
-// used without anyone calling UpdateToken (taskstore used to capture the token
-// once at construction and keep sending it after it expired).
+// used immediately (taskstore used to capture the token once at construction
+// and keep sending it after it expired).
 func TestTokenSource_ReadPerRequest(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
@@ -31,7 +31,6 @@ func TestTokenSource_ReadPerRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	current = "token-2"
-	c.UpdateToken("ignored") // no-op for a token-source client
 	if err := c.UpdateTask(context.Background(), "t1", "success", ""); err != nil {
 		t.Fatal(err)
 	}

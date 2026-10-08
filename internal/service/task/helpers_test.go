@@ -41,8 +41,6 @@ func (m *mockTaskClient) UpdateTask(_ context.Context, _, _, _ string) error {
 	return m.updateErr
 }
 
-func (m *mockTaskClient) UpdateToken(_ string) {}
-
 // mockTokenRefresher is a no-op TokenRefresher for tests.
 type mockTokenRefresher struct {
 	token  string

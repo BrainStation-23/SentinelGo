@@ -15,296 +15,111 @@
 
 ## Overview
 
-The service module (`internal/service/`) provides authentication and
-agent management functionality for SentinelGo. It consists of two
-main components:
+The service module (`internal/service/`) holds the agent's backend-facing
+services. Every one of them reaches Supabase through a single client package,
+`internal/supabase`.
 
-- `internal/service/auth/` — JWT-based authentication with Supabase
-  (login, refresh, circuit breaker, keychain persistence).
-- `internal/service/agent/` — periodic agent-info upload (calls
-  `osinfo.Collect()`, posts to the `agent-info` Edge Function).
+- `internal/supabase/` — the only Supabase client: PostgREST RPCs, Storage
+  downloads, GoTrue token refresh and edge functions.
+- `internal/service/auth/` — session lifecycle: agent-login, token refresh,
+  recovery after a 401, circuit breaker.
+- `internal/service/agent/` — periodic inventory upload
+  (`agent_enqueue_inventory`).
+- `internal/service/rpcutil/` — `PostEnqueue` and the shared retry policy for
+  the `agent_enqueue_*` RPCs.
 
-## Architecture
+## Supabase client (`internal/supabase`)
 
-```
-┌─────────────────────────────────────────┐
-│           Service Module               │
-│       (internal/service/)             │
-├─────────────────────────────────────────┤
-│ ┌─────────────────┐ ┌─────────────┐ │
-│ │  authService.go │ │agentService│ │ │
-│ │                 │ │    .go     │ │ │
-│ │ • JWT Auth      │ │ • Agent    │ │ │
-│ │ • Login/Refresh │ │   Mgmt     │ │ │
-│ │ • Token Mgmt    │ │ • Hardware │ │ │
-│ │ • API Comm      │ │   Detection│ │ │
-│ └─────────────────┘ └─────────────┘ │
-└─────────────────────────────────────────┘
-```
+**Rule: all Supabase access goes through `internal/supabase`.** Do not add
+HTTP calls to `/rest/v1`, `/storage/v1`, `/auth/v1` or `/functions/v1`
+anywhere else, and do not add the community Go SDKs back (they have no context
+support, postgrest-go never checks the HTTP status, and storage-go buffers
+whole downloads in memory and has no license file).
 
-## Authentication Service (authService.go)
+| Operation | Request | `apikey` | `Authorization` |
+|---|---|---|---|
+| `RPC(ctx, fn, params, out, opts...)` | `POST /rest/v1/rpc/<fn>` | anon key | `Bearer <access token>` |
+| `Download(ctx, bucket, path, authenticatedPrefix, w, limit)` | `GET /storage/v1/object/[authenticated/]<bucket>/<path>` | anon key | `Bearer <access token>` |
+| `RefreshSession(ctx, refreshToken)` | `POST /auth/v1/token?grant_type=refresh_token` | anon key | none |
+| `InvokeFunction(ctx, name, body, out)` | `POST /functions/v1/<name>` | anon key | none |
 
-### 1. Core Data Structures
+- **Construction.** `supabase.FromConfig(cfg)` reads the access token through
+  `cfg.GetAccessToken()` on every request, so a refreshed token is used
+  immediately. `supabase.New(baseURL, anonKey, tokenFunc)` is the general form.
+- **Transports.** Two shared, pooled clients (30 s for API calls, 10 min for
+  downloads and edge functions). Never build an `http.Client` per request.
+- **Errors.** Any non-2xx response is a `*supabase.APIError` carrying the
+  status, the PostgREST/Storage/GoTrue error code and a body capped at 4 KB.
+  It never contains headers or tokens. Classify with `supabase.IsUnauthorized`
+  (401, or `PGRST301/302/303`, `InvalidJWT`, `bad_jwt` on any status),
+  `IsForbidden` (403 / `42501`), `IsNotFound` and `StatusCode`.
+- **Downloads** stream to the writer and fail with `supabase.ErrTooLarge`
+  rather than truncating. Storage URLs are concatenated verbatim, with no
+  escaping, and pinned by golden tests.
+- **No retries, no token refresh.** Retry policy stays at the call sites, and
+  401 recovery goes through `auth.Service.DoWithAuthRetry`. The package must
+  not import `internal/service/auth`.
 
-#### Login Request/Response
-```go
-type LoginRequest struct {
-    AgentID     string `json:"agent_uuid"`
-    AgentSecret string `json:"agent_secret"`
-}
+The expected gateway responses, and the staging checklist that confirms them,
+are in [`docs/supabase-api-contract.md`](supabase-api-contract.md). Tests use
+the `internal/supabase/supabasetest` fake, which records requests and can
+simulate an expired JWT and refresh-token rotation.
 
-type LoginResponse struct {
-    Success      bool   `json:"success"`
-    AccessToken  string `json:"access_token"`
-    RefreshToken string `json:"refresh_token"`
-    TokenType    string `json:"token_type"`
-    ExpiresIn    int    `json:"expires_in"`
-    Agent        Agent  `json:"agent"`
-}
+## Authentication service (`internal/service/auth`)
 
-type Agent struct {
-    ID        string `json:"id"`
-    AgentID   string `json:"agent_uuid"`
-    Status    string `json:"status"`
-}
-```
+### Session lifecycle
 
-#### Token Refresh Structures
-```go
-type RefreshRequest struct {
-    RefreshToken string `json:"refresh_token"`
-}
+1. **Startup.** `NewService(supabaseURL, anonKey)`. If the stored access
+   token is still valid, `InitSession` reuses it (no network call); otherwise
+   `Login` runs agent-login.
+2. **Agent-login.** `Login` calls the `agent-login` edge function with
+   `agent_id` / `agent_secret`, stores the new pair with `cfg.SetTokens` and
+   persists it atomically. HTTP 401/403 returns `ErrLoginRejected` (the agent
+   needs re-provisioning; reporting pauses). 429 is not retried, because each
+   attempt extends the server's lockout. Other failures are retried up to 3
+   times.
+3. **Token refresh.** `RefreshToken` exchanges the refresh token via
+   `supabase.RefreshSession` (anon `apikey`, no bearer). Supabase rotates the
+   refresh token on every refresh, so the new pair is persisted immediately;
+   failing to persist is treated as a refresh failure. A 4xx refresh
+   (`invalid_grant`, `refresh_token_not_found`, already used) is terminal and
+   falls straight through to agent-login. Network errors and 5xx are retried.
+   Refresh is single-flight: concurrent callers wait for the one in flight.
+4. **Proactive refresh.** The scheduler refreshes the token 5 minutes before
+   it expires.
 
-type RefreshResponse struct {
-    AccessToken  string `json:"access_token"`
-    RefreshToken string `json:"refresh_token"`
-    ExpiresIn    int    `json:"expires_in"`
-}
-```
+### Recovering from a 401
 
-#### Service Configuration
-```go
-type Service struct {
-    client  *http.Client
-    baseURL string
-}
-```
+`DoWithAuthRetry(ctx, cfg, fn)` is the one 401 pattern every reporting path
+uses. If `fn` fails with `IsUnauthorized`, it calls `Recover` (refresh, then
+agent-login) and retries `fn` exactly once. A 403 is never recovered.
 
-### 2. Constants and Configuration
+- `Recover` is single-flight and gated by a circuit breaker (opens after 5
+  consecutive failures, for 5 minutes).
+- **Recover-storm guard.** A recovery within 60 s of a successful one is
+  refused (`ErrRecoveryCooldown`), and a request that is still 401 straight
+  after a successful recovery counts as a breaker failure. Without this, a
+  token the backend keeps rejecting (for example because of clock skew) would
+  loop 401 → login → 401 until agent-login rate-limits.
+- `Healthy()` is false while the breaker is open or the credentials were
+  rejected. Reporting tasks check it and pause instead of firing requests that
+  are guaranteed to 401.
 
-#### Service Endpoints
-```go
-const (
-    agentLoginEndpoint = "/functions/v1/agent-login"
-    defaultTimeout     = 60 * time.Second
-    maxRetries         = 3
-)
-```
+### Token access
 
-#### Configuration Details
-- **Login Endpoint**: Custom Supabase function for agent authentication
-- **Timeout**: 60 seconds for authentication operations
-- **Retries**: Up to 3 attempts with exponential backoff
-- **Base URL**: Configurable Supabase project URL
+`config.Config.AccessToken` / `RefreshToken` are only read and written through
+`GetAccessToken`, `GetRefreshToken` and `SetTokens`, which hold the config's
+token lock. There is no `-race` CI job (it would need cgo), so
+`internal/config/tokenaccess_test.go` enforces this structurally: it
+type-checks the module for linux, darwin and windows and fails on any direct
+field access outside `internal/config`.
 
-### 3. Service Initialization
+### The CLI never refreshes
 
-#### Constructor Function
-```go
-func NewService(baseURL string) *Service {
-    return &Service{
-        client: &http.Client{
-            Timeout: defaultTimeout,
-        },
-        baseURL: baseURL,
-    }
-}
-```
-
-#### Initialization Features
-- **HTTP Client**: Configured with appropriate timeout
-- **Base URL**: Supabase project URL for API calls
-- **Reusable**: Service instance can be reused for multiple operations
-
-### 4. Authentication Flow
-
-#### Login Process
-```go
-func (s *Service) Login(ctx context.Context, cfg *config.Config) (*LoginResponse, error)
-```
-
-#### Login Implementation
-```go
-func (s *Service) Login(ctx context.Context, cfg *config.Config) (*LoginResponse, error) {
-    // 1. Validate credentials
-    if cfg.AgentID == "" || cfg.AgentSecret == "" {
-        return nil, fmt.Errorf("agent ID and secret must be configured")
-    }
-    
-    // 2. Create request
-    req := LoginRequest{
-        AgentID:     cfg.AgentID,
-        AgentSecret: cfg.AgentSecret,
-    }
-    
-    reqBody, err := json.Marshal(req)
-    if err != nil {
-        return nil, fmt.Errorf("marshal request: %w", err)
-    }
-    
-    // 3. Send request with retry logic
-    url := cfg.SupabaseURL + agentLoginEndpoint
-    var resp *LoginResponse
-    var lastErr error
-    
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            select {
-            case <-ctx.Done():
-                return nil, ctx.Err()
-            case <-time.After(time.Duration(attempt) * time.Second):
-            }
-        }
-        
-        // HTTP request implementation
-        httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
-        if err != nil {
-            lastErr = fmt.Errorf("create request: %w", err)
-            continue
-        }
-        
-        httpReq.Header.Set("Content-Type", "application/json")
-        
-        httpResp, err := s.client.Do(httpReq)
-        if err != nil {
-            lastErr = fmt.Errorf("http request: %w", err)
-            continue
-        }
-        
-        // Response processing
-        body, err := io.ReadAll(httpResp.Body)
-        httpResp.Body.Close()
-        if err != nil {
-            lastErr = fmt.Errorf("read response: %w", err)
-            continue
-        }
-        
-        if httpResp.StatusCode != http.StatusOK {
-            lastErr = fmt.Errorf("login failed: status %d, body: %s", httpResp.StatusCode, string(body))
-            continue
-        }
-        
-        var loginResp LoginResponse
-        if err := json.Unmarshal(body, &loginResp); err != nil {
-            lastErr = fmt.Errorf("unmarshal response: %w", err)
-            continue
-        }
-        
-        resp = &loginResp
-        break
-    }
-    
-    if resp == nil {
-        return nil, fmt.Errorf("login failed after %d attempts: %w", maxRetries, lastErr)
-    }
-    
-    return resp, nil
-}
-```
-
-### 5. Token Refresh
-
-#### Refresh Process
-```go
-func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*RefreshResponse, error)
-```
-
-#### Refresh Implementation
-```go
-func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*RefreshResponse, error) {
-    if refreshToken == "" {
-        return nil, fmt.Errorf("refresh token cannot be empty")
-    }
-    
-    req := RefreshRequest{
-        RefreshToken: refreshToken,
-    }
-    
-    reqBody, err := json.Marshal(req)
-    if err != nil {
-        return nil, fmt.Errorf("marshal refresh request: %w", err)
-    }
-    
-    url := s.baseURL + "/functions/v1/agent-refresh"
-    var resp *RefreshResponse
-    var lastErr error
-    
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            select {
-            case <-ctx.Done():
-                return nil, ctx.Err()
-            case <-time.After(time.Duration(attempt) * time.Second):
-            }
-        }
-        
-        httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
-        if err != nil {
-            lastErr = fmt.Errorf("create refresh request: %w", err)
-            continue
-        }
-        
-        httpReq.Header.Set("Content-Type", "application/json")
-        
-        httpResp, err := s.client.Do(httpReq)
-        if err != nil {
-            lastErr = fmt.Errorf("refresh http request: %w", err)
-            continue
-        }
-        
-        body, err := io.ReadAll(httpResp.Body)
-        httpResp.Body.Close()
-        if err != nil {
-            lastErr = fmt.Errorf("read refresh response: %w", err)
-            continue
-        }
-        
-        if httpResp.StatusCode != http.StatusOK {
-            lastErr = fmt.Errorf("refresh failed: status %d, body: %s", httpResp.StatusCode, string(body))
-            continue
-        }
-        
-        var refreshResp RefreshResponse
-        if err := json.Unmarshal(body, &refreshResp); err != nil {
-            lastErr = fmt.Errorf("unmarshal refresh response: %w", err)
-            continue
-        }
-        
-        resp = &refreshResp
-        break
-    }
-    
-    if resp == nil {
-        return nil, fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
-    }
-    
-    return resp, nil
-}
-```
-
-### 6. Helper Methods
-
-#### Agent ID Access
-```go
-func (lr *LoginResponse) GetAgentID() string {
-    return lr.Agent.ID
-}
-```
-
-#### Compatibility Method
-- Provides backward compatibility for accessing agent ID
-- Abstracts internal structure changes
-- Simplifies calling code
+Refreshing rotates the refresh token, and that revokes the token family the
+running service holds. So CLI commands use the stored access token, and if it
+is rejected they log in with `LoginInMemory`, which updates the in-memory
+config only and never writes it.
 
 ## Agent Service (agentService.go)
 
@@ -403,72 +218,23 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 ```
 
 #### Implementation Details
-```go
-func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *osinfo.SystemInfo) error {
-    // 1. Create payload with system information
-    payload := AgentUpdatePayload{
-        Status:         "active",
-        Hostname:       sysInfo.Hostname,
-        ComputerName:   sysInfo.Hostname,
-        OSName:         sysInfo.OS,
-        OSVersion:      sysInfo.PlatformVer,
-        OSqueryVersion: "1.0.0", // TODO: Get actual osquery version
-        TotalRAM:       sysInfo.Memory.Total,
-        CPUInfo:        sysInfo.CPU.ModelName,
-        CPUCores:       sysInfo.CPU.Cores,
-        CPUUsage:       sysInfo.CPU.Usage,
-        MACAddress:     sysInfo.MACAddress,
-        SerialNumber:   getHardwareSerialNumber(),
-        HardwareModel:  getHardwareModel(),
-        Manufacturer:   getHardwareManufacturer(),
-    }
-    
-    // 2. Marshal payload
-    body, err := json.Marshal(payload)
-    if err != nil {
-        return fmt.Errorf("marshal agent update payload: %w", err)
-    }
-    
-    // 3. Create HTTP request
-    url := fmt.Sprintf("%s/rest/v1/agents?agent_uuid=eq.%s", cfg.SupabaseURL, cfg.AgentID)
-    req, err := http.NewRequestWithContext(ctx, "PATCH", url, bytes.NewReader(body))
-    if err != nil {
-        return fmt.Errorf("create agent update request: %w", err)
-    }
-    
-    // 4. Set headers
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("Accept", "application/json")
-    req.Header.Set("Authorization", "Bearer "+cfg.AccessToken)
-    req.Header.Set("apikey", cfg.SupabaseKey)
-    req.Header.Set("Prefer", "return=minimal")
-    
-    // 5. Send request
-    resp, err := s.client.Do(req)
-    if err != nil {
-        return fmt.Errorf("update agent info: %w", err)
-    }
-    defer resp.Body.Close()
-    
-    // 6. Handle response
-    if resp.StatusCode >= 400 {
-        respBody, _ := io.ReadAll(resp.Body)
-        return fmt.Errorf("agent update failed with status %d", resp.StatusCode)
-    }
-    
-    return nil
-}
-```
 
-#### Set Agent Status
-```go
-func (s *AgentService) SetAgentStatus(ctx context.Context, cfg *config.Config, status string) error
-```
+`UpdateAgentInfo` builds an `AgentUpdatePayload` from the collected
+`SystemInfo` and sends it as `{"payload": ...}` to the
+`agent_enqueue_inventory` RPC through `rpcutil.PostEnqueue`, bounded by a
+60-second timeout. The client strips NUL characters (which Postgres rejects)
+from the body.
 
-#### Get Agent Info
-```go
-func (s *AgentService) GetAgentInfo(ctx context.Context, cfg *config.Config) (map[string]interface{}, error)
-```
+`PostEnqueue` applies the shared enqueue retry policy:
+
+| Outcome | Behaviour |
+|---|---|
+| 2xx | success (an unparseable success body is only logged, never resent) |
+| 401 / expired JWT | returned, so the caller's `DoWithAuthRetry` recovers the session |
+| other 4xx | logged and dropped (the server rejected the payload) |
+| 5xx / network error | exponential backoff with jitter (1 s → 5 min), retried until the context ends |
+
+The scheduler wraps the call in `auth.Service.DoWithAuthRetry`.
 
 ## Integration Points
 

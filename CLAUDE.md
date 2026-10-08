@@ -29,14 +29,14 @@ internal/
   heartbeat/           payload generation and Supabase API calls
   lockfile/            file-based process locking and PID tracking
   osinfo/              cross-platform hardware metrics (platform-specific files)
-  service/             JWT auth (authService.go), agent info (agentService.go)
+  service/             auth (session lifecycle, 401 recovery), agent info, enqueue RPCs, tasks
+  supabase/            the only Supabase client: RPC, Storage, token refresh, edge functions
   updater/             Supabase release check, signed download, atomic replace, restart
   auditlogs/           audit log collection and forwarding
   logging/             logging utilities
   models/              shared data models
   constants/           shared constants
 
-supabase/              Edge functions (TypeScript)
 scripts/               Release, diagnostics, and pre-release checks
 release/               Compiled binaries (never edit directly)
 ```
@@ -44,7 +44,7 @@ release/               Compiled binaries (never edit directly)
 ## Runtime Flow
 
 1. Load config -> acquire lockfile -> init services
-2. Authenticate via Supabase edge function (agent-login) -> store JWT
+2. Authenticate via the agent-login edge function -> store JWT; refresh before expiry
 3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
 4. Periodic Supabase release check -> download/verify -> replace binary -> service restart
 
@@ -55,6 +55,8 @@ release/               Compiled binaries (never edit directly)
 - Config format is JSON only (not YAML, not TOML)
 - Config paths: `/opt/sentinelgo/.sentinelgo/config.json` (Linux/macOS), `C:\sentinelgo\.sentinelgo\config.json` (Windows)
 - Never hardcode Supabase credentials or API keys
+- **All Supabase access goes through `internal/supabase`.** No direct HTTP calls to `/rest/v1`, `/storage/v1`, `/auth/v1` or `/functions/v1` elsewhere, and no `supabase-community` SDKs. Classify errors with `supabase.IsUnauthorized` / `IsForbidden` / `IsNotFound` (typed `*supabase.APIError`), never by matching error strings
+- Read and write tokens only via `cfg.GetAccessToken` / `GetRefreshToken` / `SetTokens` (enforced by `internal/config/tokenaccess_test.go`)
 - Never modify `release/` directory directly; use `make release`
 - Service lifecycle managed by `github.com/kardianos/service`
 - System metrics collected via `github.com/shirou/gopsutil/v3`
@@ -67,7 +69,7 @@ release/               Compiled binaries (never edit directly)
 - Validate platform-specific code on all targets with `make verify-cross` (compiles every `GOOS/GOARCH` with `CGO_ENABLED=0`). Build tags / `_linux.go`/`_darwin.go`/`_windows.go` suffixes mean a file is only compiled on its OS, so a Windows-only dev never type-checks the Linux file otherwise.
 - Be careful with signal handling, startup order, and graceful shutdown (runs as system service)
 - Keep error handling explicit; this is a long-running service
-- Auth tokens auto-refresh; never assume a token is permanently valid
+- Auth tokens auto-refresh; never assume a token is permanently valid. Wrap Supabase calls in `auth.Service.DoWithAuthRetry` so a 401 recovers the session once
 
 ## Cross-Platform Considerations
 

@@ -29,7 +29,7 @@ func TestWithEnqueueRetry_Success(t *testing.T) {
 }
 
 func TestWithEnqueueRetry_401Propagates(t *testing.T) {
-	sentinel := statusErr(401, "unauthorized")
+	sentinel := statusErr(401, "JWT expired")
 	calls := 0
 	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
 		calls++

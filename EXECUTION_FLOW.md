@@ -36,28 +36,25 @@ Run the application using the following execution flow and automation rules:
 
 5. **Initialize MainIntegration** (`internal/main_integration.go`):
    - Create MainIntegration instance with config
-   - Initialize EnhancedAuth for token management
-   - Initialize Service for Supabase authentication
+   - Create the auth service (`internal/service/auth`) and register it as the
+     updater's auth retrier
    - Initialize Scheduler for task coordination
    - Initialize TaskManager for remote task polling/execution
 
-6. **Enhanced Authentication Flow** (`internal/auth/enhanced_auth.go`):
-   - **Session Initialization**:
-     - Load stored tokens from config
-     - Initialize Supabase client session
-   - **Token Validation**:
-     - Check access_token expiration
-     - Preemptively refresh if expiring soon (< 5 minutes)
-   - **Token Refresh** (if expired/invalid):
-     - Use refresh_token to request new access_token
-     - Implement exponential backoff retry (max 3 attempts: 1s, 2s, 4s intervals)
-     - Update session with new tokens
-     - Save new access_token to config.json with atomic write
-   - **Failure Handling**:
-     - Circuit breaker pattern (disable for 5 minutes after 5 consecutive failures)
-     - Structured logging for authentication failures
-     - Continue operation without crashing
-     - Individual tasks handle token refresh independently
+6. **Authentication Flow** (`internal/service/auth`, over `internal/supabase`):
+   - **Session start**:
+     - Reuse the stored access token if it is still comfortably valid
+     - Otherwise call the `agent-login` edge function (`agent_id` + `agent_secret`)
+   - **Token refresh** (scheduled, 5 minutes before expiry):
+     - `POST /auth/v1/token?grant_type=refresh_token` with the anon `apikey` and no bearer
+     - Persist the rotated token pair atomically (Supabase rotates refresh tokens)
+     - A 4xx refresh is terminal and falls back to agent-login; network/5xx errors are retried
+   - **401 recovery**: every Supabase call runs inside `DoWithAuthRetry`. On a
+     typed 401 it refreshes (then logs in) once and retries the call once
+   - **Failure handling**:
+     - Circuit breaker (opens for 5 minutes after 5 consecutive failures)
+     - Recovery cooldown: no new recovery within 60 s of a successful one
+     - Reporting pauses while the session is unrecoverable; the agent never crashes
 
 ## TASK EXECUTION & SCHEDULING
 
@@ -287,7 +284,8 @@ Run the application using the following execution flow and automation rules:
     - `internal/service/agentService.go` - Agent info updates
     - `internal/service/software_sync.go` - Software synchronization
     - `internal/logging/logging.go` - Audit log collection
-    - `internal/auth/enhanced_auth.go` - Authentication management
+    - `internal/service/auth/` - Session lifecycle and 401 recovery
+    - `internal/supabase/` - The only Supabase client (RPC, Storage, auth, functions)
     - `internal/config/config.go` - Configuration management
     - `internal/osinfo/` - System information collection
     - `internal/updater/` - Auto-update functionality
@@ -299,7 +297,7 @@ Run the application using the following execution flow and automation rules:
       ↓
     MainIntegration.Start()
       ↓
-    ├─ EnhancedAuth (token management)
+    ├─ Auth service (session + 401 recovery, via internal/supabase)
     ├─ Scheduler (task coordination)
     │   ├─ Auto-Update → Supabase get_latest_agent_release + Storage
     │   ├─ Agent Info → agent_push_inventory RPC

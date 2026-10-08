@@ -10,33 +10,6 @@ import (
 	"testing"
 )
 
-func TestUpdateToken_Direct(t *testing.T) {
-	c := NewClient("http://supabase.test", "anon-key", "old-token")
-	c.UpdateToken("new-token")
-	if c.accessToken != "new-token" {
-		t.Errorf("accessToken = %q, want new-token", c.accessToken)
-	}
-}
-
-func TestUpdateToken_VerifyViaRequest(t *testing.T) {
-	var receivedAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{}`)
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, "key", "old-token")
-	c.UpdateToken("refreshed-token")
-
-	_, _ = c.GetTasks(context.Background())
-	if receivedAuth != "Bearer refreshed-token" {
-		t.Errorf("Authorization = %q, want Bearer refreshed-token", receivedAuth)
-	}
-}
-
 func TestGetTasks_Success(t *testing.T) {
 	want := AgentTasksResponse{
 		ServerTime: "2024-01-01T00:00:00Z",

@@ -10,6 +10,7 @@ import (
 
 	"sentinelgo/internal/service/task"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -67,7 +68,7 @@ func TestTaskPollingServiceTokenRefreshOn401(t *testing.T) {
 
 	// Mock client that returns 401
 	mockClient := &mockTaskClient{
-		getErr: fmt.Errorf("authentication failed: status 401"),
+		getErr: &supabase.APIError{Status: 401, Code: "PGRST301", Method: "POST", Path: "/rest/v1/rpc/agent_get_tasks"},
 	}
 
 	pollingSvc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(tempDir, "test.db"), mockClient)
@@ -279,24 +280,6 @@ func TestTaskPollingServiceErrorHandling(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when creating TaskPollingService with invalid path")
 	}
-}
-
-func TestPollingService_UpdateToken(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "polling-update-token-test")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	cfg := loadTestConfig(t)
-	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(tmpDir, "tasks.sqlite"), &mockTaskClient{})
-	if err != nil {
-		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
-	}
-	defer func() { _ = svc.Close() }()
-
-	// UpdateToken must not panic or error. The mock client's UpdateToken is a no-op.
-	svc.UpdateToken("new-access-token")
 }
 
 func TestPollingService_CleanupCompletedTasks(t *testing.T) {

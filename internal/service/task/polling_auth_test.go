@@ -35,8 +35,6 @@ func (c *scriptedTaskClient) UpdateTask(_ context.Context, _, _, _ string) error
 	return err
 }
 
-func (c *scriptedTaskClient) UpdateToken(_ string) {}
-
 func expiredJWT() error {
 	return &supabase.APIError{Status: 401, Code: "PGRST301", Message: "JWT expired", Method: "POST", Path: "/rest/v1/rpc/agent_update_task"}
 }
