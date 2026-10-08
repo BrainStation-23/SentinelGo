@@ -13,6 +13,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/resilience"
+	"sentinelgo/internal/supabase"
 )
 
 // This is a white-box test (package auth) so it can drop maxRetries to 1 — that
@@ -308,7 +309,7 @@ func TestDoWithAuthRetry_401_RecoversAndRetries(t *testing.T) {
 	err := svc.DoWithAuthRetry(context.Background(), cfg, func() error {
 		calls++
 		if calls == 1 {
-			return errors.New("authentication failed: status 401")
+			return &supabase.APIError{Status: 401, Code: "PGRST301", Method: "POST", Path: "/rest/v1/rpc/f"}
 		}
 		return nil
 	})
@@ -329,7 +330,7 @@ func TestDoWithAuthRetry_403_NoRecovery(t *testing.T) {
 	calls := 0
 	err := svc.DoWithAuthRetry(context.Background(), cfg, func() error {
 		calls++
-		return errors.New("unexpected status 403: forbidden")
+		return &supabase.APIError{Status: 403, Code: "42501", Method: "POST", Path: "/rest/v1/rpc/f"}
 	})
 	if err == nil {
 		t.Fatal("expected the 403 error to propagate")

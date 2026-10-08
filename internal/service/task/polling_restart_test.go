@@ -6,7 +6,6 @@ package task_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"sentinelgo/internal/service/task"
 	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -155,7 +155,7 @@ func TestGetTasksWithRetry_401_CallsRefresher(t *testing.T) {
 	cfg := loadTestConfig(t)
 
 	// Client always returns 401 (even after a refresh the mock is stateless).
-	client := &mockTaskClient{getErr: fmt.Errorf("authentication failed: status 401")}
+	client := &mockTaskClient{getErr: &supabase.APIError{Status: 401, Code: "PGRST301", Method: "POST", Path: "/rest/v1/rpc/agent_get_tasks"}}
 	refresher := &mockTokenRefresher{token: "new-token"}
 
 	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(dir, "tasks.db"), client)
@@ -176,7 +176,7 @@ func TestGetTasksWithRetry_401_RefreshFails_ReturnsOriginalError(t *testing.T) {
 	dir := t.TempDir()
 	cfg := loadTestConfig(t)
 
-	client := &mockTaskClient{getErr: fmt.Errorf("authentication failed: status 401")}
+	client := &mockTaskClient{getErr: &supabase.APIError{Status: 401, Code: "PGRST301", Method: "POST", Path: "/rest/v1/rpc/agent_get_tasks"}}
 	refresher := &mockTokenRefresher{err: errors.New("refresh server down")}
 
 	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(dir, "tasks.db"), client)
@@ -196,7 +196,7 @@ func TestGetTasksWithRetry_NoRefresherSet_Returns401Error(t *testing.T) {
 	dir := t.TempDir()
 	cfg := loadTestConfig(t)
 
-	client := &mockTaskClient{getErr: fmt.Errorf("authentication failed: status 401")}
+	client := &mockTaskClient{getErr: &supabase.APIError{Status: 401, Code: "PGRST301", Method: "POST", Path: "/rest/v1/rpc/agent_get_tasks"}}
 	svc, err := task.NewTaskPollingServiceWithClient(cfg, filepath.Join(dir, "tasks.db"), client)
 	if err != nil {
 		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
