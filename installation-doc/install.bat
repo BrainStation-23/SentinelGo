@@ -526,14 +526,13 @@ pause
 exit /b
 
 REM verify_binary checks %REQUIRED_BINARY% against the SHA256SUMS published
-REM with the release before it is installed as Administrator. A mismatch, or
-REM a binary that is not listed, fails (errorlevel 1). If SHA256SUMS is not next
-REM to the installer it warns and succeeds (some download bundles omit it).
+REM with the release before it is installed as Administrator. A missing
+REM SHA256SUMS, a mismatch, or a binary that is not listed fails (errorlevel 1).
 :verify_binary
 if not exist "SHA256SUMS" (
-    echo [WARNING] SHA256SUMS not found next to install.bat; installing %REQUIRED_BINARY% WITHOUT checksum verification
-    echo [WARNING] Download SHA256SUMS from the release page to have the binary verified
-    exit /b 0
+    echo [ERROR] SHA256SUMS not found next to install.bat; refusing to install an unverified binary
+    echo [INFO] Download SHA256SUMS from https://github.com/BrainStation-23/SentinelGo/releases and place it next to install.bat
+    exit /b 1
 )
 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$f='%REQUIRED_BINARY%'; $a=(Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower(); $e=$null; foreach ($l in Get-Content -LiteralPath 'SHA256SUMS') { $p = $l.Trim() -split '\s+', 2; if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq $f) { $e = $p[0].ToLower(); break } }; if (-not $e) { Write-Host ('[ERROR] ' + $f + ' is not listed in SHA256SUMS'); exit 1 }; if ($a -ne $e) { Write-Host ('[ERROR] Checksum mismatch for ' + $f); Write-Host ('  expected: ' + $e); Write-Host ('  actual:   ' + $a); Write-Host '[ERROR] The file is corrupted or has been tampered with. Download it again from the official release.'; exit 1 }; Write-Host ('[SUCCESS] Verified ' + $f + ' against SHA256SUMS'); exit 0"
 exit /b %errorLevel%
