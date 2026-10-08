@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -274,43 +274,27 @@ func (s *TaskExecutorService) resolveScript(task taskstore.Task) (string, string
 }
 
 func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath string) error {
-	url := fmt.Sprintf("%s/storage/v1/object/authenticated/command-scripts/%s", s.cfg.SupabaseURL, remotePath)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("apikey", s.cfg.SupabaseKey)
-	req.Header.Set("Authorization", "Bearer "+s.cfg.GetAccessToken())
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("Executor: Failed to close response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-
 	// #nosec G304 - localPath is a controlled path from task store
 	out, err := os.Create(localPath)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := out.Close(); err != nil {
-			log.Printf("Executor: Failed to close output file: %v", err)
-		}
-	}()
 
-	const maxScriptBytes = 10 * 1024 * 1024
-	_, err = io.Copy(out, io.LimitReader(resp.Body, maxScriptBytes))
-	return err
+	// A script over the limit is rejected (supabase.ErrTooLarge) instead of
+	// being truncated and then executed, as io.LimitReader used to do.
+	c := supabase.FromConfig(s.cfg, supabase.WithHTTPClient(s.client))
+	_, dlErr := c.Download(ctx, "command-scripts", remotePath, true, out, maxScriptBytes)
+	closeErr := out.Close()
+	if dlErr != nil {
+		_ = os.Remove(localPath)
+		return dlErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("close downloaded script: %w", closeErr)
+	}
+	return nil
 }
+
+// maxScriptBytes is the largest command script the agent will download.
+const maxScriptBytes = 10 << 20

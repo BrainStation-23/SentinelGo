@@ -4,7 +4,9 @@ package task
 // Package task (not task_test) is required to access resolveTaskTimeout and cancelOverdueTasks.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -302,5 +305,43 @@ func TestDownloadScript_ServerError(t *testing.T) {
 		filepath.Join(t.TempDir(), "script.sh"))
 	if err == nil {
 		t.Error("expected error for 500 response, got nil")
+	}
+}
+
+// TestDownloadScript_RejectsOversizedScript: a script over the limit used to
+// be truncated by io.LimitReader and then executed. It must now fail, and
+// leave nothing behind to run.
+func TestDownloadScript_RejectsOversizedScript(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("#"), maxScriptBytes+1))
+	}))
+	defer srv.Close()
+
+	s := &TaskExecutorService{cfg: &config.Config{SupabaseURL: srv.URL}, client: &http.Client{}}
+	localPath := filepath.Join(t.TempDir(), "big.sh")
+	err := s.downloadScript(context.Background(), "big.sh", localPath)
+	if !errors.Is(err, supabase.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if _, statErr := os.Stat(localPath); !os.IsNotExist(statErr) {
+		t.Errorf("oversized script was left on disk (stat err = %v)", statErr)
+	}
+}
+
+// TestDownloadScript_PathByteIdentical pins the command-scripts URL.
+func TestDownloadScript_PathByteIdentical(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.EscapedPath()
+		_, _ = w.Write([]byte("echo ok"))
+	}))
+	defer srv.Close()
+
+	s := &TaskExecutorService{cfg: &config.Config{SupabaseURL: srv.URL}, client: &http.Client{}}
+	if err := s.downloadScript(context.Background(), "commands/9668bfbe/linux.sh", filepath.Join(t.TempDir(), "s.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/storage/v1/object/authenticated/command-scripts/commands/9668bfbe/linux.sh"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
 	}
 }
