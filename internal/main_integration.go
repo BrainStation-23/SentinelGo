@@ -229,7 +229,7 @@ func (mi *MainIntegration) servicesCollectHandler(svcStore *store.ServicesStore)
 
 		svc := servicessvc.NewServicesService()
 		svc.SetSupabaseURL(cfg.SupabaseURL)
-	
+
 		list := svc.GetServiceList()
 		if len(list) == 0 {
 			log.Printf("services-collect: no services found this cycle; skipping store")
