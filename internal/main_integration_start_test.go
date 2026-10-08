@@ -199,10 +199,6 @@ func TestStart_FullFlow(t *testing.T) {
 	cfg.SoftwareSyncEnabled = true
 	cfg.ServicesSyncEnabled = false
 
-	// The task manager runs in its own goroutine; wait for its run to finish
-	// (Run closes itself once ctx is cancelled) before tearing down.
-	lw := watchLog(t, "TaskManager: Closing integrated task service")
-
 	mi := NewMainIntegration(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -230,18 +226,12 @@ func TestStart_FullFlow(t *testing.T) {
 		t.Error("Start should have opened the services and software stores")
 	}
 
-	// MainIntegration.Stop does not cancel or join the TaskManager goroutine,
-	// so stop it via ctx and wait for Run's own Close before calling Stop.
-	cancel()
-	lw.wait(t)
-
+	// Stop cancels and joins the TaskManager goroutine itself (#113); ctx is
+	// deliberately still live here.
 	if err := mi.Stop(); err != nil {
 		t.Errorf("Stop() error: %v", err)
 	}
 
-	// Read status only after Stop has joined the scheduler goroutines:
-	// Task.LastRun is written without the scheduler lock that GetTaskStatus
-	// takes, so reading it while initial tasks run is a data race.
 	status := mi.GetStatus()
 	for _, key := range []string{"scheduler", "authentication", "logging"} {
 		if _, ok := status[key]; !ok {

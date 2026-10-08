@@ -24,6 +24,12 @@ import (
 // for startup to reuse it instead of minting a fresh session via agent-login.
 const startupTokenSkew = 5 * time.Minute
 
+// taskManagerStopTimeout bounds how long Stop waits for the TaskManager's Run
+// goroutine to return after its context is cancelled. A task that ignores
+// cancellation must not hang service shutdown indefinitely (service managers
+// kill a service that is slow to stop). A var so tests can shorten it.
+var taskManagerStopTimeout = 10 * time.Second
+
 // Hooks over the side effects Start reaches for (network update check, the
 // default scheduler task set, OS service/software enumeration). Production
 // uses the real implementations; tests swap them so the startup flow and task
@@ -33,6 +39,7 @@ var (
 	defaultTasks       = scheduler.CreateDefaultTasks
 	collectServices    = (*servicessvc.ServicesService).GetServiceList
 	collectSoftware    = (*swsvc.SoftwareService).GetSoftwareListWithStatus
+	runTaskManager     = (*tasksvc.TaskManager).Run
 )
 
 // MainIntegration orchestrates the agent's runtime components (auth, scheduler,
@@ -45,8 +52,13 @@ type MainIntegration struct {
 	authSvc        *authsvc.Service
 	loggingService *logging.LoggingIntegration
 	taskManager    *tasksvc.TaskManager
-	servicesStore  *store.ServicesStore
-	softwareStore  *store.SoftwareStore
+	// taskManagerCancel cancels the context the TaskManager Run goroutine runs
+	// on; taskManagerDone is closed when that goroutine returns. Stop uses them
+	// to stop and join Run before the task store is closed.
+	taskManagerCancel context.CancelFunc
+	taskManagerDone   chan struct{}
+	servicesStore     *store.ServicesStore
+	softwareStore     *store.SoftwareStore
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -377,9 +389,17 @@ func (mi *MainIntegration) startTaskManager(ctx context.Context) {
 		tm.SetTokenRefresher(&authTokenRefresher{authSvc: mi.authSvc, cfg: mi.cfg})
 	}
 
+	// Run on a context Stop can cancel (derived from ctx, so cancelling the
+	// caller's ctx still stops it), and record when Run returns so Stop can
+	// wait for it before closing the task store.
+	tmCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	mi.taskManager = tm
+	mi.taskManagerCancel = cancel
+	mi.taskManagerDone = done
 	go func() {
-		if runErr := mi.taskManager.Run(ctx); runErr != nil {
+		defer close(done)
+		if runErr := runTaskManager(tm, tmCtx); runErr != nil {
 			log.Printf("TaskManager stopped with error: %v", runErr)
 		}
 	}()
@@ -409,12 +429,8 @@ func (mi *MainIntegration) Stop() error {
 	// Stop scheduler first (this will stop all tasks)
 	mi.scheduler.Stop()
 
-	// Stop task manager
-	if mi.taskManager != nil {
-		if err := mi.taskManager.Close(); err != nil {
-			log.Printf("Warning: Failed to close task manager: %v", err)
-		}
-	}
+	// Stop task manager: cancel and join its Run goroutine, then close its store
+	mi.stopTaskManager()
 
 	// Stop audit log service
 	if mi.loggingService != nil {
@@ -439,6 +455,29 @@ func (mi *MainIntegration) Stop() error {
 
 	log.Printf("SentinelGo main integration stopped")
 	return nil
+}
+
+// stopTaskManager cancels the TaskManager's Run goroutine, waits (bounded by
+// taskManagerStopTimeout) for it to return, and only then closes the task
+// manager, so no poll or execution touches the task store after it is closed.
+// Safe to call more than once, and when the task manager was never started.
+func (mi *MainIntegration) stopTaskManager() {
+	if mi.taskManager == nil {
+		return
+	}
+	if mi.taskManagerCancel != nil {
+		mi.taskManagerCancel()
+	}
+	if mi.taskManagerDone != nil {
+		select {
+		case <-mi.taskManagerDone:
+		case <-time.After(taskManagerStopTimeout):
+			log.Printf("Warning: TaskManager did not stop within %v; closing its store anyway", taskManagerStopTimeout)
+		}
+	}
+	if err := mi.taskManager.Close(); err != nil {
+		log.Printf("Warning: Failed to close task manager: %v", err)
+	}
 }
 
 // GetStatus returns status of all components.
