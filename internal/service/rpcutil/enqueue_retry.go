@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"sentinelgo/internal/supabase"
@@ -21,6 +22,7 @@ var (
 // WithEnqueueRetry applies the agent-enqueue retry policy to fn:
 //   - nil                 → success
 //   - 401 / expired JWT   → error propagated (caller's DoWithAuthRetry handles it)
+//   - 408, 429            → transient: retried like 5xx; a 429's Retry-After is honoured
 //   - other 4xx           → logged and dropped (server rejected the payload; retrying won't help)
 //   - 5xx or network      → exponential backoff + jitter (1 s initial, 5 min max delay),
 //     retried until ctx is cancelled
@@ -40,12 +42,12 @@ func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) error) e
 		if status == 401 || supabase.IsUnauthorized(err) {
 			return err
 		}
-		if status >= 400 && status < 500 {
+		if status >= 400 && status < 500 && !isTransient4xx(status) {
 			log.Printf("[enqueue] server rejected payload (HTTP %d), dropping: %v", status, err)
 			return nil
 		}
-		// 5xx or network error (status == 0): backoff and retry.
-		delay := computeEnqueueBackoff(attempt)
+		// 408/429, 5xx or network error (status == 0): backoff and retry.
+		delay := retryDelay(attempt, status, err)
 		log.Printf("[enqueue] transient error (HTTP %d), retrying in %s: %v",
 			status, delay.Round(time.Millisecond), err)
 		select {
@@ -54,6 +56,24 @@ func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) error) e
 		case <-time.After(delay):
 		}
 	}
+}
+
+// isTransient4xx reports whether a 4xx status means "try again later" rather
+// than "this payload is wrong": 408 Request Timeout and 429 Too Many Requests.
+// Dropping those would silently lose payloads under backend rate limiting.
+func isTransient4xx(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
+}
+
+// retryDelay is the wait before the next attempt: the server's Retry-After on
+// a 429 (capped at enqueueRetryMax), otherwise exponential backoff.
+func retryDelay(attempt, status int, err error) time.Duration {
+	if status == http.StatusTooManyRequests {
+		if ra, ok := supabase.RetryAfter(err); ok {
+			return min(ra, enqueueRetryMax)
+		}
+	}
+	return computeEnqueueBackoff(attempt)
 }
 
 // computeEnqueueBackoff returns base*2^attempt + jitter, capped at enqueueRetryMax.

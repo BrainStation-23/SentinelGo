@@ -199,3 +199,14 @@ func TestInvokeFunction_Statuses(t *testing.T) {
 		t.Fatalf("second call: %v, token %q", err, out.AccessToken)
 	}
 }
+
+func TestRPC_RetryAfterIsCarried(t *testing.T) {
+	fake := supabasetest.New(t)
+	fake.Handle("POST", "/rest/v1/rpc/f", supabasetest.Response{
+		Status: 429, Body: `{"message":"rate limited"}`, Header: map[string]string{"Retry-After": "7"},
+	})
+	err := fake.Client(nil).RPC(context.Background(), "f", nil, nil)
+	if ra, ok := supabase.RetryAfter(err); !ok || ra != 7*time.Second {
+		t.Fatalf("RetryAfter = %v, %v; want 7s", ra, ok)
+	}
+}

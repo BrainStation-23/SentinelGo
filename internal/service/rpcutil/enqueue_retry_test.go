@@ -177,3 +177,97 @@ func TestCryptoInt63n_WithinRange(t *testing.T) {
 		}
 	}
 }
+
+// fastBackoff shrinks the backoff so retry tests run quickly.
+func fastBackoff(t *testing.T, base, maxDelay time.Duration) {
+	t.Helper()
+	prevBase, prevMax := enqueueRetryBase, enqueueRetryMax
+	enqueueRetryBase, enqueueRetryMax = base, maxDelay
+	t.Cleanup(func() { enqueueRetryBase, enqueueRetryMax = prevBase, prevMax })
+}
+
+// 408 and 429 are transient. They used to be dropped like any other 4xx, so
+// payloads were silently lost under backend rate limiting.
+func TestWithEnqueueRetry_408IsRetried(t *testing.T) {
+	fastBackoff(t, time.Millisecond, 10*time.Millisecond)
+	calls := 0
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
+		calls++
+		if calls == 1 {
+			return statusErr(408, "request timeout")
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("err = %v, calls = %d; want nil and 2", err, calls)
+	}
+}
+
+func TestWithEnqueueRetry_429HonoursRetryAfter(t *testing.T) {
+	// A huge backoff base proves the delay came from Retry-After: if it were
+	// ignored the test would hit its context deadline instead.
+	fastBackoff(t, time.Hour, 2*time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	calls := 0
+	start := time.Now()
+	err := WithEnqueueRetry(ctx, func(ctx context.Context) error {
+		calls++
+		if calls == 1 {
+			return &supabase.APIError{Status: 429, Method: "POST", Path: "/rest/v1/rpc/agent_enqueue_test", RetryAfter: 50 * time.Millisecond}
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("err = %v, calls = %d; want nil and 2", err, calls)
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Errorf("retried after %s, want at least the 50ms Retry-After", elapsed)
+	}
+}
+
+func TestWithEnqueueRetry_429WithoutRetryAfterUsesBackoff(t *testing.T) {
+	fastBackoff(t, time.Millisecond, 10*time.Millisecond)
+	calls := 0
+	err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
+		calls++
+		if calls < 3 {
+			return statusErr(429, "too many requests")
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("err = %v, calls = %d; want nil and 3", err, calls)
+	}
+}
+
+func TestWithEnqueueRetry_429RetryAfterIsCapped(t *testing.T) {
+	fastBackoff(t, time.Millisecond, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	calls := 0
+	err := WithEnqueueRetry(ctx, func(ctx context.Context) error {
+		calls++
+		if calls == 1 {
+			return &supabase.APIError{Status: 429, Method: "POST", Path: "/p", RetryAfter: time.Hour}
+		}
+		return nil
+	})
+	if err != nil || calls != 2 {
+		t.Fatalf("err = %v, calls = %d; want the hour-long Retry-After capped at the max backoff", err, calls)
+	}
+}
+
+func TestWithEnqueueRetry_400And403StillDropped(t *testing.T) {
+	for _, status := range []int{400, 403} {
+		calls := 0
+		err := WithEnqueueRetry(context.Background(), func(ctx context.Context) error {
+			calls++
+			return statusErr(status, "rejected")
+		})
+		if err != nil || calls != 1 {
+			t.Errorf("HTTP %d: err = %v, calls = %d; want dropped after 1 call", status, err, calls)
+		}
+	}
+}

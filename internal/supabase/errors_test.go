@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -132,4 +133,28 @@ func FuzzParseAPIError(f *testing.F) {
 		_ = IsForbidden(e)
 		_ = IsNotFound(e)
 	})
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", 0},
+		{"0", 0},
+		{"-5", 0},
+		{"30", 30 * time.Second},
+		{" 2 ", 2 * time.Second},
+		{"99999999999999999", maxRetryAfter},
+		{"Thu, 08 Oct 2026 12:00:45 GMT", 45 * time.Second},
+		{"Thu, 08 Oct 2026 11:59:00 GMT", 0}, // in the past
+		{"Fri, 09 Oct 2026 12:00:00 GMT", maxRetryAfter},
+		{"soon", 0},
+	}
+	for _, tc := range tests {
+		if got := parseRetryAfter(tc.in, now); got != tc.want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
 }

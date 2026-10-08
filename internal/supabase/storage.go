@@ -41,7 +41,7 @@ func (c *Client) Download(ctx context.Context, bucket, objectPath string, authen
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return 0, parseAPIError(http.MethodGet, req.URL.Path, resp.StatusCode, body)
+		return 0, responseError(http.MethodGet, req.URL.Path, resp, body)
 	}
 
 	if limit <= 0 {

@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrTooLarge is returned when a response or download exceeds the caller's
@@ -23,6 +26,10 @@ type APIError struct {
 	Body    string // raw response body, truncated to 4 KB
 	Method  string // request method
 	Path    string // request path (no host, no query string)
+	// RetryAfter is the server's Retry-After hint (0 if absent or invalid),
+	// e.g. on a 429 rate limit. It comes from a response header, never from
+	// anything the agent sent.
+	RetryAfter time.Duration
 }
 
 // Error formats as "<METHOD> <path>: status <n>: <code> <message>".
@@ -146,6 +153,48 @@ func IsNotFound(err error) bool {
 		return false
 	}
 	return e.Status == 404 || notFoundCodes[e.Code]
+}
+
+// RetryAfter returns the Retry-After hint carried by err, if any.
+func RetryAfter(err error) (time.Duration, bool) {
+	if e, ok := AsAPIError(err); ok && e.RetryAfter > 0 {
+		return e.RetryAfter, true
+	}
+	return 0, false
+}
+
+// parseRetryAfter parses a Retry-After header: delay-seconds or an HTTP-date.
+// Anything unparseable, negative or in the past yields 0.
+func parseRetryAfter(h string, now time.Time) time.Duration {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(h, 10, 64); err == nil {
+		// Bound before multiplying so a huge value cannot overflow.
+		if secs > int64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
+		}
+		return clampRetryAfter(time.Duration(secs) * time.Second)
+	}
+	if t, err := http.ParseTime(h); err == nil {
+		return clampRetryAfter(t.Sub(now))
+	}
+	return 0
+}
+
+// maxRetryAfter bounds how long a server can ask the agent to wait.
+const maxRetryAfter = time.Hour
+
+func clampRetryAfter(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return 0
+	case d > maxRetryAfter:
+		return maxRetryAfter
+	default:
+		return d
+	}
 }
 
 // StatusCode returns the HTTP status carried by err, or 0 when err is not an
