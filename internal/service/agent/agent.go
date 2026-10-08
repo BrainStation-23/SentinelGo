@@ -2,18 +2,14 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/osinfo/shared"
-	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
-
-	postgrest "github.com/supabase-community/postgrest-go"
+	"sentinelgo/internal/supabase"
 )
 
 const rpcTimeout = 60 * time.Second
@@ -58,20 +54,6 @@ func NewAgentService() *AgentService {
 	}
 }
 
-// newPostgrestClient builds a postgrest-go client authenticated with the
-// current access token. A new client is created per call because the token
-// rotates on every refresh.
-func newPostgrestClient(supabaseURL, anonKey, accessToken string) *postgrest.Client {
-	return postgrest.NewClient(
-		supabaseURL+"/rest/v1",
-		"public",
-		map[string]string{
-			"Authorization": "Bearer " + accessToken,
-			"apikey":        anonKey,
-		},
-	)
-}
-
 // UpdateAgentInfo updates agent information via the agent_enqueue_inventory RPC.
 func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *shared.SystemInfo) error {
 	hardwareModel := getHardwareModel()
@@ -107,53 +89,10 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		SecurityInfo:     sysInfo.SecurityInfo,
 	}
 
-	body, err := json.Marshal(map[string]interface{}{
-		"payload": payload,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal inventory payload: %w", err)
-	}
-	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
-	body = sanitize.StripJSONNUL(body)
-
-	url := cfg.SupabaseURL + "/rest/v1/rpc/agent_enqueue_inventory"
-	accessToken := cfg.GetAccessToken()
-	anonKey := cfg.SupabaseKey
-
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 
-	return rpcutil.PostEnqueue(ctx, s.client, url, accessToken, anonKey, body, "inventory")
-}
-
-// SetAgentStatus updates only the agent status column via the PostgREST SDK.
-func (s *AgentService) SetAgentStatus(ctx context.Context, cfg *config.Config, status string) error {
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
-	_, _, err := client.From("agents").
-		Update(map[string]string{"status": status}, "minimal", "").
-		ExecuteWithContext(ctx)
-	if err != nil {
-		return fmt.Errorf("update agent status: %w", err)
-	}
-	return nil
-}
-
-// GetAgentInfo retrieves agent information from the agents table via the
-// PostgREST SDK.
-func (s *AgentService) GetAgentInfo(ctx context.Context, cfg *config.Config) (map[string]interface{}, error) {
-	client := newPostgrestClient(cfg.SupabaseURL, cfg.SupabaseKey, cfg.GetAccessToken())
-
-	var agents []map[string]interface{}
-	_, err := client.From("agents").
-		Select("*", "", false).
-		ExecuteToWithContext(ctx, &agents)
-	if err != nil {
-		return nil, fmt.Errorf("get agent info: %w", err)
-	}
-
-	if len(agents) == 0 {
-		return nil, fmt.Errorf("agent not found")
-	}
-
-	return agents[0], nil
+	c := supabase.FromConfig(cfg, supabase.WithHTTPClient(s.client))
+	params := map[string]interface{}{"payload": payload}
+	return rpcutil.PostEnqueue(ctx, c, "agent_enqueue_inventory", params, "inventory")
 }

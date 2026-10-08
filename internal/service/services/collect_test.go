@@ -16,13 +16,9 @@ func TestGetServiceList_ReturnsPlatformServices(t *testing.T) {
 func TestNewServicesService_SettersApply(t *testing.T) {
 	svc := NewServicesService()
 	svc.SetSupabaseURL("https://example.supabase.co")
-	svc.SetAPIKey("test-key")
 
 	if svc.supabaseURL != "https://example.supabase.co" {
 		t.Errorf("supabaseURL = %q, want %q", svc.supabaseURL, "https://example.supabase.co")
-	}
-	if svc.apiKey != "test-key" {
-		t.Errorf("apiKey = %q, want %q", svc.apiKey, "test-key")
 	}
 	if svc.client == nil {
 		t.Error("client = nil, want a configured http.Client")

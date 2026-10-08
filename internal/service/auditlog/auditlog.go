@@ -1,12 +1,10 @@
 package auditlog
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"time"
@@ -16,15 +14,12 @@ import (
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
+	"sentinelgo/internal/supabase"
 )
 
 const (
-	rpcEnqueueBatch     = "/rest/v1/rpc/agent_enqueue_audit_logs"
-	headerContentType   = "Content-Type"
-	headerAuthorization = "Authorization"
+	rpcEnqueueAuditLogs = "agent_enqueue_audit_logs"
 	headerXDeviceID     = "X-Device-ID"
-	mimeJSON            = "application/json"
-	bearerPrefix        = "Bearer "
 )
 
 // ErrInvalidInput is returned when an audit log is missing required fields.
@@ -66,38 +61,12 @@ func auditLogCategoryKey(category string) string {
 	}
 }
 
-// newRequest builds a POST request to the enqueue RPC endpoint with all required headers set.
-func (s *AuditLogService) newRequest(ctx context.Context, body []byte) (*http.Request, error) {
-	url := s.config.SupabaseURL + rpcEnqueueBatch
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(headerContentType, mimeJSON)
-	req.Header.Set(headerAuthorization, bearerPrefix+s.config.AccessToken)
-	req.Header.Set(headerXDeviceID, s.config.DeviceID)
-	req.Header.Set("apikey", s.config.SupabaseKey)
-	return req, nil
-}
-
-// doRequest executes the request and returns the HTTP status code and any error for non-2xx responses.
-func (s *AuditLogService) doRequest(req *http.Request) (int, error) {
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			log.Printf("failed to close response body: %v", closeErr)
-		}
-	}()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode, nil
+// enqueue calls the audit-log enqueue RPC once with body (already-marshalled
+// JSON). The access token is read from the config on every request.
+func (s *AuditLogService) enqueue(ctx context.Context, body []byte) error {
+	c := supabase.FromConfig(s.config, supabase.WithHTTPClient(s.client))
+	return c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), nil,
+		supabase.WithHeader(headerXDeviceID, s.config.DeviceID))
 }
 
 // sendToSupabase sends an audit log to the agent_enqueue_audit_logs RPC.
@@ -128,12 +97,7 @@ func (s *AuditLogService) sendToSupabase(ctx context.Context, auditLog models.Au
 	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
 	data = sanitize.StripJSONNUL(data)
 
-	req, err := s.newRequest(ctx, data)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
-	if _, err := s.doRequest(req); err != nil {
+	if err := s.enqueue(ctx, data); err != nil {
 		return fmt.Errorf("audit log upload failed: %w", err)
 	}
 	return nil
@@ -222,15 +186,10 @@ func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchDat
 
 	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 
-	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) (int, error) {
-		req, err := s.newRequest(ctx, data)
-		if err != nil {
-			return 0, fmt.Errorf("create batch request: %w", err)
+	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) error {
+		if err := s.enqueue(ctx, data); err != nil {
+			return fmt.Errorf("batch logs upload failed: %w", err)
 		}
-		status, err := s.doRequest(req)
-		if err != nil {
-			return status, fmt.Errorf("batch logs upload failed: %w", err)
-		}
-		return status, nil
+		return nil
 	})
 }

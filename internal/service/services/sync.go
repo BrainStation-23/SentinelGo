@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/rpcutil"
+	"sentinelgo/internal/supabase"
 )
 
 const rpcTimeout = 60 * time.Second
@@ -21,17 +21,13 @@ func (s *ServicesService) SendByRPC(ctx context.Context, _ string, svcs []models
 		return fmt.Errorf("supabase base URL not configured for RPC call")
 	}
 
-	var accessToken, anonKey string
+	var anonKey string
+	token := func() string { return "" }
 	if cfg != nil {
-		accessToken = cfg.GetAccessToken()
 		anonKey = cfg.SupabaseKey
+		token = cfg.GetAccessToken // read per request, never a stale snapshot
 	}
-	if accessToken == "" {
-		accessToken = s.apiKey
-	}
-	if anonKey == "" {
-		anonKey = s.apiKey
-	}
+	c := supabase.New(s.supabaseURL, anonKey, token, supabase.WithHTTPClient(s.client))
 
 	type servicesItem struct {
 		Name        string `json:"name"`
@@ -58,23 +54,18 @@ func (s *ServicesService) SendByRPC(ctx context.Context, _ string, svcs []models
 		})
 	}
 
-	body, err := json.Marshal(map[string]interface{}{
+	// The client strips NUL escapes Postgres would reject from the body.
+	params := map[string]interface{}{
 		"payload": map[string]interface{}{
 			"snapshot": "full",
 			"services": items,
 		},
-	})
-	if err != nil {
-		return fmt.Errorf("marshal services payload: %w", err)
 	}
-	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
-	body = sanitize.StripJSONNUL(body)
 
-	url := s.supabaseURL + "/rest/v1/rpc/agent_enqueue_services"
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 
-	if err := rpcutil.PostEnqueue(ctx, s.client, url, accessToken, anonKey, body, "services"); err != nil {
+	if err := rpcutil.PostEnqueue(ctx, c, "agent_enqueue_services", params, "services"); err != nil {
 		return fmt.Errorf("agent_enqueue_services: %w", err)
 	}
 

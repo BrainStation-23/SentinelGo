@@ -34,7 +34,6 @@ func (h *syncServicesHandler) Slugs() []string {
 func (h *syncServicesHandler) Run(ctx context.Context, cfg *config.Config, _ taskstore.Task) (string, error) {
 	svc := servicessvc.NewServicesService()
 	svc.SetSupabaseURL(cfg.SupabaseURL)
-	svc.SetAPIKey(cfg.GetAccessToken())
 
 	list := getServicesListFn(svc)
 	if len(list) == 0 {
