@@ -38,11 +38,11 @@ func (sm *SessionManager) InitializeSession() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if sm.cfg.AccessToken == "" {
+	if sm.cfg.GetAccessToken() == "" {
 		return fmt.Errorf("no access token in config – run the registration command first")
 	}
 
-	if err := sm.client.SetSession(sm.cfg.AccessToken, sm.cfg.RefreshToken); err != nil {
+	if err := sm.client.InitSession(sm.cfg); err != nil {
 		return fmt.Errorf("set session: %w", err)
 	}
 
@@ -74,7 +74,7 @@ func (sm *SessionManager) RefreshTokens(ctx context.Context) error {
 func (sm *SessionManager) IsAuthenticated() bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.cfg != nil && sm.cfg.AccessToken != ""
+	return sm.cfg != nil && sm.cfg.GetAccessToken() != ""
 }
 
 // GetAccessToken returns the current access token.
@@ -82,7 +82,7 @@ func (sm *SessionManager) GetAccessToken() string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	if sm.cfg != nil {
-		return sm.cfg.AccessToken
+		return sm.cfg.GetAccessToken()
 	}
 	return ""
 }

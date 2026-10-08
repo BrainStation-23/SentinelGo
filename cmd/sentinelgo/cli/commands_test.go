@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,26 +244,54 @@ func TestHandleAgentInfoUpdate_NoTokens(t *testing.T) {
 	}
 }
 
-// TestHandleAgentInfoUpdate_WithRefreshToken exercises the cfg.RefreshToken != ""
-// branch. A local httptest server handles auth and agent calls so nothing hangs.
-func TestHandleAgentInfoUpdate_WithRefreshToken(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Return 401 so the auth call fails fast and agent-info update also fails.
+// TestHandleAgentInfoUpdate_NeverRefreshes: when the stored token is rejected,
+// the CLI must not refresh (a refresh from a second process would revoke the
+// running service's token family). It logs in for this command only and never
+// writes the config.
+func TestHandleAgentInfoUpdate_NeverRefreshes(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/functions/v1/agent-login" {
+			_, _ = w.Write([]byte(`{"access_token":"cli-token","refresh_token":"cli-refresh","expires_in":3600}`))
+			return
+		}
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"message":"unauthorized"}`))
+		_, _ = w.Write([]byte(`{"code":"PGRST301","message":"JWT expired"}`))
 	}))
 	defer srv.Close()
 
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	cfg := &config.Config{
+		Path:         cfgPath,
 		SupabaseURL:  srv.URL,
 		DeviceID:     "test-device",
+		AgentID:      "agent-1",
+		AgentSecret:  "secret",
 		AccessToken:  "stored-token",
 		RefreshToken: "test-refresh-token",
 		SupabaseKey:  "test-key",
 	}
 	out := captureStdout(func() { HandleAgentInfoUpdate(cfg) })
-	if !strings.Contains(out, "Refreshing") {
-		t.Errorf("expected 'Refreshing' in output; got: %q", out)
+	if !strings.Contains(out, "Logging in for this command only") {
+		t.Errorf("expected an in-memory login; got: %q", out)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		if strings.HasPrefix(p, "/auth/v1/") {
+			t.Errorf("CLI made a token-refresh request to %s", p)
+		}
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Errorf("CLI wrote the config file (stat err = %v)", err)
+	}
+	if cfg.GetRefreshToken() != "cli-refresh" {
+		t.Errorf("in-memory refresh token = %q, want the agent-login one", cfg.GetRefreshToken())
 	}
 }
 

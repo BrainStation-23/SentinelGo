@@ -1,26 +1,23 @@
 package auth
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
-	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/supabase"
 )
 
-// agentLoginEndpoint is the public Supabase edge function that exchanges the
+// agentLoginFunction is the public Supabase edge function that exchanges the
 // agent's long-lived credentials for a fresh Supabase session. It requires no
 // JWT (the agent has none yet when it calls this); the anon apikey gates the
 // edge gateway.
-const agentLoginEndpoint = "/functions/v1/agent-login"
+const agentLoginFunction = "agent-login"
 
 // loginTimeout bounds a single agent-login HTTP request.
 const loginTimeout = 60 * time.Second
@@ -46,14 +43,26 @@ type loginResponse struct {
 }
 
 // Login exchanges cfg.AgentID + cfg.AgentSecret for a brand-new Supabase
-// session via the agent-login edge function, then updates the in-memory config,
-// the active session, and persists the rotated tokens to disk.
+// session via the agent-login edge function, then updates the in-memory config
+// and persists the rotated tokens to disk.
 //
 // This is the agent's bootstrap and ultimate fallback: it is called at startup
 // and whenever a refresh can no longer recover the session. On HTTP 401/403 it
 // returns ErrLoginRejected (wrapped) so the caller can stop retrying and surface
 // a "needs re-provisioning" state.
 func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
+	return s.login(ctx, cfg, true)
+}
+
+// LoginInMemory is Login without persisting the new tokens: cfg is updated in
+// memory only. The CLI uses it so a one-off command never writes tokens the
+// running service also owns (with refresh rotation live, persisting from a
+// second process would race the service's own token family).
+func (s *Service) LoginInMemory(ctx context.Context, cfg *config.Config) error {
+	return s.login(ctx, cfg, false)
+}
+
+func (s *Service) login(ctx context.Context, cfg *config.Config, persist bool) error {
 	if cfg == nil {
 		return fmt.Errorf("login: config is nil")
 	}
@@ -64,13 +73,7 @@ func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("login: base URL not configured")
 	}
 
-	reqBody, err := json.Marshal(loginRequest{AgentID: cfg.AgentID, AgentSecret: cfg.AgentSecret})
-	if err != nil {
-		return fmt.Errorf("login: marshal request: %w", err)
-	}
-
-	url := s.baseURL + agentLoginEndpoint
-	client := httpx.NewClient(loginTimeout)
+	req := loginRequest{AgentID: cfg.AgentID, AgentSecret: cfg.AgentSecret}
 
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -84,7 +87,7 @@ func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
 
 		log.Printf("Auth: agent-login attempt %d/%d", attempt+1, maxRetries)
 
-		resp, rejected, retryable, err := s.doLoginRequest(ctx, client, url, reqBody)
+		resp, rejected, retryable, err := s.doLoginRequest(ctx, req)
 		if rejected {
 			// Credentials are bad — retrying with the same secret is pointless.
 			return fmt.Errorf("%w: %v", ErrLoginRejected, err)
@@ -108,12 +111,11 @@ func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
 		}
 
 		cfg.SetTokens(resp.AccessToken, resp.RefreshToken)
-		if err := s.SetSession(resp.AccessToken, resp.RefreshToken); err != nil {
-			log.Printf("Auth: warning – failed to update session after login: %v", err)
-		}
-		if err := saveTokensWithRetry(cfg); err != nil {
-			emergencylog.Record("auth", "agent-login succeeded but failed to persist tokens (disk/backend desync risk): %v", err)
-			return fmt.Errorf("agent-login succeeded but failed to persist tokens: %w", err)
+		if persist {
+			if err := saveTokensWithRetry(cfg); err != nil {
+				emergencylog.Record("auth", "agent-login succeeded but failed to persist tokens (disk/backend desync risk): %v", err)
+				return fmt.Errorf("agent-login succeeded but failed to persist tokens: %w", err)
+			}
 		}
 
 		log.Printf("Auth: agent-login successful (token length: %d, expires_in: %ds)", len(resp.AccessToken), resp.ExpiresIn)
@@ -123,53 +125,30 @@ func (s *Service) Login(ctx context.Context, cfg *config.Config) error {
 	return fmt.Errorf("agent-login failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// doLoginRequest performs one agent-login HTTP round-trip and classifies the
+// doLoginRequest performs one agent-login round-trip and classifies the
 // outcome for the retry loop:
 //   - rejected=true   → HTTP 401/403, bad credentials; caller must NOT retry and
 //     should surface ErrLoginRejected (needs re-provisioning).
-//   - retryable=true  → transient (network / 5xx); caller may retry with backoff.
+//   - retryable=true  → transient (network / 5xx / bad response); caller may
+//     retry with backoff.
 //   - retryable=false with a non-nil err → terminal but not a credential
-//     rejection (e.g. HTTP 429 rate limit): stop retrying, let the breaker back
-//     off rather than piling up server-side failed-attempt records.
-func (s *Service) doLoginRequest(ctx context.Context, client *http.Client, url string, body []byte) (resp *loginResponse, rejected, retryable bool, err error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, false, false, fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	// Public endpoint: no Authorization bearer. The anon apikey gates the edge
-	// gateway (Supabase rejects function calls without it).
-	if s.apiKey != "" {
-		httpReq.Header.Set("apikey", s.apiKey)
-	}
-
-	httpResp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, false, true, fmt.Errorf("http request: %w", err)
-	}
-	defer func() {
-		if cerr := httpResp.Body.Close(); cerr != nil {
-			log.Printf("Auth: failed to close agent-login response body: %v", cerr)
-		}
-	}()
-
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, false, true, fmt.Errorf("read response: %w", err)
-	}
-
-	switch {
-	case httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusForbidden:
-		return nil, true, false, fmt.Errorf("status %d: %s", httpResp.StatusCode, string(respBody))
-	case httpResp.StatusCode == http.StatusTooManyRequests:
-		return nil, false, false, fmt.Errorf("rate limited: status %d: %s", httpResp.StatusCode, string(respBody))
-	case httpResp.StatusCode != http.StatusOK:
-		return nil, false, true, fmt.Errorf("status %d: %s", httpResp.StatusCode, string(respBody))
-	}
+//     rejection (HTTP 429 rate limit): stop retrying, let the breaker back off
+//     rather than piling up server-side failed-attempt records.
+func (s *Service) doLoginRequest(ctx context.Context, req loginRequest) (resp *loginResponse, rejected, retryable bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+	defer cancel()
 
 	var lr loginResponse
-	if err := json.Unmarshal(respBody, &lr); err != nil {
-		return nil, false, true, fmt.Errorf("unmarshal response: %w", err)
+	err = s.sb.InvokeFunction(ctx, agentLoginFunction, req, &lr)
+	if err == nil {
+		return &lr, false, false, nil
 	}
-	return &lr, false, false, nil
+	switch supabase.StatusCode(err) {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, true, false, err
+	case http.StatusTooManyRequests:
+		return nil, false, false, fmt.Errorf("rate limited: %w", err)
+	default:
+		return nil, false, true, err
+	}
 }

@@ -140,7 +140,7 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 func (mi *MainIntegration) initAuth(ctx context.Context) {
 	mi.authSvc = authsvc.NewService(mi.cfg.SupabaseURL, mi.cfg.SupabaseKey)
 
-	if mi.cfg.AccessToken != "" && !authsvc.ShouldRefresh(mi.cfg.AccessToken, startupTokenSkew) {
+	if tok := mi.cfg.GetAccessToken(); tok != "" && !authsvc.ShouldRefresh(tok, startupTokenSkew) {
 		if err := mi.authSvc.InitSession(mi.cfg); err == nil {
 			log.Printf("Auth: reusing stored access token (still valid)")
 			return
