@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"sentinelgo/internal/service/auth"
+	"sentinelgo/internal/supabase"
 )
 
 func TestIsUnauthorized(t *testing.T) {
@@ -51,5 +52,19 @@ func TestIsForbidden(t *testing.T) {
 				t.Errorf("IsForbidden(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestClassification_APIErrorVerdictIsFinal guards the case the legacy
+// substring checks get wrong: a 401 whose body mentions row-level security
+// must still trigger recovery, and a 403 must not, whatever its text says.
+func TestClassification_APIErrorVerdictIsFinal(t *testing.T) {
+	rls401 := &supabase.APIError{Status: 401, Code: "PGRST301", Message: "JWT expired (row-level security)", Method: "POST", Path: "/rest/v1/rpc/f"}
+	if !auth.IsUnauthorized(rls401) || auth.IsForbidden(rls401) {
+		t.Errorf("401 mentioning RLS: IsUnauthorized=%v IsForbidden=%v, want true/false", auth.IsUnauthorized(rls401), auth.IsForbidden(rls401))
+	}
+	forbidden := &supabase.APIError{Status: 403, Code: "42501", Message: "unauthorized: permission denied", Method: "POST", Path: "/rest/v1/rpc/f"}
+	if auth.IsUnauthorized(forbidden) || !auth.IsForbidden(forbidden) {
+		t.Errorf("403 mentioning 'unauthorized': IsUnauthorized=%v IsForbidden=%v, want false/true", auth.IsUnauthorized(forbidden), auth.IsForbidden(forbidden))
 	}
 }

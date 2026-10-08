@@ -1,6 +1,10 @@
 package auth
 
-import "strings"
+import (
+	"strings"
+
+	"sentinelgo/internal/supabase"
+)
 
 // This file centralizes the heuristics for deciding whether an error returned by
 // a Supabase call means "your token is no longer accepted" (401 → try to
@@ -16,9 +20,16 @@ import "strings"
 
 // IsUnauthorized reports whether err looks like an HTTP 401 / expired-or-invalid
 // token. An explicit 403 is deliberately NOT treated as unauthorized.
+//
+// Errors from internal/supabase carry the real status and code, so their
+// verdict is final. The string heuristics below only apply to errors from the
+// paths not yet migrated to that client; they are removed in Supabase P5.
 func IsUnauthorized(err error) bool {
 	if err == nil {
 		return false
+	}
+	if _, ok := supabase.AsAPIError(err); ok {
+		return supabase.IsUnauthorized(err)
 	}
 	s := strings.ToLower(err.Error())
 	if isForbidden(s) {
@@ -40,6 +51,9 @@ func IsUnauthorized(err error) bool {
 func IsForbidden(err error) bool {
 	if err == nil {
 		return false
+	}
+	if _, ok := supabase.AsAPIError(err); ok {
+		return supabase.IsForbidden(err)
 	}
 	return isForbidden(strings.ToLower(err.Error()))
 }
