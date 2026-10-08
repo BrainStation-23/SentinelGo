@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/shirou/gopsutil/v4 v4.26.9
-	github.com/supabase-community/postgrest-go v0.0.12
 	github.com/yusufpapurcu/wmi v1.2.4
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1

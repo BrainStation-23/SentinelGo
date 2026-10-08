@@ -1,3 +1,5 @@
+// Package rpcutil holds the agent-enqueue RPC helpers shared by every
+// reporting path: the PostEnqueue call and its retry policy.
 package rpcutil
 
 import (
