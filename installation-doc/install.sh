@@ -96,16 +96,16 @@ sha256_of() {
 }
 
 # verify_binary checks a binary against the SHA256SUMS published with the
-# release before it is installed as root. A mismatch, or a binary that is not
-# listed, aborts the install. If SHA256SUMS is not next to the installer the
-# install continues with a warning (some download bundles do not include it).
+# release before it is installed as root. A missing SHA256SUMS, a mismatch, or
+# a binary that is not listed aborts the install: nothing unverified is run as
+# root.
 verify_binary() {
     local file="$1"
     local sums="./SHA256SUMS"
     if [[ ! -f "$sums" ]]; then
-        print_warning "SHA256SUMS not found next to the installer; installing $(basename "$file") WITHOUT checksum verification"
-        print_warning "Download SHA256SUMS from the release page to have the binary verified"
-        return 0
+        print_error "SHA256SUMS not found next to the installer; refusing to install an unverified binary"
+        print_error "Download SHA256SUMS from https://github.com/BrainStation-23/SentinelGo/releases and place it next to this script"
+        exit 1
     fi
 
     local actual

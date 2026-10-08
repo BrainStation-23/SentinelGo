@@ -44,7 +44,7 @@ gh attestation verify sentinelgo-linux-amd64 --repo BrainStation-23/SentinelGo
 
 If a check fails, do not run the file. Download it again from the official release page.
 
-The installers also check the binary themselves. `install.sh` and `install.bat` verify the SentinelGo binary against `SHA256SUMS` before installing it, and abort on a mismatch or on a binary that is not a published release asset. Keep `SHA256SUMS` in the same folder: without it they install with a warning and skip the check. `install.sh` also picks the binary that matches your OS and CPU (for example `sentinelgo-darwin-arm64` on Apple Silicon), so a full release download installs the right file.
+The installers also check the binary themselves. `install.sh` and `install.bat` verify the SentinelGo binary against `SHA256SUMS` before installing it, and abort on a mismatch or on a binary that is not a published release asset. Keep `SHA256SUMS` in the same folder as the installer: without it the install stops. `install.sh` also picks the binary that matches your OS and CPU (for example `sentinelgo-darwin-arm64` on Apple Silicon), so a full release download installs the right file.
 
 ## 🚀 Quick Installation (One Command)
 
