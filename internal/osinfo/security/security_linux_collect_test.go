@@ -19,13 +19,15 @@ import (
 )
 
 type linuxCmdResult struct {
-	out  string
-	code int
+	out    string // what the command writes to stdout
+	stderr string // what the command writes to stderr
+	code   int
 }
 
 // stubLinuxSecurityCommands replaces both command runners. outputs is keyed by
-// the space-joined command line; RunCommand succeeds only for code 0, while
-// RunCommandOutput returns the code as-is (mirroring the real helpers).
+// the space-joined command line; RunCommand succeeds only for code 0 and sees
+// only stdout, while RunCommandOutput returns the code as-is and sees stdout
+// followed by stderr (mirroring the real helpers' Output vs CombinedOutput).
 func stubLinuxSecurityCommands(t *testing.T, outputs map[string]linuxCmdResult) {
 	t.Helper()
 	origRun, origOut := securityRunCommand, securityRunCommandOutput
@@ -52,7 +54,7 @@ func stubLinuxSecurityCommands(t *testing.T, outputs map[string]linuxCmdResult) 
 		if !ok {
 			return "", -1, errors.New("command not available")
 		}
-		return r.out, r.code, nil
+		return r.out + r.stderr, r.code, nil
 	}
 }
 
@@ -233,7 +235,7 @@ func TestBuildAVProtection(t *testing.T) {
 		t.Fatalf("ClamAV = %+v", clam)
 	}
 	scan := clam.ScanInfo
-	if scan.LastScanTime != "Wed Oct  7 02:00:00 " || scan.ScannedFilesCount != 1234 ||
+	if scan.LastScanTime != "Wed Oct  7 02:00:00 2026" || scan.ScannedFilesCount != 1234 ||
 		scan.ScanResult != "Threats Detected" || len(scan.RecentThreats) != 1 {
 		t.Errorf("scan = %+v", scan)
 	}
@@ -265,6 +267,103 @@ func TestParseClamAVLogLine(t *testing.T) {
 	}
 	if _, ok := parseClamAVCount("no separator"); ok {
 		t.Error("parseClamAVCount accepted a line without ':'")
+	}
+}
+
+// clamscanLogTwoScans is a clamav.log holding two scans with clamd-style
+// "<ctime> -> " prefixes: an older one (Oct 6, 500 files, 1 infected) and the
+// newest one (Oct 7, 1234 files, 2 infected), followed by a clamd self-check.
+const clamscanLogTwoScans = `Tue Oct  6 02:00:00 2026 -> +++ Started at Tue Oct  6 02:00:00 2026
+Tue Oct  6 02:00:05 2026 -> /home/alice/Downloads/eicar.com: Eicar-Signature FOUND
+Tue Oct  6 02:00:09 2026 -> ----------- SCAN SUMMARY -----------
+Tue Oct  6 02:00:09 2026 -> Known viruses: 8700000
+Tue Oct  6 02:00:09 2026 -> Engine version: 1.0.7
+Tue Oct  6 02:00:09 2026 -> Scanned directories: 40
+Tue Oct  6 02:00:09 2026 -> Scanned files: 500
+Tue Oct  6 02:00:09 2026 -> Infected files: 1
+Tue Oct  6 02:00:09 2026 -> Data scanned: 12.50 MB
+Tue Oct  6 02:00:09 2026 -> Time: 9.012 sec (0 m 9 s)
+Wed Oct  7 02:00:00 2026 -> +++ Started at Wed Oct  7 02:00:00 2026
+Wed Oct  7 02:00:04 2026 -> /tmp/a/eicar.com: Eicar-Signature FOUND
+Wed Oct  7 02:00:06 2026 -> /tmp/b/eicar.zip: Eicar-Signature FOUND
+Wed Oct  7 02:00:11 2026 -> ----------- SCAN SUMMARY -----------
+Wed Oct  7 02:00:11 2026 -> Known viruses: 8700000
+Wed Oct  7 02:00:11 2026 -> Engine version: 1.0.7
+Wed Oct  7 02:00:11 2026 -> Scanned directories: 41
+Wed Oct  7 02:00:11 2026 -> Scanned files: 1234
+Wed Oct  7 02:00:11 2026 -> Infected files: 2
+Wed Oct  7 02:00:11 2026 -> Data scanned: 30.00 MB
+Wed Oct  7 02:00:11 2026 -> Time: 11.204 sec (0 m 11 s)
+Wed Oct  7 02:10:11 2026 -> SelfCheck: Database status OK.
+`
+
+// TestCollectClamAVScanInfo_NewestTimestampedScan is the regression test for
+// issue #112: the newest summary must win, and timestamped count lines must
+// parse the count after the label, not the time's minutes.
+func TestCollectClamAVScanInfo_NewestTimestampedScan(t *testing.T) {
+	root := stubLinuxSecurityRoot(t)
+	writeRootFile(t, root, "/var/log/clamav/clamav.log", clamscanLogTwoScans)
+
+	scan := collectClamAVScanInfo()
+	if scan.LastScanTime != "Wed Oct  7 02:00:11 2026" {
+		t.Errorf("LastScanTime = %q, want the newest summary's time", scan.LastScanTime)
+	}
+	if scan.ScannedFilesCount != 1234 {
+		t.Errorf("ScannedFilesCount = %d, want 1234", scan.ScannedFilesCount)
+	}
+	if scan.ScanResult != "Threats Detected" || len(scan.RecentThreats) != 1 {
+		t.Fatalf("ScanResult = %q, RecentThreats = %+v; want one threat entry from the newest scan",
+			scan.ScanResult, scan.RecentThreats)
+	}
+	if scan.RecentThreats[0].DetectionTime != "Wed Oct  7 02:00:11 2026" {
+		t.Errorf("DetectionTime = %q", scan.RecentThreats[0].DetectionTime)
+	}
+}
+
+// TestCollectClamAVScanInfo_NewestScanClean: plain clamscan --log output (no
+// timestamps) where an older scan found a threat but the newest is clean.
+func TestCollectClamAVScanInfo_NewestScanClean(t *testing.T) {
+	root := stubLinuxSecurityRoot(t)
+	writeRootFile(t, root, "/var/log/clamav/clamav.log", `/home/alice/eicar.com: Eicar-Signature FOUND
+
+----------- SCAN SUMMARY -----------
+Known viruses: 8700000
+Engine version: 1.0.7
+Scanned directories: 40
+Scanned files: 500
+Infected files: 1
+Data scanned: 12.50 MB
+Start Date: 2026:10:06 02:00:00
+End Date:   2026:10:06 02:00:09
+
+----------- SCAN SUMMARY -----------
+Known viruses: 8700000
+Engine version: 1.0.7
+Scanned directories: 41
+Scanned files: 1234
+Infected files: 0
+Data scanned: 30.00 MB
+Start Date: 2026:10:07 02:00:00
+End Date:   2026:10:07 02:00:11
+`)
+
+	scan := collectClamAVScanInfo()
+	if scan.ScannedFilesCount != 1234 {
+		t.Errorf("ScannedFilesCount = %d, want 1234", scan.ScannedFilesCount)
+	}
+	if scan.ScanResult != "Clean" || len(scan.RecentThreats) != 0 {
+		t.Errorf("ScanResult = %q, RecentThreats = %+v; want the newest (clean) scan only",
+			scan.ScanResult, scan.RecentThreats)
+	}
+	if scan.LastScanTime != "Unknown" {
+		t.Errorf("LastScanTime = %q, want Unknown for an untimestamped summary", scan.LastScanTime)
+	}
+}
+
+func TestParseClamAVCount_Timestamped(t *testing.T) {
+	got, ok := parseClamAVCount("Wed Oct  7 02:00:01 2026 -> Infected files: 2")
+	if !ok || got != 2 {
+		t.Errorf("parseClamAVCount = %d, %v; want 2, true", got, ok)
 	}
 }
 
@@ -441,8 +540,16 @@ func TestPendingSecurityPatchCount(t *testing.T) {
 		want  int
 	}{
 		{"no package manager", nil, nil, 0},
-		{"apt-check N;M", []string{aptCheck, "/usr/bin/apt-get"}, map[string]linuxCmdResult{aptCheck: cmdOK("12;3")}, 3},
-		{"apt-check unparsable", []string{aptCheck}, map[string]linuxCmdResult{aptCheck: cmdOK("12;x")}, 0},
+		// apt-check prints its "N;M" summary to stderr (no trailing newline)
+		// and nothing to stdout; see issue #109.
+		{"apt-check N;M on stderr", []string{aptCheck, "/usr/bin/apt-get"},
+			map[string]linuxCmdResult{aptCheck: {stderr: "12;5"}}, 5},
+		{"apt-check warning before N;M", []string{aptCheck},
+			map[string]linuxCmdResult{aptCheck: {stderr: "/usr/lib/update-notifier/apt_check.py:9: " +
+				"DeprecationWarning: deprecated\n  import apt_pkg\n12;5"}}, 5},
+		{"apt-check error exit", []string{aptCheck},
+			map[string]linuxCmdResult{aptCheck: {stderr: "E: Error: BrokenCount > 0", code: 255}}, 0},
+		{"apt-check unparsable", []string{aptCheck}, map[string]linuxCmdResult{aptCheck: {stderr: "12;x"}}, 0},
 		{"apt-check no separator", []string{aptCheck}, map[string]linuxCmdResult{aptCheck: cmdOK("")}, 0},
 		{"apt-check fails", []string{aptCheck}, nil, 0},
 		{"apt-get fails", []string{"/usr/bin/apt-get"}, nil, 0},
