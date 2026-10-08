@@ -15,7 +15,9 @@ import (
 	"sentinelgo/internal/updater"
 )
 
-// checkAndApplyFn is the updater entry point. Replaced in tests.
+// checkAndApplyFn is the updater entry point. Replaced in tests. Auth
+// recovery for its Supabase calls comes from the AuthRetrier the main
+// integration registers at startup (updater.SetAuthRetrier).
 var checkAndApplyFn = func(ctx context.Context, cfg *config.Config) error {
 	return updater.CheckAndApplyWithRetry(ctx, cfg)
 }

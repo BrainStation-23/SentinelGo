@@ -139,6 +139,9 @@ func (mi *MainIntegration) maybeStartupUpdateCheck(ctx context.Context) {
 // circuit breaker, so a transient outage at boot does not crash the service.
 func (mi *MainIntegration) initAuth(ctx context.Context) {
 	mi.authSvc = authsvc.NewService(mi.cfg.SupabaseURL, mi.cfg.SupabaseKey)
+	// Every update path (startup check, auto-update, agent-update task) can now
+	// recover an expired token instead of failing until the next refresh.
+	updater.SetAuthRetrier(mi.authSvc)
 
 	if tok := mi.cfg.GetAccessToken(); tok != "" && !authsvc.ShouldRefresh(tok, startupTokenSkew) {
 		if err := mi.authSvc.InitSession(mi.cfg); err == nil {

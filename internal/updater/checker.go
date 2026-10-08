@@ -2,7 +2,6 @@ package updater
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -12,12 +11,10 @@ import (
 	"sync"
 	"time"
 
-	postgrest "github.com/supabase-community/postgrest-go"
-
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
-	"sentinelgo/internal/service/rpcutil"
+	"sentinelgo/internal/supabase"
 )
 
 // LatestRelease is the row returned by the get_latest_agent_release RPC.
@@ -32,6 +29,38 @@ type LatestRelease struct {
 }
 
 var updateMutex sync.Mutex
+
+// AuthRetrier recovers the session on a 401 and retries once. It is satisfied
+// by *auth.Service; kept as a local interface so the updater does not import
+// the auth package.
+type AuthRetrier interface {
+	DoWithAuthRetry(ctx context.Context, cfg *config.Config, fn func() error) error
+}
+
+var (
+	retrierMu sync.RWMutex
+	retrier   AuthRetrier
+)
+
+// SetAuthRetrier lets every update path (startup check, scheduled auto-update,
+// agent-update task) recover an expired token instead of failing until the
+// next token refresh. Without one, Supabase calls are made once, as before.
+func SetAuthRetrier(r AuthRetrier) {
+	retrierMu.Lock()
+	defer retrierMu.Unlock()
+	retrier = r
+}
+
+// withAuthRetry runs fn through the configured AuthRetrier, if any.
+func withAuthRetry(ctx context.Context, cfg *config.Config, fn func() error) error {
+	retrierMu.RLock()
+	r := retrier
+	retrierMu.RUnlock()
+	if r == nil {
+		return fn()
+	}
+	return r.DoWithAuthRetry(ctx, cfg, fn)
+}
 
 // windowsServiceName is the SCM service name registered at install time
 // (see cmd/sentinelgo/main.go). The Windows update path restarts via SCM
@@ -165,29 +194,25 @@ func backoffDuration(n int) time.Duration {
 // fetchLatestRelease calls the get_latest_agent_release RPC and returns the
 // result, or nil when no release is configured yet. The platform and arch are
 // derived from runtime.GOOS / runtime.GOARCH.
+//
+// The HTTP status is checked (postgrest-go did not, so a 401 or 500 surfaced
+// as a JSON parse error), and an expired token is recovered via the
+// AuthRetrier, so an agent can still self-update after its token expires.
 func fetchLatestRelease(ctx context.Context, cfg *config.Config) (*LatestRelease, error) {
-	client := postgrest.NewClient(
-		cfg.SupabaseURL+"/rest/v1",
-		"public",
-		map[string]string{
-			"Authorization": "Bearer " + cfg.GetAccessToken(),
-			"apikey":        cfg.SupabaseKey,
-		},
-	)
+	ctx, cancel := context.WithTimeout(ctx, releaseRPCTimeout)
+	defer cancel()
 
-	rawResult, err := rpcutil.CallWithTimeout(ctx, releaseRPCTimeout, func() (string, error) {
-		return client.Rpc("get_latest_agent_release", "", map[string]interface{}{
-			"p_platform": runtime.GOOS,
-			"p_arch":     runtime.GOARCH,
-		}), client.ClientError
+	params := map[string]interface{}{
+		"p_platform": runtime.GOOS,
+		"p_arch":     runtime.GOARCH,
+	}
+	var rows []LatestRelease
+	err := withAuthRetry(ctx, cfg, func() error {
+		rows = nil
+		return supabase.FromConfig(cfg).RPC(ctx, "get_latest_agent_release", params, &rows)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get_latest_agent_release RPC: %w", err)
-	}
-
-	var rows []LatestRelease
-	if err := json.Unmarshal([]byte(rawResult), &rows); err != nil {
-		return nil, fmt.Errorf("parse RPC response: %w", err)
 	}
 	if len(rows) == 0 {
 		return nil, nil
