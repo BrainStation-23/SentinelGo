@@ -59,7 +59,9 @@ type physicalDiskInfo struct {
 func parsePhysicalDiskItem(item map[string]any) physicalDiskInfo {
 	info := physicalDiskInfo{diskIndex: -1}
 	if v, ok := item["DeviceId"].(float64); ok {
-		info.diskIndex = int(v)
+		if idx, ok := shared.JSONInt(v); ok && idx >= 0 {
+			info.diskIndex = idx
+		}
 	}
 	if v, ok := item["FriendlyName"].(string); ok {
 		info.description = strings.TrimSpace(v)
@@ -77,7 +79,7 @@ func parsePhysicalDiskItem(item map[string]any) physicalDiskInfo {
 		info.healthStr = v
 	}
 	if v, ok := item["Size"].(float64); ok {
-		info.totalBytes = uint64(v)
+		info.totalBytes, _ = shared.JSONUint64(v)
 	}
 	return info
 }
@@ -131,7 +133,7 @@ func parseBitLockerResult(result map[string]any) windowsVolumeInfo {
 		vol.driveLetter = strings.TrimSpace(dl)
 	}
 	if fs, ok := result["FreeSpace"].(float64); ok {
-		vol.freeBytes = uint64(fs)
+		vol.freeBytes, _ = shared.JSONUint64(fs)
 	}
 	if fsys, ok := result["FileSystem"].(string); ok {
 		vol.fileSystem = strings.TrimSpace(fsys)
@@ -152,7 +154,11 @@ func classifyBitLockerProtection(result map[string]any) (status, encType string)
 	if !ok {
 		return status, encType
 	}
-	switch int(ps) {
+	psInt, ok := shared.JSONInt(ps)
+	if !ok {
+		return status, encType
+	}
+	switch psInt {
 	case 1: // On
 		status = "enabled"
 	case 0: // Off

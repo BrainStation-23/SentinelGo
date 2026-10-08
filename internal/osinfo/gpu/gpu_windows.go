@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 
@@ -111,14 +112,17 @@ func applyWindowsGPUStringFields(g *shared.GPU, item map[string]any) {
 // applyWindowsGPUVRAM sets Dedicated/SharedVRAM from AdapterRAM, which is a
 // uint32 WMI field capped at ~4 GB and may underreport high-VRAM GPUs.
 func applyWindowsGPUVRAM(g *shared.GPU, item map[string]any) {
-	v, ok := item["AdapterRAM"].(float64)
-	if !ok || v <= 0 {
+	raw, _ := item["AdapterRAM"].(float64)
+	v, ok := shared.JSONUint64(raw)
+	if !ok || v == 0 {
 		if g.Architecture == "Integrated" {
 			g.SharedVRAM = "Shared (dynamic)"
 		}
 		return
 	}
-	vramStr := formatVRAMBytes(int64(v))
+	// AdapterRAM is a uint32 WMI field, so anything above that range is
+	// malformed; formatVRAMBytes reports it as ">= 4 GB" either way.
+	vramStr := formatVRAMBytes(int64(min(v, math.MaxUint32)))
 	if g.Architecture == "Integrated" {
 		g.SharedVRAM = vramStr
 	} else {
@@ -134,7 +138,7 @@ func parseWindowsGPUItem(item map[string]any) shared.GPU {
 	// VideoMemoryType: 3=VRAM (dedicated/discrete), 4=DRAM (shared/integrated).
 	var vmt int
 	if v, ok := item["VideoMemoryType"].(float64); ok {
-		vmt = int(v)
+		vmt, _ = shared.JSONInt(v)
 	}
 	g.Architecture = windowsGPUArchitecture(vmt, g.Manufacturer)
 

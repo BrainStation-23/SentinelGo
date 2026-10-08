@@ -2,6 +2,7 @@ package network
 
 import (
 	stdnet "net"
+	"net/netip"
 	"strings"
 
 	psnet "github.com/shirou/gopsutil/v4/net"
@@ -115,4 +116,13 @@ func hasFlag(iface psnet.InterfaceStat, flag string) bool {
 		}
 	}
 	return false
+}
+
+// isIPAddress reports whether s (ignoring surrounding whitespace) is an IPv4 or
+// IPv6 address; an IPv6 zone such as "fe80::1%eth0" is allowed. The per-OS
+// parsers use it so malformed tool output never reaches the heartbeat as a
+// gateway or DNS server.
+func isIPAddress(s string) bool {
+	_, err := netip.ParseAddr(strings.TrimSpace(s))
+	return err == nil
 }
