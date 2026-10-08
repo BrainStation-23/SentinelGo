@@ -13,6 +13,8 @@ import (
 func minimalTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return &config.Config{
+		// Keep stores/emergency log in a temp dir, not the package directory.
+		Path:        filepath.Join(t.TempDir(), "config.json"),
 		DeviceID:    "test-device-id",
 		AgentID:     "test-agent-id",
 		SupabaseURL: "https://test.supabase.co",

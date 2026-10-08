@@ -249,6 +249,7 @@ func TestHandleAgentInfoUpdate_NoTokens(t *testing.T) {
 // running service's token family). It logs in for this command only and never
 // writes the config.
 func TestHandleAgentInfoUpdate_NeverRefreshes(t *testing.T) {
+	stubOSInfo(t)
 	var mu sync.Mutex
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

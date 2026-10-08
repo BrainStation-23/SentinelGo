@@ -15,6 +15,18 @@ import (
 	"sentinelgo/internal/osinfo"
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
+	"sentinelgo/internal/service/rpcutil"
+)
+
+// Test seams. The handlers below load the system-wide config, exit the
+// process, wait for OS signals and run the (slow, host-dependent) OS info
+// collector; tests swap these out so none of that happens in-process.
+var (
+	loadDefaultConfig = func() (*config.Config, error) { return config.Load("") }
+	osExit            = os.Exit
+	logFatalf         = log.Fatalf
+	notifySignals     = signal.Notify
+	collectOSInfo     = osinfo.Collect
 )
 
 func HandleAuditLogsStandalone(cfg *config.Config) {
@@ -23,7 +35,8 @@ func HandleAuditLogsStandalone(cfg *config.Config) {
 	li, err := logging.NewLoggingIntegration(cfg)
 	if err != nil {
 		fmt.Printf("Failed to create logging integration: %v\n", err)
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -31,12 +44,13 @@ func HandleAuditLogsStandalone(cfg *config.Config) {
 
 	if err := li.Start(ctx); err != nil {
 		fmt.Printf("Failed to start logging service: %v\n", err)
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 
 	fmt.Println("Audit logs service is running. Press Ctrl+C to stop.")
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	notifySignals(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	fmt.Println("\nStopping audit logs service...")
@@ -80,14 +94,15 @@ func withLoggingIntegrationForConfig(cfg *config.Config, action func(*logging.Lo
 }
 
 func withLoggingIntegration(action func(*logging.LoggingIntegration, context.Context) error) {
-	cfg, err := config.Load("")
+	cfg, err := loadDefaultConfig()
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 	if err := withLoggingIntegrationForConfig(cfg, action); err != nil {
 		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -128,12 +143,14 @@ func HandleLoggingStats() {
 func HandleEnableAutoUpdate(cfgPath string) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logFatalf("Failed to load config: %v", err)
+		return
 	}
 
 	cfg.AutoUpdate = true
 	if err := cfg.Save(); err != nil {
-		log.Fatalf("Failed to save config: %v", err)
+		logFatalf("Failed to save config: %v", err)
+		return
 	}
 	fmt.Println("Auto-update enabled in config")
 }
@@ -155,10 +172,13 @@ func HandleAgentInfoUpdate(cfg *config.Config) {
 	}
 
 	// Collect first: it can take a while, and must not eat the network budget.
-	sysInfo := osinfo.Collect()
+	sysInfo := collectOSInfo()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// A payload the server rejects is dropped by the enqueue retry policy;
+	// have it reported so the operator is not told the update succeeded (#120).
+	ctx = rpcutil.ReportDroppedPayloads(ctx)
 
 	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.SupabaseKey)
 	agentSvc := agentsvc.NewAgentService()

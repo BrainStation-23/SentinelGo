@@ -133,3 +133,59 @@ func TestApplyLastOpened(t *testing.T) {
 		t.Errorf("Unmatched.LastOpened = %q, want empty", software[2].LastOpened)
 	}
 }
+
+func TestKnownFolderRoots_FromEnvironment(t *testing.T) {
+	t.Setenv("ProgramFiles", `D:\PF`)
+	t.Setenv("ProgramFiles(x86)", `D:\PF86`)
+	t.Setenv("windir", `D:\Win`)
+
+	roots := knownFolderRoots()
+	want := map[string]string{
+		"{6d809377-6af0-444b-8957-a3773f02200e}": `D:\PF`,
+		"{905e63b6-c1bf-494e-b29c-65b732d3d21a}": `D:\PF`,
+		"{7c5a40ef-a0fb-4bfc-874a-c0f2e0b9fa8e}": `D:\PF86`,
+		"{f38bf404-1d43-42f2-9305-67de0b28fc23}": `D:\Win`,
+		"{1ac14e77-02e7-4e5d-b744-2eb1ae5198b7}": `D:\Win\System32`,
+	}
+	if len(roots) != len(want) {
+		t.Fatalf("roots has %d entries, want %d: %v", len(roots), len(want), roots)
+	}
+	for k, v := range want {
+		if roots[k] != v {
+			t.Errorf("roots[%s] = %q, want %q", k, roots[k], v)
+		}
+	}
+}
+
+// With the environment variables unset (empty), the documented defaults apply.
+func TestKnownFolderRoots_Defaults(t *testing.T) {
+	t.Setenv("ProgramFiles", "")
+	t.Setenv("ProgramFiles(x86)", "")
+	t.Setenv("windir", "")
+
+	roots := knownFolderRoots()
+	checks := map[string]string{
+		"{905e63b6-c1bf-494e-b29c-65b732d3d21a}": `C:\Program Files`,
+		"{7c5a40ef-a0fb-4bfc-874a-c0f2e0b9fa8e}": `C:\Program Files (x86)`,
+		"{1ac14e77-02e7-4e5d-b744-2eb1ae5198b7}": `C:\Windows\System32`,
+	}
+	for k, v := range checks {
+		if roots[k] != v {
+			t.Errorf("roots[%s] = %q, want %q", k, roots[k], v)
+		}
+	}
+}
+
+// TestGetWindowsLastOpened_LiveIsWellFormed runs the real (read-only) UserAssist
+// query. Its contents depend on the machine, so only the shape is asserted: the
+// call must not fail hard, and every entry it does return must be normalized.
+func TestGetWindowsLastOpened_LiveIsWellFormed(t *testing.T) {
+	for _, e := range getWindowsLastOpened() {
+		if e.Path == "" || e.Path != strings.ToLower(e.Path) {
+			t.Errorf("entry path %q is empty or not lowercased", e.Path)
+		}
+		if e.LastRun.IsZero() || e.LastRun.Location() != time.UTC {
+			t.Errorf("entry %q has invalid LastRun %v", e.Path, e.LastRun)
+		}
+	}
+}

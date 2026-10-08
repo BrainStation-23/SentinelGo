@@ -35,7 +35,7 @@ const releasesBucket = "agent-releases"
 // key — the agent-releases bucket has RLS that allows any authenticated user
 // to download.
 func downloadAndVerify(ctx context.Context, cfg *config.Config, assetPath, expectedChecksum, sigAssetPath string) (string, string, error) {
-	selfPath, err := os.Executable()
+	selfPath, err := executablePath()
 	if err != nil {
 		return "", "", err
 	}

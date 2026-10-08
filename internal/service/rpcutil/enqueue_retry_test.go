@@ -271,3 +271,35 @@ func TestWithEnqueueRetry_400And403StillDropped(t *testing.T) {
 		}
 	}
 }
+
+func TestWithEnqueueRetry_ReportDroppedPayloads(t *testing.T) {
+	for _, status := range []int{400, 403, 422} {
+		apiErr := statusErr(status, "rejected")
+		calls := 0
+		err := WithEnqueueRetry(ReportDroppedPayloads(context.Background()), func(ctx context.Context) error {
+			calls++
+			return apiErr
+		})
+		if !errors.Is(err, ErrPayloadDropped) {
+			t.Errorf("HTTP %d: err = %v, want ErrPayloadDropped", status, err)
+		}
+		if !errors.Is(err, apiErr) || supabase.StatusCode(err) != status {
+			t.Errorf("HTTP %d: err = %v, want it to wrap the server error", status, err)
+		}
+		if calls != 1 {
+			t.Errorf("HTTP %d: calls = %d, want 1 (no retry)", status, calls)
+		}
+	}
+}
+
+func TestWithEnqueueRetry_ReportDroppedPayloadsLeavesOtherOutcomes(t *testing.T) {
+	ctx := ReportDroppedPayloads(context.Background())
+	if err := WithEnqueueRetry(ctx, func(ctx context.Context) error { return nil }); err != nil {
+		t.Errorf("success: err = %v, want nil", err)
+	}
+	unauth := statusErr(401, "JWT expired")
+	err := WithEnqueueRetry(ctx, func(ctx context.Context) error { return unauth })
+	if !errors.Is(err, unauth) || errors.Is(err, ErrPayloadDropped) {
+		t.Errorf("401: err = %v, want the 401 unchanged", err)
+	}
+}

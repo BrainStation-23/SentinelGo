@@ -11,6 +11,13 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// Test seams: production always runs the real commands against the real
+// sysfs mount; tests swap these for fixture output and a t.TempDir() tree.
+var (
+	displayRunCommand = shared.RunCommand
+	displaySysfsRoot  = "/sys"
+)
+
 // xrandrInfo bundles the per-connector state gathered from `xrandr --query`
 // that buildLinuxDisplay layers on top of EDID data. Grouping these together
 // keeps downstream function signatures short.
@@ -28,11 +35,11 @@ func getDisplays() []shared.Display {
 		resolutions:  make(map[string]string),
 		refreshRates: make(map[string]float64),
 	}
-	if output, err := shared.RunCommand("xrandr", "--query"); err == nil {
+	if output, err := displayRunCommand("xrandr", "--query"); err == nil {
 		xr.connected, xr.resolutions, xr.refreshRates = parseXrandrQuery(output)
 	}
 
-	drmDirs, err := os.ReadDir("/sys/class/drm")
+	drmDirs, err := os.ReadDir(displaySysfsRoot + "/class/drm")
 	if err != nil {
 		return displays
 	}
@@ -148,7 +155,7 @@ func drmConnectorName(name string) string {
 func buildLinuxDisplay(name string, xr xrandrInfo) (shared.Display, bool) {
 	connectorName := drmConnectorName(name)
 
-	edidPath := fmt.Sprintf("/sys/class/drm/%s/edid", name)
+	edidPath := fmt.Sprintf("%s/class/drm/%s/edid", displaySysfsRoot, name)
 	edidData, edidErr := shared.ReadFileBytes(edidPath)
 	hasEDID := edidErr == nil && len(edidData) > 16
 	if !hasEDID && !xr.connected[connectorName] && !xr.connected[name] {
@@ -196,14 +203,24 @@ func isUnknownOrEmpty(s string) bool {
 // applyEDIDDecodeFallback shells out to `edid-decode` to recover a serial
 // number or model name when the raw EDID parse didn't produce one.
 func applyEDIDDecodeFallback(display *shared.Display, edidPath string) {
-	if !isUnknownOrEmpty(display.SerialNumber) && display.Model != "Unknown" {
+	if !isUnknownOrEmpty(display.SerialNumber) && !isUnknownOrEmpty(display.Model) {
 		return
 	}
-	edidDecodeOutput, err := shared.RunCommand("edid-decode", edidPath)
+	edidDecodeOutput, err := displayRunCommand("edid-decode", edidPath)
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(edidDecodeOutput, "\n") {
+	lines := strings.Split(edidDecodeOutput, "\n")
+	// Current edid-decode prints the monitor's own name and serial strings as
+	// "Display Product Name: '...'" / "Display Product Serial Number: '...'"
+	// descriptors, after the header's numeric "Model:"/"Serial Number:"
+	// fields. Apply the descriptors first so they take precedence.
+	for _, line := range lines {
+		if strings.Contains(line, "Display Product Name:") || strings.Contains(line, "Display Product Serial Number:") {
+			applyEDIDDecodeLine(display, line)
+		}
+	}
+	for _, line := range lines {
 		applyEDIDDecodeLine(display, line)
 	}
 }
@@ -216,8 +233,8 @@ func applyEDIDDecodeLine(display *shared.Display, line string) {
 }
 
 // applySerialFromDecodeLine fills display.SerialNumber from an edid-decode
-// "Serial Number:" line, unless one is already set or the value is a
-// placeholder.
+// "Serial Number:" / "Display Product Serial Number:" line, unless one is
+// already set or the value is a placeholder.
 func applySerialFromDecodeLine(display *shared.Display, line string) {
 	if !isUnknownOrEmpty(display.SerialNumber) || !strings.Contains(line, "Serial Number:") {
 		return
@@ -230,27 +247,51 @@ func applySerialFromDecodeLine(display *shared.Display, line string) {
 }
 
 // applyModelFromDecodeLine fills display.Model from an edid-decode
-// "Monitor Name:"/"Model:" line, unless one is already set or the value is
-// too short to be meaningful.
+// "Display Product Name:"/"Monitor Name:"/"Model:" line, unless one is
+// already set or the value is too short to be meaningful. A purely numeric
+// value is rejected: edid-decode's "Model:" line is the numeric product code,
+// not a name.
 func applyModelFromDecodeLine(display *shared.Display, line string) {
-	if display.Model != "Unknown" || (!strings.Contains(line, "Monitor Name:") && !strings.Contains(line, "Model:")) {
+	if !isUnknownOrEmpty(display.Model) {
+		return
+	}
+	if !strings.Contains(line, "Display Product Name:") && !strings.Contains(line, "Monitor Name:") && !strings.Contains(line, "Model:") {
 		return
 	}
 	value, ok := edidDecodeFieldValue(line)
-	if !ok || value == "" || len(value) <= 2 {
+	if !ok || len(value) <= 2 || isDecimalString(value) {
 		return
 	}
 	display.Model = value
 }
 
+// isDecimalString reports whether s is non-empty and consists only of ASCII
+// digits.
+func isDecimalString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // edidDecodeFieldValue splits an "edid-decode" "Label: value" line and
-// returns the trimmed value.
+// returns the trimmed value, without the single quotes current edid-decode
+// puts around descriptor strings (e.g. "Display Product Name: 'DELL U2722D'").
 func edidDecodeFieldValue(line string) (string, bool) {
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) != 2 {
 		return "", false
 	}
-	return strings.TrimSpace(parts[1]), true
+	value := strings.TrimSpace(parts[1])
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	return value, true
 }
 
 // applyLinuxSerialFallbacks tries, in order, xrandr connector properties, the
@@ -521,19 +562,27 @@ func parseEDIDSize(edid []byte) float64 {
 }
 
 func getSerialFromXrandrProps(connectorName string) string {
-	output, err := shared.RunCommand("xrandr", "--prop", "--query")
+	output, err := displayRunCommand("xrandr", "--prop", "--query")
 	if err != nil {
 		return ""
 	}
 	currentConnector := ""
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
+	lines := strings.Split(output, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
 		if connector, ok := xrandrConnectorLine(line); ok {
 			currentConnector = connector
 			continue
 		}
 		if currentConnector != connectorName {
 			continue
+		}
+		if line == "EDID:" {
+			// Real xrandr prints the EDID hex on the indented lines that
+			// follow "EDID:" (16 bytes per line), not on the same line.
+			var consumed int
+			line, consumed = joinXrandrEDIDHexLines(line, lines[i+1:])
+			i += consumed
 		}
 		if serial, ok := serialFromXrandrEDIDLine(line); ok {
 			return serial
@@ -553,6 +602,38 @@ func xrandrConnectorLine(line string) (connector string, ok bool) {
 		return "", false
 	}
 	return parts[0], true
+}
+
+// joinXrandrEDIDHexLines appends the hex-only continuation lines in rest to
+// the "EDID:" header line, stopping at the first line that isn't pure hex. It
+// returns the joined "EDID: <hex>" line and how many lines of rest it used.
+func joinXrandrEDIDHexLines(header string, rest []string) (string, int) {
+	var b strings.Builder
+	b.WriteString(header)
+	n := 0
+	for _, l := range rest {
+		l = strings.TrimSpace(l)
+		if !isHexString(l) {
+			break
+		}
+		b.WriteString(l)
+		n++
+	}
+	return b.String(), n
+}
+
+// isHexString reports whether s is non-empty and consists only of hex digits.
+func isHexString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // serialFromXrandrEDIDLine decodes an "EDID: <hex>" property line and
@@ -579,7 +660,7 @@ func serialFromXrandrEDIDLine(line string) (string, bool) {
 }
 
 func getSerialFromDMI() string {
-	serial, err := shared.ReadFileContent("/sys/class/dmi/id/product_serial")
+	serial, err := shared.ReadFileContent(displaySysfsRoot + "/class/dmi/id/product_serial")
 	if err != nil {
 		return ""
 	}

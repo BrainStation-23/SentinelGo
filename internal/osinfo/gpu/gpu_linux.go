@@ -10,6 +10,13 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 )
 
+// Test seams: production always runs the real commands against the real
+// sysfs mount; tests swap these for fixture output and a t.TempDir() tree.
+var (
+	gpuRunCommand = shared.RunCommand
+	gpuSysfsRoot  = "/sys"
+)
+
 // parsePCISize converts lspci size strings like "256M", "8G", "512K" to bytes.
 func parsePCISize(s string) int64 {
 	s = strings.TrimSpace(s)
@@ -85,7 +92,7 @@ func formatLinuxVRAM(bytes int64) string {
 // The AMD amdgpu driver exposes this at /sys/class/drm/cardN/device/mem_info_vram_total.
 // Returns 0 when unavailable (driver doesn't expose the file, integrated GPU, or any error).
 func linuxSysfsVRAMBytes(busID string) int64 {
-	const drmBase = "/sys/class/drm"
+	drmBase := gpuSysfsRoot + "/class/drm"
 	entries, err := os.ReadDir(drmBase)
 	if err != nil {
 		return 0
@@ -163,7 +170,7 @@ func firstIntInString(s string) (int, bool) {
 // findROCmDeviceIndex maps a PCI bus ID (e.g. "01:00.0") to a rocm-smi device
 // index so VRAM can be queried per-GPU rather than from a global dump.
 func findROCmDeviceIndex(busID string) int {
-	out, err := shared.RunCommand("rocm-smi", "--showbus", "--csv")
+	out, err := gpuRunCommand("rocm-smi", "--showbus", "--csv")
 	if err != nil {
 		return -1
 	}
@@ -290,7 +297,7 @@ func extractKernelDriver(vLine string) (string, bool) {
 func queryLinuxPCIDetails(busID string) (dedicatedVRAM, currentStatus, kernelDriver string) {
 	dedicatedVRAM = "Unknown"
 	currentStatus = "Unknown"
-	vOut, vErr := shared.RunCommand("lspci", "-v", "-s", busID)
+	vOut, vErr := gpuRunCommand("lspci", "-v", "-s", busID)
 	if vErr != nil {
 		return dedicatedVRAM, currentStatus, kernelDriver
 	}
@@ -319,7 +326,7 @@ func linuxDriverVersionFromSysfs(kernelDriver string) string {
 	if kernelDriver == "" {
 		return ""
 	}
-	versionPath := fmt.Sprintf("/sys/module/%s/version", kernelDriver)
+	versionPath := fmt.Sprintf("%s/module/%s/version", gpuSysfsRoot, kernelDriver)
 	vStr, vErr := shared.ReadFileContent(versionPath)
 	if vErr != nil {
 		return ""
@@ -331,7 +338,7 @@ func linuxDriverVersionFromSysfs(kernelDriver string) string {
 // using nvidia-smi, which provides more accurate per-GPU data than lspci.
 // --id accepts the PCI bus ID in 0000:BB:DD.F format.
 func enrichNvidiaGPU(g *shared.GPU, busID string) {
-	nOut, nErr := shared.RunCommand("nvidia-smi",
+	nOut, nErr := gpuRunCommand("nvidia-smi",
 		"--query-gpu=name,memory.total,driver_version",
 		"--format=csv,noheader,nounits",
 		"--id=0000:"+busID)
@@ -360,20 +367,25 @@ func amdVRAMFromROCm(busID string) (string, bool) {
 	if deviceIdx < 0 {
 		return "", false
 	}
-	amdOut, amdErr := shared.RunCommand("rocm-smi", "-d", strconv.Itoa(deviceIdx), "--showmeminfo", "vram", "--csv")
+	amdOut, amdErr := gpuRunCommand("rocm-smi", "-d", strconv.Itoa(deviceIdx), "--showmeminfo", "vram", "--csv")
 	if amdErr != nil {
 		return "", false
 	}
+	totalCol := 1
 	for i, amdLine := range strings.Split(amdOut, "\n") {
 		amdLine = strings.TrimSpace(amdLine)
-		if i == 0 || amdLine == "" {
+		if i == 0 {
+			totalCol = rocmTotalVRAMColumn(amdLine)
+			continue
+		}
+		if amdLine == "" {
 			continue
 		}
 		amdParts := strings.Split(amdLine, ",")
-		if len(amdParts) < 2 {
+		if len(amdParts) <= totalCol {
 			continue
 		}
-		vramStr := strings.TrimSpace(amdParts[len(amdParts)-1])
+		vramStr := strings.TrimSpace(amdParts[totalCol])
 		vramBytes, err := strconv.ParseInt(vramStr, 10, 64)
 		if err == nil && vramBytes > 0 {
 			return formatLinuxVRAM(vramBytes), true
@@ -381,6 +393,20 @@ func amdVRAMFromROCm(busID string) (string, bool) {
 		return "", false
 	}
 	return "", false
+}
+
+// rocmTotalVRAMColumn returns the index of the "VRAM Total Memory" column in
+// a rocm-smi --showmeminfo CSV header. Newer rocm-smi versions also print a
+// "VRAM Total Used Memory" column, so the column is located by name; the first
+// value column is assumed when the header doesn't name it.
+func rocmTotalVRAMColumn(header string) int {
+	for i, col := range strings.Split(header, ",") {
+		col = strings.ToLower(col)
+		if strings.Contains(col, "total memory") && !strings.Contains(col, "used") {
+			return i
+		}
+	}
+	return 1
 }
 
 // enrichAMDGPU sets DedicatedVRAM for an AMD GPU. It tries the DRM sysfs
@@ -400,7 +426,7 @@ func enrichAMDGPU(g *shared.GPU, busID string) {
 // device's uevent via its bus ID, avoiding the DRM card iteration that could
 // overwrite HardwareID with a different GPU's data.
 func enrichIntelGPU(g *shared.GPU, busID string) {
-	ueventPath := fmt.Sprintf("/sys/bus/pci/devices/0000:%s/uevent", busID)
+	ueventPath := fmt.Sprintf("%s/bus/pci/devices/0000:%s/uevent", gpuSysfsRoot, busID)
 	data, err := shared.ReadFileContent(ueventPath)
 	if err != nil {
 		return
@@ -454,7 +480,7 @@ func buildLinuxGPU(line string) (shared.GPU, bool) {
 func getGPUs() []shared.GPU {
 	var gpus []shared.GPU
 
-	lspciOutput, err := shared.RunCommand("lspci", "-nn")
+	lspciOutput, err := gpuRunCommand("lspci", "-nn")
 	if err != nil {
 		return gpus
 	}

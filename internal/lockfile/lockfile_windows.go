@@ -21,7 +21,8 @@ func IsProcessRunning(pid int) bool {
 		return false
 	}
 
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	// SYNCHRONIZE is required by the WaitForSingleObject check below.
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
 		// Process does not exist, or we lack rights to query it. Treat the
 		// common case (no such process) as "not running".
