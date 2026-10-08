@@ -1,10 +1,8 @@
 package network
 
 import (
-	"math"
 	stdnet "net"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	psnet "github.com/shirou/gopsutil/v4/net"
@@ -127,22 +125,4 @@ func hasFlag(iface psnet.InterfaceStat, flag string) bool {
 func isIPAddress(s string) bool {
 	_, err := netip.ParseAddr(strings.TrimSpace(s))
 	return err == nil
-}
-
-// linkSpeedMbps converts a link speed such as "1000 Mbps" or "10 Gbps"
-// (value and unit already split) to Mbps. ok is false for non-numeric or
-// negative values and for Gbps values whose conversion would overflow int64.
-func linkSpeedMbps(value, unit string) (mbps int64, ok bool) {
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	if strings.HasPrefix(strings.ToLower(unit), "g") {
-		const mbpsPerGbps = 1000
-		if n > math.MaxInt64/mbpsPerGbps {
-			return 0, false
-		}
-		return n * mbpsPerGbps, true
-	}
-	return n, true
 }
