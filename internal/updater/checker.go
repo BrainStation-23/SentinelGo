@@ -139,6 +139,7 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("download and verify failed: %w", err)
 	}
 	if actualChecksum != latest.SHA256 {
+		_ = removeFile(newPath)
 		_ = removeFile(backupPath)
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
