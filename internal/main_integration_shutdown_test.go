@@ -119,7 +119,7 @@ func TestStop_BoundedWhenTaskManagerIgnoresCancel(t *testing.T) {
 	cfg := startTestConfig(t, fb.srv.URL)
 	cfg.EnableTaskPolling = true
 
-	lw := watchLog(t, "TaskManager did not stop within")
+	lw := watchLog(t)
 	mi := NewMainIntegration(cfg)
 	if err := mi.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
