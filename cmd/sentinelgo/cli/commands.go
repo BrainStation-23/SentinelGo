@@ -15,6 +15,7 @@ import (
 	"sentinelgo/internal/osinfo"
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
+	"sentinelgo/internal/service/rpcutil"
 )
 
 // Test seams. The handlers below load the system-wide config, exit the
@@ -175,6 +176,9 @@ func HandleAgentInfoUpdate(cfg *config.Config) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// A payload the server rejects is dropped by the enqueue retry policy;
+	// have it reported so the operator is not told the update succeeded (#120).
+	ctx = rpcutil.ReportDroppedPayloads(ctx)
 
 	authSvc := authsvc.NewService(cfg.SupabaseURL, cfg.SupabaseKey)
 	agentSvc := agentsvc.NewAgentService()

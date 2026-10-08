@@ -298,7 +298,7 @@ func TestHandleAgentInfoUpdate_LoginFails(t *testing.T) {
 func TestHandleAgentInfoUpdate_UpdateFailsAfterLogin(t *testing.T) {
 	stubOSInfo(t)
 	// 401 is returned without retry (a 5xx would back off until the 30s budget
-	// runs out; any other 4xx is dropped as a poison payload and reported as success).
+	// runs out; any other 4xx is dropped and reported as rejected, see #120).
 	srv := agentInfoServer(t, http.StatusOK, http.StatusUnauthorized)
 
 	out := captureStdout(func() { HandleAgentInfoUpdate(agentInfoConfig(t, srv.URL, "")) })
@@ -308,5 +308,25 @@ func TestHandleAgentInfoUpdate_UpdateFailsAfterLogin(t *testing.T) {
 	}
 	if !strings.Contains(out, "Agent info update failed") {
 		t.Errorf("expected update failure; got %q", out)
+	}
+}
+
+// Regression for #120: a non-retryable 4xx from agent_enqueue_inventory is
+// dropped by the enqueue retry policy. The background loop must keep dropping
+// silently, but the CLI must not tell the operator the update succeeded.
+func TestHandleAgentInfoUpdate_StoredTokenPayloadRejected(t *testing.T) {
+	stubOSInfo(t)
+	srv := agentInfoServer(t, http.StatusInternalServerError, http.StatusBadRequest)
+
+	out := captureStdout(func() { HandleAgentInfoUpdate(agentInfoConfig(t, srv.URL, "stored-token")) })
+
+	if strings.Contains(out, "updated successfully") {
+		t.Errorf("reported success although the server rejected the payload; got %q", out)
+	}
+	if !strings.Contains(out, "Agent info update failed") {
+		t.Errorf("expected an update failure to be reported; got %q", out)
+	}
+	if strings.Contains(out, "Logging in") {
+		t.Errorf("a 400 must not trigger a login; got %q", out)
 	}
 }
