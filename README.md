@@ -79,7 +79,7 @@ Per-agent authentication, HTTPS only, signed releases, and personal data redacte
 
 ## 📡 What you get from every device
 
-| | |
+| Area | What's collected |
 |---|---|
 | 🖥️ **Hardware & system** | CPU, memory, disks, GPUs, RAM modules, displays, printers and peripherals; OS, uptime and last boot |
 | 🛡️ **Security posture** | Disk encryption (BitLocker, FileVault, LUKS), antivirus, firewall, Secure Boot, SIP, SELinux/AppArmor, TPM, open ports |
@@ -210,7 +210,7 @@ Found a vulnerability? Please report it privately. See **[SECURITY.md](SECURITY.
 
 ## 📚 Learn more
 
-| | |
+| For | Read |
 |---|---|
 | 🚀 **Using SentinelGo** | [Install guide](installation-doc/INSTALLATION.md) · [Configuration](docs/02-config-module.md) · [CLI](docs/agent-commands-guide.md) · [Changelog](CHANGELOG.md) |
 | 🏗️ **How it's built** | [Project overview](docs/08-project-overview.md) · [Updater](docs/07-updater-module.md) · [Audit-log pipeline](docs/audit-logs-architecture.md) · [Hardware metrics](docs/05-osinfo-module.md) |
