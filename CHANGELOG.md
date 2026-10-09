@@ -19,6 +19,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - This changelog. Release notes are now taken from it instead of being generated from commit messages.
 - `scripts/changelog` tool and CI check: pull requests must add a changelog entry unless labelled `skip-changelog`.
 - FOSSA license scan status badge in the README.
+- `GOVERNANCE.md`: roles, how decisions are made, how to become a maintainer, and how the project continues if the maintainer is unavailable.
 
 ### Changed
 
