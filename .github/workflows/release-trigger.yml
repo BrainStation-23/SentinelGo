@@ -53,28 +53,56 @@ jobs:
           # event and triggers release.yml's `on: push: tags` handler.
           token: ${{ secrets.RELEASE_PAT }}
 
+      # Inputs are passed through env, never interpolated into the script, and
+      # an explicit version must look like vX.Y.Z[-pre].
       - name: Compute next version
         id: ver
+        env:
+          VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          if [ -n "$VERSION" ]; then
+            if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::version must look like v1.2.3, got '$VERSION'"
+              exit 1
+            fi
+            echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           else
             LATEST=$(git tag -l 'v[0-9]*' | sort -V | tail -1)
             [ -z "$LATEST" ] && LATEST="v0.0.0"
             VER=${LATEST#v}
             IFS='.' read -r MAJ MIN PAT <<< "$VER"
-            case "${{ inputs.bump }}" in
+            case "$BUMP" in
               major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
               minor) MIN=$((MIN+1)); PAT=0 ;;
               patch) PAT=$((PAT+1)) ;;
             esac
-            echo "tag=v$MAJ.$MIN.$PAT" >> $GITHUB_OUTPUT
+            echo "tag=v$MAJ.$MIN.$PAT" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Release notes come from CHANGELOG.md, so the version must already have
+      # its section on main (cut it with `make changelog-release` in a PR first).
+      - name: Check CHANGELOG.md has this version
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          go run ./scripts/changelog -check
+          if ! go run ./scripts/changelog -extract "$TAG" > /dev/null; then
+            echo "::error file=CHANGELOG.md::No [$TAG] section. Run 'make changelog-release VERSION=$TAG' and merge it before releasing."
+            exit 1
           fi
 
       - name: Push tag
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.ver.outputs.tag }}
-          git push origin ${{ steps.ver.outputs.tag }}
-          echo "Tagged and pushed ${{ steps.ver.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged and pushed $TAG"
