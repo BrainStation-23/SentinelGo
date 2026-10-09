@@ -367,6 +367,7 @@ make release VERSION=vX.Y.Z
 | [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md) | Per-OS install steps |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release |
 | [`RELEASE.md`](RELEASE.md) | How releases are versioned, cut and published |
+| [`GOVERNANCE.md`](GOVERNANCE.md) | Maintainers, decision-making and continuity |
 | [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and security architecture |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev workflow, commit style, PR checklist |
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community standards |
