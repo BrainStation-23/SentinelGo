@@ -25,8 +25,8 @@ func getLocalUsers() []shared.UserWithGroup {
 // this implementation iterates all local groups and tests membership instead.
 func getUserGroups(username string) []string {
 	cmd := fmt.Sprintf(
-		`$u="%s"; Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue).Name -like ('*\'+$u) } | Select-Object -ExpandProperty Name`,
-		username)
+		`$u=%s; Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue).Name -like ('*\'+$u) } | Select-Object -ExpandProperty Name`,
+		shared.PSQuote(username))
 	if output, err := shared.RunPowerShell(cmd); err == nil {
 		return parseWindowsGroupLines(output)
 	}
