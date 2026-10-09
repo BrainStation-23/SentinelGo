@@ -92,12 +92,10 @@ Per-agent authentication, HTTPS only, signed releases, and personal data redacte
 
 ## ⚡ How it works
 
-```mermaid
-flowchart LR
-    A["🛡️ SentinelGo agent<br/>on each device"] -->|"heartbeat, inventory,<br/>audit logs"| B["☁️ Your Supabase<br/>backend"]
-    B -->|"tasks and<br/>signed updates"| A
-    B --> C["📊 Dashboards<br/>and alerts"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+  <img src="docs/assets/flow-light.svg" alt="The SentinelGo agent on every device sends heartbeats, inventory and logs to your Supabase backend, which sends back tasks and signed updates and feeds dashboards and alerts." width="100%">
+</picture>
 
 1. **Authenticate:** each agent signs in and gets a short-lived token that it renews on its own.
 2. **Report:** a heartbeat every few minutes, plus full hardware and software inventory.
