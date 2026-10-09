@@ -8,14 +8,14 @@ import (
 
 func TestPSQuote(t *testing.T) {
 	cases := map[string]string{
-		"Ethernet":         `'Ethernet'`,
-		"":                 `''`,
-		"it's":             `'it''s'`,
-		"x$(calc)":         `'x$(calc)'`,
-		`a"b`:              `'a"b'`,
-		"'; calc; '":       `'''; calc; '''`,
+		"Ethernet":    `'Ethernet'`,
+		"":            `''`,
+		"it's":        `'it''s'`,
+		"x$(calc)":    `'x$(calc)'`,
+		`a"b`:         `'a"b'`,
+		"'; calc; '":  `'''; calc; '''`,
 		"smart’quote": "'smart’’quote'",
-		"‘‚‛": "'‘‘‚‚‛‛'",
+		"‘‚‛":         "'‘‘‚‚‛‛'",
 	}
 	for in, want := range cases {
 		if got := PSQuote(in); got != want {
