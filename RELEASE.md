@@ -98,6 +98,35 @@ make sign                     # needs SENTINELGO_SIGNING_KEY
 Local builds are for testing only. Published releases always come from the
 release workflow.
 
+## Reproducing a release
+
+Release binaries are reproducible: building the same tag with the same Go
+version gives a bit-for-bit identical binary on any machine. Builds use
+`-trimpath`, so no local file paths end up in the binary, and `CGO_ENABLED=0`,
+so no system C toolchain is involved.
+
+To check a published release yourself:
+
+```bash
+git clone https://github.com/BrainStation-23/SentinelGo.git
+cd SentinelGo
+git checkout vX.Y.Z
+# Use the Go version from GO_VERSION in .github/workflows/release.yml
+make all VERSION=vX.Y.Z
+
+# Check your binaries against the published checksums
+mkdir check && cp build/*/sentinelgo-* check/ && cd check
+curl -sLO https://github.com/BrainStation-23/SentinelGo/releases/download/vX.Y.Z/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+Build from a fresh clone with no local changes: Go records whether the working
+tree was modified, and that flag is part of the binary.
+
+Every binary should report `OK`. Releases up to and including v3.4.0 were
+built before `-trimpath` was added; they embed the build machine's paths and
+only reproduce on a GitHub Actions runner.
+
 ## If something goes wrong
 
 - **Trigger Release says `[Unreleased]` is empty.** Nothing has changed since
