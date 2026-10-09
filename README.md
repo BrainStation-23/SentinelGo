@@ -12,6 +12,7 @@
 [![Latest release](https://img.shields.io/github/v/release/BrainStation-23/SentinelGo?style=flat-square&color=00b894&label=release)](https://github.com/BrainStation-23/SentinelGo/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge?style=flat-square)](https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15253/badge)](https://www.bestpractices.dev/projects/15253)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
 
 **[Website](https://brainstation-23.github.io/SentinelGo/)** &nbsp;·&nbsp;
@@ -213,8 +214,8 @@ Found a vulnerability? Please report it privately. See **[SECURITY.md](SECURITY.
 | For | Read |
 |---|---|
 | 🚀 **Using SentinelGo** | [Install guide](installation-doc/INSTALLATION.md) · [Configuration](docs/02-config-module.md) · [CLI](docs/agent-commands-guide.md) · [Changelog](CHANGELOG.md) |
-| 🏗️ **How it's built** | [Project overview](docs/08-project-overview.md) · [Updater](docs/07-updater-module.md) · [Audit-log pipeline](docs/audit-logs-architecture.md) · [Hardware metrics](docs/05-osinfo-module.md) |
-| 🤝 **The project** | [Contributing](CONTRIBUTING.md) · [Governance](GOVERNANCE.md) · [Releases](RELEASE.md) · [Security policy](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md) |
+| 🏗️ **How it's built** | [Project overview](docs/08-project-overview.md) · [Security assurance case](docs/assurance-case.md) · [Updater](docs/07-updater-module.md) · [Audit-log pipeline](docs/audit-logs-architecture.md) · [Hardware metrics](docs/05-osinfo-module.md) |
+| 🤝 **The project** | [Contributing](CONTRIBUTING.md) · [Governance](GOVERNANCE.md) · [Roadmap](ROADMAP.md) · [Releases](RELEASE.md) · [Security policy](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md) |
 
 <br/>
 

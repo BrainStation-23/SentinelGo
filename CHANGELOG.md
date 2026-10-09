@@ -13,15 +13,28 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
-### Security
+### Added
 
-- Windows: local account names and network adapter names are now quoted safely before being passed to PowerShell. Previously, a local account whose name contained `$(...)`, or an adapter name containing a quote, would have run as a command with the agent's SYSTEM privileges. Creating such an account or renaming an adapter requires administrator rights.
+- `docs/assurance-case.md`: the security assurance case (requirements, threat model, trust boundaries, secure-design principles and the weaknesses countered).
+- `ROADMAP.md`: what's planned for the next releases and beyond.
+- Coding standards and code review sections in `CONTRIBUTING.md`.
+- OpenSSF Best Practices badge in the README.
 
 ### Changed
 
 - README redesigned for first-time visitors: a header banner, what SentinelGo does and collects at a glance, a three-step quick start, and configuration, CLI and build details folded into expandable sections.
 - Release binaries are reproducible: builds use `-trimpath`, and the installer and release scripts are committed as executable so CI builds from an unmodified tree. Anyone can rebuild a release and compare it with `SHA256SUMS`; see "Reproducing a release" in `RELEASE.md`.
 - CI runs the test suite with the Go race detector.
+- `SECURITY.md` corrected to match the code: release signatures are verified (not "planned"), updates come from Supabase rather than the GitHub API, credentials are protected by file permissions rather than an OS credential store, and the CI controls list is complete. Adds a "What to expect" section on what SentinelGo does and doesn't protect against.
+- `docs/08-project-overview.md` updated to the current package layout.
+
+### Removed
+
+- `docs/09-system-architecture.md`, `EXECUTION_FLOW.md` and `process_flow.md`, which `docs/08-project-overview.md` had superseded and which described components that no longer exist.
+
+### Security
+
+- Windows: local account names and network adapter names are now quoted safely before being passed to PowerShell. Previously, a local account whose name contained `$(...)`, or an adapter name containing a quote, would have run as a command with the agent's SYSTEM privileges. Creating such an account or renaming an adapter requires administrator rights.
 
 ## [v3.4.0] - 2026-10-09
 

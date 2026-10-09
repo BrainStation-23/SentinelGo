@@ -1,6 +1,6 @@
 # SentinelGo — Project Overview
 
-> Canonical architecture reference. Merges and supersedes the older `docs/09-system-architecture.md`, `EXECUTION_FLOW.md`, and `process_flow.md`.
+> Canonical architecture reference. The security architecture and threat model are in [`assurance-case.md`](assurance-case.md).
 
 ## 1. What SentinelGo is
 
@@ -29,7 +29,7 @@ sentinelgo/
 │   │
 │   ├── auth/                       EnhancedAuth: JWT login, circuit breaker, auto-refresh.
 │   ├── config/                     JSON config loading, env-var overrides, validation,
-│   │                               keychain/credential-storage helpers.
+│   │                               owner-only file permissions for the config (secure_*.go).
 │   ├── lockfile/                   File-based process lock keyed on agent UUID + version.
 │   ├── osinfo/                     Cross-platform hardware metrics. Files split by
 │   │                               build tag (_linux.go, _darwin.go, _windows.go) and
@@ -40,7 +40,11 @@ sentinelgo/
 │   │
 │   ├── service/
 │   │   ├── agent/                  Agent-info upload service.
-│   │   ├── auth/                   Login + token-rotation service.
+│   │   ├── auditlog/               Audit-log upload service.
+│   │   ├── auth/                   Login + token-rotation service (DoWithAuthRetry).
+│   │   ├── rpcutil/                Enqueue RPC helper with retries.
+│   │   ├── services/               OS services inventory and sync.
+│   │   ├── software/               Software inventory and sync.
 │   │   └── task/                   Task poller + script executor + result reporter.
 │   │
 │   ├── logging/                    Local queue, batching, durable checkpoint, HTTPS upload
@@ -49,24 +53,29 @@ sentinelgo/
 │   │   ├── collector/              Per-OS collectors (Windows Event Log, journalctl,
 │   │   │                           log show), shared parse/exec helpers, no-op stub.
 │   │   └── parser/                 Log normalization and severity mapping.
-│   ├── auditlogstore/              SQLite-backed durable queue for audit events.
 │   │
 │   ├── updater/                    Supabase release check (RPC + Storage), signed
 │   │                               binary download, atomic replace, restart.
-│   ├── store/                      SQLite store: software inventory + pending sync state.
-│   ├── taskstore/                  SQLite store: assigned tasks + status transitions.
+│   ├── store/                      SQLite store: audit-log queue, software and services
+│   │                               inventory, task state.
+│   ├── taskstore/                  RPC client for assigned tasks (agent_get_tasks / agent_update_task).
 │   │
 │   ├── network/                    Connectivity probing, IP/interface discovery.
 │   ├── sanitize/                   PII / sensitive-value redaction before upload.
+│   ├── supabase/                   The only Supabase client: RPC, Storage, auth and Edge
+│   │                               Functions, with typed errors (APIError).
 │   ├── httpx/                      Shared HTTP client with retry/timeout.
+│   ├── resilience/                 Circuit breaker for failing calls.
+│   ├── binpath/                    Resolves system tools to fixed absolute paths (no PATH lookup).
+│   ├── winsec/                     Windows DACL helpers for owner-only files.
+│   ├── emergencylog/               Durable log of rare fatal failures.
 │   ├── models/                     Shared data types.
 │
-├── supabase/                       TypeScript Edge Functions (deployed to Supabase).
 ├── scripts/                        Release, diagnostics, pre-release checks.
 ├── installation-doc/               OS-specific install scripts and INSTALLATION.md.
 ├── docs/                           This directory.
 ├── Makefile                        Build, test, cross-compile, pre-release gate.
-└── go.mod                          Module path: `sentinelgo`; requires Go 1.25+.
+└── go.mod                          Module path: `sentinelgo`; requires Go 1.26+.
 ```
 
 ## 3. High-level architecture
@@ -91,7 +100,7 @@ sentinelgo/
 |  +-----------+  +-----------+  +-----v----+  +-----------------------+     |
 |  |  osinfo/  |  | procinfo/ |  | software |  |  audit-logs           |     |
 |  |  hardware |  | processes |  | inventory|  |  collector ->         |     |
-|  |  metrics  |  |           |  | (store/) |  |  auditlogstore ->     |     |
+|  |  metrics  |  |           |  | (store/) |  |  store/ queue ->      |     |
 |  +-----------+  +-----------+  +-----------+  |  logging uploader     |     |
 |                                                +-----------+-----------+     |
 |                                                            |                 |

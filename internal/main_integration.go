@@ -43,7 +43,7 @@ var (
 )
 
 // MainIntegration orchestrates the agent's runtime components (auth, scheduler,
-// logging, task manager) according to EXECUTION_FLOW.md. It wires together
+// logging, task manager) as described in docs/08-project-overview.md. It wires together
 // collaborators it is given and drives their startup/shutdown ordering; the
 // concrete dependencies are supplied at construction time.
 type MainIntegration struct {
