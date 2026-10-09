@@ -35,7 +35,10 @@ func (h *syncInventoryHandler) Run(ctx context.Context, cfg *config.Config, _ ta
 
 	type collectResult struct{ info *shared.SystemInfo }
 	ch := make(chan collectResult, 1)
-	go func() { ch <- collectResult{collectSysInfoFn()} }()
+	// Read the hook before starting the goroutine: on timeout the goroutine
+	// outlives Run, and must not pick up a hook swapped in afterwards.
+	collect := collectSysInfoFn
+	go func() { ch <- collectResult{collect()} }()
 
 	var sysInfo *shared.SystemInfo
 	select {

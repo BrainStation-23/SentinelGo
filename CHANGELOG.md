@@ -16,6 +16,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 ### Changed
 
 - README redesigned for first-time visitors: a header banner, what SentinelGo does and collects at a glance, a three-step quick start, and configuration, CLI and build details folded into expandable sections.
+- Release binaries are reproducible: builds use `-trimpath`, and the installer and release scripts are committed as executable so CI builds from an unmodified tree. Anyone can rebuild a release and compare it with `SHA256SUMS`; see "Reproducing a release" in `RELEASE.md`.
+- CI runs the test suite with the Go race detector.
 
 ## [v3.4.0] - 2026-10-09
 
