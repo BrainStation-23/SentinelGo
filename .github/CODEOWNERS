@@ -1,3 +1,2 @@
-# Every change needs approval from a member of the internal-apps team
-# (required by the branch ruleset on main).
-* @BrainStation-23/internal-apps
+# The project's maintainer. GitHub requests their review on every pull request.
+* @Warhammer4000
