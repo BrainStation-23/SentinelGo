@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- README redesigned for first-time visitors: a header banner, what SentinelGo does and collects at a glance, a three-step quick start, and configuration, CLI and build details folded into expandable sections.
+
 ## [v3.4.0] - 2026-10-09
 
 ### Added

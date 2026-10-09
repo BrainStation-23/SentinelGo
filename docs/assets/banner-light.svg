@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="t d">
+  <title id="t">SentinelGo</title>
+  <desc id="d">One lightweight agent. Total endpoint visibility. Continuous compliance.</desc>
+  <defs>
+    <radialGradient id="glow" cx="22%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#00d4aa" stop-opacity=".14"/>
+      <stop offset="1" stop-color="#00d4aa" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2ff0c6"/>
+      <stop offset="1" stop-color="#00a986"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#eef2f6" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="320" rx="20" fill="#ffffff"/>
+  <rect width="1200" height="320" rx="20" fill="url(#grid)" opacity=".6"/>
+  <rect width="1200" height="320" rx="20" fill="url(#glow)"/>
+  <rect x=".5" y=".5" width="1199" height="319" rx="19.5" fill="none" stroke="#dde3ea"/>
+
+  <g transform="translate(110 70)">
+    <path d="M90 0 0 34v58c0 56 38.5 101 90 113 51.5-12 90-57 90-113V34z" fill="url(#shield)"/>
+    <path d="m52 100 26 26 52-56" stroke="#0d1117" stroke-width="16" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="350" y="138" font-size="72" font-weight="800" fill="#0f1720" letter-spacing="-1.5">Sentinel<tspan fill="#00876c">Go</tspan></text>
+    <text x="352" y="186" font-size="25" fill="#536171">One lightweight agent. Total endpoint visibility.</text>
+    <text x="352" y="218" font-size="25" fill="#536171">Continuous compliance.</text>
+
+    <g font-size="17" font-weight="600" fill="#00876c">
+      <rect x="352" y="244" width="222" height="36" rx="18" fill="#00876c" fill-opacity=".10"/>
+      <text x="463" y="268" text-anchor="middle">Windows · macOS · Linux</text>
+      <rect x="586" y="244" width="190" height="36" rx="18" fill="#00876c" fill-opacity=".10"/>
+      <text x="681" y="268" text-anchor="middle">One static binary</text>
+      <rect x="788" y="244" width="160" height="36" rx="18" fill="#00876c" fill-opacity=".10"/>
+      <text x="868" y="268" text-anchor="middle">Self-updating</text>
+      <rect x="960" y="244" width="150" height="36" rx="18" fill="#00876c" fill-opacity=".10"/>
+      <text x="1035" y="268" text-anchor="middle">Open source</text>
+    </g>
+  </g>
+</svg>
