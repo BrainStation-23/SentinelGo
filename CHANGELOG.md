@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Security
+
+- Windows: local account names and network adapter names are now quoted safely before being passed to PowerShell. Previously, a local account whose name contained `$(...)`, or an adapter name containing a quote, would have run as a command with the agent's SYSTEM privileges. Creating such an account or renaming an adapter requires administrator rights.
+
 ### Changed
 
 - README redesigned for first-time visitors: a header banner, what SentinelGo does and collects at a glance, a three-step quick start, and configuration, CLI and build details folded into expandable sections.
