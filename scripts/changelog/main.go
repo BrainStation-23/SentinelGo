@@ -5,15 +5,17 @@
 //	go run ./scripts/changelog -check             # fail if CHANGELOG.md is malformed
 //	go run ./scripts/changelog -extract v3.4.0    # print v3.4.0's notes (the GitHub release body)
 //	go run ./scripts/changelog -release v3.4.0    # move [Unreleased] entries under a new v3.4.0 heading
+//	go run ./scripts/changelog -latest            # print the newest released version
 //
 // The file follows Keep a Changelog (https://keepachangelog.com/en/1.1.0/):
 // an "## [Unreleased]" section first, then "## [vX.Y.Z] - YYYY-MM-DD" sections
 // newest first, each grouped under "### Added/Changed/Deprecated/Removed/Fixed/Security",
 // and a link reference for every heading at the bottom of the file.
 //
-// The release workflow publishes -extract's output as the release body, and
-// the release trigger refuses to tag a version that has no section, so a
-// release can't ship without human-written notes.
+// The release flow (see RELEASE.md) uses every mode: Trigger Release runs
+// -release on a release branch and opens a PR; when it merges, Tag Release
+// tags -latest if it has no tag yet; the release workflow publishes -extract's
+// output as the release body. A release can't ship without changelog notes.
 package main
 
 import (
@@ -58,64 +60,99 @@ type changelog struct {
 	links    []string
 }
 
+// options holds the command-line flags; exactly one mode must be set.
+type options struct {
+	path    string
+	check   bool
+	latest  bool
+	extract string
+	release string
+	date    string
+}
+
 func main() {
-	path := flag.String("file", "CHANGELOG.md", "changelog to operate on")
-	check := flag.Bool("check", false, "validate the changelog structure")
-	extract := flag.String("extract", "", "print the notes for this version")
-	release := flag.String("release", "", "move [Unreleased] entries under this new version")
-	date := flag.String("date", time.Now().UTC().Format(time.DateOnly), "release date for -release")
+	var o options
+	flag.StringVar(&o.path, "file", "CHANGELOG.md", "changelog to operate on")
+	flag.BoolVar(&o.check, "check", false, "validate the changelog structure")
+	flag.BoolVar(&o.latest, "latest", false, "print the newest released version")
+	flag.StringVar(&o.extract, "extract", "", "print the notes for this version")
+	flag.StringVar(&o.release, "release", "", "move [Unreleased] entries under this new version")
+	flag.StringVar(&o.date, "date", time.Now().UTC().Format(time.DateOnly), "release date for -release")
 	flag.Parse()
 
-	if err := run(*path, *check, *extract, *release, *date); err != nil {
+	if err := run(o); err != nil {
 		fmt.Fprintln(os.Stderr, "changelog:", err)
 		os.Exit(1)
 	}
 }
 
-func run(path string, check bool, extract, release, date string) error {
+func run(o options) error {
 	modes := 0
-	for _, on := range []bool{check, extract != "", release != ""} {
+	for _, on := range []bool{o.check, o.latest, o.extract != "", o.release != ""} {
 		if on {
 			modes++
 		}
 	}
 	if modes != 1 {
-		return errors.New("pass exactly one of -check, -extract or -release")
+		return errors.New("pass exactly one of -check, -latest, -extract or -release")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(o.path)
 	if err != nil {
 		return err
 	}
 	cl := parse(string(data))
 
 	switch {
-	case check:
+	case o.check:
 		if err := cl.validate(); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return fmt.Errorf("%s: %w", o.path, err)
 		}
-		fmt.Printf("%s: OK (%d releases)\n", path, len(cl.sections)-1)
+		fmt.Printf("%s: OK (%d releases)\n", o.path, len(cl.sections)-1)
 		return nil
-	case extract != "":
-		notes, err := cl.notes(extract)
+	case o.latest:
+		version, err := cl.latest()
+		if err != nil {
+			return err
+		}
+		fmt.Println(version)
+		return nil
+	case o.extract != "":
+		notes, err := cl.notes(o.extract)
 		if err != nil {
 			return err
 		}
 		fmt.Println(notes)
 		return nil
 	default:
-		if err := cl.validate(); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		if err := cl.release(release, date); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(cl.String()), 0o644); err != nil { //nolint:gosec // G306: a tracked doc, not a secret
-			return err
-		}
-		fmt.Printf("%s: moved [Unreleased] to [%s] - %s\n", path, release, date)
-		return nil
+		return releaseFile(cl, o)
 	}
+}
+
+func releaseFile(cl *changelog, o options) error {
+	if err := cl.validate(); err != nil {
+		return fmt.Errorf("%s: %w", o.path, err)
+	}
+	if err := cl.release(o.release, o.date); err != nil {
+		return err
+	}
+	if err := os.WriteFile(o.path, []byte(cl.String()), 0o644); err != nil { //nolint:gosec // G306: a tracked doc, not a secret
+		return err
+	}
+	fmt.Printf("%s: moved [Unreleased] to [%s] - %s\n", o.path, o.release, o.date)
+	return nil
+}
+
+// latest returns the newest released version, after validating the file so a
+// malformed changelog can't produce a tag.
+func (cl *changelog) latest() (string, error) {
+	if err := cl.validate(); err != nil {
+		return "", err
+	}
+	if len(cl.sections) < 2 {
+		return "", errors.New("no released versions yet")
+	}
+	return cl.sections[1].name, nil
 }
 
 func parse(text string) *changelog {

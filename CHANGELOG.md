@@ -17,13 +17,13 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - Project website at <https://brainstation-23.github.io/SentinelGo/>, published from `site/` by GitHub Pages.
 - This changelog. Release notes are now taken from it instead of being generated from commit messages.
-- `scripts/changelog` tool and CI check: pull requests must add a changelog entry unless labelled `skip-changelog`.
+- `scripts/changelog` tool (`-check`, `-extract`, `-release`, `-latest`) and CI check: pull requests must add a changelog entry unless labelled `skip-changelog`.
 - FOSSA license scan status badge in the README.
 
 ### Changed
 
-- The release trigger refuses to tag a version that has no section in `CHANGELOG.md`.
-- `RELEASE.md` rewritten to describe the current release process, including the changelog step.
+- One-click releases: **Trigger Release** moves the `[Unreleased]` entries under the new version in a "Release vX.Y.Z" pull request that merges itself once checks pass, and the new **Tag Release** workflow tags `main` when it merges. A dry-run option shows the release notes first.
+- `RELEASE.md` rewritten to describe the current release process.
 - `CHANGELOG.md` and `RELEASE.md` are linked from the README.
 
 ### Removed

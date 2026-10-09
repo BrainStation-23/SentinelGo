@@ -16,34 +16,50 @@ SentinelGo follows [Semantic Versioning](https://semver.org). Tags look like
 
 ## Steps
 
-### 1. Cut the changelog
+Every merged PR has already added its entry under `## [Unreleased]` in
+`CHANGELOG.md`. Releasing turns those entries into the new version's section.
 
-Every merged PR has already added its entry under `## [Unreleased]`. Turn those
-entries into the release's section and open a PR with the result:
+### 1. Trigger the release
 
-```bash
-git checkout -b release/v3.4.0 origin/main
-make changelog-release VERSION=v3.4.0   # moves [Unreleased] under [v3.4.0] - <today>
-git commit -am "Release v3.4.0"
-git push -u origin release/v3.4.0       # open a PR against main
-```
+Run **Trigger Release** (Actions → Trigger Release → Run workflow) on `main`:
 
-Review the section as release notes, since this is exactly what users will
-read. Edit wording, merge duplicate entries, and confirm every vulnerability fix
-is listed under **Security** with its CVE or GHSA ID if one is published. Then
-get the PR approved and merge it.
+- **bump**: `patch`, `minor` or `major`, counted from the latest release; or
+- **version**: an explicit version such as `v3.4.0`.
+- **dry run**: tick it to see the release notes in the run summary without
+  opening a PR. Useful before the real run.
 
-### 2. Trigger the release
+The workflow moves the `[Unreleased]` entries under `## [v3.4.0] - <today>`,
+leaves an empty `[Unreleased]` above it, and opens a **Release v3.4.0** pull
+request from `release/v3.4.0` with auto-merge turned on. It fails if
+`[Unreleased]` is empty or the version is already tagged.
 
-Run the **Trigger Release** workflow (Actions → Trigger Release → Run workflow)
-with **version** set to the same `v3.4.0`. It checks that `CHANGELOG.md` on
-`main` has a `[v3.4.0]` section, then pushes the tag. It refuses to tag a
-version without one.
+### 2. The release PR merges
 
-The workflow pushes the tag with the `RELEASE_PAT` secret so that the tag push
-triggers the release workflow (pushes made with `GITHUB_TOKEN` don't).
+The PR runs the same required checks as any other change, then merges itself.
+Before it does, you can push edits to the `release/v3.4.0` branch to polish the
+notes. They are exactly what users will read, so make sure every vulnerability
+fix is listed under **Security** with its CVE or GHSA ID if one is published.
 
-### 3. What the release workflow does
+If another PR merges first and the release PR falls behind `main`, run Trigger
+Release again with the same version. It rebuilds the branch from the current
+`main`, including the newly merged entries.
+
+### 3. The tag is pushed
+
+When the release PR merges, **Tag Release**
+([`.github/workflows/tag-release.yml`](.github/workflows/tag-release.yml)) sees
+that the newest version in `CHANGELOG.md` has no tag and pushes `v3.4.0`.
+
+You can also cut a release by hand: run
+`make changelog-release VERSION=v3.4.0` on a branch and merge it in a PR. Tag
+Release tags it the same way.
+
+Both workflows authenticate with the `RELEASE_PAT` secret, because branches,
+PRs and tags created with `GITHUB_TOKEN` don't trigger other workflows. The
+token needs **Contents** and **Pull requests** read and write access on this
+repository.
+
+### 4. What the release workflow does
 
 The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
@@ -84,11 +100,17 @@ release workflow.
 
 ## If something goes wrong
 
-- **Trigger Release fails on the changelog check.** The `[vX.Y.Z]` section isn't
-  on `main` yet. Merge the changelog PR from step 1, then rerun.
-- **The release workflow fails.** Fix the cause in a PR, then delete the tag
-  (`git push --delete origin vX.Y.Z`) and trigger the release again, or release
-  the next patch version.
+- **Trigger Release says `[Unreleased]` is empty.** Nothing has changed since
+  the last release that needs one, or PRs were merged with `skip-changelog`.
+  Add entries in a PR first.
+- **Trigger Release says `main` already has the section.** The release PR
+  merged but no tag was pushed. Check the Tag Release run, fix the cause (for
+  example an expired `RELEASE_PAT`), then run **Tag Release** manually.
+- **The release PR doesn't merge.** A required check failed or the branch fell
+  behind `main`. Fix the check, or run Trigger Release again with the same version.
+- **The release workflow fails after tagging.** Fix the cause in a PR, delete
+  the tag (`git push --delete origin vX.Y.Z`) and run **Tag Release** manually
+  to tag `main` again. Or release the next patch version instead.
 - **A published release is broken.** Don't move or reuse its tag. Release a new
   patch version with the fix, and describe the problem in that version's
   changelog section.

@@ -1,0 +1,60 @@
+name: Tag Release
+
+# Tags main when CHANGELOG.md's newest released version has no tag yet, which
+# happens when a "Release vX.Y.Z" PR (from Trigger Release, or cut by hand with
+# `make changelog-release`) merges. The tag starts release.yml.
+# Run it manually to retry after a failed tag push, or to re-tag main after
+# deleting a tag whose release failed.
+#
+# The tag is pushed with RELEASE_PAT because a tag pushed with GITHUB_TOKEN
+# doesn't trigger other workflows. See release-trigger.yml for the token's
+# required permissions.
+on:
+  push:
+    branches: [main]
+    paths: [CHANGELOG.md]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag new release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Tag the newest CHANGELOG.md version
+        run: |
+          TAG=$(go run ./scripts/changelog -latest)
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG is already tagged; nothing to release."
+            exit 0
+          fi
+          # sort -V orders v1.0.0-rc.1 after v1.0.0, so a pre-release of this
+          # same version doesn't count as newer.
+          NEWEST=$( { git tag -l 'v[0-9]*'; echo "$TAG"; } | sort -V | tail -1)
+          if [ "$NEWEST" != "$TAG" ] && [[ "$NEWEST" != "$TAG"-* ]]; then
+            echo "::error file=CHANGELOG.md::Newest changelog version $TAG is older than the existing tag $NEWEST."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+          echo "Tagged $GITHUB_SHA as $TAG; release.yml will publish it." >> "$GITHUB_STEP_SUMMARY"

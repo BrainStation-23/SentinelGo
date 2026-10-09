@@ -187,8 +187,9 @@ sbom:
 changelog-check:
 	go run ./scripts/changelog -check
 
-# Move the [Unreleased] entries under a new dated heading, ready to merge before
-# triggering the release: make changelog-release VERSION=v3.4.0
+# Move the [Unreleased] entries under a new dated heading. Trigger Release does
+# this for you; run it by hand to cut a release in your own PR, which Tag Release
+# tags when it merges: make changelog-release VERSION=v3.4.0
 changelog-release:
 	@test "$(origin VERSION)" = "command line" || (echo "usage: make changelog-release VERSION=vX.Y.Z" && exit 1)
 	go run ./scripts/changelog -release $(VERSION)
