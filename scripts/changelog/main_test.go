@@ -85,6 +85,29 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+func TestLatest(t *testing.T) {
+	got, err := parse(valid).latest()
+	if err != nil || got != "v1.1.0" {
+		t.Fatalf("latest() = %q, %v; want v1.1.0", got, err)
+	}
+
+	cl := parse(valid)
+	if err := cl.release("v1.2.0", "2026-03-01"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := cl.latest(); got != "v1.2.0" {
+		t.Fatalf("after release, latest() = %q; want v1.2.0", got)
+	}
+
+	onlyUnreleased := "# Changelog\n\n## [Unreleased]\n\n[Unreleased]: https://example.com\n"
+	if _, err := parse(onlyUnreleased).latest(); err == nil {
+		t.Fatal("want error when nothing has been released")
+	}
+	if _, err := parse(strings.Replace(valid, "## [Unreleased]", "## [v9.0.0]", 1)).latest(); err == nil {
+		t.Fatal("want error for a malformed changelog")
+	}
+}
+
 func TestReleaseMovesUnreleasedAndUpdatesLinks(t *testing.T) {
 	cl := parse(valid)
 	if err := cl.release("v1.2.0", "2026-03-01"); err != nil {
@@ -150,19 +173,22 @@ func TestRunModes(t *testing.T) {
 	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(path, false, "", "", "2026-03-01"); err == nil {
+	if err := run(options{path: path, date: "2026-03-01"}); err == nil {
 		t.Fatal("want error when no mode is given")
 	}
-	if err := run(path, true, "v1.0.0", "", "2026-03-01"); err == nil {
+	if err := run(options{path: path, check: true, latest: true}); err == nil {
 		t.Fatal("want error when two modes are given")
 	}
-	if err := run(path, true, "", "", ""); err != nil {
+	if err := run(options{path: path, check: true}); err != nil {
 		t.Fatalf("-check: %v", err)
 	}
-	if err := run(path, false, "v1.0.0", "", ""); err != nil {
+	if err := run(options{path: path, latest: true}); err != nil {
+		t.Fatalf("-latest: %v", err)
+	}
+	if err := run(options{path: path, extract: "v1.0.0"}); err != nil {
 		t.Fatalf("-extract: %v", err)
 	}
-	if err := run(path, false, "", "v1.2.0", "2026-03-01"); err != nil {
+	if err := run(options{path: path, release: "v1.2.0", date: "2026-03-01"}); err != nil {
 		t.Fatalf("-release: %v", err)
 	}
 	data, err := os.ReadFile(path)
