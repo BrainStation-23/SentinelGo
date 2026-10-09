@@ -13,9 +13,22 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/assurance-case.md`: the security assurance case (requirements, threat model, trust boundaries, secure-design principles and the weaknesses countered).
+- `ROADMAP.md`: what's planned for the next releases and beyond.
+- Coding standards and code review sections in `CONTRIBUTING.md`.
+- OpenSSF Best Practices badge in the README.
+
 ### Changed
 
 - README redesigned for first-time visitors: a header banner, what SentinelGo does and collects at a glance, a three-step quick start, and configuration, CLI and build details folded into expandable sections.
+- `SECURITY.md` corrected to match the code: release signatures are verified (not "planned"), updates come from Supabase rather than the GitHub API, credentials are protected by file permissions rather than an OS credential store, and the CI controls list is complete. Adds a "What to expect" section on what SentinelGo does and doesn't protect against.
+- `docs/08-project-overview.md` updated to the current package layout.
+
+### Removed
+
+- `docs/09-system-architecture.md`, `EXECUTION_FLOW.md` and `process_flow.md`, which `docs/08-project-overview.md` had superseded and which described components that no longer exist.
 
 ## [v3.4.0] - 2026-10-09
 
