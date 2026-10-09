@@ -1,0 +1,41 @@
+name: Changelog
+
+# Every pull request records its user-visible change under [Unreleased] in
+# CHANGELOG.md, which becomes the release notes. Changes with nothing to tell
+# users (CI, tests, refactors, dependency bumps) opt out with a label.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    name: Changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Validate CHANGELOG.md
+        run: go run ./scripts/changelog -check
+
+      - name: Require an entry
+        if: >-
+          !contains(github.event.pull_request.labels.*.name, 'skip-changelog') &&
+          !contains(github.event.pull_request.labels.*.name, 'dependencies')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE_SHA" HEAD -- CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::Add an entry under [Unreleased] in CHANGELOG.md, or label the PR 'skip-changelog' if it has no user-visible change."
+            exit 1
+          fi

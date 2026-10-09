@@ -365,6 +365,8 @@ make release VERSION=vX.Y.Z
 | [`docs/07-updater-module.md`](docs/07-updater-module.md) | Self-update flow |
 | [`docs/audit-logs-architecture.md`](docs/audit-logs-architecture.md) | Audit-log pipeline end-to-end |
 | [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md) | Per-OS install steps |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release |
+| [`RELEASE.md`](RELEASE.md) | How releases are versioned, cut and published |
 | [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and security architecture |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev workflow, commit style, PR checklist |
 | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community standards |

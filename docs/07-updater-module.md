@@ -4,7 +4,7 @@
 > [`docs/08-project-overview.md`](08-project-overview.md). Config knobs
 > (`auto_update`, `auto_update_interval`, `current_version`) —
 > [`docs/02-config-module.md`](02-config-module.md). Release build/sign
-> pipeline — [`RELEASE_PROCESS.md`](../RELEASE_PROCESS.md) and
+> pipeline — [`RELEASE.md`](../RELEASE.md) and
 > `.github/workflows/release.yml`.
 
 ## Overview

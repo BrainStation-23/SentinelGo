@@ -11,6 +11,7 @@ Thank you for taking the time to contribute! Every bug report, feature idea, doc
 - [Getting started](#getting-started)
 - [Development workflow](#development-workflow)
 - [Commit style](#commit-style)
+- [Changelog entries](#changelog-entries)
 - [Pull request checklist](#pull-request-checklist)
 - [Reporting bugs](#reporting-bugs)
 - [Suggesting features](#suggesting-features)
@@ -129,6 +130,25 @@ chore(ci): pin golangci-lint to v2.12.2
 
 ---
 
+## Changelog entries
+
+[`CHANGELOG.md`](CHANGELOG.md) is the project's release notes: each release's section is published as its GitHub release description. Every pull request with a user-visible change adds a line under `## [Unreleased]`, in the matching group:
+
+| Group | For |
+|---|---|
+| `### Added` | New features, collectors, CLI flags, task handlers |
+| `### Changed` | Changes to existing behaviour or output |
+| `### Deprecated` | Features that will be removed in a later release |
+| `### Removed` | Features or files that are gone |
+| `### Fixed` | Bug fixes |
+| `### Security` | Vulnerability fixes and hardening. Include the CVE or GHSA ID once one is published. |
+
+Write for someone running the agent, not for reviewers: say what changed for them, not which functions moved. For example, `- Updater: a binary that fails its checksum is deleted instead of left on disk.`
+
+If a PR has nothing to tell users (tests, CI, refactors, docs), label it `skip-changelog`. Dependabot PRs (`dependencies` label) are exempt automatically. The **Changelog** check enforces this and validates the file's format; run `make changelog-check` locally.
+
+---
+
 ## Pull request checklist
 
 Before marking your PR ready for review, confirm:
@@ -138,6 +158,7 @@ Before marking your PR ready for review, confirm:
 - [ ] `make check-no-cgo` passes (no `import "C"` introduced)
 - [ ] `gofmt -s -l .` prints nothing (all files formatted)
 - [ ] New behaviour is covered by tests where practical
+- [ ] User-visible changes have a [changelog entry](#changelog-entries) under `[Unreleased]` (or the PR is labelled `skip-changelog`)
 - [ ] Public functions and types have doc comments
 - [ ] The PR description explains *what* changed and *why*
 - [ ] Breaking changes are called out explicitly

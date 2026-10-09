@@ -85,7 +85,7 @@ Builds are driven by the root `Makefile`:
 
 - `make build` — local build for the host OS.
 - `make build-all` — cross-compile for linux / darwin / windows (amd64 + arm64).
-- `make release` — full release pipeline (see [`RELEASE_PROCESS.md`](../RELEASE_PROCESS.md)).
+- `make release` — full release pipeline (see [`RELEASE.md`](../RELEASE.md)).
 
 The version string baked into `version.go` comes from the most recent
 git tag (e.g. `v1.4.2`) and is also written to the on-disk config's

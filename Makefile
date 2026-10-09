@@ -37,7 +37,7 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom changelog-check changelog-release
 
 all: windows linux macos
 
@@ -182,6 +182,16 @@ notices:
 SBOM_DIR ?= build/sbom
 sbom:
 	go run ./scripts/licenses -sbom $(SBOM_DIR)
+
+# CHANGELOG.md is the source of release notes (see RELEASE.md).
+changelog-check:
+	go run ./scripts/changelog -check
+
+# Move the [Unreleased] entries under a new dated heading, ready to merge before
+# triggering the release: make changelog-release VERSION=v3.4.0
+changelog-release:
+	@test "$(origin VERSION)" = "command line" || (echo "usage: make changelog-release VERSION=vX.Y.Z" && exit 1)
+	go run ./scripts/changelog -release $(VERSION)
 
 # Compile every release target with CGO_ENABLED=0 so platform-specific files
 # (e.g. the audit log collectors) are type-checked on every run, not just the
