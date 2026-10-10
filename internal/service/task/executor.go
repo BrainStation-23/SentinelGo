@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sync"
 	"time"
@@ -202,7 +203,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		return handler(taskCtx, task)
 	}
 
-	scriptPath, scriptName, err := s.resolveScript(task)
+	ref, err := s.resolveScript(task)
 	if err != nil {
 		return "", err
 	}
@@ -217,9 +218,15 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		}
 	}()
 
-	localScriptPath := filepath.Join(tempDir, scriptName)
-	if err := s.downloadScript(taskCtx, scriptPath, localScriptPath); err != nil {
-		return "", fmt.Errorf("download script: %w", err)
+	localScriptPath := filepath.Join(tempDir, ref.Filename)
+	if ref.Body != nil {
+		if err := writeInlineScript(localScriptPath, *ref.Body); err != nil {
+			return "", fmt.Errorf("write inline script: %w", err)
+		}
+	} else {
+		if err := s.downloadScript(taskCtx, ref.RemotePath, localScriptPath); err != nil {
+			return "", fmt.Errorf("download script: %w", err)
+		}
 	}
 
 	payloadPath := filepath.Join(tempDir, "payload.json")
@@ -255,22 +262,87 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}
 }
 
-func (s *TaskExecutorService) resolveScript(task taskstore.Task) (string, string, error) {
+// scriptRef is the result of resolveScript: either a remote path to download,
+// or an inline body to write directly into the temp directory.
+type scriptRef struct {
+	// RemotePath is non-empty when the script must be fetched from Storage.
+	RemotePath string
+	// Body is non-nil when the script content was supplied inline.
+	Body *string
+	// Filename is the local name to use when writing into the temp dir.
+	// The extension determines the interpreter on every platform.
+	Filename string
+}
+
+// scriptFilenameRe is the allowlist for script filenames (contract §1 / §2).
+// It also rejects the special names "." and ".." via the suffix check in
+// validateScriptFilename.
+var scriptFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._ \-]{1,128}$`)
+
+// validateScriptFilename returns a non-nil error when name would allow a
+// path-traversal attack or is otherwise prohibited by the contract.
+func validateScriptFilename(name string) error {
+	if !scriptFilenameRe.MatchString(name) {
+		return fmt.Errorf("script filename %q is not allowed (must match ^[A-Za-z0-9._ -]{1,128}$)", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("script filename %q is not allowed", name)
+	}
+	return nil
+}
+
+// defaultScriptFilename returns a safe default filename when the script entry
+// does not carry an explicit one.
+func defaultScriptFilename() string {
+	if runtime.GOOS == "windows" {
+		return "install.ps1"
+	}
+	return "install.sh"
+}
+
+// resolveScriptEntry converts a single scripts[key] object into a scriptRef.
+// It prefers "path" over "body" as per contract §2.
+func resolveScriptEntry(obj map[string]interface{}) (scriptRef, bool) {
+	// path-based entry (original form, unchanged)
+	if p, ok := obj["path"].(string); ok && p != "" {
+		return scriptRef{RemotePath: p, Filename: filepath.Base(p)}, true
+	}
+
+	// inline-body entry (new: contract §2)
+	body, hasBody := obj["body"].(string)
+	if !hasBody {
+		return scriptRef{}, false
+	}
+
+	filename, _ := obj["filename"].(string)
+	if filename == "" {
+		filename = defaultScriptFilename()
+	}
+	return scriptRef{Body: &body, Filename: filename}, true
+}
+
+func (s *TaskExecutorService) resolveScript(task taskstore.Task) (scriptRef, error) {
 	osKey := runtime.GOOS
 
 	if scriptObj, ok := task.Scripts[osKey].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
+		if ref, ok := resolveScriptEntry(scriptObj); ok {
+			if err := validateScriptFilename(ref.Filename); err != nil {
+				return scriptRef{}, err
+			}
+			return ref, nil
 		}
 	}
 
 	if scriptObj, ok := task.Scripts["all"].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
+		if ref, ok := resolveScriptEntry(scriptObj); ok {
+			if err := validateScriptFilename(ref.Filename); err != nil {
+				return scriptRef{}, err
+			}
+			return ref, nil
 		}
 	}
 
-	return "", "", fmt.Errorf("no script found for platform: %s", osKey)
+	return scriptRef{}, fmt.Errorf("no script found for platform: %s", osKey)
 }
 
 func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath string) error {
@@ -296,5 +368,18 @@ func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, lo
 	return nil
 }
 
-// maxScriptBytes is the largest command script the agent will download.
+// writeInlineScript writes an inline script body to localPath with 0700
+// permissions (matching the chmod that downloaded scripts receive on Unix).
+func writeInlineScript(localPath, body string) error {
+	if int64(len(body)) > maxScriptBytes {
+		return fmt.Errorf("inline script body exceeds limit of %d bytes", maxScriptBytes)
+	}
+	// #nosec G306 - scripts must be executable (0700)
+	if err := os.WriteFile(localPath, []byte(body), 0700); err != nil {
+		return fmt.Errorf("write inline script: %w", err)
+	}
+	return nil
+}
+
+// maxScriptBytes is the largest command script the agent will download or accept inline.
 const maxScriptBytes = 10 << 20
