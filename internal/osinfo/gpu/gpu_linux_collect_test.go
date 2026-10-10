@@ -229,6 +229,26 @@ func TestEnrichAMDGPU_ROCmFallback(t *testing.T) {
 			wantVRAM: "15 GB",
 		},
 		{
+			// #111: current rocm-smi also prints a used-memory column; the
+			// total must be picked, not the last column.
+			name: "rocm-smi with total and used columns",
+			outputs: map[string]string{
+				rocmShowBus: header + "card0,0000:03:00.0\n",
+				"rocm-smi -d 0 --showmeminfo vram --csv": "device,VRAM Total Memory (B),VRAM Total Used Memory (B)\n" +
+					"card0,17163091968,1073741824\n",
+			},
+			wantVRAM: "15 GB",
+		},
+		{
+			name: "rocm-smi with used column before total",
+			outputs: map[string]string{
+				rocmShowBus: header + "card0,0000:03:00.0\n",
+				"rocm-smi -d 0 --showmeminfo vram --csv": "device,VRAM Total Used Memory (B),VRAM Total Memory (B)\n" +
+					"card0,1073741824,8589934592\n",
+			},
+			wantVRAM: "8 GB",
+		},
+		{
 			name:     "rocm-smi not installed",
 			outputs:  nil,
 			wantVRAM: "Unknown",

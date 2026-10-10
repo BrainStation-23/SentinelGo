@@ -40,6 +40,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # Fail before building if the tag has no CHANGELOG.md section to publish.
+      - name: Check release notes exist
+        run: go run ./scripts/changelog -extract "${GITHUB_REF#refs/tags/}" > /dev/null
+
       - name: Ensure shell scripts are executable
         run: chmod +x installation-doc/install.sh installation-doc/install.command scripts/*.sh
 
@@ -167,11 +171,18 @@ jobs:
     needs: [build, attest, attest-installers]
     permissions:
       contents: write
-      models: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          fetch-depth: 0
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      # The release body is the tag's CHANGELOG.md section, written and reviewed
+      # in a pull request. Fails the release if the section is missing or empty.
+      - name: Release notes from CHANGELOG.md
+        run: go run ./scripts/changelog -extract "${GITHUB_REF#refs/tags/}" > release-notes.md
 
       - name: Download artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -179,62 +190,10 @@ jobs:
           name: release-binaries
           path: artifacts
 
-      - name: Generate AI release notes
-        id: ai_notes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          CURR_TAG="${GITHUB_REF#refs/tags/}"
-          PREV_TAG=$(git tag -l 'v[0-9]*' | sort -V | grep -v "^${CURR_TAG}$" | tail -1)
-
-          if [ -n "$PREV_TAG" ]; then
-            COMMITS=$(git log "${PREV_TAG}..${CURR_TAG}" --pretty=format:"- %s" | head -60)
-          else
-            COMMITS=$(git log --pretty=format:"- %s" | head -60)
-          fi
-
-          PAYLOAD=$(jq -n \
-            --arg curr "$CURR_TAG" \
-            --arg commits "$COMMITS" \
-            '{
-              model: "openai/gpt-4o-mini",
-              messages: [
-                {
-                  role: "system",
-                  content: "You are a technical writer creating release notes for SentinelGo, a cross-platform Go system monitoring agent (Linux, macOS, Windows). Write concise, user-focused release notes in markdown. Group into: Breaking Changes, New Features, Bug Fixes, Improvements. Omit empty sections. Use bullet points. Be brief."
-                },
-                {
-                  role: "user",
-                  content: ("Generate release notes for " + $curr + " from these commits:\n\n" + $commits)
-                }
-              ],
-              temperature: 0.3,
-              max_tokens: 800
-            }')
-
-          RESPONSE=$(curl -sf -X POST https://models.github.ai/inference/chat/completions \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" || echo "")
-
-          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null || echo "")
-
-          if [ -n "$NOTES" ]; then
-            {
-              echo "notes<<AIEOF"
-              echo "$NOTES"
-              echo "AIEOF"
-              echo "success=true"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "success=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
-          body: ${{ steps.ai_notes.outputs.success == 'true' && steps.ai_notes.outputs.notes || '' }}
-          generate_release_notes: ${{ steps.ai_notes.outputs.success != 'true' }}
+          body_path: release-notes.md
           # artifacts/sentinelgo-* also covers sentinelgo-install.desktop(.sig).
           files: |
             artifacts/sentinelgo-*

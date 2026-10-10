@@ -49,7 +49,6 @@ We follow coordinated disclosure. We ask that you give us reasonable time to dev
 The following are in scope:
 
 - The SentinelGo agent binary and all packages under `internal/` and `cmd/`
-- The Supabase Edge Functions under `supabase/`
 - The installation scripts under `installation-doc/`
 - The build and release pipeline (`.github/workflows/`)
 
@@ -63,37 +62,57 @@ Out of scope:
 
 ## Security Architecture
 
-SentinelGo runs as a privileged system service (systemd / launchd / Windows SCM) and communicates exclusively with a Supabase backend. The points below describe the security controls built into the agent.
+SentinelGo runs as a privileged system service (systemd / launchd / Windows SCM) and communicates exclusively with a Supabase backend. The points below describe the security controls built into the agent. The threat model and the reasoning behind these controls are in the [assurance case](docs/assurance-case.md).
+
+### What to expect
+
+SentinelGo **is designed to protect**:
+
+- the agent's credentials and the data it collects, in transit (HTTPS only) and at rest on the device (owner-only file permissions);
+- the agent binary itself: updates are installed only if they are newer, match the published SHA-256 checksum and carry a valid Ed25519 signature;
+- the device from the agent's own mistakes: input from the OS and the network is validated and fuzzed, external commands are run by absolute path, and task output is redacted before upload.
+
+SentinelGo **does not protect against**:
+
+- **A compromised backend.** The backend can send tasks that run scripts with the agent's privileges (root or SYSTEM). Anyone who controls your Supabase project or its service-role key controls every enrolled device. Protect the backend accordingly.
+- **A local administrator or root user.** They can read the agent's config, including its credentials, and stop or replace the agent.
+- **A compromised device.** SentinelGo reports a device's state; it is not an antivirus or EDR and does not prevent attacks on the device.
 
 ### Authentication and credentials
 
 - Every agent authenticates to the backend using a unique `agent_uuid` / `agent_secret` pair. These are never derived from hostnames or other guessable data.
 - On successful login the agent receives a short-lived JWT. The JWT is automatically refreshed before expiry; the agent never relies on a single long-lived token.
-- A circuit-breaker in `internal/auth/` limits the number of consecutive failed auth attempts and introduces back-off to resist credential-stuffing.
-- Credentials are stored on disk using the OS credential store where available (`internal/config/secure_unix.go`, `internal/config/secure_windows.go`). The config file is written with restrictive permissions.
+- A circuit breaker (`internal/resilience/`) stops repeated failing calls and backs off, so a misconfigured or rejected agent doesn't hammer the backend.
+- The agent secret and tokens are stored in cleartext in `config.json`, protected by file permissions: mode `0600` in an owner-only `0700` directory on Linux and macOS (`internal/config/secure_unix.go`), and an explicit DACL allowing only SYSTEM, Administrators and the agent's account on Windows (`internal/config/secure_windows.go`).
 
 ### Transport security
 
-- All communication with Supabase and GitHub uses HTTPS. Plain HTTP is not used and there is no downgrade path.
+- The agent only talks to the Supabase backend, over HTTPS. A `supabase_url` that isn't `https://` is rejected at startup, so there is no plaintext or downgrade path.
+- TLS uses Go's `crypto/tls` defaults: TLS 1.2 or newer, certificate verification always on.
 - The shared HTTP client (`internal/httpx/`) enforces timeouts on every outbound request.
 
 ### Task execution (script runner)
 
 - Script payloads are downloaded exclusively from a Supabase Storage bucket that is protected by Row Level Security. The agent uses its authenticated JWT for every download; unauthenticated requests are rejected by the backend.
-- The task runner (`internal/service/task/`) does not evaluate or interpolate the script path — it downloads to a temporary file and executes it with the OS shell.
+- The task runner (`internal/service/task/`) does not evaluate or interpolate the script path — it downloads to a temporary file and executes it with the OS shell. Scripts larger than 10 MiB are rejected.
+- Scripts run with the agent's privileges. This is by design (they exist to administer the device), and it is why the backend must be trusted; see "What to expect" above.
 - Execution results (exit code, stdout, stderr) are uploaded back to the backend. The sanitize package (`internal/sanitize/`) redacts PII and credential-like patterns from outputs before they leave the machine.
 
 ### Automatic updates
 
-- Release binaries are cross-compiled with `CGO_ENABLED=0` (fully static, no C runtime dependency).
-- Each release ships a `SHA256SUMS` file. The signing script (`scripts/sign`) generates these checksums at release time. **Verifying the checksum before running a downloaded binary is strongly recommended** — see `installation-doc/INSTALLATION.md`.
-- The updater (`internal/updater/`) fetches the latest release tag from the GitHub Releases API over HTTPS, selects the matching asset by exact name, and performs an atomic binary replace on disk.
-- Binary signature verification (cryptographic signing beyond SHA-256) is a planned enhancement.
+- Release binaries are cross-compiled with `CGO_ENABLED=0` (fully static, no C runtime dependency) and are reproducible; see [`RELEASE.md`](RELEASE.md).
+- Every release binary and installer is signed with Ed25519 (`scripts/sign`), listed in `SHA256SUMS`, and has a GitHub build-provenance attestation.
+- The updater (`internal/updater/`) asks the backend for the latest release through the `get_latest_agent_release` RPC and downloads the binary and its `.sig` from Supabase Storage. It installs the update only if:
+  - the version is strictly newer than the running one (no downgrades),
+  - the SHA-256 matches the release manifest, and
+  - the Ed25519 signature verifies against the public key compiled into the agent (`internal/updater/pubkey.go`). A missing or invalid signature is a hard failure.
+- The current binary is backed up first, the new one replaces it atomically, and a failed replace rolls back to the backup.
+- The installers verify the binary against `SHA256SUMS` and refuse to install if the file is missing. See [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md).
 
 ### Audit log collection
 
 - The audit log collector (`internal/auditlogs/collector/`) reads from OS-native event sources (Windows Event Log, Linux journald, macOS unified log) using read-only APIs. It does not modify system logs.
-- Events are queued in a local SQLite database (`internal/auditlogstore/`) before upload. The queue provides at-least-once delivery without losing events across restarts.
+- Events are queued in a local SQLite database (`internal/store/`) before upload. The queue provides at-least-once delivery without losing events across restarts.
 
 ### Process isolation
 
@@ -108,23 +127,28 @@ Every pull request and release runs:
 
 | Check | Tool | Gate |
 |-------|------|------|
+| Static analysis | CodeQL | Merging to `main` is blocked on high-severity alerts |
+| Static analysis | Semgrep | Required check |
+| Static analysis and coverage | SonarCloud | Quality gate reported on every pull request |
+| Static analysis | gosec | Findings uploaded to the GitHub Security tab (advisory only) |
+| Secret scanning | GitGuardian | Required check |
 | Dependency vulnerability scan | `govulncheck` | Build fails on known vulnerabilities |
 | Filesystem/secret/misconfiguration scan | Trivy (CRITICAL + HIGH) | Build fails |
-| Static analysis | Gosec | Findings uploaded to GitHub Security tab (advisory only) |
 | Module integrity | `go mod verify` | Build fails on tampered modules |
 | CGO enforcement | Custom grep | Build fails if `import "C"` is introduced |
 | Lint (all three OSes) | golangci-lint | Build fails |
+| Fuzzing | Go native fuzzing | Nightly, on every parser of untrusted input |
 
-Release binaries are produced only after the full CI pipeline passes. No binary is attached to a GitHub Release unless all gates are green.
+Release binaries are produced only after the full CI pipeline passes. No binary is attached to a GitHub Release unless all gates are green. The `main` branch only accepts changes through pull requests that pass the required checks, with no bypass for anyone.
 
 ---
 
 ## Known Limitations
 
-The following gaps are acknowledged and on the roadmap:
+The following gaps are acknowledged and tracked in the [roadmap](ROADMAP.md):
 
-1. **Cryptographic binary signing** — Release binaries are currently protected by SHA-256 checksums only. A proper code-signing scheme (e.g., sigstore/cosign) is planned.
-2. **Update rollback** — There is no automated rollback if the newly applied binary fails to start. Manual recovery requires re-downloading a previous release.
+1. **Update rollback after a failed start** — A failed binary replace rolls back automatically, but if the new binary is installed and then fails to start, there is no automatic rollback. Recovery means reinstalling a previous release.
+2. **Cleartext credentials on disk** — The agent secret and tokens are protected by file permissions, not encrypted with an OS keychain.
 3. **No mTLS** — The agent authenticates to Supabase via JWT, not mutual TLS. This is an inherent constraint of the Supabase Edge Function API.
 
 ---

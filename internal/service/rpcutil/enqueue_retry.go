@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,11 +20,33 @@ var (
 	enqueueRetryMax  = 5 * time.Minute
 )
 
+// ErrPayloadDropped marks an enqueue whose payload the server rejected with a
+// non-retryable 4xx. WithEnqueueRetry returns it (wrapping the server error)
+// only when ctx was prepared with ReportDroppedPayloads; otherwise the drop is
+// logged and nil is returned, which is what the background loops rely on.
+var ErrPayloadDropped = errors.New("enqueue: server rejected payload")
+
+type reportDropsKey struct{}
+
+// ReportDroppedPayloads returns a ctx under which WithEnqueueRetry (and so
+// PostEnqueue) reports a dropped payload as an error wrapping
+// ErrPayloadDropped instead of returning nil. It is for interactive callers,
+// such as the CLI, that must not report success when nothing was saved.
+func ReportDroppedPayloads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, reportDropsKey{}, true)
+}
+
+func reportsDrops(ctx context.Context) bool {
+	v, _ := ctx.Value(reportDropsKey{}).(bool)
+	return v
+}
+
 // WithEnqueueRetry applies the agent-enqueue retry policy to fn:
 //   - nil                 → success
 //   - 401 / expired JWT   → error propagated (caller's DoWithAuthRetry handles it)
 //   - 408, 429            → transient: retried like 5xx; a 429's Retry-After is honoured
-//   - other 4xx           → logged and dropped (server rejected the payload; retrying won't help)
+//   - other 4xx           → logged and dropped (server rejected the payload; retrying won't help);
+//     nil is returned, or an error wrapping ErrPayloadDropped under ReportDroppedPayloads
 //   - 5xx or network      → exponential backoff + jitter (1 s initial, 5 min max delay),
 //     retried until ctx is cancelled
 //
@@ -44,6 +67,9 @@ func WithEnqueueRetry(ctx context.Context, fn func(ctx context.Context) error) e
 		}
 		if status >= 400 && status < 500 && !isTransient4xx(status) {
 			log.Printf("[enqueue] server rejected payload (HTTP %d), dropping: %v", status, err)
+			if reportsDrops(ctx) {
+				return fmt.Errorf("%w (HTTP %d): %w", ErrPayloadDropped, status, err)
+			}
 			return nil
 		}
 		// 408/429, 5xx or network error (status == 0): backoff and retry.

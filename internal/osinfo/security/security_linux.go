@@ -140,7 +140,8 @@ func applyAVEnabledState(details *shared.AntivirusDetails, enabledStr string) {
 }
 
 // collectClamAVScanInfo reads the ClamAV log for the most recent scan summary
-// time, scanned-file count, and any infected-file detections.
+// time, scanned-file count, and any infected-file detections. Only the newest
+// "SCAN SUMMARY" block is considered; older scans in the log are ignored.
 func collectClamAVScanInfo() shared.SecurityScanInfo {
 	var scan shared.SecurityScanInfo
 	scan.LastScanTime = "Unknown"
@@ -152,17 +153,30 @@ func collectClamAVScanInfo() shared.SecurityScanInfo {
 		return scan
 	}
 	lines := strings.Split(string(logData), "\n")
+	start := 0
 	for i := len(lines) - 1; i >= 0; i-- {
-		parseClamAVLogLine(strings.TrimSpace(lines[i]), &scan)
+		if strings.Contains(lines[i], "SCAN SUMMARY") {
+			start = i
+			break
+		}
+	}
+	for _, line := range lines[start:] {
+		parseClamAVLogLine(strings.TrimSpace(line), &scan)
 	}
 	return scan
 }
 
+// clamAVTimestampSep separates the ctime prefix ClamAV writes on log lines
+// (e.g. "Wed Oct  7 02:00:01 2026 -> ") from the message.
+const clamAVTimestampSep = " -> "
+
 // parseClamAVLogLine inspects a single ClamAV log line, updating scan with
 // the scan summary time, scanned-file count, and infected-file details.
 func parseClamAVLogLine(line string, scan *shared.SecurityScanInfo) {
-	if strings.Contains(line, "SCAN SUMMARY") && len(line) > 24 {
-		scan.LastScanTime = line[:20]
+	if strings.Contains(line, "SCAN SUMMARY") {
+		if ts, _, ok := strings.Cut(line, clamAVTimestampSep); ok && ts != "" {
+			scan.LastScanTime = ts
+		}
 	}
 	if strings.Contains(line, "Scanned files:") {
 		if count, ok := parseClamAVCount(line); ok {
@@ -184,14 +198,15 @@ func parseClamAVLogLine(line string, scan *shared.SecurityScanInfo) {
 }
 
 // parseClamAVCount extracts the integer count from a "Label: N" style ClamAV
-// log line.
+// log line. The count follows the last ':', so a timestamp prefix such as
+// "Wed Oct  7 02:00:01 2026 -> " does not affect it.
 func parseClamAVCount(line string) (int, bool) {
-	parts := strings.Split(line, ":")
-	if len(parts) < 2 {
+	idx := strings.LastIndex(line, ":")
+	if idx < 0 {
 		return 0, false
 	}
 	var count int
-	if _, err := fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &count); err != nil {
+	if _, err := fmt.Sscanf(strings.TrimSpace(line[idx+1:]), "%d", &count); err != nil {
 		return 0, false
 	}
 	return count, true
@@ -497,11 +512,17 @@ func pendingSecurityPatchCount() int {
 }
 
 // pendingPatchesFromAptCheck parses the "N;M" output of apt-check, where M is
-// the count of pending security updates.
+// the count of pending security updates. apt-check writes that summary to
+// stderr (stdout is empty), so combined output is read and the last line,
+// which follows any Python warnings, is parsed.
 func pendingPatchesFromAptCheck() int {
-	out, err := securityRunCommand("/usr/lib/update-notifier/apt-check")
-	if err != nil {
+	out, exitCode, err := securityRunCommandOutput("/usr/lib/update-notifier/apt-check")
+	if err != nil || exitCode != 0 {
 		return 0
+	}
+	out = strings.TrimSpace(out)
+	if i := strings.LastIndex(out, "\n"); i >= 0 {
+		out = out[i+1:]
 	}
 	parts := strings.Split(strings.TrimSpace(out), ";")
 	if len(parts) < 2 {

@@ -186,6 +186,7 @@ func TestCheckAndApply_ChecksumMismatchRemovesBackup(t *testing.T) {
 		t.Errorf("self must be untouched, got %q", got)
 	}
 	assertNotExist(t, f.self+".backup", "backup")
+	assertNotExist(t, f.self+".new", "staged binary") // #116
 	if len(f.restarted) != 0 {
 		t.Error("restart must not run on a checksum mismatch")
 	}

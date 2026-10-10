@@ -198,13 +198,9 @@ func TestCreateBackup_BackupNotWritable(t *testing.T) {
 // A read error mid-copy must not leave a truncated backup behind (a later
 // rollback would restore a corrupt binary). Opening a directory succeeds but
 // reading it fails, which drives the io.Copy error path.
+// Regression test for #115: on Windows the partial backup can only be removed
+// once its handle is closed.
 func TestCreateBackup_CopyErrorRemovesPartialBackup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// Known bug: createBackup removes the partial backup while its handle
-		// is still open (dst is closed by a defer), which Windows refuses, so
-		// the partial file is left behind there.
-		t.Skip("partial-backup cleanup fails on Windows while the file is open")
-	}
 	self := t.TempDir()
 	setExecutablePath(t, func() (string, error) { return self, nil })
 

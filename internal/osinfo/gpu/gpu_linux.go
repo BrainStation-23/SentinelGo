@@ -371,16 +371,21 @@ func amdVRAMFromROCm(busID string) (string, bool) {
 	if amdErr != nil {
 		return "", false
 	}
+	totalCol := 1
 	for i, amdLine := range strings.Split(amdOut, "\n") {
 		amdLine = strings.TrimSpace(amdLine)
-		if i == 0 || amdLine == "" {
+		if i == 0 {
+			totalCol = rocmTotalVRAMColumn(amdLine)
+			continue
+		}
+		if amdLine == "" {
 			continue
 		}
 		amdParts := strings.Split(amdLine, ",")
-		if len(amdParts) < 2 {
+		if len(amdParts) <= totalCol {
 			continue
 		}
-		vramStr := strings.TrimSpace(amdParts[len(amdParts)-1])
+		vramStr := strings.TrimSpace(amdParts[totalCol])
 		vramBytes, err := strconv.ParseInt(vramStr, 10, 64)
 		if err == nil && vramBytes > 0 {
 			return formatLinuxVRAM(vramBytes), true
@@ -388,6 +393,20 @@ func amdVRAMFromROCm(busID string) (string, bool) {
 		return "", false
 	}
 	return "", false
+}
+
+// rocmTotalVRAMColumn returns the index of the "VRAM Total Memory" column in
+// a rocm-smi --showmeminfo CSV header. Newer rocm-smi versions also print a
+// "VRAM Total Used Memory" column, so the column is located by name; the first
+// value column is assumed when the header doesn't name it.
+func rocmTotalVRAMColumn(header string) int {
+	for i, col := range strings.Split(header, ",") {
+		col = strings.ToLower(col)
+		if strings.Contains(col, "total memory") && !strings.Contains(col, "used") {
+			return i
+		}
+	}
+	return 1
 }
 
 // enrichAMDGPU sets DedicatedVRAM for an AMD GPU. It tries the DRM sysfs

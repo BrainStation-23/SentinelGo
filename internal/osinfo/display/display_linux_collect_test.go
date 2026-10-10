@@ -8,6 +8,7 @@ package display
 // tree in t.TempDir(). Nothing here reads the host's /sys or runs xrandr.
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -142,10 +143,9 @@ func TestGetDisplays_EndToEnd(t *testing.T) {
 		t.Errorf("HDMI-A-1 = %+v", hdmi)
 	}
 
-	// Model is not asserted: the EDID parse leaves it "" (not "Unknown"), and
-	// applyModelFromDecodeLine only fills a model that is exactly "Unknown".
+	// The EDID parse leaves Model "" (not "Unknown"); edid-decode still fills it.
 	dp2 := byDesc["DP-2"]
-	if dp2.SerialNumber != "7MT0123456" ||
+	if dp2.SerialNumber != "7MT0123456" || dp2.Model != "ROG PG279Q" ||
 		dp2.ConnectionType != "DisplayPort" || dp2.Resolution != "1920x1080" {
 		t.Errorf("DP-2 = %+v", dp2)
 	}
@@ -467,5 +467,184 @@ func TestFillLinuxDisplayDefaults(t *testing.T) {
 	fillLinuxDisplayDefaults(&d)
 	if d.Manufacturer != "Unknown" || d.SerialNumber != "Unknown" || d.Model != "Unknown" {
 		t.Errorf("got %+v", d)
+	}
+}
+
+// withEDIDChecksum sets byte 127 so the 128-byte base block sums to 0 mod 256,
+// as a real EDID does.
+func withEDIDChecksum(edid []byte) []byte {
+	var sum byte
+	for _, b := range edid[:127] {
+		sum += b
+	}
+	edid[127] = -sum
+	return edid
+}
+
+// xrandrPropEDIDBlock renders edid the way `xrandr --prop` does: "\tEDID: "
+// alone on a line, then 16 bytes (32 hex chars) per "\t\t"-indented line.
+func xrandrPropEDIDBlock(edid []byte) string {
+	h := hex.EncodeToString(edid)
+	var b strings.Builder
+	b.WriteString("\tEDID: \n")
+	for i := 0; i < len(h); i += 32 {
+		b.WriteString("\t\t" + h[i:i+32] + "\n")
+	}
+	return b.String()
+}
+
+// Regression for #119: real `xrandr --prop` output splits the EDID over eight
+// indented continuation lines rather than putting it after "EDID:".
+func TestGetSerialFromXrandrProps_MultiLineEDID(t *testing.T) {
+	edid := withEDIDChecksum(makeEDID(0x10, 0xAC, 12, 31, 60, 34, timing1920x1080, "DELL U2722D", "CN0XR12345"))
+	if !bytes.Equal(edid[:8], []byte{0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}) {
+		t.Fatal("fixture EDID header invalid")
+	}
+	var sum byte
+	for _, b := range edid {
+		sum += b
+	}
+	if sum != 0 {
+		t.Fatalf("fixture EDID checksum invalid: sum %d", sum)
+	}
+
+	other := withEDIDChecksum(makeEDID(0x4C, 0x2D, 1, 30, 52, 29, timing1920x1080, "SAMSUNG", "OTHER0001"))
+	out := "Screen 0: minimum 320 x 200, current 3840 x 1080, maximum 16384 x 16384\n" +
+		"eDP-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 309mm x 174mm\n" +
+		xrandrPropEDIDBlock(other) +
+		"\tscaling mode: Full aspect \n" +
+		"\t\tsupported: Full, Center, Full aspect\n" +
+		"   1920x1080     60.02*+\n" +
+		"HDMI-1 connected 1920x1080+1920+0 (normal left inverted right x axis y axis) 597mm x 336mm\n" +
+		xrandrPropEDIDBlock(edid) +
+		"\tnon-desktop: 0 \n" +
+		"\t\tsupported: 0, 1\n" +
+		"\tlink-status: Good \n" +
+		"\t\tsupported: Good, Bad\n" +
+		"   1920x1080     60.00*+  50.00    59.94\n" +
+		"DP-1 disconnected (normal left inverted right x axis y axis)\n" +
+		"\tnon-desktop: 0 \n" +
+		"\t\tsupported: 0, 1\n"
+	if got := strings.Count(out, "\t\t"+hex.EncodeToString(edid)[:32]); got != 1 {
+		t.Fatalf("fixture malformed: %d", got)
+	}
+	stubLinuxDisplayCommands(t, map[string]string{"xrandr --prop --query": out})
+
+	if got := getSerialFromXrandrProps("HDMI-1"); got != "CN0XR12345" {
+		t.Errorf("HDMI-1 serial = %q, want CN0XR12345", got)
+	}
+	if got := getSerialFromXrandrProps("eDP-1"); got != "OTHER0001" {
+		t.Errorf("eDP-1 serial = %q, want OTHER0001", got)
+	}
+	if got := getSerialFromXrandrProps("DP-1"); got != "" {
+		t.Errorf("DP-1 (no EDID) serial = %q, want empty", got)
+	}
+}
+
+// Regression for #119: an EDID with a serial but no name descriptor and no
+// physical size parses to Model "" (not "Unknown"); edid-decode's monitor name
+// must still fill it.
+func TestGetDisplays_EDIDDecodeFillsEmptyModel(t *testing.T) {
+	root := stubLinuxDisplaySysfs(t)
+	nameless := withEDIDChecksum(makeEDID(0x10, 0xAC, 12, 31, 0, 0, timing1920x1080, "", "CN0XR12345"))
+	if m := parseEDIDModel(nameless); m != "" {
+		t.Fatalf("fixture precondition: parseEDIDModel = %q, want empty", m)
+	}
+	edidPath := addDRMConnector(t, root, "card0-DP-3", nameless)
+	stubLinuxDisplayCommands(t, map[string]string{
+		"edid-decode " + edidPath: "Block 0, Base EDID:\n" +
+			"  EDID Structure Version & Revision: 1.4\n" +
+			"  Vendor & Product Identification:\n" +
+			"    Manufacturer: DEL\n" +
+			"    Made in: week 12 of 2021\n" +
+			"  Display Descriptors:\n" +
+			"    Display Product Serial Number: 'CN0XR12345'\n" +
+			"    Monitor Name: DELL U2722D\n",
+	})
+
+	displays := getDisplays()
+	if len(displays) != 1 {
+		t.Fatalf("got %d displays (%+v), want 1", len(displays), displays)
+	}
+	if d := displays[0]; d.Model != "DELL U2722D" || d.SerialNumber != "CN0XR12345" {
+		t.Errorf("DP-3 = %+v, want Model DELL U2722D, Serial CN0XR12345", d)
+	}
+}
+
+func TestApplyModelFromDecodeLine_EmptyModel(t *testing.T) {
+	d := shared.Display{Model: ""}
+	applyModelFromDecodeLine(&d, "    Monitor Name: DELL U2722D")
+	if d.Model != "DELL U2722D" {
+		t.Errorf("Model = %q, want DELL U2722D", d.Model)
+	}
+}
+
+// modernEDIDDecodeFixture is current edid-decode output (format as printed by
+// edid-decode 1.x): the header carries the numeric product code ("Model:") and
+// serial field, while the name and serial strings live in quoted descriptors.
+const modernEDIDDecodeFixture = `edid-decode (hex):
+
+00 ff ff ff ff ff ff 00 10 ac 12 a1 4c 30 31 30
+0c 1f 01 04 b5 3c 22 78 3b 4f 25 ae 52 4f 9e 26
+
+----------------
+
+Block 0, Base EDID:
+  EDID Structure Version & Revision: 1.4
+  Vendor & Product Identification:
+    Manufacturer: DEL
+    Model: 41234
+    Serial Number: 808530252
+    Made in: week 12 of 2021
+  Basic Display Parameters & Features:
+    Digital display
+    Bits per primary color channel: 10
+    DisplayPort interface
+    Maximum image size: 60 cm x 34 cm
+    Gamma: 2.20
+  Standard Timings:
+    DMT 0x52:  1920x1080   60.000000 Hz  16:9     67.500 kHz    148.500000 MHz
+  Detailed Timing Descriptors:
+    DTD 1:  1920x1080   60.000000 Hz  16:9     67.500 kHz    148.500000 MHz (600 mm x 340 mm)
+                 Hfront   88 Hsync  44 Hback  148 Hpol P
+                 Vfront    4 Vsync   5 Vback   36 Vpol P
+    Display Product Serial Number: 'CN0XR12345'
+    Display Product Name: 'DELL U2722D'
+    Display Range Limits:
+      Monitor ranges (GTF): 48-75 Hz V, 30-90 kHz H, max dotclock 170 MHz
+  Extension blocks: 1
+Checksum: 0x2c
+`
+
+// Modern edid-decode: the quoted descriptor strings must win over the
+// header's numeric product code / serial field, with quotes stripped.
+func TestApplyEDIDDecodeFallback_ModernFormat(t *testing.T) {
+	stubLinuxDisplayCommands(t, map[string]string{"edid-decode /x/edid": modernEDIDDecodeFixture})
+	d := shared.Display{SerialNumber: "Unknown", Model: ""}
+	applyEDIDDecodeFallback(&d, "/x/edid")
+	if d.Model != "DELL U2722D" || d.SerialNumber != "CN0XR12345" {
+		t.Errorf("got Model %q, Serial %q; want DELL U2722D, CN0XR12345", d.Model, d.SerialNumber)
+	}
+
+	// Without the name descriptor, the numeric product code is still not a model.
+	noName := strings.Replace(modernEDIDDecodeFixture, "    Display Product Name: 'DELL U2722D'\n", "", 1)
+	stubLinuxDisplayCommands(t, map[string]string{"edid-decode /x/edid": noName})
+	d = shared.Display{SerialNumber: "SN1", Model: ""}
+	applyEDIDDecodeFallback(&d, "/x/edid")
+	if d.Model != "" {
+		t.Errorf("Model = %q, want empty (41234 is a product code)", d.Model)
+	}
+}
+
+func TestEDIDDecodeLine_QuotedAndNumeric(t *testing.T) {
+	d := shared.Display{SerialNumber: "Unknown", Model: "Unknown"}
+	applyEDIDDecodeLine(&d, "    Display Product Serial Number: 'CN0XR12345'")
+	applyEDIDDecodeLine(&d, "    Model: 41234")
+	if d.SerialNumber != "CN0XR12345" || d.Model != "Unknown" {
+		t.Errorf("got %+v", d)
+	}
+	applyEDIDDecodeLine(&d, "    Display Product Name: 'PRO AP241'")
+	if d.Model != "PRO AP241" {
+		t.Errorf("Model = %q, want PRO AP241", d.Model)
 	}
 }

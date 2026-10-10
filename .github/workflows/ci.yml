@@ -167,6 +167,28 @@ jobs:
           path: coverage.out
           retention-days: 1
 
+  # ── race detector ─────────────────────────────────────────────────────────────
+  # The race detector needs cgo, so this job alone builds with CGO_ENABLED=1.
+  # Release binaries are unaffected: they're built by `make all` with cgo off.
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    needs: [static-checks, lint]
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run tests with -race
+        run: go test -race -timeout=10m -short ./...
+
   # ── cross-compile all targets ─────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
