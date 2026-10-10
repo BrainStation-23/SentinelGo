@@ -2,20 +2,28 @@ name: Trigger Release
 
 # HOW THIS WORKS
 # ──────────────
-# GitHub blocks workflows that use GITHUB_TOKEN from triggering other
-# workflows (loop-prevention). So if we push a tag with GITHUB_TOKEN,
-# release.yml's `on: push: tags: v*` never fires.
+# One click starts a release; see RELEASE.md.
 #
-# Fix: push the tag with a PAT (Personal Access Token). A PAT push IS
-# treated as a real user push and DOES trigger downstream workflows.
+#   1. This workflow picks the next version, moves CHANGELOG.md's [Unreleased]
+#      entries under a new [vX.Y.Z] heading on a release/vX.Y.Z branch, and
+#      opens a "Release vX.Y.Z" pull request with auto-merge on.
+#   2. The PR runs the normal required checks and merges itself.
+#   3. tag-release.yml sees the new version on main and pushes the tag.
+#   4. The tag runs release.yml, which publishes the [vX.Y.Z] section as the
+#      release notes.
+#
+# main only accepts changes through pull requests that pass the required
+# checks, so the changelog update has to be a PR rather than a direct commit.
+# Run with "dry run" ticked to see the release notes without opening a PR.
+# Running it again replaces the release branch with a fresh cut from main.
 #
 # REQUIRED SECRET: RELEASE_PAT
-#   Go to GitHub → Settings → Developer settings → Personal access tokens
-#   → Fine-grained tokens → Generate new token
-#   Set: Repository access → this repo only
-#   Permissions: Contents → Read and write
-#   Then add it at: repo → Settings → Secrets and variables → Actions
-#   Name: RELEASE_PAT
+#   A fine-grained personal access token for this repository with
+#     Contents: Read and write       (push the release branch and the tag)
+#     Pull requests: Read and write  (open the PR and enable auto-merge)
+#   PRs opened and branches pushed with GITHUB_TOKEN don't trigger workflows,
+#   so the PR's required checks would never run and it could never merge.
+#   Add it at: repo → Settings → Secrets and variables → Actions → RELEASE_PAT
 
 on:
   workflow_dispatch:
@@ -30,18 +38,27 @@ on:
           - minor
           - major
       version:
-        description: 'Explicit version override (e.g. v3.0.0) — leave empty to use bump'
+        description: 'Explicit version override (e.g. v3.0.0); leave empty to use bump'
         required: false
+      dry_run:
+        description: 'Dry run: show the release notes without opening a PR'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-trigger
+  cancel-in-progress: false
+
 jobs:
-  create-tag:
-    name: Compute version and push tag
+  release-pr:
+    name: Open release pull request
     runs-on: ubuntu-latest
-    # The tag push authenticates with RELEASE_PAT (persisted by checkout below),
-    # so GITHUB_TOKEN itself only needs read access.
+    if: github.ref == 'refs/heads/main'
+    # Pushes and PR calls authenticate with RELEASE_PAT, so GITHUB_TOKEN itself
+    # only needs read access.
     permissions:
       contents: read
     steps:
@@ -49,32 +66,93 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          # Use PAT so the subsequent tag push is treated as a real user
-          # event and triggers release.yml's `on: push: tags` handler.
           token: ${{ secrets.RELEASE_PAT }}
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Inputs are passed through env, never interpolated into the script, and
+      # an explicit version must look like vX.Y.Z[-pre]. A bump starts from the
+      # newest of the latest tag and the latest CHANGELOG.md version.
       - name: Compute next version
         id: ver
+        env:
+          VERSION: ${{ inputs.version }}
+          BUMP: ${{ inputs.bump }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          if [ -n "$VERSION" ]; then
+            if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::version must look like v1.2.3, got '$VERSION'"
+              exit 1
+            fi
+            TAG=$VERSION
           else
-            LATEST=$(git tag -l 'v[0-9]*' | sort -V | tail -1)
+            LATEST=$( { git tag -l 'v[0-9]*'; go run ./scripts/changelog -latest; } | sort -V | tail -1)
             [ -z "$LATEST" ] && LATEST="v0.0.0"
             VER=${LATEST#v}
+            VER=${VER%%-*}
             IFS='.' read -r MAJ MIN PAT <<< "$VER"
-            case "${{ inputs.bump }}" in
+            case "$BUMP" in
               major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
               minor) MIN=$((MIN+1)); PAT=0 ;;
               patch) PAT=$((PAT+1)) ;;
             esac
-            echo "tag=v$MAJ.$MIN.$PAT" >> $GITHUB_OUTPUT
+            TAG="v$MAJ.$MIN.$PAT"
           fi
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "::error::$TAG is already tagged."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Push tag
+      - name: Cut CHANGELOG.md
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
+          if go run ./scripts/changelog -extract "$TAG" > /dev/null 2>&1; then
+            echo "::error file=CHANGELOG.md::main already has a [$TAG] section. Merging it should have tagged it; check the Tag Release workflow."
+            exit 1
+          fi
+          if ! go run ./scripts/changelog -release "$TAG"; then
+            echo "::error file=CHANGELOG.md::Could not cut $TAG. Is [Unreleased] empty?"
+            exit 1
+          fi
+          go run ./scripts/changelog -extract "$TAG" > "$RUNNER_TEMP/notes.md"
+          {
+            echo "## Release notes for $TAG"
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open release pull request
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          BRANCH="release/$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.ver.outputs.tag }}
-          git push origin ${{ steps.ver.outputs.tag }}
-          echo "Tagged and pushed ${{ steps.ver.outputs.tag }}"
+          git checkout -B "$BRANCH"
+          git commit -am "Release $TAG"
+          git push --force origin "$BRANCH"
+
+          {
+            echo "Merging this PR tags \`$TAG\` on \`main\` and publishes the release with these notes from \`CHANGELOG.md\`."
+            echo "Edit the notes by pushing to this branch before it merges."
+            echo
+            echo "---"
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+          } > "$RUNNER_TEMP/body.md"
+
+          PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "Release $TAG" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          gh pr merge "$BRANCH" --auto --merge
+          echo "Release PR: $(gh pr view "$BRANCH" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

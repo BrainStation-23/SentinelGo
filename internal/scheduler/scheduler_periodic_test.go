@@ -150,7 +150,7 @@ func TestExecutePeriodicTask_Directly(t *testing.T) {
 	if count.Load() != 1 {
 		t.Errorf("handler ran %d time(s), want 1", count.Load())
 	}
-	if task.LastRun.IsZero() {
+	if task.LastRun().IsZero() {
 		t.Error("LastRun should be set after execution")
 	}
 	if task.Running.Load() {

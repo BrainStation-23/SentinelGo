@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,5 +204,44 @@ func TestTaskManagerErrorHandling(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("TaskManager did not stop within expected time")
+	}
+}
+
+// TestTaskManager_CloseIsIdempotent covers #113: Run closes the manager when
+// its ctx ends and MainIntegration.Stop closes it again after joining Run.
+// Repeated and concurrent Close calls must all succeed.
+func TestTaskManager_CloseIsIdempotent(t *testing.T) {
+	cfg := &config.Config{
+		EnableTaskPolling: false,
+		TaskDBPath:        filepath.Join(t.TempDir(), "tasks.sqlite"),
+	}
+	pollingSvc, err := task.NewTaskPollingServiceWithClient(cfg, cfg.TaskDBPath, &mockTaskClient{})
+	if err != nil {
+		t.Fatalf("NewTaskPollingServiceWithClient: %v", err)
+	}
+	tm := task.NewTaskManagerWithPollingService(cfg, pollingSvc)
+
+	// Run returns via Close once its ctx is cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := tm.Run(ctx); err != nil {
+		t.Fatalf("Run() after cancel = %v, want nil", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- tm.Close()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("repeated Close() = %v, want nil", err)
+		}
 	}
 }

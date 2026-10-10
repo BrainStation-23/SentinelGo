@@ -11,7 +11,10 @@ Thank you for taking the time to contribute! Every bug report, feature idea, doc
 - [Getting started](#getting-started)
 - [Development workflow](#development-workflow)
 - [Commit style](#commit-style)
+- [Coding standards](#coding-standards)
+- [Changelog entries](#changelog-entries)
 - [Pull request checklist](#pull-request-checklist)
+- [Code review](#code-review)
 - [Reporting bugs](#reporting-bugs)
 - [Suggesting features](#suggesting-features)
 - [Cross-platform rules](#cross-platform-rules)
@@ -129,6 +132,44 @@ chore(ci): pin golangci-lint to v2.12.2
 
 ---
 
+## Coding standards
+
+SentinelGo follows the standard Go style guides. Contributions are expected to comply with them:
+
+- [Effective Go](https://go.dev/doc/effective_go)
+- [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)
+- [Go Doc Comments](https://go.dev/doc/comment) for package, type and function documentation
+
+On top of those, the project rules in [Cross-platform rules](#cross-platform-rules) apply, plus these:
+
+- Handle every error explicitly. This is a long-running service, so don't panic and don't silently drop errors.
+- Run external programs through `internal/binpath` (absolute paths, never a bare name), and pass values as separate arguments. If a value has to go into a PowerShell script, quote it with `shared.PSQuote`.
+- All Supabase access goes through `internal/supabase`; read and write tokens only through `cfg.GetAccessToken` / `GetRefreshToken` / `SetTokens`.
+- New parsers of input the agent doesn't control come with a fuzz target.
+
+**Enforcement.** CI checks formatting with `gofmt -s` and runs `go vet` and `golangci-lint` on Linux, macOS and Windows; any finding fails the build. Run `make format-check` and `make quality-check` locally before pushing.
+
+---
+
+## Changelog entries
+
+[`CHANGELOG.md`](CHANGELOG.md) is the project's release notes: each release's section is published as its GitHub release description. Every pull request with a user-visible change adds a line under `## [Unreleased]`, in the matching group:
+
+| Group | For |
+|---|---|
+| `### Added` | New features, collectors, CLI flags, task handlers |
+| `### Changed` | Changes to existing behaviour or output |
+| `### Deprecated` | Features that will be removed in a later release |
+| `### Removed` | Features or files that are gone |
+| `### Fixed` | Bug fixes |
+| `### Security` | Vulnerability fixes and hardening. Include the CVE or GHSA ID once one is published. |
+
+Write for someone running the agent, not for reviewers: say what changed for them, not which functions moved. For example, `- Updater: a binary that fails its checksum is deleted instead of left on disk.`
+
+If a PR has nothing to tell users (tests, CI, refactors, docs), label it `skip-changelog`. Dependabot PRs (`dependencies` label) are exempt automatically. The **Changelog** check enforces this and validates the file's format; run `make changelog-check` locally.
+
+---
+
 ## Pull request checklist
 
 Before marking your PR ready for review, confirm:
@@ -138,9 +179,29 @@ Before marking your PR ready for review, confirm:
 - [ ] `make check-no-cgo` passes (no `import "C"` introduced)
 - [ ] `gofmt -s -l .` prints nothing (all files formatted)
 - [ ] New behaviour is covered by tests where practical
+- [ ] User-visible changes have a [changelog entry](#changelog-entries) under `[Unreleased]` (or the PR is labelled `skip-changelog`)
 - [ ] Public functions and types have doc comments
 - [ ] The PR description explains *what* changed and *why*
 - [ ] Breaking changes are called out explicitly
+
+---
+
+## Code review
+
+Every change reaches `main` through a pull request. The `main` branch ruleset enforces this for everyone, maintainers included, with no bypass.
+
+**How review works.** The required checks run automatically: builds and tests on all three OSes, the race detector, CodeQL, Semgrep, secret scanning and the changelog check. Automated reviewers (GitHub Copilot and CodeRabbit) comment on the diff. Then a maintainer reviews it. GitHub requests the review from the maintainers listed in [`CODEOWNERS`](.github/CODEOWNERS). While the project has a single maintainer, the maintainer's own pull requests are merged after the checks pass and the automated review comments are addressed. See [`GOVERNANCE.md`](GOVERNANCE.md).
+
+**What the reviewer checks:**
+
+1. **Correctness.** The change does what the PR says, and edge cases and error paths are handled.
+2. **All three platforms.** Platform-specific files have their counterparts, and nothing assumes one OS.
+3. **Security.** No new `PATH` lookups, unquoted shell input, secrets, plaintext HTTP or weakened update verification. If the change affects a claim in the [assurance case](docs/assurance-case.md), the document is updated too.
+4. **Tests.** New behaviour and bug fixes come with tests, and parsers of untrusted input with fuzz targets.
+5. **Style.** The [coding standards](#coding-standards) are followed.
+6. **Docs and changelog.** User-visible changes have a changelog entry, and the docs still describe what the code does.
+
+**What's required to merge:** every required check passes, the branch is up to date with `main`, review comments are resolved, and a maintainer approves (or, for the maintainer's own PRs, merges it).
 
 ---
 

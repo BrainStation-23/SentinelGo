@@ -1,98 +1,76 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/-%F0%9F%9B%A1%EF%B8%8F%20SentinelGo-0d1117?style=for-the-badge&labelColor=0d1117&color=00d4aa" alt="" height="52"/>
-
-# SentinelGo
-
-### One lightweight agent. Total endpoint visibility. Continuous compliance.
-
-<p>
-A single, dependency-free binary that turns every Windows, macOS, and Linux device<br/>
-into a continuously-monitored, audit-ready endpoint — hardware inventory, security posture,<br/>
-encryption status, and tamper-evident audit logs, streamed to your backend in real time.
-</p>
+<a href="https://brainstation-23.github.io/SentinelGo/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+    <img src="docs/assets/banner-light.svg" alt="SentinelGo: one lightweight agent. Total endpoint visibility. Continuous compliance." width="100%">
+  </picture>
+</a>
 
 <br/>
 
-[![Platforms](https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-cross--platform-0078d4?style=flat-square&logo=windows&logoColor=white)](#-runs-everywhere-your-fleet-does)
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white)](#-build-from-source)
-[![CGO Free](https://img.shields.io/badge/CGO__ENABLED-0%20%C2%B7%20static%20binary-22c55e?style=flat-square&logo=go&logoColor=white)](#-build-from-source)
-[![License](https://img.shields.io/badge/License-Apache%202.0-green?style=flat-square&logo=apache&logoColor=white)](#-license)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge)](https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo)
+[![Latest release](https://img.shields.io/github/v/release/BrainStation-23/SentinelGo?style=flat-square&color=00b894&label=release)](https://github.com/BrainStation-23/SentinelGo/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge?style=flat-square)](https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15253/badge)](https://www.bestpractices.dev/projects/15253)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
 
-<br/>
-
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=coverage)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=bugs)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
-
-<br/>
-
-[**Quick Start**](#-quick-start) &nbsp;·&nbsp; [**What it captures**](#-what-it-captures) &nbsp;·&nbsp; [**How it works**](#-how-it-works) &nbsp;·&nbsp; [**Configuration**](#%EF%B8%8F-configuration) &nbsp;·&nbsp; [**Docs**](#-documentation)
+**[Website](https://brainstation-23.github.io/SentinelGo/)** &nbsp;·&nbsp;
+**[Download](https://github.com/BrainStation-23/SentinelGo/releases/latest)** &nbsp;·&nbsp;
+**[Install guide](installation-doc/INSTALLATION.md)** &nbsp;·&nbsp;
+**[Docs](#-learn-more)** &nbsp;·&nbsp;
+**[Changelog](CHANGELOG.md)**
 
 </div>
 
 <br/>
 
----
+**SentinelGo turns every Windows, macOS and Linux machine in your fleet into a continuously monitored, audit-ready endpoint.** Drop one small file on a device and it starts reporting what's installed, how it's secured, and what's happening on it, then keeps itself up to date.
 
-## ✨ Why teams choose SentinelGo
-
-Most compliance and asset-management tools ship a heavy stack — a kernel module here, a Python runtime there, a different installer per OS, and an agent that drifts out of date the moment you deploy it. SentinelGo takes the opposite approach.
+No runtime to install, no agent zoo, no per-OS tooling. Just one binary that runs as a native service and stays out of the way.
 
 <br/>
 
+## ✨ Why SentinelGo
+
 <table>
 <tr>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-**📦 Zero dependencies, anywhere**
-
-Every build is a `CGO_ENABLED=0` static binary. No runtime, no shared libraries, no per-machine toolchain. Drop one file on a box and it runs — identically on a 2019 Windows Server, an Apple Silicon MacBook, and an ARM64 Linux node.
-
-</td>
-<td width="50%" valign="top">
-
-**🔄 Deploy once, stay current forever**
-
-Built-in self-update checks GitHub Releases, downloads the right binary for the platform, verifies it, and replaces itself atomically — so your fleet never falls behind without manual intervention.
+### 📦 Deploy in minutes
+One static binary per platform with no dependencies. Copy it, run `-install`, done. It runs as a Windows Service, systemd unit or launchd daemon and restarts itself on failure.
 
 </td>
-</tr>
-<tr>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-**⚙️ Runs as a first-class service**
-
-Native Windows Service, systemd unit, and launchd daemon. Install with one command; the agent survives reboots and automatically restarts on failure.
+### 🔍 See everything
+Hardware, software, network, security posture and live audit logs from every device, in one consistent format across all three operating systems.
 
 </td>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-**🔒 Built for compliance from day one**
-
-Durable, at-least-once audit-log delivery backed by a local SQLite queue means events survive network outages and reboots instead of being silently dropped.
+### 🔄 Stays current by itself
+Signed, verified self-updates roll out new versions across your fleet. No manual upgrades, no drift.
 
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-**🪶 Tiny footprint**
-
-A single background process designed for minimal CPU and memory impact — built to monitor, not to get in the way.
+### 🧾 Built for audits
+Audit events are queued on disk and delivered at least once, so nothing is lost to a reboot or a network outage.
 
 </td>
-<td width="50%" valign="top">
+<td width="33%" valign="top">
 
-**🔐 Secure by design**
+### 🪶 Light footprint
+A single background process built to monitor quietly, without slowing down the people using the machine.
 
-Per-agent JWT authentication, HTTPS-only transport, Supabase Row Level Security on every endpoint, and PII redaction before data leaves the machine.
+</td>
+<td width="33%" valign="top">
+
+### 🔐 Secure by design
+Per-agent authentication, HTTPS only, signed releases, and personal data redacted before it leaves the device.
 
 </td>
 </tr>
@@ -100,194 +78,66 @@ Per-agent JWT authentication, HTTPS-only transport, Supabase Row Level Security 
 
 <br/>
 
----
+## 📡 What you get from every device
 
-## 📡 What it captures
-
-> SentinelGo gives you a live, structured picture of every endpoint — far beyond "is it online."
-
-<br/>
-
-<details open>
-<summary><b>🖥️ &nbsp;Complete hardware &amp; system inventory</b></summary>
-<br/>
-
-CPU (model, cores, clock, usage), memory, per-disk capacity and health, GPUs, RAM modules (per-slot), displays, audio devices, printers, and connected peripherals (with vendor/product IDs). Plus OS name and version, architecture, locale, timezone, uptime, and last boot — refreshed on every heartbeat.
-
-</details>
-
-<details open>
-<summary><b>🔐 &nbsp;Security &amp; compliance posture</b></summary>
-<br/>
-
-| Category | What's collected |
+| Area | What's collected |
 |---|---|
-| **Disk encryption** | BitLocker (Windows), FileVault (macOS), LUKS (Linux) — including hardware vs. software type |
-| **Antivirus** | Installed products, enabled state, definition currency |
-| **Firewall** | Status and per-profile configuration |
-| **OS hardening** | Secure Boot, VBS/HVCI, Credential Guard (Windows) · SIP (macOS) · SELinux/AppArmor/kernel lockdown (Linux) |
-| **Ports** | Listening ports mapped to the owning process |
-| **Firmware** | BIOS/UEFI vendor and version, TPM presence and version |
-
-</details>
-
-<details open>
-<summary><b>🌐 &nbsp;Network visibility</b></summary>
-<br/>
-
-Per-adapter details: MAC, type, link speed, connection status, IPv4/IPv6 addressing (with DHCP and subnet info), default gateway, DNS servers, and Wi-Fi SSID + signal strength.
-
-</details>
-
-<details open>
-<summary><b>📦 &nbsp;Software &amp; extension inventory</b></summary>
-<br/>
-
-Installed applications and versions across every major source — Windows programs and Microsoft Store, Debian/RPM/Snap/Flatpak, Homebrew and casks, and the macOS App Store — with first-seen / last-seen change tracking. Includes browser-extension inventory for Chrome, Firefox, Edge, and Brave.
-
-</details>
-
-<details open>
-<summary><b>📝 &nbsp;Tamper-evident audit log streaming</b></summary>
-<br/>
-
-Continuous, normalized audit events from each platform's native source:
-
-- **Windows** — Event Log (Security, System, Defender, PowerShell, Task Scheduler, Firewall, RDP, Group Policy, and more)
-- **Linux** — auth/syslog and journald
-- **macOS** — unified log
-
-Events are categorized, severity-tagged, checkpointed, and uploaded in batches with exponential-backoff retry — nothing is lost across restarts or outages.
-
-</details>
-
-<details open>
-<summary><b>👥 &nbsp;Local account inventory</b></summary>
-<br/>
-
-Local user accounts with group membership — without collecting sensitive credential material.
-
-</details>
+| 🖥️ **Hardware & system** | CPU, memory, disks, GPUs, RAM modules, displays, printers and peripherals; OS, uptime and last boot |
+| 🛡️ **Security posture** | Disk encryption (BitLocker, FileVault, LUKS), antivirus, firewall, Secure Boot, SIP, SELinux/AppArmor, TPM, open ports |
+| 🌐 **Network** | Adapters, IP addressing, gateways, DNS and Wi-Fi details |
+| 📦 **Software** | Installed apps from every major package source, with change history, plus browser extensions |
+| 📝 **Audit logs** | Windows Event Log, Linux journald and auth logs, macOS unified log, normalized and severity-tagged |
+| 👥 **Local accounts** | Users and group membership, never passwords or other credentials |
 
 <br/>
-
----
-
-## 🌍 Runs everywhere your fleet does
-
-| Platform | Architectures | Service model |
-|---|---|---|
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="18" height="18"/> &nbsp;**Windows** | `amd64` | Windows Service |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="18" height="18"/> &nbsp;**macOS** | `arm64` (Apple Silicon) &nbsp;·&nbsp; `amd64` (Intel) | launchd daemon |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="18" height="18"/> &nbsp;**Linux** | `amd64` &nbsp;·&nbsp; `arm64` | systemd unit |
-
-Every target is cross-compiled from a single host into a static binary — no per-platform build farm required.
-
-<br/>
-
----
-
-## 🛠️ Built with
-
-<div align="center">
-
-[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev)
-[![SQLite](https://img.shields.io/badge/SQLite-local%20queue-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org)
-[![Supabase](https://img.shields.io/badge/Supabase-backend-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI%2FCD-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/features/actions)
-[![SonarCloud](https://img.shields.io/badge/SonarCloud-quality-F3702A?style=for-the-badge&logo=sonarcloud&logoColor=white)](https://sonarcloud.io)
-
-</div>
-
-<br/>
-
----
 
 ## ⚡ How it works
 
-```mermaid
-flowchart TD
-    GH["🐙 GitHub Releases"]
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+  <img src="docs/assets/flow-light.svg" alt="The SentinelGo agent on every device sends heartbeats, inventory and logs to your Supabase backend, which sends back tasks and signed updates and feeds dashboards and alerts." width="100%">
+</picture>
 
-    subgraph Backend["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ☁️ Supabase Backend &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"]
-        D["📈 Dashboards"]
-        AL["🔔 Alerting"]
-        T["📋 Task queue"]
-        U["📦 Update store"]
-    end
-
-    subgraph Agent["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 🛡️ SentinelGo Agent &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"]
-        M["📊 Metrics"]
-        S["📦 Software inventory"]
-        A["📝 Audit logs"]
-    end
-
-    GH -->|"release assets synced"| U
-
-    Agent -->|"authenticate — JWT"| Backend
-    T -->|"tasks / commands"| Agent
-    U -->|"binary download & replace"| Agent
-
-    M -->|"heartbeat"| D
-    S -->|"inventory sync"| D
-    A -->|"log batches"| AL
-```
+1. **Authenticate:** each agent signs in and gets a short-lived token that it renews on its own.
+2. **Report:** a heartbeat every few minutes, plus full hardware and software inventory.
+3. **Stream:** audit events are collected, queued locally and uploaded in batches.
+4. **Stay current:** new releases are downloaded, verified and installed automatically.
 
 <br/>
 
-| Step | What happens |
-|---|---|
-| **1. Authenticate** | The agent logs in to a Supabase Edge Function and receives a short-lived JWT, auto-refreshed in the background with a circuit breaker. |
-| **2. Report** | System metrics are collected and sent as a heartbeat on a configurable interval (default 5 min), plus periodic full hardware/software inventory. |
-| **3. Stream** | Audit logs are collected from OS-native sources, normalized, durably queued in SQLite, and uploaded with at-least-once delivery. |
-| **4. Stay current** | The backend syncs release assets from GitHub Releases. The agent polls for available updates, downloads the binary from the backend, replaces itself atomically, and restarts cleanly. |
+## 🚀 Get started
 
-<br/>
+**1. Download** the binary for your platform from the [latest release](https://github.com/BrainStation-23/SentinelGo/releases/latest).
 
----
+| Windows | macOS | Linux |
+|:---:|:---:|:---:|
+| `amd64` | Apple Silicon · Intel | `amd64` · `arm64` |
 
-## 🚀 Quick start
+**2. Add your backend details** to a [`config.json`](#configuration) next to the binary.
 
-**1. Download** the release for your platform from [GitHub Releases](https://github.com/BrainStation-23/SentinelGo/releases/latest).
-
-**2. Place** the binary in the install directory:
-
-| Platform | Path |
-|---|---|
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="16" height="16"/> Linux &nbsp;/&nbsp; <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="16" height="16"/> macOS | `/opt/sentinelgo/` |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="16" height="16"/> Windows | `C:\sentinelgo\` |
-
-**3. Create** a `config.json` (see [Configuration](#%EF%B8%8F-configuration) below).
-
-**4. Install and start** the service:
+**3. Install it as a service:**
 
 ```bash
-# Linux / macOS (as root)
-sudo ./sentinelgo -install
-
-# Windows (as Administrator)
-.\sentinelgo.exe -install
-
-# Run in foreground for debugging (any OS)
-./sentinelgo -run
+sudo ./sentinelgo -install       # Linux / macOS
+.\sentinelgo.exe -install        # Windows, as Administrator
 ```
 
-📖 Full per-OS walkthrough: [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md)
+That's it. The agent starts reporting right away and keeps running across reboots.
+
+📖 Step-by-step instructions for each OS, including checksum verification, are in the **[install guide](installation-doc/INSTALLATION.md)**.
 
 <br/>
 
----
+<details>
+<summary><b id="configuration">⚙️ Configuration</b></summary>
+<br/>
 
-## ⚙️ Configuration
-
-The agent reads a single JSON file. Default locations:
+The agent reads one JSON file:
 
 | OS | Path |
 |---|---|
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/linux/linux-original.svg" width="16" height="16"/> Linux &nbsp;/&nbsp; <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/apple/apple-original.svg" width="16" height="16"/> macOS | `/opt/sentinelgo/.sentinelgo/config.json` |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/windows8/windows8-original.svg" width="16" height="16"/> Windows | `C:\sentinelgo\.sentinelgo\config.json` |
-
-Override with `-config <path>`. Common fields:
+| Linux / macOS | `/opt/sentinelgo/.sentinelgo/config.json` |
+| Windows | `C:\sentinelgo\.sentinelgo\config.json` |
 
 ```json
 {
@@ -303,18 +153,17 @@ Override with `-config <path>`. Common fields:
 }
 ```
 
-Every field can also be set via environment variable. The agent never embeds credentials in the binary — it authenticates at runtime and rotates its JWT automatically.
+Use `-config <path>` for a different location. Every field can also be set with an environment variable. No credentials are built into the binary.
 
-📖 Full reference: [`docs/02-config-module.md`](docs/02-config-module.md)
+Full reference: [`docs/02-config-module.md`](docs/02-config-module.md)
 
+</details>
+
+<details>
+<summary><b>💻 Command-line reference</b></summary>
 <br/>
 
----
-
-## 💻 Command-line interface
-
 ```bash
-# Service management
 sentinelgo -install             # install as a system service (admin/root)
 sentinelgo -uninstall           # remove the service
 sentinelgo -run                 # run in the foreground
@@ -322,131 +171,99 @@ sentinelgo -status              # show installed/running processes and versions
 sentinelgo -version             # print version
 sentinelgo -config PATH         # use a custom config file
 
-# Operations
-sentinelgo -collect-logs        # force an immediate audit-log collection
+sentinelgo -collect-logs        # collect audit logs now
 sentinelgo -upload-logs         # flush pending audit logs
 sentinelgo -software-list       # show installed software inventory
 sentinelgo -agent-info-update   # refresh hardware/system inventory
 ```
 
-📖 Full flag reference: [`docs/agent-commands-guide.md`](docs/agent-commands-guide.md)
+Full reference: [`docs/agent-commands-guide.md`](docs/agent-commands-guide.md)
 
+</details>
+
+<details>
+<summary><b>🔨 Build from source</b></summary>
 <br/>
 
----
-
-## 🔨 Build from source
+Requires Go 1.26 or newer. Every build is a `CGO_ENABLED=0` static binary, and all platforms cross-compile from a single machine.
 
 ```bash
-make build                 # dev build  →  bin/sentinelgo[.exe]
-make test                  # go test ./...
-make verify-cross          # type-check every GOOS/GOARCH with CGO_ENABLED=0
-make check-no-cgo          # fail if any import "C" is introduced
-make pre-release           # full quality gate + build
+make build                 # dev build -> bin/sentinelgo[.exe]
+make test                  # run the test suite
+make verify-cross          # type-check every GOOS/GOARCH
 make release VERSION=vX.Y.Z
 ```
 
-> All builds are `CGO_ENABLED=0` static binaries cross-compiled from a single host. **Go 1.26+ required.**
+</details>
 
 <br/>
 
----
+## 🔐 Security
 
-## 📚 Documentation
+- **HTTPS only**, with a per-agent token issued at runtime. Nothing secret is embedded in the binary.
+- **Signed releases.** Every binary is signed and checksummed, and both the updater and the installers verify it before running anything.
+- **Privacy first.** Account inventory never includes credentials, and personal data is redacted from task output before upload.
+- **Continuously checked.** CodeQL, gosec, govulncheck, Trivy and SonarCloud run on every change, and parsers are fuzzed nightly.
 
-| Document | What it covers |
+Found a vulnerability? Please report it privately. See **[SECURITY.md](SECURITY.md)**.
+
+<br/>
+
+## 📚 Learn more
+
+| For | Read |
 |---|---|
-| [`docs/08-project-overview.md`](docs/08-project-overview.md) | Architecture, package layout, runtime flow |
-| [`docs/01-main-module.md`](docs/01-main-module.md) | CLI, flag parsing, service entry point |
-| [`docs/02-config-module.md`](docs/02-config-module.md) | Configuration schema and validation |
-| [`docs/05-osinfo-module.md`](docs/05-osinfo-module.md) | Cross-platform hardware metrics |
-| [`docs/06-service-module.md`](docs/06-service-module.md) | Service lifecycle and auth |
-| [`docs/07-updater-module.md`](docs/07-updater-module.md) | Self-update flow |
-| [`docs/audit-logs-architecture.md`](docs/audit-logs-architecture.md) | Audit-log pipeline end-to-end |
-| [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md) | Per-OS install steps |
-| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and security architecture |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev workflow, commit style, PR checklist |
-| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community standards |
+| 🚀 **Using SentinelGo** | [Install guide](installation-doc/INSTALLATION.md) · [Configuration](docs/02-config-module.md) · [CLI](docs/agent-commands-guide.md) · [Changelog](CHANGELOG.md) |
+| 🏗️ **How it's built** | [Project overview](docs/08-project-overview.md) · [Security assurance case](docs/assurance-case.md) · [Updater](docs/07-updater-module.md) · [Audit-log pipeline](docs/audit-logs-architecture.md) · [Hardware metrics](docs/05-osinfo-module.md) |
+| 🤝 **The project** | [Contributing](CONTRIBUTING.md) · [Governance](GOVERNANCE.md) · [Roadmap](ROADMAP.md) · [Releases](RELEASE.md) · [Security policy](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md) |
 
 <br/>
 
----
+## 🙌 Get involved
 
-## 🔐 Security & privacy
+Bug reports, ideas, docs and code are all welcome.
 
-- All backend communication is over **HTTPS** with a per-agent JWT — obtained at runtime, never hardcoded.
-- Local-account collection captures **usernames and group membership only** — never credential material.
-- Script payloads are downloaded from a **RLS-gated** Supabase Storage bucket using the agent's own JWT.
-- The `internal/sanitize` package **redacts PII and credential-like patterns** from task outputs before upload.
-- Release binaries include a `SHA256SUMS` file. Verify before running: `sha256sum -c SHA256SUMS`.
+[![Report a bug](https://img.shields.io/badge/🐛_Report_a_bug-d73a49?style=for-the-badge)](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml)
+[![Request a feature](https://img.shields.io/badge/💡_Request_a_feature-0366d6?style=for-the-badge)](https://github.com/BrainStation-23/SentinelGo/issues/new?template=feature_request.yml)
+[![Ask a question](https://img.shields.io/badge/💬_Ask_a_question-6f42c1?style=for-the-badge)](https://github.com/BrainStation-23/SentinelGo/discussions)
 
-📖 Full security policy and architecture: [`SECURITY.md`](SECURITY.md)
-
-<br/>
-
----
-
-## 🙌 Contributing
-
-Contributions of all kinds are welcome — bug fixes, new features, documentation improvements, and platform-specific work.
-
-| | |
-|---|---|
-| 🐛 **Bug report** | [Open a bug report](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml) |
-| 💡 **Feature request** | [Open a feature request](https://github.com/BrainStation-23/SentinelGo/issues/new?template=feature_request.yml) |
-| 🔐 **Security issue** | See [SECURITY.md](SECURITY.md) — do not open a public issue |
-| 💬 **Question** | [Start a discussion](https://github.com/BrainStation-23/SentinelGo/discussions) |
-| 📖 **Contributing guide** | [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, commit style, PR checklist |
-| 💚 **Code of Conduct** | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
-
-<br/>
-
----
-
-## 🤝 Contributors
-
-All contributions are welcome — bug reports, feature requests, documentation improvements, and code.
+New here? Start with the **[contributing guide](CONTRIBUTING.md)**.
 
 <a href="https://github.com/BrainStation-23/SentinelGo/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=BrainStation-23/SentinelGo" alt="Contributors" />
 </a>
 
-*Made with [contrib.rocks](https://contrib.rocks)*
+<br/>
+
+<details>
+<summary><b>📈 Project health</b></summary>
+<br/>
+
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=coverage)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=bugs)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FBrainStation-23%2FSentinelGo?ref=badge_shield)
+
+</details>
 
 <br/>
 
 ---
 
-## 💎 Sponsors
-
 <div align="center">
 
-**SentinelGo is proudly sponsored by**
-
-<br/>
+**Sponsored by**
 
 <a href="https://brainstation-23.com">
-  <img src="https://brainstation-23.com/wp-content/uploads/2025/06/image-1-1.webp" alt="BrainStation-23" width="300" />
+  <img src="https://brainstation-23.com/wp-content/uploads/2025/06/image-1-1.webp" alt="BrainStation-23" width="240" />
 </a>
 
 <br/><br/>
 
-**[BrainStation-23](https://brainstation-23.com)** &nbsp;·&nbsp; Software engineering & technology services, building impactful digital products worldwide.
-
-</div>
-
-<br/>
-
----
-
-## 📄 License
-
-Distributed under the **Apache 2.0** License. See [`LICENSE`](LICENSE) for details.
-
-<br/>
-
-<div align="center">
-
-Made with ❤️ by the SentinelGo team &nbsp;·&nbsp; [Contribute](CONTRIBUTING.md) &nbsp;·&nbsp; [Report a bug](https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml) &nbsp;·&nbsp; [Security policy](SECURITY.md) &nbsp;·&nbsp; [Code of Conduct](CODE_OF_CONDUCT.md)
+Licensed under [Apache 2.0](LICENSE) &nbsp;·&nbsp; Made with ❤️ by the SentinelGo team
 
 </div>

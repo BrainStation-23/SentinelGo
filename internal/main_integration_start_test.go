@@ -115,19 +115,16 @@ func resetUpdaterRetrier(t *testing.T) {
 	t.Cleanup(func() { updater.SetAuthRetrier(nil) })
 }
 
-// logWatcher captures the standard logger and signals once a line containing
-// substr has been written. The original output is restored on cleanup.
+// logWatcher captures the standard logger's output. The original output is
+// restored on cleanup.
 type logWatcher struct {
-	mu     sync.Mutex
-	buf    bytes.Buffer
-	substr string
-	seen   chan struct{}
-	once   sync.Once
+	mu  sync.Mutex
+	buf bytes.Buffer
 }
 
-func watchLog(t *testing.T, substr string) *logWatcher {
+func watchLog(t *testing.T) *logWatcher {
 	t.Helper()
-	w := &logWatcher{substr: substr, seen: make(chan struct{})}
+	w := &logWatcher{}
 	orig := log.Writer()
 	log.SetOutput(w)
 	t.Cleanup(func() { log.SetOutput(orig) })
@@ -137,9 +134,6 @@ func watchLog(t *testing.T, substr string) *logWatcher {
 func (w *logWatcher) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if bytes.Contains(p, []byte(w.substr)) {
-		w.once.Do(func() { close(w.seen) })
-	}
 	return w.buf.Write(p)
 }
 
@@ -147,15 +141,6 @@ func (w *logWatcher) contains(s string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return strings.Contains(w.buf.String(), s)
-}
-
-func (w *logWatcher) wait(t *testing.T) {
-	t.Helper()
-	select {
-	case <-w.seen:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for log line %q", w.substr)
-	}
 }
 
 // rejectedAuthSvc returns an auth service whose credentials were rejected by
@@ -199,10 +184,6 @@ func TestStart_FullFlow(t *testing.T) {
 	cfg.SoftwareSyncEnabled = true
 	cfg.ServicesSyncEnabled = false
 
-	// The task manager runs in its own goroutine; wait for its run to finish
-	// (Run closes itself once ctx is cancelled) before tearing down.
-	lw := watchLog(t, "TaskManager: Closing integrated task service")
-
 	mi := NewMainIntegration(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -230,18 +211,12 @@ func TestStart_FullFlow(t *testing.T) {
 		t.Error("Start should have opened the services and software stores")
 	}
 
-	// MainIntegration.Stop does not cancel or join the TaskManager goroutine,
-	// so stop it via ctx and wait for Run's own Close before calling Stop.
-	cancel()
-	lw.wait(t)
-
+	// Stop cancels and joins the TaskManager goroutine itself (#113); ctx is
+	// deliberately still live here.
 	if err := mi.Stop(); err != nil {
 		t.Errorf("Stop() error: %v", err)
 	}
 
-	// Read status only after Stop has joined the scheduler goroutines:
-	// Task.LastRun is written without the scheduler lock that GetTaskStatus
-	// takes, so reading it while initial tasks run is a data race.
 	status := mi.GetStatus()
 	for _, key := range []string{"scheduler", "authentication", "logging"} {
 		if _, ok := status[key]; !ok {
@@ -404,7 +379,7 @@ func TestInitAuth_InitSessionFailsFallsBackToLogin(t *testing.T) {
 	cfg := startTestConfig(t, "")
 	cfg.SetTokens(testJWT(time.Hour), "")
 
-	lw := watchLog(t, "startup agent-login failed")
+	lw := watchLog(t)
 	mi := &MainIntegration{cfg: cfg}
 	mi.initAuth(context.Background())
 

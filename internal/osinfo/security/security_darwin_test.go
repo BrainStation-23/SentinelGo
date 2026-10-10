@@ -34,12 +34,14 @@ const (
 	darwinMRTLog   = "/var/log/MRT.log"
 )
 
-// stubDarwinSecurityCommands replaces darwinRunCommand for the duration of
-// the test. Keys in responses return their output; every other command
-// fails. The returned pointer records every command that was run.
+// stubDarwinSecurityCommands replaces darwinRunCommand and
+// darwinRunCommandOutput for the duration of the test. Keys in responses
+// return their output (from either runner); every other command fails. The
+// returned pointer records every command that was run. Use
+// stubDarwinProcesses when stdout and stderr must be told apart.
 func stubDarwinSecurityCommands(t *testing.T, responses map[string]string) *[]string {
 	t.Helper()
-	orig := darwinRunCommand
+	orig, origOut := darwinRunCommand, darwinRunCommandOutput
 	var calls []string
 	darwinRunCommand = func(name string, args ...string) (string, error) {
 		key := strings.Join(append([]string{name}, args...), " ")
@@ -49,7 +51,15 @@ func stubDarwinSecurityCommands(t *testing.T, responses map[string]string) *[]st
 		}
 		return "", errors.New("command failed: " + key)
 	}
-	t.Cleanup(func() { darwinRunCommand = orig })
+	darwinRunCommandOutput = func(name string, args ...string) (string, int, error) {
+		key := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, key)
+		if out, ok := responses[key]; ok {
+			return out, 0, nil
+		}
+		return "", -1, errors.New("command failed: " + key)
+	}
+	t.Cleanup(func() { darwinRunCommand, darwinRunCommandOutput = orig, origOut })
 	return &calls
 }
 
@@ -487,8 +497,9 @@ func TestCollectHardwareSecurity(t *testing.T) {
 		{
 			name: "Intel with T2",
 			responses: map[string]string{
-				darwinCmdHardware: "Model Name: MacBook Pro\n  Processor Name: Quad-Core Intel Core i7\n  Apple T2 Security Chip\n",
-				darwinCmdIBridge:  "Boot Policy: No Security\n",
+				// SPHardwareDataType does not name the T2; SPiBridgeDataType does.
+				darwinCmdHardware: "Model Name: MacBook Pro\n  Processor Name: Quad-Core Intel Core i7\n",
+				darwinCmdIBridge:  "Controller Information:\n  Model Name: Apple T2 Security Chip\n  Boot Policy: No Security\n",
 			},
 			wantEnclave: "Enabled", wantLock: "Unknown", wantSB: "disabled",
 		},
@@ -540,8 +551,8 @@ func TestCollectIdentityAccessControl(t *testing.T) {
 			name: "everything enabled, rapid security response pending",
 			user: "alice",
 			responses: map[string]string{
-				darwinCmdBioutil:            "Touch ID: enabled\n",
-				darwinCmdProfiles:           "Bootstrap Token supported: YES\n",
+				darwinCmdBioutil:            "System Touch ID configuration:\n\tTouch ID functionality: 1\n\tTouch ID for unlock: 1\n",
+				darwinCmdProfiles:           "profiles: Bootstrap Token supported on server: YES\nprofiles: Bootstrap Token escrowed to server: YES\n",
 				darwinCmdSecToken + "alice": "Secure token is ENABLED for user alice\n",
 				darwinCmdSWUpdate:           "* Label: macOS Ventura 13.3.1 (a)\n\tTitle: Rapid Security Response macOS 13.3.1 (a), Recommended: YES, Action: restart,\n",
 			},
@@ -561,8 +572,8 @@ func TestCollectIdentityAccessControl(t *testing.T) {
 		{
 			name: "no user: secure token not queried; ordinary security update",
 			responses: map[string]string{
-				darwinCmdBioutil:  "Touch ID: disabled\n",
-				darwinCmdProfiles: "Bootstrap Token escrowed: YES\n",
+				darwinCmdBioutil:  "System Touch ID configuration:\n\tTouch ID functionality: 1\n\tTouch ID for unlock: 0\n",
+				darwinCmdProfiles: "profiles: Bootstrap Token supported on server: YES\nprofiles: Bootstrap Token escrowed to server: YES\n",
 				darwinCmdSWUpdate: "* Label: Security Update 2024-001\n",
 			},
 			want: want{"Disabled", "Enabled", "Unknown", "Non-Compliant", "Up to Date"},

@@ -22,6 +22,11 @@ endif
 # is silently ignored. config.Version uses its real import path.
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X sentinelgo/internal/config.Version=$(VERSION)"
 
+# -trimpath drops the build machine's file paths from the binary, so anyone who
+# builds the same tag with the same Go version gets a bit-for-bit identical
+# binary (see "Reproducing a release" in RELEASE.md).
+GOBUILDFLAGS=-trimpath
+
 # Dev build output name. On Windows the binary needs a .exe extension to be
 # runnable (PowerShell/cmd won't execute an extension-less file).
 ifeq ($(OS),Windows_NT)
@@ -37,20 +42,20 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom changelog-check changelog-release
 
 all: windows linux macos
 
 windows:
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
 
 linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o build/linux/sentinelgo-linux-amd64 ./cmd/sentinelgo
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o build/linux/sentinelgo-linux-arm64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/linux/sentinelgo-linux-amd64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/linux/sentinelgo-linux-arm64 ./cmd/sentinelgo
 
 macos:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-amd64 ./cmd/sentinelgo
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o build/darwin/sentinelgo-darwin-arm64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/darwin/sentinelgo-darwin-amd64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/darwin/sentinelgo-darwin-arm64 ./cmd/sentinelgo
 
 # Build all platforms for release, then sign and generate SHA256SUMS.
 # Requires SENTINELGO_SIGNING_KEY env var (base64-encoded ed25519 private key).
@@ -101,7 +106,7 @@ clean:
 
 # Development build (current platform only)
 build: format
-	go build $(LDFLAGS) -o $(DEV_BIN) ./cmd/sentinelgo
+	go build $(GOBUILDFLAGS) $(LDFLAGS) -o $(DEV_BIN) ./cmd/sentinelgo
 	@echo "Built $(DEV_BIN) (version $(VERSION))"
 
 # Show version information
@@ -182,6 +187,17 @@ notices:
 SBOM_DIR ?= build/sbom
 sbom:
 	go run ./scripts/licenses -sbom $(SBOM_DIR)
+
+# CHANGELOG.md is the source of release notes (see RELEASE.md).
+changelog-check:
+	go run ./scripts/changelog -check
+
+# Move the [Unreleased] entries under a new dated heading. Trigger Release does
+# this for you; run it by hand to cut a release in your own PR, which Tag Release
+# tags when it merges: make changelog-release VERSION=v3.4.0
+changelog-release:
+	@test "$(origin VERSION)" = "command line" || (echo "usage: make changelog-release VERSION=vX.Y.Z" && exit 1)
+	go run ./scripts/changelog -release $(VERSION)
 
 # Compile every release target with CGO_ENABLED=0 so platform-specific files
 # (e.g. the audit log collectors) are type-checked on every run, not just the

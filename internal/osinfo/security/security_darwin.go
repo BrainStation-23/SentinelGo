@@ -3,6 +3,7 @@ package security
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -12,9 +13,10 @@ import (
 // are variables only so tests can substitute canned output and a fake
 // filesystem; production always uses the real implementations.
 var (
-	darwinRunCommand = shared.RunCommand
-	darwinStat       = os.Stat
-	darwinReadFile   = os.ReadFile
+	darwinRunCommand       = shared.RunCommand
+	darwinRunCommandOutput = shared.RunCommandOutput
+	darwinStat             = os.Stat
+	darwinReadFile         = os.ReadFile
 )
 
 const avCrowdStrikeFalcon = "CrowdStrike Falcon"
@@ -233,7 +235,12 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		}
 	}
 
+	// Some products have more than one known path; report each product once.
+	seen := make(map[string]bool)
 	for _, e := range knownEDR {
+		if seen[e.name] {
+			continue
+		}
 		installed := false
 		if _, err := darwinStat(e.path); err == nil {
 			installed = true
@@ -244,6 +251,7 @@ func collectEDRInfo() shared.EDRXDRDetectionInfo {
 		if !installed {
 			continue
 		}
+		seen[e.name] = true
 
 		isRunning := runningProcs[e.proc]
 		status := "Stopped"
@@ -313,7 +321,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	hwOut, err := darwinRunCommand("system_profiler", "SPHardwareDataType")
 	if err == nil {
 		lower := strings.ToLower(hwOut)
-		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") || strings.Contains(lower, "t2") {
+		if strings.Contains(lower, "apple silicon") || strings.Contains(lower, "apple m") {
 			hw.SecureEnclaveStatus = "Enabled"
 		}
 
@@ -326,24 +334,37 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 			}
 		}
 	}
+	// Intel Macs with a T2 chip also have a Secure Enclave. SPHardwareDataType
+	// does not name the T2; the iBridge report does.
+	if hw.SecureEnclaveStatus != "Enabled" && hasT2Chip() {
+		hw.SecureEnclaveStatus = "Enabled"
+	}
 	return hw
+}
+
+// t2ChipPattern matches the T2 chip name as system_profiler SPiBridgeDataType
+// reports it ("Model Name: Apple T2 Security Chip", older builds "Apple T2
+// chip"). It requires the "Apple T2" word pair so that serial numbers and
+// firmware strings that merely contain "T2" do not match.
+var t2ChipPattern = regexp.MustCompile(`(?i)\bapple\s+t2\b`)
+
+// hasT2Chip reports whether the iBridge report names an Apple T2 chip.
+func hasT2Chip() bool {
+	out, err := darwinRunCommand("system_profiler", "SPiBridgeDataType")
+	return err == nil && t2ChipPattern.MatchString(out)
 }
 
 func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 
 	id.TouchIDStatus = "Disabled"
-	if out, err := darwinRunCommand("bioutil", "-read", "-system"); err == nil {
-		if strings.Contains(strings.ToLower(out), "enabled") {
-			id.TouchIDStatus = "Enabled"
-		}
+	if out, err := darwinRunCommand("bioutil", "-read", "-system"); err == nil && touchIDUnlockEnabled(out) {
+		id.TouchIDStatus = "Enabled"
 	}
 
 	id.BootstrapTokenStatus = "Disabled"
-	if out, err := darwinRunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil {
-		if strings.Contains(strings.ToLower(out), "supported: yes") || strings.Contains(strings.ToLower(out), "escrowed: yes") {
-			id.BootstrapTokenStatus = "Enabled"
-		}
+	if out, err := darwinRunCommand("profiles", "status", "-type", "bootstraptoken"); err == nil && bootstrapTokenEscrowed(out) {
+		id.BootstrapTokenStatus = "Enabled"
 	}
 
 	id.SecureTokenStatus = "Unknown"
@@ -352,12 +373,9 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 		currentUser = os.Getenv("LOGNAME") // fallback when running as a launchd service
 	}
 	if currentUser != "" {
-		if out, err := darwinRunCommand("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
-			if strings.Contains(strings.ToLower(out), "is enabled") {
-				id.SecureTokenStatus = "Enabled"
-			} else if strings.Contains(strings.ToLower(out), "is disabled") {
-				id.SecureTokenStatus = "Disabled"
-			}
+		// sysadminctl logs its answer to stderr, so read combined output.
+		if out, _, err := darwinRunCommandOutput("sysadminctl", "-secureTokenStatus", currentUser); err == nil {
+			id.SecureTokenStatus = parseSecureTokenStatus(out)
 		}
 	}
 
@@ -379,6 +397,61 @@ func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
 	}
 
 	return id
+}
+
+// colonValues yields the trimmed, lower-cased key and value of every
+// "key: value" line in out, splitting at the last colon.
+func colonValues(out string, fn func(key, value string)) {
+	for _, line := range strings.Split(out, "\n") {
+		i := strings.LastIndex(line, ":")
+		if i < 0 {
+			continue
+		}
+		fn(strings.ToLower(strings.TrimSpace(line[:i])), strings.ToLower(strings.TrimSpace(line[i+1:])))
+	}
+}
+
+// touchIDUnlockEnabled parses `bioutil -read -system`, whose lines are
+// numeric flags such as "Touch ID for unlock: 1" (Sequoia and later:
+// "Biometrics for unlock: 1"). Touch ID counts as enabled when unlock is 1
+// and the functionality flag, if present, is not 0.
+func touchIDUnlockEnabled(out string) bool {
+	unlock, functionalityOff := false, false
+	colonValues(out, func(key, value string) {
+		switch {
+		case strings.HasSuffix(key, "for unlock"):
+			unlock = value == "1"
+		case strings.HasSuffix(key, "functionality"):
+			functionalityOff = value == "0"
+		}
+	})
+	return unlock && !functionalityOff
+}
+
+// bootstrapTokenEscrowed parses `profiles status -type bootstraptoken`, e.g.
+// "profiles: Bootstrap Token escrowed to server: YES". Server support alone
+// ("supported on server: YES") does not mean a token was escrowed.
+func bootstrapTokenEscrowed(out string) bool {
+	escrowed := false
+	colonValues(out, func(key, value string) {
+		if strings.Contains(key, "escrowed") && value == "yes" {
+			escrowed = true
+		}
+	})
+	return escrowed
+}
+
+// parseSecureTokenStatus parses `sysadminctl -secureTokenStatus <user>`,
+// e.g. "... sysadminctl[812:10422] Secure token is ENABLED for user alice".
+func parseSecureTokenStatus(out string) string {
+	lower := strings.ToLower(out)
+	switch {
+	case strings.Contains(lower, "is enabled"):
+		return "Enabled"
+	case strings.Contains(lower, "is disabled"):
+		return "Disabled"
+	}
+	return "Unknown"
 }
 
 // collectAV checks for known AV app bundles and reports Gatekeeper status.

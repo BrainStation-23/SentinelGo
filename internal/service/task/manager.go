@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -24,6 +25,11 @@ type TaskManager struct {
 	dbPath        string
 	lastTaskCount int
 	runningTasks  map[string]bool
+
+	// closeOnce makes Close idempotent: Run closes on ctx cancellation and the
+	// owner (MainIntegration.Stop) closes again after joining Run.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewTaskManager creates a new integrated task manager.
@@ -159,17 +165,18 @@ func (tm *TaskManager) executeTasks(ctx context.Context) {
 	tm.executorSvc.ExecutePendingTasks(ctx)
 }
 
-// Close closes the task manager and its services.
+// Close closes the task manager and its services. It is idempotent and safe
+// for concurrent use: only the first call closes the underlying store, and
+// every call returns that first call's result.
 func (tm *TaskManager) Close() error {
-	log.Printf("TaskManager: Closing integrated task service")
-
-	var err error
-	if tm.pollingSvc != nil {
-		if closeErr := tm.pollingSvc.Close(); closeErr != nil {
-			log.Printf("TaskManager: Error closing polling service: %v", closeErr)
-			err = closeErr
+	tm.closeOnce.Do(func() {
+		log.Printf("TaskManager: Closing integrated task service")
+		if tm.pollingSvc != nil {
+			if err := tm.pollingSvc.Close(); err != nil {
+				log.Printf("TaskManager: Error closing polling service: %v", err)
+				tm.closeErr = err
+			}
 		}
-	}
-
-	return err
+	})
+	return tm.closeErr
 }
