@@ -170,7 +170,7 @@ API_TOKEN=your-api-token
 ## GitHub Actions
 
 ### CI Workflow (.github/workflows/ci.yml)
-- Runs on push to main/develop branches
+- Runs on push to main/dev branches (and pull requests into them)
 - Runs tests on pull requests
 - Builds all platforms for testing
 
