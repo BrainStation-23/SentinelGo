@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -210,18 +209,15 @@ func TestResolveScript_AllFallback(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	ref, err := s.resolveScript(task)
+	path, name, err := s.resolveScript(task)
 	if err != nil {
 		t.Fatalf("resolveScript(all fallback): %v", err)
 	}
-	if ref.RemotePath != "/scripts/cross-platform.sh" {
-		t.Errorf("RemotePath = %q, want /scripts/cross-platform.sh", ref.RemotePath)
+	if path != "/scripts/cross-platform.sh" {
+		t.Errorf("path = %q, want /scripts/cross-platform.sh", path)
 	}
-	if ref.Filename != "cross-platform.sh" {
-		t.Errorf("Filename = %q, want cross-platform.sh", ref.Filename)
-	}
-	if ref.Body != nil {
-		t.Error("Body should be nil for path-based entry")
+	if name != "cross-platform.sh" {
+		t.Errorf("name = %q, want cross-platform.sh", name)
 	}
 }
 
@@ -234,7 +230,7 @@ func TestResolveScript_NoMatch(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	_, err := s.resolveScript(task)
+	_, _, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for no matching script platform, got nil")
 	}
@@ -245,170 +241,9 @@ func TestResolveScript_NoMatch(t *testing.T) {
 func TestResolveScript_EmptyScripts(t *testing.T) {
 	task := taskstore.Task{Scripts: map[string]interface{}{}}
 	s := &TaskExecutorService{}
-	_, err := s.resolveScript(task)
+	_, _, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for empty scripts map, got nil")
-	}
-}
-
-// TestResolveScript_InlineBodyOnly verifies an inline body-only entry is
-// resolved correctly and gets a default filename on the current platform.
-func TestResolveScript_InlineBodyOnly(t *testing.T) {
-	body := "echo hello"
-	task := taskstore.Task{
-		Scripts: map[string]interface{}{
-			runtime.GOOS: map[string]interface{}{"body": body},
-		},
-	}
-	s := &TaskExecutorService{}
-	ref, err := s.resolveScript(task)
-	if err != nil {
-		t.Fatalf("resolveScript(inline body): %v", err)
-	}
-	if ref.Body == nil || *ref.Body != body {
-		t.Errorf("Body = %v, want %q", ref.Body, body)
-	}
-	if ref.RemotePath != "" {
-		t.Errorf("RemotePath = %q, want empty string", ref.RemotePath)
-	}
-	wantFilename := defaultScriptFilename()
-	if ref.Filename != wantFilename {
-		t.Errorf("Filename = %q, want %q", ref.Filename, wantFilename)
-	}
-}
-
-// TestResolveScript_InlineBodyWithFilename verifies that an explicit filename
-// in the entry is used when present.
-func TestResolveScript_InlineBodyWithFilename(t *testing.T) {
-	body := "echo hi"
-	task := taskstore.Task{
-		Scripts: map[string]interface{}{
-			runtime.GOOS: map[string]interface{}{
-				"body":     body,
-				"filename": "deploy.sh",
-			},
-		},
-	}
-	s := &TaskExecutorService{}
-	ref, err := s.resolveScript(task)
-	if err != nil {
-		t.Fatalf("resolveScript(inline body+filename): %v", err)
-	}
-	if ref.Filename != "deploy.sh" {
-		t.Errorf("Filename = %q, want deploy.sh", ref.Filename)
-	}
-}
-
-// TestResolveScript_PathWinsOverBody verifies that when both "path" and "body"
-// are present, "path" takes precedence (contract §2).
-func TestResolveScript_PathWinsOverBody(t *testing.T) {
-	task := taskstore.Task{
-		Scripts: map[string]interface{}{
-			runtime.GOOS: map[string]interface{}{
-				"path":     "commands/install.sh",
-				"body":     "echo should-be-ignored",
-				"filename": "install.sh",
-			},
-		},
-	}
-	s := &TaskExecutorService{}
-	ref, err := s.resolveScript(task)
-	if err != nil {
-		t.Fatalf("resolveScript(path+body): %v", err)
-	}
-	if ref.RemotePath != "commands/install.sh" {
-		t.Errorf("RemotePath = %q, want commands/install.sh", ref.RemotePath)
-	}
-	if ref.Body != nil {
-		t.Error("Body must be nil when path is present")
-	}
-}
-
-// TestResolveScript_AllFallbackInlineBody verifies the "all" key also works
-// with an inline body.
-func TestResolveScript_AllFallbackInlineBody(t *testing.T) {
-	body := "echo cross-platform"
-	task := taskstore.Task{
-		Scripts: map[string]interface{}{
-			"all": map[string]interface{}{
-				"body":     body,
-				"filename": "run.sh",
-			},
-		},
-	}
-	s := &TaskExecutorService{}
-	ref, err := s.resolveScript(task)
-	if err != nil {
-		t.Fatalf("resolveScript(all+inline body): %v", err)
-	}
-	if ref.Body == nil || *ref.Body != body {
-		t.Errorf("Body = %v, want %q", ref.Body, body)
-	}
-	if ref.Filename != "run.sh" {
-		t.Errorf("Filename = %q, want run.sh", ref.Filename)
-	}
-}
-
-// ── validateScriptFilename ────────────────────────────────────────────────────
-
-func TestValidateScriptFilename_BadNames(t *testing.T) {
-	bad := []string{
-		"../etc/passwd",
-		"../../x",
-		"con:",
-		"",
-		".",
-		"..",
-		string(make([]byte, 129)), // too long
-		"has/slash.sh",
-		"has\x00null.sh",
-	}
-	for _, name := range bad {
-		if err := validateScriptFilename(name); err == nil {
-			t.Errorf("validateScriptFilename(%q) = nil, want error", name)
-		}
-	}
-}
-
-func TestValidateScriptFilename_GoodNames(t *testing.T) {
-	good := []string{
-		"install.ps1",
-		"install.sh",
-		"My Script 1.sh",
-		"script-v2.py",
-		"script_v2.py",
-		"a",
-		string(make([]byte, 128)), // max length (all zero bytes are invalid in regex, use a valid one)
-	}
-	// Replace the 128-byte test with a valid 128-char name
-	good[len(good)-1] = string(bytes.Repeat([]byte("a"), 128))
-	for _, name := range good {
-		if err := validateScriptFilename(name); err != nil {
-			t.Errorf("validateScriptFilename(%q) = %v, want nil", name, err)
-		}
-	}
-}
-
-// ── writeInlineScript ─────────────────────────────────────────────────────────
-
-func TestWriteInlineScript_Success(t *testing.T) {
-	body := "#!/bin/sh\necho hello"
-	path := filepath.Join(t.TempDir(), "script.sh")
-	if err := writeInlineScript(path, body); err != nil {
-		t.Fatalf("writeInlineScript: %v", err)
-	}
-	got, _ := os.ReadFile(path)
-	if string(got) != body {
-		t.Errorf("content = %q, want %q", got, body)
-	}
-}
-
-func TestWriteInlineScript_OversizedBody(t *testing.T) {
-	body := string(bytes.Repeat([]byte("x"), maxScriptBytes+1))
-	path := filepath.Join(t.TempDir(), "big.sh")
-	err := writeInlineScript(path, body)
-	if err == nil {
-		t.Fatal("expected error for oversized inline body, got nil")
 	}
 }
 

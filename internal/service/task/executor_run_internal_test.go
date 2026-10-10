@@ -241,36 +241,7 @@ func assertNoTaskTempDirs(t *testing.T, dir string) {
 	}
 }
 
-func TestRunTask_InlineBodyRuns_ReturnsOutput(t *testing.T) {
-	tmp := isolateTempDir(t)
-	_, body := echoScript("hello-from-inline", 0)
-	name, _ := echoScript("hello-from-inline", 0) // get the right extension
-
-	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "http://127.0.0.1:0")
-
-	task := taskstore.Task{
-		ID:      "t-inline",
-		Slug:    "scripted",
-		Payload: map[string]interface{}{},
-		Scripts: map[string]interface{}{
-			runtime.GOOS: map[string]interface{}{
-				"filename": name,
-				"body":     body,
-			},
-		},
-	}
-
-	out, err := s.runTask(context.Background(), task)
-	if err != nil {
-		t.Fatalf("runTask(inline body): %v (output %q)", err, out)
-	}
-	if !strings.Contains(out, "hello-from-inline") {
-		t.Errorf("output = %q, want it to contain hello-from-inline", out)
-	}
-	assertNoTaskTempDirs(t, tmp)
-}
-
-
+// ── downloadScript ───────────────────────────────────────────────────────────
 
 func TestDownloadScript_LocalPathUnwritable(t *testing.T) {
 	s := &TaskExecutorService{cfg: &config.Config{SupabaseURL: "http://127.0.0.1:0"}, client: &http.Client{}}
