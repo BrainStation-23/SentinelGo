@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,15 +211,18 @@ func TestResolveScript_AllFallback(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	path, name, err := s.resolveScript(task)
+	ref, err := s.resolveScript(task)
 	if err != nil {
 		t.Fatalf("resolveScript(all fallback): %v", err)
 	}
-	if path != "/scripts/cross-platform.sh" {
-		t.Errorf("path = %q, want /scripts/cross-platform.sh", path)
+	if ref.RemotePath != "/scripts/cross-platform.sh" {
+		t.Errorf("path = %q, want /scripts/cross-platform.sh", ref.RemotePath)
 	}
-	if name != "cross-platform.sh" {
-		t.Errorf("name = %q, want cross-platform.sh", name)
+	if ref.Filename != "cross-platform.sh" {
+		t.Errorf("name = %q, want cross-platform.sh", ref.Filename)
+	}
+	if ref.Body != nil {
+		t.Errorf("Body = %q, want nil for a path entry", *ref.Body)
 	}
 }
 
@@ -230,7 +235,7 @@ func TestResolveScript_NoMatch(t *testing.T) {
 		},
 	}
 	s := &TaskExecutorService{}
-	_, _, err := s.resolveScript(task)
+	_, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for no matching script platform, got nil")
 	}
@@ -241,9 +246,132 @@ func TestResolveScript_NoMatch(t *testing.T) {
 func TestResolveScript_EmptyScripts(t *testing.T) {
 	task := taskstore.Task{Scripts: map[string]interface{}{}}
 	s := &TaskExecutorService{}
-	_, _, err := s.resolveScript(task)
+	_, err := s.resolveScript(task)
 	if err == nil {
 		t.Error("expected error for empty scripts map, got nil")
+	}
+}
+
+// TestResolveScript_InlineBody covers the policy-engine form: a body and a
+// filename, no path (#135).
+func TestResolveScript_InlineBody(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"filename": "install.ps1", "content_type": "text/plain", "body": "winget install x"},
+	}}
+	ref, err := (&TaskExecutorService{}).resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript: %v", err)
+	}
+	if ref.Body == nil || *ref.Body != "winget install x" {
+		t.Errorf("Body = %v, want the inline body", ref.Body)
+	}
+	if ref.RemotePath != "" {
+		t.Errorf("RemotePath = %q, want empty", ref.RemotePath)
+	}
+	if ref.Filename != "install.ps1" {
+		t.Errorf("Filename = %q, want install.ps1", ref.Filename)
+	}
+}
+
+func TestResolveScript_InlineBodyDefaultFilename(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"body": "echo hi"},
+	}}
+	ref, err := (&TaskExecutorService{}).resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript: %v", err)
+	}
+	want := "install.sh"
+	if runtime.GOOS == "windows" {
+		want = "install.ps1"
+	}
+	if ref.Filename != want {
+		t.Errorf("Filename = %q, want %q", ref.Filename, want)
+	}
+}
+
+// TestResolveScript_PathWinsOverBody follows contract §2.
+func TestResolveScript_PathWinsOverBody(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"path": "installs/u/run.sh", "filename": "other.sh", "body": "echo inline"},
+	}}
+	ref, err := (&TaskExecutorService{}).resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript: %v", err)
+	}
+	if ref.RemotePath != "installs/u/run.sh" || ref.Filename != "run.sh" || ref.Body != nil {
+		t.Errorf("ref = %+v, want the path entry", ref)
+	}
+}
+
+func TestResolveScript_AllFallbackWithBody(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		"plan9": map[string]interface{}{"path": "x.sh"},
+		"all":   map[string]interface{}{"filename": "run.py", "body": "print(1)"},
+	}}
+	ref, err := (&TaskExecutorService{}).resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript: %v", err)
+	}
+	if ref.Body == nil || *ref.Body != "print(1)" || ref.Filename != "run.py" {
+		t.Errorf("ref = %+v, want the all-entry body", ref)
+	}
+}
+
+// TestResolveScript_PathNameNotValidated keeps path-based tasks unchanged:
+// basenames outside the inline filename rule still resolve.
+func TestResolveScript_PathNameNotValidated(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"path": "installs/u/setup(v2)+fix.sh"},
+	}}
+	ref, err := (&TaskExecutorService{}).resolveScript(task)
+	if err != nil {
+		t.Fatalf("resolveScript: %v", err)
+	}
+	if ref.Filename != "setup(v2)+fix.sh" {
+		t.Errorf("Filename = %q, want setup(v2)+fix.sh", ref.Filename)
+	}
+}
+
+func TestResolveScript_InlineRejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry map[string]interface{}
+		want  string
+	}{
+		{"traversal", map[string]interface{}{"filename": "../x", "body": "x"}, "invalid inline script filename"},
+		{"nested traversal", map[string]interface{}{"filename": "../../x", "body": "x"}, "invalid inline script filename"},
+		{"explicit empty filename", map[string]interface{}{"filename": "", "body": "x"}, "invalid inline script filename"},
+		{"dot", map[string]interface{}{"filename": ".", "body": "x"}, "invalid inline script filename"},
+		{"dotdot", map[string]interface{}{"filename": "..", "body": "x"}, "invalid inline script filename"},
+		{"drive colon", map[string]interface{}{"filename": "con:", "body": "x"}, "invalid inline script filename"},
+		{"backslash", map[string]interface{}{"filename": "a\\b.ps1", "body": "x"}, "invalid inline script filename"},
+		{"too long", map[string]interface{}{"filename": strings.Repeat("a", 129), "body": "x"}, "invalid inline script filename"},
+		{"filename not a string", map[string]interface{}{"filename": 7, "body": "x"}, "not a string"},
+		{"empty body", map[string]interface{}{"filename": "install.sh", "body": ""}, "body is empty"},
+		{"oversize body", map[string]interface{}{"body": strings.Repeat("x", maxScriptBytes+1)}, "over the"},
+		{"windows device", map[string]interface{}{"filename": "NUL.ps1", "body": "x"}, "reserved device name"},
+		{"windows device bare", map[string]interface{}{"filename": "con", "body": "x"}, "reserved device name"},
+		{"trailing dot", map[string]interface{}{"filename": "install.ps1.", "body": "x"}, "ends in a dot or space"},
+		{"trailing space", map[string]interface{}{"filename": "install.ps1 ", "body": "x"}, "ends in a dot or space"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := taskstore.Task{Scripts: map[string]interface{}{runtime.GOOS: tt.entry}}
+			_, err := (&TaskExecutorService{}).resolveScript(task)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveScript_InlineBodyAtLimit(t *testing.T) {
+	task := taskstore.Task{Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"body": strings.Repeat("x", maxScriptBytes)},
+	}}
+	if _, err := (&TaskExecutorService{}).resolveScript(task); err != nil {
+		t.Fatalf("resolveScript at exactly the limit: %v", err)
 	}
 }
 

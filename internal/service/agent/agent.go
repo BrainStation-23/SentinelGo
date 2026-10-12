@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/constants"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/rpcutil"
@@ -40,6 +41,10 @@ type AgentUpdatePayload struct {
 	Printers         interface{} `json:"printers,omitempty"`
 	OSInformation    interface{} `json:"os_information"`
 	SecurityInfo     interface{} `json:"security_info,omitempty"`
+	// Capabilities lists the task features this agent supports (contract
+	// v1 §6). Always sent, even empty, so the backend can tell "none" from
+	// an agent too old to report them.
+	Capabilities []string `json:"capabilities"`
 }
 
 // AgentService handles agent-related database operations.
@@ -87,6 +92,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		Printers:         sysInfo.Printers,
 		OSInformation:    sysInfo.OSInformation,
 		SecurityInfo:     sysInfo.SecurityInfo,
+		Capabilities:     constants.Capabilities(),
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

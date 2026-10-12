@@ -88,6 +88,36 @@ func TestExecuteTask_NativeHandlerNotes(t *testing.T) {
 	}
 }
 
+// TestExecuteTask_NoteCapped: a huge note is cut to head + tail before it is
+// reported or stored, and a reboot marker in the cut middle survives (#139).
+func TestExecuteTask_NoteCapped(t *testing.T) {
+	client := &fakeTaskClient{}
+	s, dbPath := newExecutorFixture(t, client, "")
+	huge := strings.Repeat("h", 1<<20) + "\n" + rebootMarker + "\n" + strings.Repeat("t", 4<<20) + "END"
+	s.nativeHandlers["test-native"] = func(context.Context, taskstore.Task) (string, error) {
+		return huge, errors.New("installer failed")
+	}
+	tk := taskstore.Task{ID: "t1", Slug: "test-native"}
+	seedTasks(t, s.pollingSvc, tk)
+
+	s.executeTask(context.Background(), tk)
+
+	u := client.recorded()
+	if len(u) != 1 {
+		t.Fatalf("reported %d updates, want 1", len(u))
+	}
+	note := u[0].note
+	if len(note) > maxNoteBytes+128 {
+		t.Errorf("reported note is %d bytes, want about %d", len(note), maxNoteBytes)
+	}
+	if !strings.Contains(note, "END (Error: installer failed)") || !strings.Contains(note, rebootMarker) {
+		t.Errorf("note lost its tail or the reboot marker")
+	}
+	if got := readTaskRow(t, dbPath, "t1"); got.note != note {
+		t.Error("stored note differs from the reported note")
+	}
+}
+
 // If the 'executing' marker can't be written the task must not run at all:
 // running it could repeat a reboot forever after a crash.
 func TestExecuteTask_MarkExecutingFails_SkipsTask(t *testing.T) {
@@ -218,6 +248,64 @@ func TestRunTask_ScriptFails_ReturnsOutputAndError(t *testing.T) {
 	}
 	if !strings.Contains(out, "about-to-fail") {
 		t.Errorf("output = %q, want the script's output kept for the failure note", out)
+	}
+}
+
+// TestRunTask_InlineBody_Runs runs a policy-style inline script with no
+// storage path: nothing is downloaded and the output reaches the note (#135).
+func TestRunTask_InlineBody_Runs(t *testing.T) {
+	tmp := isolateTempDir(t)
+	name, body := echoScript("hello-inline", 0)
+	// No server: any download attempt would fail.
+	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "http://127.0.0.1:0")
+
+	task := taskstore.Task{
+		ID:   "t1",
+		Slug: "install-package",
+		Scripts: map[string]interface{}{
+			runtime.GOOS: map[string]interface{}{"filename": name, "content_type": "text/plain", "body": body},
+		},
+	}
+	out, err := s.runTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("runTask: %v (output %q)", err, out)
+	}
+	if !strings.Contains(out, "hello-inline") {
+		t.Errorf("output = %q, want it to contain hello-inline", out)
+	}
+	assertNoTaskTempDirs(t, tmp)
+}
+
+func TestRunTask_InlineBadFilename_NotRun(t *testing.T) {
+	tmp := isolateTempDir(t)
+	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "")
+	task := taskstore.Task{ID: "t1", Slug: "x", Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"filename": "../evil.sh", "body": "echo pwned"},
+	}}
+	if _, err := s.runTask(context.Background(), task); err == nil {
+		t.Fatal("runTask succeeded, want a filename error")
+	}
+	// The task dir is tmp/sentinel-task-*, so "../evil.sh" would land in tmp.
+	if _, err := os.Stat(filepath.Join(tmp, "evil.sh")); err == nil {
+		t.Error("inline script was written outside the temp dir")
+	}
+	assertNoTaskTempDirs(t, tmp)
+}
+
+func TestWriteInlineScript_Mode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "install.sh")
+	if err := writeInlineScript(p, "echo hi\n"); err != nil {
+		t.Fatalf("writeInlineScript: %v", err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil || string(got) != "echo hi\n" {
+		t.Fatalf("content = %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(p)
+		if fi.Mode().Perm() != 0700 {
+			t.Errorf("mode = %v, want 0700", fi.Mode().Perm())
+		}
 	}
 }
 

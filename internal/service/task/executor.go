@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"sentinelgo/internal/artifact"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/supabase"
@@ -148,14 +150,14 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	}
 
 	log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
-	note, err := s.runTask(ctx, task)
+	note, result, err := s.runTaskResult(ctx, task)
 	if err != nil {
 		log.Printf("Executor: Task %s failed: %v", task.ID, err)
 		statusNote := err.Error()
 		if note != "" {
 			statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
 		}
-		if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", statusNote); err != nil {
+		if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "failed", capNote(statusNote), result); err != nil {
 			log.Printf("Executor: Failed to report task status: %v", err)
 		}
 		return
@@ -166,7 +168,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	if statusNote == "" {
 		statusNote = "Executed successfully"
 	}
-	if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", statusNote); err != nil {
+	if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "success", capNote(statusNote), result); err != nil {
 		log.Printf("Executor: Failed to report task status: %v", err)
 	}
 }
@@ -188,6 +190,13 @@ func resolveTaskTimeout(task taskstore.Task) time.Duration {
 }
 
 func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
+	note, _, err := s.runTaskResult(ctx, task)
+	return note, err
+}
+
+// runTaskResult runs a task and returns its note, its structured result
+// (nil unless a script ran to exit, #140) and its error.
+func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.Task) (string, map[string]interface{}, error) {
 	timeout := resolveTaskTimeout(task)
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -199,34 +208,59 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	defer s.deregisterRunning(task.ID)
 
 	if handler, ok := s.nativeHandlers[task.Slug]; ok {
-		return handler(taskCtx, task)
+		if len(task.Artifacts) > 0 {
+			return "", nil, fmt.Errorf("artifacts are only supported for script tasks")
+		}
+		note, err := handler(taskCtx, task)
+		return note, nil, err
 	}
 
-	scriptPath, scriptName, err := s.resolveScript(task)
+	// Reject bad artifact specs before anything is created or downloaded.
+	if err := artifact.Validate(task.Artifacts); err != nil {
+		return "", nil, fmt.Errorf("invalid task artifacts: %w", err)
+	}
+
+	script, err := s.resolveScript(task)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	tempDir, err := os.MkdirTemp("", "sentinel-task-"+task.ID)
 	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
+		return "", nil, fmt.Errorf("create temp dir: %w", err)
 	}
+	// Removes the script, payload.json and every artifact, whatever the
+	// outcome (contract §3.7).
 	defer func() {
 		if err := os.RemoveAll(tempDir); err != nil {
 			log.Printf("Executor: Failed to remove temp dir: %v", err)
 		}
 	}()
 
-	localScriptPath := filepath.Join(tempDir, scriptName)
-	if err := s.downloadScript(taskCtx, scriptPath, localScriptPath); err != nil {
-		return "", fmt.Errorf("download script: %w", err)
+	localScriptPath := filepath.Join(tempDir, script.Filename)
+	if script.Body != nil {
+		if err := writeInlineScript(localScriptPath, *script.Body); err != nil {
+			return "", nil, fmt.Errorf("write inline script: %w", err)
+		}
+	} else if err := s.downloadScript(taskCtx, script.RemotePath, localScriptPath); err != nil {
+		return "", nil, fmt.Errorf("download script: %w", err)
+	}
+
+	// Downloads run under taskCtx, so they count against the task timeout;
+	// the backend sizes timeout_minutes to cover download plus install
+	// (contract §4). If any file fails verification the script never runs.
+	artifactsDir := filepath.Join(tempDir, "artifacts")
+	artifactPaths, err := s.fetchArtifacts(taskCtx, artifactsDir, task.Artifacts)
+	if err != nil {
+		return "", nil, fmt.Errorf("fetch artifacts: %w", err)
 	}
 
 	payloadPath := filepath.Join(tempDir, "payload.json")
-	payloadData, _ := json.Marshal(task.Payload)
-	if err := os.WriteFile(payloadPath, payloadData, 0600); err != nil {
-		return "", fmt.Errorf("write payload: %w", err)
+	if err := writePayload(payloadPath, task, artifactPaths); err != nil {
+		return "", nil, err
 	}
+	resultPath := filepath.Join(tempDir, "result.json")
+	env := append(scriptEnv(task, tempDir, artifactsDir, artifactPaths), "SENTINEL_RESULT_FILE="+resultPath)
 
 	// Buffer of 1 so the goroutine can always send even after a timeout, preventing a leak.
 	resultChan := make(chan struct {
@@ -235,7 +269,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}, 1)
 
 	go func() {
-		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath)
+		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, env)
 		resultChan <- struct {
 			output string
 			err    error
@@ -249,28 +283,170 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 			timeout.Round(time.Second), task.ID, task.Slug,
 		)
 		log.Printf("Executor: %s", timeoutNote)
-		return timeoutNote, fmt.Errorf("task execution timeout")
+		return timeoutNote, nil, fmt.Errorf("task execution timeout")
 	case result := <-resultChan:
-		return result.output, result.err
+		note, taskResult := readTaskResult(resultPath, result.output, result.err)
+		return note, taskResult, result.err
 	}
 }
 
-func (s *TaskExecutorService) resolveScript(task taskstore.Task) (string, string, error) {
+// fetchArtifacts downloads and verifies the task's artifacts into dir. A task
+// without artifacts makes no request and gets a nil map.
+func (s *TaskExecutorService) fetchArtifacts(ctx context.Context, dir string, specs []artifact.Spec) (map[string]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	c := supabase.FromConfig(s.cfg, supabase.WithHTTPClient(artifact.HTTPClient()))
+	return artifact.Fetch(ctx, c, s.artifactAuthRetry, dir, specs)
+}
+
+// artifactAuthRetry recovers the session once on a 401, through the same
+// path task status updates use.
+func (s *TaskExecutorService) artifactAuthRetry(ctx context.Context, fn func() error) error {
+	err := fn()
+	if err == nil || s.pollingSvc == nil || !s.pollingSvc.recoverAfter401(ctx, err) {
+		return err
+	}
+	return fn()
+}
+
+// artifactInfo is one entry of payload.json's reserved "artifacts" key.
+type artifactInfo struct {
+	Path     string `json:"path"`
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
+}
+
+// writePayload writes the task payload for the script. With artifacts, the
+// reserved top-level "artifacts" key is set to where each file is, replacing
+// anything the server put there (contract §3.6); without, the payload is
+// written unchanged.
+func writePayload(path string, task taskstore.Task, artifactPaths map[string]string) error {
+	payload := task.Payload
+	if len(task.Artifacts) > 0 {
+		payload = make(map[string]interface{}, len(task.Payload)+1)
+		for k, v := range task.Payload {
+			payload[k] = v
+		}
+		infos := make(map[string]artifactInfo, len(task.Artifacts))
+		for _, a := range task.Artifacts {
+			infos[a.ID] = artifactInfo{Path: artifactPaths[a.ID], Filename: a.Filename, SHA256: a.SHA256, Size: a.Size}
+		}
+		payload["artifacts"] = infos
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write payload: %w", err)
+	}
+	return nil
+}
+
+// scriptEnv is the environment a script gets on top of the agent's (contract
+// §3.6). The first three are set for every script task.
+func scriptEnv(task taskstore.Task, tempDir, artifactsDir string, artifactPaths map[string]string) []string {
+	env := []string{
+		"SENTINEL_TASK_ID=" + task.ID,
+		"SENTINEL_TASK_DIR=" + tempDir,
+		"SENTINEL_ARTIFACTS_DIR=" + artifactsDir,
+	}
+	for _, a := range task.Artifacts {
+		env = append(env, "SENTINEL_ARTIFACT_"+strings.ToUpper(a.ID)+"="+artifactPaths[a.ID])
+	}
+	return env
+}
+
+// scriptRef says where a task's script comes from: a path in the
+// command-scripts bucket, or a body sent inline with the task (contract §2).
+// Exactly one of RemotePath and Body is set.
+type scriptRef struct {
+	RemotePath string
+	Body       *string
+	Filename   string
+}
+
+// resolveScript picks the script entry for this OS, falling back to "all".
+// Within an entry a non-empty path wins over an inline body.
+func (s *TaskExecutorService) resolveScript(task taskstore.Task) (scriptRef, error) {
 	osKey := runtime.GOOS
 
-	if scriptObj, ok := task.Scripts[osKey].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
+	for _, key := range []string{osKey, "all"} {
+		entry, ok := task.Scripts[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ref, found, err := resolveScriptEntry(entry)
+		if err != nil {
+			return scriptRef{}, fmt.Errorf("script for %s: %w", key, err)
+		}
+		if found {
+			return ref, nil
 		}
 	}
 
-	if scriptObj, ok := task.Scripts["all"].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
-		}
+	return scriptRef{}, fmt.Errorf("no script found for platform: %s", osKey)
+}
+
+// resolveScriptEntry reads one scripts[<key>] entry. found is false when the
+// entry has neither a path nor a body.
+func resolveScriptEntry(entry map[string]interface{}) (ref scriptRef, found bool, err error) {
+	if path, ok := entry["path"].(string); ok && path != "" {
+		// Path-based scripts keep their existing naming; the path comes from
+		// our own bucket listing, not a free-form field.
+		return scriptRef{RemotePath: path, Filename: filepath.Base(path)}, true, nil
 	}
 
-	return "", "", fmt.Errorf("no script found for platform: %s", osKey)
+	body, ok := entry["body"].(string)
+	if !ok {
+		return scriptRef{}, false, nil
+	}
+	if body == "" {
+		return scriptRef{}, false, fmt.Errorf("inline script body is empty")
+	}
+	if len(body) > maxScriptBytes {
+		return scriptRef{}, false, fmt.Errorf("inline script is %d bytes, over the %d byte limit", len(body), maxScriptBytes)
+	}
+
+	filename := defaultScriptFilename()
+	if raw, present := entry["filename"]; present {
+		name, isString := raw.(string)
+		if !isString {
+			return scriptRef{}, false, fmt.Errorf("inline script filename is not a string")
+		}
+		filename = name
+	}
+	if err := validateScriptFilename(filename); err != nil {
+		return scriptRef{}, false, err
+	}
+
+	return scriptRef{Body: &body, Filename: filename}, true, nil
+}
+
+// defaultScriptFilename names an inline script that came without a filename.
+// The extension picks the interpreter in executeLocalScript.
+func defaultScriptFilename() string {
+	if runtime.GOOS == "windows" {
+		return "install.ps1"
+	}
+	return "install.sh"
+}
+
+// validateScriptFilename applies the contract §1 filename rule.
+func validateScriptFilename(name string) error {
+	if err := artifact.ValidateFilename(name); err != nil {
+		return fmt.Errorf("invalid inline script filename: %w", err)
+	}
+	return nil
+}
+
+// writeInlineScript writes an inline body into the task temp dir with the
+// same 0700 mode that downloaded scripts get before they run.
+func writeInlineScript(localPath, body string) error {
+	// #nosec G306 - the script must be executable by its owner; the temp dir is 0700
+	return os.WriteFile(localPath, []byte(body), 0700)
 }
 
 func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath string) error {
