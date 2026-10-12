@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"sentinelgo/internal/artifact"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/supabase"
@@ -200,7 +202,15 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	defer s.deregisterRunning(task.ID)
 
 	if handler, ok := s.nativeHandlers[task.Slug]; ok {
+		if len(task.Artifacts) > 0 {
+			return "", fmt.Errorf("artifacts are only supported for script tasks")
+		}
 		return handler(taskCtx, task)
+	}
+
+	// Reject bad artifact specs before anything is created or downloaded.
+	if err := artifact.Validate(task.Artifacts); err != nil {
+		return "", fmt.Errorf("invalid task artifacts: %w", err)
 	}
 
 	script, err := s.resolveScript(task)
@@ -212,6 +222,8 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
+	// Removes the script, payload.json and every artifact, whatever the
+	// outcome (contract §3.7).
 	defer func() {
 		if err := os.RemoveAll(tempDir); err != nil {
 			log.Printf("Executor: Failed to remove temp dir: %v", err)
@@ -227,11 +239,20 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		return "", fmt.Errorf("download script: %w", err)
 	}
 
-	payloadPath := filepath.Join(tempDir, "payload.json")
-	payloadData, _ := json.Marshal(task.Payload)
-	if err := os.WriteFile(payloadPath, payloadData, 0600); err != nil {
-		return "", fmt.Errorf("write payload: %w", err)
+	// Downloads run under taskCtx, so they count against the task timeout;
+	// the backend sizes timeout_minutes to cover download plus install
+	// (contract §4). If any file fails verification the script never runs.
+	artifactsDir := filepath.Join(tempDir, "artifacts")
+	artifactPaths, err := s.fetchArtifacts(taskCtx, artifactsDir, task.Artifacts)
+	if err != nil {
+		return "", fmt.Errorf("fetch artifacts: %w", err)
 	}
+
+	payloadPath := filepath.Join(tempDir, "payload.json")
+	if err := writePayload(payloadPath, task, artifactPaths); err != nil {
+		return "", err
+	}
+	env := scriptEnv(task, tempDir, artifactsDir, artifactPaths)
 
 	// Buffer of 1 so the goroutine can always send even after a timeout, preventing a leak.
 	resultChan := make(chan struct {
@@ -240,7 +261,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}, 1)
 
 	go func() {
-		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, nil)
+		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, env)
 		resultChan <- struct {
 			output string
 			err    error
@@ -258,6 +279,75 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	case result := <-resultChan:
 		return result.output, result.err
 	}
+}
+
+// fetchArtifacts downloads and verifies the task's artifacts into dir. A task
+// without artifacts makes no request and gets a nil map.
+func (s *TaskExecutorService) fetchArtifacts(ctx context.Context, dir string, specs []artifact.Spec) (map[string]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	c := supabase.FromConfig(s.cfg, supabase.WithHTTPClient(artifact.HTTPClient()))
+	return artifact.Fetch(ctx, c, s.artifactAuthRetry, dir, specs)
+}
+
+// artifactAuthRetry recovers the session once on a 401, through the same
+// path task status updates use.
+func (s *TaskExecutorService) artifactAuthRetry(ctx context.Context, fn func() error) error {
+	err := fn()
+	if err == nil || s.pollingSvc == nil || !s.pollingSvc.recoverAfter401(ctx, err) {
+		return err
+	}
+	return fn()
+}
+
+// artifactInfo is one entry of payload.json's reserved "artifacts" key.
+type artifactInfo struct {
+	Path     string `json:"path"`
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
+}
+
+// writePayload writes the task payload for the script. With artifacts, the
+// reserved top-level "artifacts" key is set to where each file is, replacing
+// anything the server put there (contract §3.6); without, the payload is
+// written unchanged.
+func writePayload(path string, task taskstore.Task, artifactPaths map[string]string) error {
+	payload := task.Payload
+	if len(task.Artifacts) > 0 {
+		payload = make(map[string]interface{}, len(task.Payload)+1)
+		for k, v := range task.Payload {
+			payload[k] = v
+		}
+		infos := make(map[string]artifactInfo, len(task.Artifacts))
+		for _, a := range task.Artifacts {
+			infos[a.ID] = artifactInfo{Path: artifactPaths[a.ID], Filename: a.Filename, SHA256: a.SHA256, Size: a.Size}
+		}
+		payload["artifacts"] = infos
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write payload: %w", err)
+	}
+	return nil
+}
+
+// scriptEnv is the environment a script gets on top of the agent's (contract
+// §3.6). The first three are set for every script task.
+func scriptEnv(task taskstore.Task, tempDir, artifactsDir string, artifactPaths map[string]string) []string {
+	env := []string{
+		"SENTINEL_TASK_ID=" + task.ID,
+		"SENTINEL_TASK_DIR=" + tempDir,
+		"SENTINEL_ARTIFACTS_DIR=" + artifactsDir,
+	}
+	for _, a := range task.Artifacts {
+		env = append(env, "SENTINEL_ARTIFACT_"+strings.ToUpper(a.ID)+"="+artifactPaths[a.ID])
+	}
+	return env
 }
 
 // scriptRef says where a task's script comes from: a path in the
