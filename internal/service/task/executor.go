@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sync"
 	"time"
@@ -202,7 +203,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		return handler(taskCtx, task)
 	}
 
-	scriptPath, scriptName, err := s.resolveScript(task)
+	script, err := s.resolveScript(task)
 	if err != nil {
 		return "", err
 	}
@@ -217,8 +218,12 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 		}
 	}()
 
-	localScriptPath := filepath.Join(tempDir, scriptName)
-	if err := s.downloadScript(taskCtx, scriptPath, localScriptPath); err != nil {
+	localScriptPath := filepath.Join(tempDir, script.Filename)
+	if script.Body != nil {
+		if err := writeInlineScript(localScriptPath, *script.Body); err != nil {
+			return "", fmt.Errorf("write inline script: %w", err)
+		}
+	} else if err := s.downloadScript(taskCtx, script.RemotePath, localScriptPath); err != nil {
 		return "", fmt.Errorf("download script: %w", err)
 	}
 
@@ -255,22 +260,98 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}
 }
 
-func (s *TaskExecutorService) resolveScript(task taskstore.Task) (string, string, error) {
+// scriptRef says where a task's script comes from: a path in the
+// command-scripts bucket, or a body sent inline with the task (contract §2).
+// Exactly one of RemotePath and Body is set.
+type scriptRef struct {
+	RemotePath string
+	Body       *string
+	Filename   string
+}
+
+// scriptFilenameRe is the contract §1 filename rule. It keeps a server-supplied
+// name from escaping the task temp dir (no separators, no drive colons).
+var scriptFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._ -]{1,128}$`)
+
+// resolveScript picks the script entry for this OS, falling back to "all".
+// Within an entry a non-empty path wins over an inline body.
+func (s *TaskExecutorService) resolveScript(task taskstore.Task) (scriptRef, error) {
 	osKey := runtime.GOOS
 
-	if scriptObj, ok := task.Scripts[osKey].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
+	for _, key := range []string{osKey, "all"} {
+		entry, ok := task.Scripts[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ref, found, err := resolveScriptEntry(entry)
+		if err != nil {
+			return scriptRef{}, fmt.Errorf("script for %s: %w", key, err)
+		}
+		if found {
+			return ref, nil
 		}
 	}
 
-	if scriptObj, ok := task.Scripts["all"].(map[string]interface{}); ok {
-		if path, ok := scriptObj["path"].(string); ok {
-			return path, filepath.Base(path), nil
-		}
+	return scriptRef{}, fmt.Errorf("no script found for platform: %s", osKey)
+}
+
+// resolveScriptEntry reads one scripts[<key>] entry. found is false when the
+// entry has neither a path nor a body.
+func resolveScriptEntry(entry map[string]interface{}) (ref scriptRef, found bool, err error) {
+	if path, ok := entry["path"].(string); ok && path != "" {
+		// Path-based scripts keep their existing naming; the path comes from
+		// our own bucket listing, not a free-form field.
+		return scriptRef{RemotePath: path, Filename: filepath.Base(path)}, true, nil
 	}
 
-	return "", "", fmt.Errorf("no script found for platform: %s", osKey)
+	body, ok := entry["body"].(string)
+	if !ok {
+		return scriptRef{}, false, nil
+	}
+	if body == "" {
+		return scriptRef{}, false, fmt.Errorf("inline script body is empty")
+	}
+	if len(body) > maxScriptBytes {
+		return scriptRef{}, false, fmt.Errorf("inline script is %d bytes, over the %d byte limit", len(body), maxScriptBytes)
+	}
+
+	filename := defaultScriptFilename()
+	if raw, present := entry["filename"]; present {
+		name, isString := raw.(string)
+		if !isString {
+			return scriptRef{}, false, fmt.Errorf("inline script filename is not a string")
+		}
+		filename = name
+	}
+	if err := validateScriptFilename(filename); err != nil {
+		return scriptRef{}, false, err
+	}
+
+	return scriptRef{Body: &body, Filename: filename}, true, nil
+}
+
+// defaultScriptFilename names an inline script that came without a filename.
+// The extension picks the interpreter in executeLocalScript.
+func defaultScriptFilename() string {
+	if runtime.GOOS == "windows" {
+		return "install.ps1"
+	}
+	return "install.sh"
+}
+
+// validateScriptFilename applies the contract §1 filename rule.
+func validateScriptFilename(name string) error {
+	if name == "." || name == ".." || !scriptFilenameRe.MatchString(name) {
+		return fmt.Errorf("invalid inline script filename %q", name)
+	}
+	return nil
+}
+
+// writeInlineScript writes an inline body into the task temp dir with the
+// same 0700 mode that downloaded scripts get before they run.
+func writeInlineScript(localPath, body string) error {
+	// #nosec G306 - the script must be executable by its owner; the temp dir is 0700
+	return os.WriteFile(localPath, []byte(body), 0700)
 }
 
 func (s *TaskExecutorService) downloadScript(ctx context.Context, remotePath, localPath string) error {

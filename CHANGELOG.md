@@ -32,6 +32,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - `docs/09-system-architecture.md`, `EXECUTION_FLOW.md` and `process_flow.md`, which `docs/08-project-overview.md` had superseded and which described components that no longer exist.
 
+### Fixed
+
+- Tasks whose script is sent inline (`scripts.<os>.body`, no storage path) now run. Previously every policy-triggered app install failed with `no script found for platform`. Inline filenames are checked so a server value can't write outside the task's temp directory, and empty or over-10 MiB bodies fail the task (#135).
+
 ### Security
 
 - Windows: local account names and network adapter names are now quoted safely before being passed to PowerShell. Previously, a local account whose name contained `$(...)`, or an adapter name containing a quote, would have run as a command with the agent's SYSTEM privileges. Creating such an account or renaming an adapter requires administrator rights.
