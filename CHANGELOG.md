@@ -21,6 +21,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - OpenSSF Best Practices badge in the README.
 - `internal/artifact`: downloads the files a task needs (such as installer packages) from Supabase Storage with the agent's own token, streaming them to disk while checking the exact size and SHA-256. A file that doesn't match is deleted. Downloads retry on network errors and 5xx, recover once from an expired token, abort when no data arrives for 2 minutes, and check free disk space first. Not used by tasks yet (#136).
 - Script tasks can carry `artifacts`: files such as installer packages that the agent downloads and verifies before the script runs. The script finds them through `SENTINEL_ARTIFACT_<ID>` environment variables and the `artifacts` key in `payload.json`. If any file fails verification, the script doesn't run and the task note names the artifact. Artifacts are kept in the local task database, so a restart between polling and execution doesn't lose them. Every script task now also gets `SENTINEL_TASK_ID`, `SENTINEL_TASK_DIR` and `SENTINEL_ARTIFACTS_DIR` (#137).
+- The inventory payload lists the task features the agent supports (`capabilities`: `script_inline_body_v1`, `task_artifacts_v1`), so the backend won't send installer tasks to agents that can't run them. `sentinelgo -version` prints the list (#138).
 
 ### Changed
 
