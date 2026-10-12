@@ -8,13 +8,14 @@ import (
 	"sentinelgo/internal/taskstore"
 )
 
+// TestNewStore_EmptyPath: an empty path is an error, not a database file
+// named "?_pragma=..." created in the working directory.
 func TestNewStore_EmptyPath(t *testing.T) {
 	store, err := store.NewTaskStore("")
-	// NewStore may succeed with empty path, so just check it doesn't panic
-	if store != nil {
-		t.Cleanup(func() { _ = store.Close() })
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("NewTaskStore(\"\") succeeded, want an error")
 	}
-	_ = err
 }
 
 func TestNewStore_TempDir(t *testing.T) {
