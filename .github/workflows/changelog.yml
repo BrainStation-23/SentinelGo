@@ -28,10 +28,13 @@ jobs:
       - name: Validate CHANGELOG.md
         run: go run ./scripts/changelog -check
 
+      # Dependency bumps are exempt by label and, independently, by author, so
+      # a Dependabot PR never blocks on a missing label.
       - name: Require an entry
         if: >-
           !contains(github.event.pull_request.labels.*.name, 'skip-changelog') &&
-          !contains(github.event.pull_request.labels.*.name, 'dependencies')
+          !contains(github.event.pull_request.labels.*.name, 'dependencies') &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -37,4 +39,21 @@ func TestPrintVersion_noPanic(t *testing.T) {
 	Version = "v0.0.0-test"
 	// printVersion writes to stdout; we just verify it doesn't panic.
 	printVersion()
+}
+
+func TestPrintVersion_ListsCapabilities(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	printVersion()
+	os.Stdout = orig
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+
+	if !strings.Contains(string(out), "Capabilities: script_inline_body_v1, task_artifacts_v1") {
+		t.Errorf("printVersion output = %q, want the capabilities line", out)
+	}
 }

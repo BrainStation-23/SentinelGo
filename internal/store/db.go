@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +14,13 @@ import (
 // MaxOpenConns is set to 1 because SQLite only allows one concurrent writer; using a larger
 // pool causes spurious SQLITE_BUSY errors even within the same process.
 // All entity stores in this package should use this function instead of sql.Open directly.
+//
+// An empty path is rejected: the DSN would then be just "?_pragma=...", which
+// SQLite takes as a file of that name in the working directory.
 func Open(path string) (*sql.DB, error) {
+	if path == "" {
+		return nil, errors.New("open database: empty path")
+	}
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, err

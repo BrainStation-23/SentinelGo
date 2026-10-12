@@ -1,3 +1,7 @@
+# Version updates target dev, like every other change; they reach main with
+# the next dev -> main PR. The "dependencies" label exempts them from the
+# Changelog check (changelog.yml also exempts Dependabot by author, in case a
+# label is ever missing: Dependabot silently skips labels that don't exist).
 version: 2
 updates:
   - package-ecosystem: "gomod"
@@ -7,6 +11,7 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Asia/Dhaka"
+    target-branch: "dev"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
@@ -33,6 +38,7 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Asia/Dhaka"
+    target-branch: "dev"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
