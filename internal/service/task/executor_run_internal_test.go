@@ -88,6 +88,36 @@ func TestExecuteTask_NativeHandlerNotes(t *testing.T) {
 	}
 }
 
+// TestExecuteTask_NoteCapped: a huge note is cut to head + tail before it is
+// reported or stored, and a reboot marker in the cut middle survives (#139).
+func TestExecuteTask_NoteCapped(t *testing.T) {
+	client := &fakeTaskClient{}
+	s, dbPath := newExecutorFixture(t, client, "")
+	huge := strings.Repeat("h", 1<<20) + "\n" + rebootMarker + "\n" + strings.Repeat("t", 4<<20) + "END"
+	s.nativeHandlers["test-native"] = func(context.Context, taskstore.Task) (string, error) {
+		return huge, errors.New("installer failed")
+	}
+	tk := taskstore.Task{ID: "t1", Slug: "test-native"}
+	seedTasks(t, s.pollingSvc, tk)
+
+	s.executeTask(context.Background(), tk)
+
+	u := client.recorded()
+	if len(u) != 1 {
+		t.Fatalf("reported %d updates, want 1", len(u))
+	}
+	note := u[0].note
+	if len(note) > maxNoteBytes+128 {
+		t.Errorf("reported note is %d bytes, want about %d", len(note), maxNoteBytes)
+	}
+	if !strings.Contains(note, "END (Error: installer failed)") || !strings.Contains(note, rebootMarker) {
+		t.Errorf("note lost its tail or the reboot marker")
+	}
+	if got := readTaskRow(t, dbPath, "t1"); got.note != note {
+		t.Error("stored note differs from the reported note")
+	}
+}
+
 // If the 'executing' marker can't be written the task must not run at all:
 // running it could repeat a reboot forever after a crash.
 func TestExecuteTask_MarkExecutingFails_SkipsTask(t *testing.T) {

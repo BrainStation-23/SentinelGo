@@ -11,8 +11,9 @@ import (
 	"sentinelgo/internal/binpath"
 )
 
-// executeLocalScript runs the task script on macOS.
-func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath, payloadPath string) (string, error) {
+// executeLocalScript runs the task script on macOS. env is added to the
+// agent's environment.
+func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath, payloadPath string, env []string) (string, error) {
 	// #nosec G302 - Executable scripts need 0755 permissions
 	if err := os.Chmod(scriptPath, 0755); err != nil {
 		return "", fmt.Errorf("chmod failed: %w", err)
@@ -32,8 +33,8 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
 	}
 
+	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = 30 * time.Second
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	return runBounded(cmd)
 }

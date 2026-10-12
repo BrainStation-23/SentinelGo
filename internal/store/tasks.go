@@ -41,6 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assigned_at ON tasks(assigned_at);
 // looping forever.
 const MaxRetryAttempts = 3
 
+// retryAllowedSQL excludes tasks whose payload sets "retry_on_failure": false
+// (contract §4: installers must not be re-run after the user has seen the
+// failure). A missing key, true, or an unparseable payload keeps the old
+// behaviour. CASE guards json_type, which errors on malformed JSON.
+const retryAllowedSQL = `(CASE WHEN json_valid(payload) THEN json_type(payload, '$.retry_on_failure') END) IS NOT 'false'`
+
 // RetryableTask holds the minimal fields needed to report a "retrying" status
 // before a task is reset to 'assigned'.
 type RetryableTask struct {
@@ -131,7 +137,8 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 }
 
 // GetRetryableTasks returns tasks that are eligible to be retried: failed (or
-// retrying) long enough ago and below the attempt cap. The caller should report
+// retrying) long enough ago, below the attempt cap, and not opted out with
+// retry_on_failure: false. The caller should report
 // "retrying" status to the server for each before calling ResetOldFailedTasks.
 func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, error) {
 	cutoff := time.Now().UTC().Add(-cooldown).Format(time.RFC3339)
@@ -142,7 +149,7 @@ func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, 
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
-	`, MaxRetryAttempts, cutoff)
+		AND `+retryAllowedSQL, MaxRetryAttempts, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -165,8 +172,8 @@ func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, 
 
 // ResetOldFailedTasks resets failed (or retrying) tasks older than cooldown
 // back to 'assigned' for retry, up to MaxRetryAttempts times. Tasks that have
-// already been retried the maximum number of times are left in 'failed' state
-// permanently.
+// already been retried the maximum number of times, or whose payload sets
+// retry_on_failure: false, are left in 'failed' state permanently.
 func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	cutoff := time.Now().UTC().Add(-cooldown).Format(time.RFC3339)
@@ -179,7 +186,7 @@ func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
-	`, now, MaxRetryAttempts, cutoff)
+		AND `+retryAllowedSQL, now, MaxRetryAttempts, cutoff)
 	if err != nil {
 		return 0, err
 	}

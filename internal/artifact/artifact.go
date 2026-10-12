@@ -229,6 +229,7 @@ func prepareDir(dir string) error {
 		return fmt.Errorf("create artifacts dir: %w", err)
 	}
 	// MkdirAll leaves an existing dir's mode alone.
+	// #nosec G302 - a directory needs the execute bit to be entered; 0700 is owner-only
 	if err := os.Chmod(dir, 0700); err != nil {
 		return fmt.Errorf("restrict artifacts dir: %w", err)
 	}
