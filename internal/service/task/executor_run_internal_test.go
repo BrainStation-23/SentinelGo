@@ -285,7 +285,8 @@ func TestRunTask_InlineBadFilename_NotRun(t *testing.T) {
 	if _, err := s.runTask(context.Background(), task); err == nil {
 		t.Fatal("runTask succeeded, want a filename error")
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(tmp), "evil.sh")); err == nil {
+	// The task dir is tmp/sentinel-task-*, so "../evil.sh" would land in tmp.
+	if _, err := os.Stat(filepath.Join(tmp, "evil.sh")); err == nil {
 		t.Error("inline script was written outside the temp dir")
 	}
 	assertNoTaskTempDirs(t, tmp)

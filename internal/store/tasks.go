@@ -155,6 +155,10 @@ func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, 
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
+		-- Only once the failure has reached the server: resetting an unsynced
+		-- row would drop its final status and result before SyncPendingTasks
+		-- sends them (it only picks up completed rows).
+		AND is_synced = 1
 		-- retry_on_failure: false opts out (contract §4: an installer must
 		-- not re-run after the user has seen the failure). A missing key,
 		-- true, or an unparseable payload retries; CASE guards json_type,
@@ -197,6 +201,10 @@ func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
+		-- Only once the failure has reached the server: resetting an unsynced
+		-- row would drop its final status and result before SyncPendingTasks
+		-- sends them (it only picks up completed rows).
+		AND is_synced = 1
 		-- retry_on_failure: false opts out (contract §4: an installer must
 		-- not re-run after the user has seen the failure). A missing key,
 		-- true, or an unparseable payload retries; CASE guards json_type,

@@ -31,6 +31,12 @@ func readTaskResult(path, note string, runErr error) (string, map[string]interfa
 		result = map[string]interface{}{}
 	}
 	result["exit_code"] = code
+	// The backend caps p_result at 16 KB, and exit_code was just added; a
+	// result over the cap would be rejected on every resend.
+	if b, err := json.Marshal(result); err != nil || len(b) > maxResultFileBytes {
+		result = map[string]interface{}{"exit_code": code}
+		problem = fmt.Sprintf("result file ignored: over the %d byte limit once exit_code is added", maxResultFileBytes)
+	}
 	if problem != "" {
 		log.Printf("Executor: %s", problem)
 		note += "\n[agent] " + problem

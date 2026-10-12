@@ -43,3 +43,9 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    # GitHub doesn't support mixing CodeQL Action versions in one workflow,
+    # so its sub-actions are always bumped together.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

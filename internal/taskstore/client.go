@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"time"
 
 	"sentinelgo/internal/supabase"
 )
@@ -12,11 +13,15 @@ import (
 // Client handles RPC calls to agent_get_tasks and agent_update_task.
 type Client struct {
 	sb *supabase.Client
-	// noResultParam is set once the server shows it has no p_result
-	// parameter (an older backend), so later updates skip it instead of
-	// paying for a failed call each time.
-	noResultParam atomic.Bool
+	// noResultUntil (unix nanoseconds) is set when the server shows it has
+	// no p_result parameter (an older backend). Until then updates skip it
+	// instead of paying for a failed call each time; afterwards it is tried
+	// again, so a backend upgrade is picked up without an agent restart.
+	noResultUntil atomic.Int64
 }
+
+// resultParamRecheck is how long p_result stays off after a PGRST202.
+const resultParamRecheck = time.Hour
 
 // NewClient creates a client that authenticates with a fixed accessToken.
 // anonKey is sent as the apikey header. Production code uses
@@ -52,7 +57,7 @@ func (c *Client) UpdateTask(ctx context.Context, taskID, status, note string) er
 // UpdateTaskWithResult calls agent_update_task with an optional structured
 // result (p_result, sentinel-ops#49). A backend without that parameter
 // answers PGRST202 ("function not found"); the update is then retried once
-// without it, and p_result is not sent again for the life of the process.
+// without it, and p_result is left out for the next resultParamRecheck.
 func (c *Client) UpdateTaskWithResult(ctx context.Context, taskID, status, note string, result map[string]interface{}) error {
 	params := map[string]interface{}{
 		"p_task_id": taskID,
@@ -61,15 +66,15 @@ func (c *Client) UpdateTaskWithResult(ctx context.Context, taskID, status, note 
 	if note != "" {
 		params["p_note"] = note
 	}
-	withResult := result != nil && !c.noResultParam.Load()
+	withResult := result != nil && time.Now().UnixNano() >= c.noResultUntil.Load()
 	if withResult {
 		params["p_result"] = result
 	}
 
 	err := c.sb.RPC(ctx, "agent_update_task", params, nil)
 	if withResult && isFunctionNotFound(err) {
-		c.noResultParam.Store(true)
-		log.Printf("TaskStore: server has no agent_update_task p_result parameter; sending task results without it")
+		c.noResultUntil.Store(time.Now().Add(resultParamRecheck).UnixNano())
+		log.Printf("TaskStore: server has no agent_update_task p_result parameter; sending task results without it for %v", resultParamRecheck)
 		delete(params, "p_result")
 		err = c.sb.RPC(ctx, "agent_update_task", params, nil)
 	}

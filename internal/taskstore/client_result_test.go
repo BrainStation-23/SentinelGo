@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // resultServer records each agent_update_task body. When oldBackend is set it
@@ -115,7 +116,32 @@ func TestUpdateTaskWithResult_OtherNotFoundNotRetried(t *testing.T) {
 	if n != 1 {
 		t.Errorf("calls = %d, want 1", n)
 	}
-	if c.noResultParam.Load() {
+	if c.noResultUntil.Load() != 0 {
 		t.Error("a non-PGRST202 404 disabled p_result")
+	}
+}
+
+// TestUpdateTaskWithResult_RechecksAfterInterval: once the recheck interval
+// has passed, p_result is tried again, so a backend upgrade is picked up
+// without restarting the agent.
+func TestUpdateTaskWithResult_RechecksAfterInterval(t *testing.T) {
+	srv, calls := resultServer(t, false)
+	c := NewClient(srv.URL, "key", "token")
+	result := map[string]interface{}{"exit_code": 0}
+
+	c.noResultUntil.Store(time.Now().Add(time.Hour).UnixNano())
+	if err := c.UpdateTaskWithResult(context.Background(), "t1", "success", "", result); err != nil {
+		t.Fatal(err)
+	}
+	c.noResultUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	if err := c.UpdateTaskWithResult(context.Background(), "t2", "success", "", result); err != nil {
+		t.Fatal(err)
+	}
+	got := calls()
+	if _, has := got[0]["p_result"]; has {
+		t.Error("p_result sent inside the recheck interval")
+	}
+	if _, has := got[1]["p_result"]; !has {
+		t.Error("p_result not retried after the recheck interval")
 	}
 }

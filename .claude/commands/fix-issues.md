@@ -5,7 +5,7 @@ If arguments are given, they are the issue numbers to work on, in that order (e.
 ## 1. Pick the queue
 
 ```bash
-gh issue list --state open --limit 100 --json number,title,labels,body
+gh issue list --state open --limit 1000 --json number,title,labels,body   # gh pages through results up to --limit
 ```
 
 - Skip tracking/epic issues whose body is mainly a checklist of other issues (e.g. "[Installers] ..." parents). They close when their children do.
@@ -25,20 +25,22 @@ Print the queue (number, title, why it's in that order) before starting.
 2. **Understand it:** `gh issue view <n> --comments`. Read the code it touches. Follow `CLAUDE.md` rules (no cgo, all Supabase access via `internal/supabase`, tokens only via the `cfg` accessors, wrap Supabase calls in `DoWithAuthRetry`, platform files validated for all three OSes).
 3. **Fix it** with tests that fail before the fix and pass after. Keep the change scoped to the issue.
 4. **Changelog:** add an entry under `## [Unreleased]` in `CHANGELOG.md` (right subsection: Added / Changed / Fixed / Security), referencing the issue. The `Changelog` check is required.
-5. **Verify locally before pushing** (CI requires all of these):
+5. **Verify locally before pushing** (everything except gosec is a required CI check):
    ```bash
    # CI runs `gofmt -s -l .`. On a Windows checkout every file has CRLF and
    # shows up, so check the changed files with CR stripped:
    for f in $(git diff --name-only dev -- '*.go') $(git ls-files -o --exclude-standard -- '*.go'); do
      tr -d '\r' < "$f" | gofmt -s -l | sed "s|<standard input>|$f|"; done
-   go vet ./...
+   for os in linux darwin windows; do CGO_ENABLED=0 GOOS=$os go vet ./...; done
    go test ./...
    make check-no-cgo
    make verify-cross
    # golangci-lint v2.12.2 is not on PATH; install to temp and lint each OS:
-   GOBIN=$TEMP/sg_lint go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-   for os in linux darwin windows; do CGO_ENABLED=0 GOOS=$os $TEMP/sg_lint/golangci-lint run ./...; done
-   # gosec runs standalone in CI and catches things golangci-lint doesn't (e.g. G302 on 0700 dirs):
+   LINT_DIR=$(mktemp -d)
+   GOBIN=$LINT_DIR go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+   for os in linux darwin windows; do CGO_ENABLED=0 GOOS=$os "$LINT_DIR/golangci-lint" run ./...; done
+   # gosec is advisory in CI (continue-on-error), but its findings show up as
+   # code-scanning alerts on the PR, so fix or annotate them too (e.g. G302 on 0700 dirs):
    for os in linux windows; do GOOS=$os gosec -quiet -exclude-dir=scripts ./...; done
    ```
    SonarCloud flags SQL built by string concatenation (S2077) even from constants; write queries as literals.
