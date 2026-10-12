@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, dev]
   pull_request:
-    branches: [main, develop]
+    branches: [main, dev]
   workflow_call: # allows release.yml to reuse this workflow directly
 
 permissions:
@@ -229,7 +229,9 @@ jobs:
     name: SonarQube
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name != 'workflow_call'
+    # Dependabot runs get no repository secrets, so SONAR_TOKEN is empty and the
+    # scan can only fail; SonarCloud's own app still analyses those PRs.
+    if: github.event_name != 'workflow_call' && github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
