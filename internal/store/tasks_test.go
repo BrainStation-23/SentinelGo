@@ -147,7 +147,7 @@ func TestGetRetryableTasks(t *testing.T) {
 	ts := newTaskStoreForTest(t)
 	seedTask(t, ts, "task-retryable", "assigned")
 	if _, err := ts.db.Exec(
-		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=0 WHERE id=?",
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', is_synced=1, attempt_count=0 WHERE id=?",
 		"task-retryable"); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestGetRetryableTasks_AtMaxAttempts(t *testing.T) {
 	ts := newTaskStoreForTest(t)
 	seedTask(t, ts, "task-maxed", "assigned")
 	if _, err := ts.db.Exec(
-		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=? WHERE id=?",
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', is_synced=1, attempt_count=? WHERE id=?",
 		MaxRetryAttempts, "task-maxed"); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -189,13 +189,13 @@ func TestResetOldFailedTasks(t *testing.T) {
 	ts := newTaskStoreForTest(t)
 	seedTask(t, ts, "task-old", "assigned")
 	if _, err := ts.db.Exec(
-		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=0 WHERE id=?",
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', is_synced=1, attempt_count=0 WHERE id=?",
 		"task-old"); err != nil {
 		t.Fatalf("setup old task: %v", err)
 	}
 	seedTask(t, ts, "task-maxed", "assigned")
 	if _, err := ts.db.Exec(
-		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', attempt_count=? WHERE id=?",
+		"UPDATE tasks SET status='failed', completed_at='2020-01-01T00:00:00Z', is_synced=1, attempt_count=? WHERE id=?",
 		MaxRetryAttempts, "task-maxed"); err != nil {
 		t.Fatalf("setup maxed task: %v", err)
 	}

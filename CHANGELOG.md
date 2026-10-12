@@ -19,7 +19,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - `ROADMAP.md`: what's planned for the next releases and beyond.
 - Coding standards and code review sections in `CONTRIBUTING.md`.
 - OpenSSF Best Practices badge in the README.
-- `internal/artifact`: downloads the files a task needs (such as installer packages) from Supabase Storage with the agent's own token, streaming them to disk while checking the exact size and SHA-256. A file that doesn't match is deleted. Downloads retry on network errors and 5xx, recover once from an expired token, abort when no data arrives for 2 minutes, and check free disk space first. Not used by tasks yet (#136).
+- `internal/artifact`: downloads the files a task needs (such as installer packages) from Supabase Storage with the agent's own token, streaming them to disk while checking the exact size and SHA-256. A file that doesn't match is deleted. Downloads retry on network errors and 5xx, recover once from an expired token, abort when no data arrives for 2 minutes, and check free disk space first (#136).
 - Script tasks can carry `artifacts`: files such as installer packages that the agent downloads and verifies before the script runs. The script finds them through `SENTINEL_ARTIFACT_<ID>` environment variables and the `artifacts` key in `payload.json`. If any file fails verification, the script doesn't run and the task note names the artifact. Artifacts are kept in the local task database, so a restart between polling and execution doesn't lose them. Every script task now also gets `SENTINEL_TASK_ID`, `SENTINEL_TASK_DIR` and `SENTINEL_ARTIFACTS_DIR` (#137).
 - The inventory payload lists the task features the agent supports (`capabilities`: `script_inline_body_v1`, `task_artifacts_v1`), so the backend won't send installer tasks to agents that can't run them. `sentinelgo -version` prints the list (#138).
 - Script tasks report a structured result next to the note: the script's exit code, plus anything the script writes as a JSON object (up to 16 KiB) to the file named by `SENTINEL_RESULT_FILE`, such as `reboot_required`. The agent always sets `exit_code` itself. Older backends without the new `p_result` parameter keep working: the agent retries once without it and stops sending it. The result is kept locally, so a report retried after a network failure still carries it (#140).
@@ -42,6 +42,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 ### Fixed
 
 - Tasks whose script is sent inline (`scripts.<os>.body`, no storage path) now run. Previously every policy-triggered app install failed with `no script found for platform`. Inline filenames are checked so a server value can't write outside the task's temp directory, and empty or over-10 MiB bodies fail the task (#135).
+- A task that failed while the agent was offline is no longer retried before its failure reaches the server. Previously the retry reset it after 5 minutes, before the pending report was sent, so the server never saw that attempt's status and output.
 
 ### Security
 

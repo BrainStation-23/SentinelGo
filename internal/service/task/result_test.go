@@ -227,3 +227,18 @@ func TestExecuteTask_NativeHandler_NoResult(t *testing.T) {
 		t.Errorf("updates = %+v, want 1 plain update", u)
 	}
 }
+
+// TestReadTaskResult_CapIncludesExitCode: a file just under 16 KiB is fine on
+// its own, but adding exit_code would push p_result over the backend's cap.
+func TestReadTaskResult_CapIncludesExitCode(t *testing.T) {
+	prefix, suffix := `{"data":"`, `"}`
+	body := prefix + strings.Repeat("x", maxResultFileBytes-len(prefix)-len(suffix)) + suffix
+	p := writeResult(t, body)
+	note, got := readTaskResult(p, "out", nil)
+	if len(got) != 1 || got["exit_code"] != 0 {
+		t.Errorf("result keys = %d, want only exit_code", len(got))
+	}
+	if !strings.Contains(note, "once exit_code is added") {
+		t.Errorf("note = %q", note)
+	}
+}

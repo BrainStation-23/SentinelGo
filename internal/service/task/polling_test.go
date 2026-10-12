@@ -218,6 +218,10 @@ func TestTaskPollingServiceResetFailedTasks(t *testing.T) {
 	if err := ts.StoreTasks([]taskstore.Task{testTask}); err != nil {
 		t.Fatalf("Failed to store test task: %v", err)
 	}
+	// Only failures the server has seen are retried.
+	if err := ts.MarkTaskSynced(testTask.ID); err != nil {
+		t.Fatalf("MarkTaskSynced: %v", err)
+	}
 
 	time.Sleep(100 * time.Millisecond)
 

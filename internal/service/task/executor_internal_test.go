@@ -350,6 +350,10 @@ func TestResolveScript_InlineRejected(t *testing.T) {
 		{"filename not a string", map[string]interface{}{"filename": 7, "body": "x"}, "not a string"},
 		{"empty body", map[string]interface{}{"filename": "install.sh", "body": ""}, "body is empty"},
 		{"oversize body", map[string]interface{}{"body": strings.Repeat("x", maxScriptBytes+1)}, "over the"},
+		{"windows device", map[string]interface{}{"filename": "NUL.ps1", "body": "x"}, "reserved device name"},
+		{"windows device bare", map[string]interface{}{"filename": "con", "body": "x"}, "reserved device name"},
+		{"trailing dot", map[string]interface{}{"filename": "install.ps1.", "body": "x"}, "ends in a dot or space"},
+		{"trailing space", map[string]interface{}{"filename": "install.ps1 ", "body": "x"}, "ends in a dot or space"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -19,8 +19,15 @@ func TestTaskResult_StoredForUnsyncedAndClearedOnRetry(t *testing.T) {
 		t.Errorf("Result = %v", got)
 	}
 
-	// A retry starts clean: the next run reports its own result.
+	// A retry starts clean: the next run reports its own result. While the
+	// failure is unsynced it isn't reset, so it can't be lost.
 	if _, err := ts.db.Exec("UPDATE tasks SET completed_at='2020-01-01T00:00:00Z' WHERE id='t'"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := ts.ResetOldFailedTasks(0); err != nil || n != 0 {
+		t.Fatalf("ResetOldFailedTasks on an unsynced failure = %d, %v; want 0", n, err)
+	}
+	if err := ts.MarkTaskSynced("t"); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := ts.ResetOldFailedTasks(0); err != nil || n != 1 {

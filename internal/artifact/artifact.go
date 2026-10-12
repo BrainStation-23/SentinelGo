@@ -100,7 +100,7 @@ func validateSpec(s Spec) error {
 	if err := validatePath(s.Path); err != nil {
 		return err
 	}
-	if err := validateFilename(s.Filename); err != nil {
+	if err := ValidateFilename(s.Filename); err != nil {
 		return err
 	}
 	if !sha256Re.MatchString(s.SHA256) {
@@ -119,17 +119,28 @@ func validatePath(p string) error {
 	if strings.HasPrefix(p, "/") {
 		return fmt.Errorf("path must not start with /")
 	}
-	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
-		if seg == ".." {
+	for _, seg := range strings.Split(strings.ReplaceAll(p, "\\", "/"), "/") {
+		switch seg {
+		case "..":
 			return fmt.Errorf("path must not contain a .. segment")
+		case "", ".":
+			return fmt.Errorf("path must not contain an empty or . segment")
 		}
 	}
 	return nil
 }
 
-func validateFilename(name string) error {
+// ValidateFilename applies the contract §1 filename rule, plus two things
+// Windows does to names: device names ("NUL.msi" is the NUL device) and a
+// trailing dot or space, which Windows strips, so "x.ps1." would run as
+// "x.ps1" but be dispatched on the extension ".". Inline script names use it
+// too.
+func ValidateFilename(name string) error {
 	if name == "." || name == ".." || !filenameRe.MatchString(name) {
 		return fmt.Errorf("invalid filename %q", name)
+	}
+	if strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") {
+		return fmt.Errorf("filename %q ends in a dot or space", name)
 	}
 	base := strings.ToUpper(strings.TrimRight(strings.SplitN(name, ".", 2)[0], " "))
 	if windowsDeviceNames[base] {

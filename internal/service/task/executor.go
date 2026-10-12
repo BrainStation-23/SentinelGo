@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -369,10 +368,6 @@ type scriptRef struct {
 	Filename   string
 }
 
-// scriptFilenameRe is the contract §1 filename rule. It keeps a server-supplied
-// name from escaping the task temp dir (no separators, no drive colons).
-var scriptFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._ -]{1,128}$`)
-
 // resolveScript picks the script entry for this OS, falling back to "all".
 // Within an entry a non-empty path wins over an inline body.
 func (s *TaskExecutorService) resolveScript(task taskstore.Task) (scriptRef, error) {
@@ -441,8 +436,8 @@ func defaultScriptFilename() string {
 
 // validateScriptFilename applies the contract §1 filename rule.
 func validateScriptFilename(name string) error {
-	if name == "." || name == ".." || !scriptFilenameRe.MatchString(name) {
-		return fmt.Errorf("invalid inline script filename %q", name)
+	if err := artifact.ValidateFilename(name); err != nil {
+		return fmt.Errorf("invalid inline script filename: %w", err)
 	}
 	return nil
 }
