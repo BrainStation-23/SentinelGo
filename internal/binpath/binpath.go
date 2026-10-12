@@ -51,6 +51,7 @@ var knownPaths = func() map[string][]string {
 		"flatpak":    {"/usr/bin/flatpak"},
 		"ufw":        {"/usr/sbin/ufw", "/sbin/ufw"},
 		"sudo":       {"/usr/bin/sudo"},
+		"env":        {"/usr/bin/env", "/bin/env"},
 
 		// Linux + macOS (candidates cover both; order doesn't matter since
 		// only one OS's paths will ever exist on a given host)

@@ -156,7 +156,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 		if note != "" {
 			statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
 		}
-		if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", statusNote); err != nil {
+		if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", capNote(statusNote)); err != nil {
 			log.Printf("Executor: Failed to report task status: %v", err)
 		}
 		return
@@ -167,7 +167,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	if statusNote == "" {
 		statusNote = "Executed successfully"
 	}
-	if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", statusNote); err != nil {
+	if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", capNote(statusNote)); err != nil {
 		log.Printf("Executor: Failed to report task status: %v", err)
 	}
 }
@@ -240,7 +240,7 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	}, 1)
 
 	go func() {
-		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath)
+		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, nil)
 		resultChan <- struct {
 			output string
 			err    error

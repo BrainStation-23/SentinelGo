@@ -28,6 +28,9 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - CI runs the test suite with the Go race detector.
 - `SECURITY.md` corrected to match the code: release signatures are verified (not "planned"), updates come from Supabase rather than the GitHub API, credentials are protected by file permissions rather than an OS credential store, and the CI controls list is complete. Adds a "What to expect" section on what SentinelGo does and doesn't protect against.
 - `docs/08-project-overview.md` updated to the current package layout.
+- A failed task whose payload sets `"retry_on_failure": false` is no longer retried automatically. Installers use this so a failed install isn't downloaded and run again after the user has already seen the failure. Tasks without the key retry as before (#139).
+- Task notes are capped at 64 KiB: the first 8 KiB and the last 56 KiB of the output, with a marker showing how much was cut. A `SENTINEL_REBOOT_REQUIRED` line is always kept. Script output is collected in bounded memory instead of being held in full (#139).
+- On Linux, environment variables the agent passes to a task script now reach it when the script runs through `sudo` (#139).
 
 ### Removed
 
