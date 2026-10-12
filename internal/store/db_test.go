@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -55,5 +56,16 @@ func TestOpen_ExecutesDDL(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+func TestOpen_EmptyPathRejected(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if db, err := Open(""); err == nil {
+		_ = db.Close()
+		t.Fatal("Open(\"\") succeeded, want an error")
+	}
+	if entries, _ := os.ReadDir("."); len(entries) != 0 {
+		t.Errorf("Open(\"\") created %d file(s) in the working directory", len(entries))
 	}
 }

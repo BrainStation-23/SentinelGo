@@ -170,3 +170,36 @@ func TestUpdateAgentInfo_CancelledContext(t *testing.T) {
 		t.Error("expected error with cancelled context, got nil")
 	}
 }
+
+// TestUpdateAgentInfo_SendsCapabilities is the golden check for contract v1
+// §6: the inventory payload carries exactly the capabilities this build has.
+func TestUpdateAgentInfo_SendsCapabilities(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, mockSysInfo()); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	want := `"capabilities":["script_inline_body_v1","task_artifacts_v1"]`
+	if !strings.Contains(string(body), want) {
+		t.Errorf("request body lacks %s: %s", want, body)
+	}
+}
+
+// TestAgentUpdatePayload_EmptyCapabilitiesSent: an empty list is sent as []
+// so the backend can tell it from an old agent that sends nothing.
+func TestAgentUpdatePayload_EmptyCapabilitiesSent(t *testing.T) {
+	b, err := json.Marshal(agent.AgentUpdatePayload{Capabilities: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"capabilities":[]`) {
+		t.Errorf("payload = %s, want \"capabilities\":[]", b)
+	}
+}
