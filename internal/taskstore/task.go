@@ -1,6 +1,10 @@
 package taskstore
 
-import "time"
+import (
+	"time"
+
+	"sentinelgo/internal/artifact"
+)
 
 // Task represents a task from agent_get_tasks RPC response
 type Task struct {
@@ -13,6 +17,9 @@ type Task struct {
 	Tags        []string               `json:"tags"`
 	Payload     map[string]interface{} `json:"payload"`
 	Scripts     map[string]interface{} `json:"scripts"`
+	// Artifacts are files the agent downloads and verifies before running
+	// the script (contract v1 §1, #134). Empty for most tasks.
+	Artifacts []artifact.Spec `json:"artifacts"`
 	Status      string                 `json:"status"`
 	Note        string                 `json:"note"`
 	AssignedAt  *time.Time             `json:"assigned_at"`

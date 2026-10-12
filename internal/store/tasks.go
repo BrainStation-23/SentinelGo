@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"sentinelgo/internal/artifact"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -41,12 +42,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assigned_at ON tasks(assigned_at);
 // looping forever.
 const MaxRetryAttempts = 3
 
-// retryAllowedSQL excludes tasks whose payload sets "retry_on_failure": false
-// (contract §4: installers must not be re-run after the user has seen the
-// failure). A missing key, true, or an unparseable payload keeps the old
-// behaviour. CASE guards json_type, which errors on malformed JSON.
-const retryAllowedSQL = `(CASE WHEN json_valid(payload) THEN json_type(payload, '$.retry_on_failure') END) IS NOT 'false'`
-
 // RetryableTask holds the minimal fields needed to report a "retrying" status
 // before a task is reset to 'assigned'.
 type RetryableTask struct {
@@ -60,6 +55,9 @@ var tasksMigrations = []Migration{
 	{Version: 2, SQL: "UPDATE tasks SET status = 'assigned' WHERE status = '' OR status IS NULL"},
 	// Track how many times a task has been retried so we can cap retries.
 	{Version: 3, SQL: "ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"},
+	// Task artifacts (installer files, #137) so they survive a restart
+	// between polling and execution. NULL on older rows means none.
+	{Version: 4, SQL: "ALTER TABLE tasks ADD COLUMN artifacts TEXT"},
 }
 
 // TaskStore is a SQLite-backed queue for agent tasks.
@@ -101,8 +99,8 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 	stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO tasks
 		(id, command_id, slug, name, description, category, tags, payload, scripts,
-		 status, note, assigned_at, completed_at, created_at, updated_at, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -117,6 +115,11 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 		tagsJSON, _ := json.Marshal(t.Tags)
 		payloadJSON, _ := json.Marshal(t.Payload)
 		scriptsJSON, _ := json.Marshal(t.Scripts)
+		var artifactsJSON interface{} // NULL when the task has none
+		if len(t.Artifacts) > 0 {
+			b, _ := json.Marshal(t.Artifacts)
+			artifactsJSON = string(b)
+		}
 
 		if t.Status == "" {
 			t.Status = "assigned"
@@ -126,7 +129,7 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 			t.ID, t.CommandID, t.Slug, t.Name, t.Description, t.Category,
 			string(tagsJSON), string(payloadJSON), string(scriptsJSON),
 			t.Status, t.Note, formatTime(t.AssignedAt), formatTime(t.CompletedAt),
-			formatTime(t.CreatedAt), formatTime(t.UpdatedAt), t.CreatedBy,
+			formatTime(t.CreatedAt), formatTime(t.UpdatedAt), t.CreatedBy, artifactsJSON,
 		)
 		if err != nil {
 			return err
@@ -149,7 +152,12 @@ func (s *TaskStore) GetRetryableTasks(cooldown time.Duration) ([]RetryableTask, 
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
-		AND `+retryAllowedSQL, MaxRetryAttempts, cutoff)
+		-- retry_on_failure: false opts out (contract §4: an installer must
+		-- not re-run after the user has seen the failure). A missing key,
+		-- true, or an unparseable payload retries; CASE guards json_type,
+		-- which errors on malformed JSON.
+		AND (CASE WHEN json_valid(payload) THEN json_type(payload, '$.retry_on_failure') END) IS NOT 'false'
+	`, MaxRetryAttempts, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +194,12 @@ func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 		AND attempt_count < ?
 		AND completed_at IS NOT NULL
 		AND completed_at < ?
-		AND `+retryAllowedSQL, now, MaxRetryAttempts, cutoff)
+		-- retry_on_failure: false opts out (contract §4: an installer must
+		-- not re-run after the user has seen the failure). A missing key,
+		-- true, or an unparseable payload retries; CASE guards json_type,
+		-- which errors on malformed JSON.
+		AND (CASE WHEN json_valid(payload) THEN json_type(payload, '$.retry_on_failure') END) IS NOT 'false'
+	`, now, MaxRetryAttempts, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -224,7 +237,7 @@ func (s *TaskStore) GetAssignedTasks() ([]taskstore.Task, error) {
 
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts
 		FROM tasks
 		WHERE status = 'assigned'
 		ORDER BY assigned_at ASC
@@ -308,7 +321,7 @@ func (s *TaskStore) ClearCompletedTasks(olderThan time.Time) error {
 func (s *TaskStore) GetUnsyncedTasks() ([]taskstore.Task, error) {
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts
 		FROM tasks
 		WHERE is_synced = 0 AND status IN ('success', 'failed', 'retrying')
 	`)
@@ -384,13 +397,14 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 	var tasks []taskstore.Task
 	for rows.Next() {
 		var t taskstore.Task
-		var tagsJSON, payloadJSON, scriptsJSON []byte
+		var tagsJSON, payloadJSON, scriptsJSON, artifactsJSON []byte
 		var assignedAt, completedAt, createdAt, updatedAt []byte
 
 		err := rows.Scan(
 			&t.ID, &t.CommandID, &t.Slug, &t.Name, &t.Description, &t.Category,
 			&tagsJSON, &payloadJSON, &scriptsJSON,
 			&t.Status, &t.Note, &assignedAt, &completedAt, &createdAt, &updatedAt, &t.CreatedBy,
+			&artifactsJSON,
 		)
 		if err != nil {
 			return nil, err
@@ -404,6 +418,14 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 		}
 		if err := json.Unmarshal(scriptsJSON, &t.Scripts); err != nil {
 			log.Printf("TaskStore: unmarshal scripts: %v", err)
+		}
+		if len(artifactsJSON) > 0 {
+			if err := json.Unmarshal(artifactsJSON, &t.Artifacts); err != nil {
+				// Keep a marker spec so the executor fails the task rather than
+				// running the script without its files.
+				log.Printf("TaskStore: unmarshal artifacts for %s: %v", t.ID, err)
+				t.Artifacts = []artifact.Spec{{ID: "stored_artifacts_unreadable"}}
+			}
 		}
 		t.AssignedAt = parseTime(assignedAt)
 		t.CompletedAt = parseTime(completedAt)
