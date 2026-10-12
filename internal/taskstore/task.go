@@ -27,6 +27,11 @@ type Task struct {
 	CreatedAt   *time.Time      `json:"created_at"`
 	UpdatedAt   *time.Time      `json:"updated_at"`
 	CreatedBy   string          `json:"created_by"`
+	// Result is the structured outcome the agent reports with the final
+	// status (exit_code plus anything the script wrote, sentinel-ops#49).
+	// Agent-side only: kept in the local store so a retried report carries
+	// it, never read from the server.
+	Result map[string]interface{} `json:"-"`
 }
 
 // AgentTasksResponse represents the response from agent_get_tasks RPC

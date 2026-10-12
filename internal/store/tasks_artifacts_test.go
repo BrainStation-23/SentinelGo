@@ -65,11 +65,11 @@ func TestTaskArtifacts_MigrationV4KeepsOldRows(t *testing.T) {
 
 	ts, err := NewTaskStore(path)
 	if err != nil {
-		t.Fatalf("NewTaskStore (migrate to v4): %v", err)
+		t.Fatalf("NewTaskStore (migrate from v3): %v", err)
 	}
 	t.Cleanup(func() { _ = ts.Close() })
-	if v, _ := CurrentVersion(ts.db); v != 4 {
-		t.Errorf("schema version = %d, want 4", v)
+	if v, _ := CurrentVersion(ts.db); v != len(tasksMigrations) {
+		t.Errorf("schema version = %d, want %d", v, len(tasksMigrations))
 	}
 	got, err := ts.GetAssignedTasks()
 	if err != nil || len(got) != 1 || got[0].ID != "old" || got[0].Artifacts != nil {

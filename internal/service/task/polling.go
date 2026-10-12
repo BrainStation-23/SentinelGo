@@ -148,7 +148,7 @@ func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
 		for _, t := range retryable {
 			note := fmt.Sprintf("Attempt %d of %d failed; retrying.",
 				t.AttemptCount+1, store.MaxRetryAttempts+1)
-			if err := s.updateTask(ctx, t.ID, "retrying", note); err != nil {
+			if err := s.updateTask(ctx, t.ID, "retrying", note, nil); err != nil {
 				log.Printf("TaskPolling: Failed to report retrying status for task %s: %v", t.ID, err)
 			}
 		}
@@ -201,14 +201,26 @@ func (s *TaskPollingService) getTasksWithRetry(ctx context.Context) (*taskstore.
 	return s.client.GetTasks(ctx)
 }
 
+// resultUpdater is implemented by clients that can send a structured task
+// result (taskstore.Client). Others get the plain update.
+type resultUpdater interface {
+	UpdateTaskWithResult(ctx context.Context, taskID, status, note string, result map[string]interface{}) error
+}
+
 // updateTask reports a task status, recovering the session and retrying once
 // if the token was rejected (the same policy as getTasksWithRetry).
-func (s *TaskPollingService) updateTask(ctx context.Context, taskID, status, note string) error {
-	err := s.client.UpdateTask(ctx, taskID, status, note)
+func (s *TaskPollingService) updateTask(ctx context.Context, taskID, status, note string, result map[string]interface{}) error {
+	send := func() error {
+		if ru, ok := s.client.(resultUpdater); ok && result != nil {
+			return ru.UpdateTaskWithResult(ctx, taskID, status, note, result)
+		}
+		return s.client.UpdateTask(ctx, taskID, status, note)
+	}
+	err := send()
 	if err == nil || !s.recoverAfter401(ctx, err) {
 		return err
 	}
-	return s.client.UpdateTask(ctx, taskID, status, note)
+	return send()
 }
 
 // recoverAfter401 reports whether err is a rejected token that was recovered,
@@ -235,16 +247,23 @@ func (s *TaskPollingService) GetLocalTasks() ([]taskstore.Task, error) {
 
 // ReportTaskStatus updates task status via RPC and local storage.
 func (s *TaskPollingService) ReportTaskStatus(ctx context.Context, taskID, status, note string) error {
+	return s.ReportTaskResult(ctx, taskID, status, note, nil)
+}
+
+// ReportTaskResult is ReportTaskStatus with a structured result (#140). The
+// result is stored locally with the note, so a failed report is retried
+// with it by SyncPendingTasks.
+func (s *TaskPollingService) ReportTaskResult(ctx context.Context, taskID, status, note string, result map[string]interface{}) error {
 	isSynced := false
 
-	err := s.updateTask(ctx, taskID, status, note)
+	err := s.updateTask(ctx, taskID, status, note, result)
 	if err == nil {
 		isSynced = true
 	} else {
 		log.Printf("TaskPolling: Network update failed for task %s (status: %s). Result stored locally for retry.", taskID, status)
 	}
 
-	if err := s.store.UpdateTaskStatus(taskID, status, note, isSynced); err != nil {
+	if err := s.store.UpdateTaskResult(taskID, status, note, result, isSynced); err != nil {
 		return fmt.Errorf("update task in store: %w", err)
 	}
 
@@ -266,7 +285,7 @@ func (s *TaskPollingService) SyncPendingTasks(ctx context.Context) error {
 
 	for _, task := range tasks {
 		log.Printf("TaskPolling: Syncing task %s...", task.ID)
-		if err := s.updateTask(ctx, task.ID, task.Status, task.Note); err != nil {
+		if err := s.updateTask(ctx, task.ID, task.Status, task.Note, task.Result); err != nil {
 			log.Printf("TaskPolling: Failed to sync task %s: %v", task.ID, err)
 			continue
 		}
