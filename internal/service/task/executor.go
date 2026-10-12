@@ -151,14 +151,14 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	}
 
 	log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
-	note, err := s.runTask(ctx, task)
+	note, result, err := s.runTaskResult(ctx, task)
 	if err != nil {
 		log.Printf("Executor: Task %s failed: %v", task.ID, err)
 		statusNote := err.Error()
 		if note != "" {
 			statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
 		}
-		if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "failed", capNote(statusNote)); err != nil {
+		if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "failed", capNote(statusNote), result); err != nil {
 			log.Printf("Executor: Failed to report task status: %v", err)
 		}
 		return
@@ -169,7 +169,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	if statusNote == "" {
 		statusNote = "Executed successfully"
 	}
-	if err := s.pollingSvc.ReportTaskStatus(ctx, task.ID, "success", capNote(statusNote)); err != nil {
+	if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "success", capNote(statusNote), result); err != nil {
 		log.Printf("Executor: Failed to report task status: %v", err)
 	}
 }
@@ -191,6 +191,13 @@ func resolveTaskTimeout(task taskstore.Task) time.Duration {
 }
 
 func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
+	note, _, err := s.runTaskResult(ctx, task)
+	return note, err
+}
+
+// runTaskResult runs a task and returns its note, its structured result
+// (nil unless a script ran to exit, #140) and its error.
+func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.Task) (string, map[string]interface{}, error) {
 	timeout := resolveTaskTimeout(task)
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -203,24 +210,25 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 
 	if handler, ok := s.nativeHandlers[task.Slug]; ok {
 		if len(task.Artifacts) > 0 {
-			return "", fmt.Errorf("artifacts are only supported for script tasks")
+			return "", nil, fmt.Errorf("artifacts are only supported for script tasks")
 		}
-		return handler(taskCtx, task)
+		note, err := handler(taskCtx, task)
+		return note, nil, err
 	}
 
 	// Reject bad artifact specs before anything is created or downloaded.
 	if err := artifact.Validate(task.Artifacts); err != nil {
-		return "", fmt.Errorf("invalid task artifacts: %w", err)
+		return "", nil, fmt.Errorf("invalid task artifacts: %w", err)
 	}
 
 	script, err := s.resolveScript(task)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	tempDir, err := os.MkdirTemp("", "sentinel-task-"+task.ID)
 	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
+		return "", nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	// Removes the script, payload.json and every artifact, whatever the
 	// outcome (contract §3.7).
@@ -233,10 +241,10 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	localScriptPath := filepath.Join(tempDir, script.Filename)
 	if script.Body != nil {
 		if err := writeInlineScript(localScriptPath, *script.Body); err != nil {
-			return "", fmt.Errorf("write inline script: %w", err)
+			return "", nil, fmt.Errorf("write inline script: %w", err)
 		}
 	} else if err := s.downloadScript(taskCtx, script.RemotePath, localScriptPath); err != nil {
-		return "", fmt.Errorf("download script: %w", err)
+		return "", nil, fmt.Errorf("download script: %w", err)
 	}
 
 	// Downloads run under taskCtx, so they count against the task timeout;
@@ -245,14 +253,15 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 	artifactsDir := filepath.Join(tempDir, "artifacts")
 	artifactPaths, err := s.fetchArtifacts(taskCtx, artifactsDir, task.Artifacts)
 	if err != nil {
-		return "", fmt.Errorf("fetch artifacts: %w", err)
+		return "", nil, fmt.Errorf("fetch artifacts: %w", err)
 	}
 
 	payloadPath := filepath.Join(tempDir, "payload.json")
 	if err := writePayload(payloadPath, task, artifactPaths); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	env := scriptEnv(task, tempDir, artifactsDir, artifactPaths)
+	resultPath := filepath.Join(tempDir, "result.json")
+	env := append(scriptEnv(task, tempDir, artifactsDir, artifactPaths), "SENTINEL_RESULT_FILE="+resultPath)
 
 	// Buffer of 1 so the goroutine can always send even after a timeout, preventing a leak.
 	resultChan := make(chan struct {
@@ -275,9 +284,10 @@ func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) 
 			timeout.Round(time.Second), task.ID, task.Slug,
 		)
 		log.Printf("Executor: %s", timeoutNote)
-		return timeoutNote, fmt.Errorf("task execution timeout")
+		return timeoutNote, nil, fmt.Errorf("task execution timeout")
 	case result := <-resultChan:
-		return result.output, result.err
+		note, taskResult := readTaskResult(resultPath, result.output, result.err)
+		return note, taskResult, result.err
 	}
 }
 

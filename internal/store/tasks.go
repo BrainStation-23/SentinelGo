@@ -58,6 +58,9 @@ var tasksMigrations = []Migration{
 	// Task artifacts (installer files, #137) so they survive a restart
 	// between polling and execution. NULL on older rows means none.
 	{Version: 4, SQL: "ALTER TABLE tasks ADD COLUMN artifacts TEXT"},
+	// Structured task result (#140), kept so a report retried after a
+	// network failure still carries it.
+	{Version: 5, SQL: "ALTER TABLE tasks ADD COLUMN result TEXT"},
 }
 
 // TaskStore is a SQLite-backed queue for agent tasks.
@@ -188,7 +191,7 @@ func (s *TaskStore) ResetOldFailedTasks(cooldown time.Duration) (int, error) {
 
 	result, err := s.db.Exec(`
 		UPDATE tasks
-		SET status = 'assigned', note = '', completed_at = NULL, updated_at = ?,
+		SET status = 'assigned', note = '', result = NULL, completed_at = NULL, updated_at = ?,
 		    attempt_count = attempt_count + 1
 		WHERE status IN ('failed', 'retrying')
 		AND attempt_count < ?
@@ -237,7 +240,7 @@ func (s *TaskStore) GetAssignedTasks() ([]taskstore.Task, error) {
 
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result
 		FROM tasks
 		WHERE status = 'assigned'
 		ORDER BY assigned_at ASC
@@ -290,19 +293,35 @@ func (s *TaskStore) ResetInterruptedTasks() (int, error) {
 	return int(n), nil
 }
 
-// UpdateTaskStatus updates the status, note, and sync flag for a task.
+// UpdateTaskStatus updates the status, note, and sync flag for a task. It
+// clears any stored result; use UpdateTaskResult to keep one.
 func (s *TaskStore) UpdateTaskStatus(taskID, status, note string, isSynced bool) error {
+	return s.UpdateTaskResult(taskID, status, note, nil, isSynced)
+}
+
+// UpdateTaskResult is UpdateTaskStatus plus the structured result (#140),
+// stored next to the note so SyncPendingTasks resends it. A nil result is
+// stored as NULL.
+func (s *TaskStore) UpdateTaskResult(taskID, status, note string, result map[string]interface{}, isSynced bool) error {
 	syncedValue := 0
 	if isSynced {
 		syncedValue = 1
 	}
+	var resultJSON interface{}
+	if result != nil {
+		b, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("encode task result: %w", err)
+		}
+		resultJSON = string(b)
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(`
 		UPDATE tasks
-		SET status = ?, note = COALESCE(?, note), is_synced = ?, updated_at = ?,
+		SET status = ?, note = COALESCE(?, note), result = ?, is_synced = ?, updated_at = ?,
 		    completed_at = CASE WHEN ? IN ('success', 'failed') THEN ? ELSE completed_at END
 		WHERE id = ?
-	`, status, note, syncedValue, now, status, now, taskID)
+	`, status, note, resultJSON, syncedValue, now, status, now, taskID)
 	return err
 }
 
@@ -321,7 +340,7 @@ func (s *TaskStore) ClearCompletedTasks(olderThan time.Time) error {
 func (s *TaskStore) GetUnsyncedTasks() ([]taskstore.Task, error) {
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result
 		FROM tasks
 		WHERE is_synced = 0 AND status IN ('success', 'failed', 'retrying')
 	`)
@@ -397,14 +416,14 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 	var tasks []taskstore.Task
 	for rows.Next() {
 		var t taskstore.Task
-		var tagsJSON, payloadJSON, scriptsJSON, artifactsJSON []byte
+		var tagsJSON, payloadJSON, scriptsJSON, artifactsJSON, resultJSON []byte
 		var assignedAt, completedAt, createdAt, updatedAt []byte
 
 		err := rows.Scan(
 			&t.ID, &t.CommandID, &t.Slug, &t.Name, &t.Description, &t.Category,
 			&tagsJSON, &payloadJSON, &scriptsJSON,
 			&t.Status, &t.Note, &assignedAt, &completedAt, &createdAt, &updatedAt, &t.CreatedBy,
-			&artifactsJSON,
+			&artifactsJSON, &resultJSON,
 		)
 		if err != nil {
 			return nil, err
@@ -425,6 +444,11 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 				// running the script without its files.
 				log.Printf("TaskStore: unmarshal artifacts for %s: %v", t.ID, err)
 				t.Artifacts = []artifact.Spec{{ID: "stored_artifacts_unreadable"}}
+			}
+		}
+		if len(resultJSON) > 0 {
+			if err := json.Unmarshal(resultJSON, &t.Result); err != nil {
+				log.Printf("TaskStore: unmarshal result for %s: %v", t.ID, err)
 			}
 		}
 		t.AssignedAt = parseTime(assignedAt)
