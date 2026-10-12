@@ -221,6 +221,63 @@ func TestRunTask_ScriptFails_ReturnsOutputAndError(t *testing.T) {
 	}
 }
 
+// TestRunTask_InlineBody_Runs runs a policy-style inline script with no
+// storage path: nothing is downloaded and the output reaches the note (#135).
+func TestRunTask_InlineBody_Runs(t *testing.T) {
+	tmp := isolateTempDir(t)
+	name, body := echoScript("hello-inline", 0)
+	// No server: any download attempt would fail.
+	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "http://127.0.0.1:0")
+
+	task := taskstore.Task{
+		ID:   "t1",
+		Slug: "install-package",
+		Scripts: map[string]interface{}{
+			runtime.GOOS: map[string]interface{}{"filename": name, "content_type": "text/plain", "body": body},
+		},
+	}
+	out, err := s.runTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("runTask: %v (output %q)", err, out)
+	}
+	if !strings.Contains(out, "hello-inline") {
+		t.Errorf("output = %q, want it to contain hello-inline", out)
+	}
+	assertNoTaskTempDirs(t, tmp)
+}
+
+func TestRunTask_InlineBadFilename_NotRun(t *testing.T) {
+	tmp := isolateTempDir(t)
+	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "")
+	task := taskstore.Task{ID: "t1", Slug: "x", Scripts: map[string]interface{}{
+		runtime.GOOS: map[string]interface{}{"filename": "../evil.sh", "body": "echo pwned"},
+	}}
+	if _, err := s.runTask(context.Background(), task); err == nil {
+		t.Fatal("runTask succeeded, want a filename error")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(tmp), "evil.sh")); err == nil {
+		t.Error("inline script was written outside the temp dir")
+	}
+	assertNoTaskTempDirs(t, tmp)
+}
+
+func TestWriteInlineScript_Mode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "install.sh")
+	if err := writeInlineScript(p, "echo hi\n"); err != nil {
+		t.Fatalf("writeInlineScript: %v", err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil || string(got) != "echo hi\n" {
+		t.Fatalf("content = %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(p)
+		if fi.Mode().Perm() != 0700 {
+			t.Errorf("mode = %v, want 0700", fi.Mode().Perm())
+		}
+	}
+}
+
 // scriptTask is a scripted task whose script for this OS is at commands/<name>.
 func scriptTask(name string) taskstore.Task {
 	return taskstore.Task{
