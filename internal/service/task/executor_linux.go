@@ -14,8 +14,9 @@ import (
 )
 
 // executeLocalScript runs the task script on Linux, optionally using sudo for
-// scripts that contain privileged commands.
-func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath, payloadPath string) (string, error) {
+// scripts that contain privileged commands. env is added to the agent's
+// environment, and is passed through sudo explicitly.
+func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath, payloadPath string, env []string) (string, error) {
 	needsSudo := false
 
 	// #nosec G304 - scriptPath is a controlled path from task store
@@ -32,48 +33,51 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		return "", fmt.Errorf("chmod failed: %w", err)
 	}
 
-	ext := filepath.Ext(scriptPath)
-
-	var cmd *exec.Cmd
-
-	if needsSudo {
-		var args []string
-		args = append(args, binpath.Resolve("sudo"), "-S")
-		switch ext {
-		case ".sh":
-			args = append(args, binpath.Resolve("bash"), scriptPath, payloadPath)
-		case ".py":
-			args = append(args, binpath.Resolve("python3"), scriptPath, payloadPath)
-		default:
-			args = append(args, scriptPath, payloadPath)
-		}
-		// #nosec G204 - args are validated and controlled
-		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
-		// Do not set cmd.Stdin: when running as a system service os.Stdin is
-		// /dev/null, causing sudo -S to hang. If the agent lacks root, the
-		// task will fail with a clear error.
-		cmd.Env = append(os.Environ(), "SUDO_PROMPT=[sudo] password for %u: ")
-	} else {
-		switch ext {
-		case ".sh":
-			// #nosec G204 - scriptPath is a controlled path from task store
-			cmd = exec.CommandContext(ctx, binpath.Resolve("bash"), scriptPath, payloadPath)
-		case ".py":
-			// #nosec G204 - scriptPath is a controlled path from task store
-			cmd = exec.CommandContext(ctx, binpath.Resolve("python3"), scriptPath, payloadPath)
-		default:
-			// #nosec G204 - scriptPath is a controlled path from task store
-			cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
-		}
-	}
+	cmd := linuxScriptCommand(ctx, scriptPath, payloadPath, env, needsSudo)
 
 	// Give the subprocess 30 s to exit cleanly after context cancellation
 	// before escalating to SIGKILL, so processes that ignore SIGTERM don't
 	// block the goroutine indefinitely.
 	cmd.WaitDelay = 30 * time.Second
 
-	output, err := cmd.CombinedOutput()
-	return string(output), err
+	return runBounded(cmd)
+}
+
+// linuxScriptCommand builds the command for a script: the interpreter its
+// extension picks, under sudo when needsSudo is set.
+func linuxScriptCommand(ctx context.Context, scriptPath, payloadPath string, env []string, needsSudo bool) *exec.Cmd {
+	var args []string
+	switch filepath.Ext(scriptPath) {
+	case ".sh":
+		args = []string{binpath.Resolve("bash"), scriptPath, payloadPath}
+	case ".py":
+		args = []string{binpath.Resolve("python3"), scriptPath, payloadPath}
+	default:
+		args = []string{scriptPath, payloadPath}
+	}
+
+	if !needsSudo {
+		// #nosec G204 - scriptPath is a controlled path from task store
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Env = append(os.Environ(), env...)
+		return cmd
+	}
+
+	// sudo resets the environment by default (env_reset), so the task's
+	// variables are handed to the script through env(1) inside sudo.
+	sudoArgs := []string{"-S"}
+	if len(env) > 0 {
+		sudoArgs = append(sudoArgs, binpath.Resolve("env"))
+		sudoArgs = append(sudoArgs, env...)
+	}
+	sudoArgs = append(sudoArgs, args...)
+	// #nosec G204 - args are validated and controlled
+	cmd := exec.CommandContext(ctx, binpath.Resolve("sudo"), sudoArgs...)
+	// Do not set cmd.Stdin: when running as a system service os.Stdin is
+	// /dev/null, causing sudo -S to hang. If the agent lacks root, the
+	// task will fail with a clear error.
+	cmd.Env = append(os.Environ(), "SUDO_PROMPT=[sudo] password for %u: ")
+	return cmd
 }
 
 // containsPrivilegedCommands reports whether the script contains commands that
