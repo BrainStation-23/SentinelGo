@@ -19,6 +19,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - `ROADMAP.md`: what's planned for the next releases and beyond.
 - Coding standards and code review sections in `CONTRIBUTING.md`.
 - OpenSSF Best Practices badge in the README.
+- `internal/artifact`: downloads the files a task needs (such as installer packages) from Supabase Storage with the agent's own token, streaming them to disk while checking the exact size and SHA-256. A file that doesn't match is deleted. Downloads retry on network errors and 5xx, recover once from an expired token, abort when no data arrives for 2 minutes, and check free disk space first. Not used by tasks yet (#136).
 
 ### Changed
 
