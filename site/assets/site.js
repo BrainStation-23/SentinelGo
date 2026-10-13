@@ -172,7 +172,8 @@
     try { cached = JSON.parse(localStorage.getItem('sg-latest') || 'null'); } catch (e) {}
     if (cached && typeof cached.tag === 'string' && /^v\d+\.\d+\.\d+$/.test(cached.tag)) {
       apply(cached.tag);
-      if (Date.now() - cached.t < TTL) return;
+      // A timestamp in the future (clock moved back) counts as stale.
+      if (typeof cached.t === 'number' && cached.t <= Date.now() && Date.now() - cached.t < TTL) return;
     }
     if (!window.fetch) return;
     fetch('https://api.github.com/repos/BrainStation-23/SentinelGo/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })

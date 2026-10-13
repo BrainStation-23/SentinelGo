@@ -114,7 +114,7 @@ header.nav.scrolled {
 .nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--surface-3); text-decoration: none; }
 .nav-actions { display: flex; align-items: center; gap: 8px; }
 .nav .wrap { position: relative; }
-.menu-btn { display: none; }
+.nav .menu-btn { display: none; }
 .menu-btn .close-i { display: none; }
 header.nav.open .menu-btn .open-i { display: none; }
 header.nav.open .menu-btn .close-i { display: block; }
@@ -536,7 +536,15 @@ html:not(.js-ready) .explorer { grid-template-columns: 1fr; }
 html:not(.js-ready) .panel + .panel { margin-top: 18px; }
 html:not(.js-ready) .code[data-label] + .code[data-label] { margin-top: 18px; }
 html:not(.js-ready) .code[data-label]::before { content: attr(data-label); display: block; padding: 14px 22px 0; font: 600 13px var(--font-sans); color: #c6d0dc; }
-html:not(.js-ready) .menu-btn, html:not(.js-ready) .copy { display: none; }
+html:not(.js-ready) .nav .menu-btn, html:not(.js-ready) .theme-toggle, html:not(.js-ready) .copy { display: none; }
+@media (max-width: 1080px) {
+  html:not(.js-ready) .nav .wrap { flex-wrap: wrap; height: auto; padding-block: 12px; row-gap: 6px; }
+  html:not(.js-ready) .nav-links {
+    display: flex; position: static; order: 3; width: 100%; flex-direction: row; overflow-x: auto;
+    padding: 0; border: 0; background: none; box-shadow: none; scrollbar-width: none;
+  }
+  html:not(.js-ready) .nav-links a { white-space: nowrap; padding: 8px 12px; font-size: 14.5px; }
+}
 html:not(.js-ready) .code pre { padding-right: 22px; }
 
 /* ---------- Install steps ---------- */
@@ -547,7 +555,7 @@ html:not(.js-ready) .code pre { padding-right: 22px; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1080px) {
-  .menu-btn { display: inline-grid; }
+  .nav .menu-btn { display: inline-grid; }
   .nav-links {
     display: none; position: absolute; top: calc(100% + 6px); left: 16px; right: 16px; flex-direction: column; gap: 2px;
     padding: 8px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--surface); box-shadow: var(--shadow);
