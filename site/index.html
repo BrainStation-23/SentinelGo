@@ -3,510 +3,991 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SentinelGo — Lightweight endpoint monitoring agent</title>
-<meta name="description" content="SentinelGo is an open-source, dependency-free agent that turns every Windows, macOS and Linux device into a continuously monitored, audit-ready endpoint.">
-<meta property="og:title" content="SentinelGo">
-<meta property="og:description" content="One lightweight agent. Total endpoint visibility. Continuous compliance.">
+<title>SentinelGo · Endpoint management, built on a zero-dependency agent</title>
+<meta name="description" content="SentinelGo is an open-source, dependency-free agent for Windows, macOS and Linux, powering a full endpoint-management platform: inventory, security posture, CVEs, compliance, policies, software deployment, remote actions and alerting.">
+<meta property="og:title" content="SentinelGo: every endpoint, seen, secured and kept that way">
+<meta property="og:description" content="One static agent for Windows, macOS and Linux. Inventory, posture, compliance, policies, deployment and remote actions, with a public roadmap to native MDM.">
 <meta property="og:type" content="website">
-<meta name="color-scheme" content="dark light">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.4 5.1 13.4 12 15 6.9-1.6 12-7.6 12-15V7z' fill='%2300d4aa'/%3E%3Cpath d='m11 16 3.5 3.5L21.5 12' stroke='%230d1117' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<style>
-  :root {
-    --bg: #0d1117;
-    --bg-2: #121821;
-    --card: #161d27;
-    --border: #253041;
-    --text: #e6edf3;
-    --muted: #9aa7b6;
-    --accent: #00d4aa;
-    --accent-ink: #04241d;
-    --accent-soft: rgba(0, 212, 170, .12);
-    --code-bg: #0a0e14;
-    --shadow: 0 10px 30px rgba(0, 0, 0, .35);
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #ffffff;
-      --bg-2: #f5f8fa;
-      --card: #ffffff;
-      --border: #dde3ea;
-      --text: #0f1720;
-      --muted: #536171;
-      --accent: #00876c;
-      --accent-ink: #ffffff;
-      --accent-soft: rgba(0, 135, 108, .10);
-      --code-bg: #0d1117;
-      --shadow: 0 10px 30px rgba(15, 23, 32, .08);
-    }
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, monospace; }
-  :not(pre) > code {
-    background: var(--accent-soft);
-    padding: .1em .4em;
-    border-radius: 5px;
-    font-size: .9em;
-  }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
-  .skip { position: absolute; left: -999px; }
-  .skip:focus { left: 16px; top: 16px; background: var(--card); padding: 8px 12px; z-index: 10; }
-
-  /* Nav */
-  header.nav {
-    position: sticky; top: 0; z-index: 5;
-    background: color-mix(in srgb, var(--bg) 85%, transparent);
-    backdrop-filter: blur(10px);
-    border-bottom: 1px solid var(--border);
-  }
-  .nav .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); }
-  .brand:hover { text-decoration: none; }
-  .nav ul { display: flex; gap: 22px; list-style: none; margin: 0 0 0 auto; padding: 0; }
-  .nav ul a { color: var(--muted); font-size: 15px; }
-  .nav ul a:hover { color: var(--text); text-decoration: none; }
-  .gh-link { display: inline-flex; align-items: center; gap: 6px; }
-
-  /* Buttons */
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 12px 20px; border-radius: 10px;
-    font-weight: 600; font-size: 15px;
-    border: 1px solid var(--border);
-    color: var(--text); background: var(--card);
-  }
-  .btn:hover { text-decoration: none; border-color: var(--accent); }
-  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  .btn.primary:hover { filter: brightness(1.08); }
-
-  /* Hero */
-  .hero { padding: 88px 0 72px; position: relative; overflow: hidden; }
-  .hero::before {
-    content: ""; position: absolute; inset: -40% -10% auto; height: 700px;
-    background: radial-gradient(closest-side, var(--accent-soft), transparent 70%);
-    pointer-events: none;
-  }
-  .hero .wrap { position: relative; display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; }
-  .eyebrow {
-    display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: .04em;
-    color: var(--accent); background: var(--accent-soft);
-    padding: 4px 12px; border-radius: 999px; margin-bottom: 18px;
-  }
-  h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.08; margin: 0 0 20px; letter-spacing: -.02em; }
-  h1 span { color: var(--accent); }
-  .lede { font-size: 19px; color: var(--muted); margin: 0 0 30px; max-width: 34em; }
-  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
-  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
-  .badges img { height: 20px; }
-
-  .terminal {
-    background: var(--code-bg); color: #d6dee8;
-    border: 1px solid var(--border); border-radius: 14px;
-    box-shadow: var(--shadow); overflow: hidden;
-  }
-  .terminal .bar { display: flex; gap: 7px; padding: 12px 14px; border-bottom: 1px solid #1f2733; }
-  .terminal .bar i { width: 11px; height: 11px; border-radius: 50%; background: #2c3644; }
-  .terminal pre { margin: 0; padding: 18px 20px 22px; font-size: 13.5px; line-height: 1.7; overflow-x: auto; }
-  .c-dim { color: #6b7a8c; }
-  .c-acc { color: #00d4aa; }
-  .c-ok { color: #7ee787; }
-
-  /* Sections */
-  section { padding: 80px 0; }
-  section.alt { background: var(--bg-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .section-head { max-width: 680px; margin-bottom: 44px; }
-  .section-head h2 { font-size: clamp(28px, 3.4vw, 38px); margin: 0 0 12px; letter-spacing: -.01em; line-height: 1.2; }
-  .section-head p { color: var(--muted); margin: 0; font-size: 17px; }
-
-  .grid { display: grid; gap: 18px; }
-  /* Let grid columns shrink below their code blocks' width; the <pre> scrolls instead. */
-  .hero .wrap > *, .grid > *, .quick > * { min-width: 0; }
-  .grid.c3 { grid-template-columns: repeat(3, 1fr); }
-  .grid.c2 { grid-template-columns: repeat(2, 1fr); }
-  .card {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 14px; padding: 24px;
-  }
-  .card h3 { margin: 14px 0 8px; font-size: 18px; }
-  .card p { margin: 0; color: var(--muted); font-size: 15px; }
-  .icon {
-    width: 40px; height: 40px; border-radius: 10px;
-    display: grid; place-items: center;
-    background: var(--accent-soft); color: var(--accent);
-  }
-  .icon svg { width: 22px; height: 22px; }
-
-  .card ul { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 15px; }
-  .card li { margin: 4px 0; }
-
-  /* Platforms */
-  table { width: 100%; border-collapse: collapse; font-size: 15px; }
-  th, td { text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
-  tr:last-child td { border-bottom: 0; }
-  .table-card { padding: 4px 8px; overflow-x: auto; }
-
-  /* Steps */
-  .steps { counter-reset: step; }
-  .step { position: relative; padding-left: 64px; }
-  .step::before {
-    counter-increment: step; content: counter(step);
-    position: absolute; left: 24px; top: 24px;
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--accent); color: var(--accent-ink);
-    font-weight: 700; font-size: 14px; display: grid; place-items: center;
-  }
-  .step h3 { margin-top: 0; }
-
-  /* Code blocks */
-  .code {
-    position: relative; background: var(--code-bg); color: #d6dee8;
-    border: 1px solid var(--border); border-radius: 12px; margin: 14px 0 0;
-  }
-  .code pre { margin: 0; padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.65; }
-  .copy {
-    position: absolute; top: 10px; right: 10px;
-    background: #1c2430; color: #c6d0dc; border: 1px solid #2c3644;
-    border-radius: 7px; font-size: 12px; padding: 4px 10px; cursor: pointer;
-  }
-  .copy:hover { border-color: #00d4aa; }
-
-  .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  .quick .card h3 { margin-top: 0; }
-
-  /* Community */
-  .links .card { display: flex; flex-direction: column; gap: 6px; }
-  .links .card a { font-weight: 600; }
-
-  /* Footer */
-  footer { padding: 48px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
-  footer .wrap { display: flex; flex-wrap: wrap; gap: 20px 40px; justify-content: space-between; align-items: center; }
-  footer nav { display: flex; flex-wrap: wrap; gap: 18px; }
-  footer a { color: var(--muted); }
-  footer a:hover { color: var(--text); }
-
-  @media (max-width: 900px) {
-    .hero .wrap, .quick, .grid.c2 { grid-template-columns: 1fr; }
-    .grid.c3 { grid-template-columns: 1fr 1fr; }
-    .nav ul li.hide-sm { display: none; }
-  }
-  @media (max-width: 600px) {
-    .wrap { padding: 0 16px; }
-    .grid.c3 { grid-template-columns: 1fr; }
-    .hero { padding: 56px 0 48px; }
-    section { padding: 56px 0; }
-    .nav ul { gap: 14px; }
-    .nav ul li.hide-xs { display: none; }
-    .step { padding-left: 56px; }
-    .step::before { left: 18px; }
-  }
-</style>
+<meta property="og:url" content="https://brainstation-23.github.io/SentinelGo/">
+<meta name="theme-color" content="#060a11">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.4 5.1 13.4 12 15 6.9-1.6 12-7.6 12-15V7z' fill='%2300d4aa'/%3E%3Cpath d='m11 16 3.5 3.5L21.5 12' stroke='%23060a11' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script>
+  // Apply the saved theme before first paint to avoid a flash.
+  (function () {
+    try { var t = localStorage.getItem('sg-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  })();
+</script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="m9 4-6 2v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+    <symbol id="i-checks" viewBox="0 0 24 24"><path d="M10 6h11M10 12h11M10 18h11"/><path d="m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/></symbol>
+    <symbol id="i-flow" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="15" width="7" height="6" rx="1.5"/><path d="M6.5 9v3a3 3 0 0 0 3 3H14"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-5-6-5M12 19h8"/></symbol>
+    <symbol id="i-apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M15 8l2 2"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+    <symbol id="i-file-check" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 3.5a4 4 0 0 1 0 9M22 21a7 7 0 0 0-4-6.3"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M3 5.6 10.4 4.6v7H3zM11.6 4.4 21 3v8.6h-9.4zM3 12.6h7.4v7L3 18.5zM11.6 12.6H21V21l-9.4-1.3z"/></symbol>
+    <symbol id="i-mac" viewBox="0 0 24 24"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
+    <symbol id="i-linux" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 10 3 2-3 2M12.5 15H17"/></symbol>
+    <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></symbol>
+  </defs>
+</svg>
+
 <a class="skip" href="#main">Skip to content</a>
+<div class="progress" aria-hidden="true"></div>
 
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="#top" aria-label="SentinelGo home">
-      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.4 5.1 13.4 12 15 6.9-1.6 12-7.6 12-15V7z" fill="#00d4aa"/><path d="m11 16 3.5 3.5L21.5 12" stroke="#0d1117" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00d4aa"/><stop offset="1" stop-color="#5b8cff"/></linearGradient></defs><path d="M16 2 4 7v8c0 7.4 5.1 13.4 12 15 6.9-1.6 12-7.6 12-15V7z" fill="url(#bg1)"/><path d="m11 16 3.5 3.5L21.5 12" stroke="#060a11" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       SentinelGo
+      <span class="ver" data-version>v3.5.0</span>
     </a>
-    <ul>
-      <li class="hide-sm"><a href="#features">Features</a></li>
-      <li class="hide-sm"><a href="#how">How it works</a></li>
-      <li class="hide-xs"><a href="#install">Install</a></li>
-      <li class="hide-xs"><a href="#security">Security</a></li>
-      <li>
-        <a class="gh-link" href="https://github.com/BrainStation-23/SentinelGo">
-          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-          GitHub
-        </a>
-      </li>
+    <ul class="nav-links" id="nav-menu">
+      <li><a href="#platform">Platform</a></li>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#trust">Trust</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#faq">FAQ</a></li>
     </ul>
+    <div class="nav-actions">
+      <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="nav-menu" aria-label="Open section menu">
+        <svg class="i open-i"><use href="#i-menu"/></svg><svg class="i close-i"><use href="#i-x"/></svg>
+      </button>
+      <button class="icon-btn theme-toggle" type="button" aria-label="Toggle colour theme">
+        <svg class="i moon"><use href="#i-moon"/></svg><svg class="i sun"><use href="#i-sun"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/BrainStation-23/SentinelGo" aria-label="SentinelGo on GitHub"><svg class="i"><use href="#i-github"/></svg></a>
+    </div>
   </div>
 </header>
 
 <main id="main">
+
+  <!-- ============ HERO ============ -->
   <div class="hero" id="top">
     <div class="wrap">
       <div>
-        <span class="eyebrow">Open source · Apache 2.0</span>
-        <h1>One lightweight agent.<br><span>Total endpoint visibility.</span></h1>
-        <p class="lede">SentinelGo is a single, dependency-free binary that turns every Windows, macOS and Linux device into a continuously monitored, audit-ready endpoint: hardware inventory, security posture, encryption status and tamper-evident audit logs, streamed to your backend in real time.</p>
+        <a class="eyebrow" href="#roadmap"><b>Roadmap</b> Native macOS MDM is next →</a>
+        <h1 class="display">Every endpoint.<br><span class="grad">Seen, secured,</span><br>and kept that way.</h1>
+        <p class="lede">SentinelGo is a single, dependency-free agent for Windows, macOS and Linux. It powers a full endpoint-management platform: live inventory, security posture and CVEs, compliance, policies, software deployment and remote actions, from one console.</p>
         <div class="cta">
-          <a class="btn primary" href="https://github.com/BrainStation-23/SentinelGo/releases/latest">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
-            Download latest release
-          </a>
-          <a class="btn" href="https://github.com/BrainStation-23/SentinelGo">View source on GitHub</a>
+          <a class="btn primary" href="https://github.com/BrainStation-23/SentinelGo/releases/latest"><svg class="i"><use href="#i-download"/></svg>Download <span data-version>v3.5.0</span></a>
+          <a class="btn" href="#roadmap"><svg class="i"><use href="#i-map"/></svg>Explore the roadmap</a>
         </div>
-        <div class="badges">
-          <a href="https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo"><img src="https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge" alt="OpenSSF Scorecard"></a>
-          <a href="https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo"><img src="https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&amp;metric=alert_status" alt="SonarCloud quality gate"></a>
-          <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
+        <div class="hero-meta">
+          <span><svg class="i"><use href="#i-check"/></svg>Apache-2.0 agent</span>
+          <span><svg class="i"><use href="#i-check"/></svg>No cgo, no runtime</span>
+          <span><svg class="i"><use href="#i-check"/></svg>Signed self-update</span>
         </div>
       </div>
-
-      <div class="terminal" aria-label="Example terminal session">
-        <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="c-dim"># Linux / macOS, as root</span>
-<span class="c-acc">$</span> sha256sum -c SHA256SUMS --ignore-missing
-sentinelgo-linux-amd64: <span class="c-ok">OK</span>
-<span class="c-acc">$</span> chmod +x sentinelgo-linux-amd64
-
-<span class="c-dim"># Install and start as a systemd service</span>
-<span class="c-acc">$</span> sudo ./sentinelgo-linux-amd64 -install
-
-<span class="c-dim"># Show installed/running processes and versions</span>
-<span class="c-acc">$</span> sudo ./sentinelgo-linux-amd64 -status</pre>
+      <div class="orb" aria-label="Animation: a fleet of devices reporting to the platform; non-compliant devices are detected and remediated">
+        <canvas id="fleet"></canvas>
+        <div class="toasts" aria-live="off"></div>
+        <div class="orb-caption" aria-hidden="true">
+          <span><i style="background:var(--accent)"></i>heartbeat</span>
+          <span><i style="background:var(--accent-3)"></i>signed action</span>
+          <span><i style="background:var(--danger)"></i>drift</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <section class="alt" id="features">
+  <!-- ============ STATS ============ -->
+  <div class="stats">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Why teams choose SentinelGo</h2>
-        <p>Most compliance and asset-management tools ship a heavy stack: a kernel module here, a Python runtime there, a different installer per OS. SentinelGo takes the opposite approach.</p>
+      <div class="stat"><div class="num" data-count="24">24</div><div class="lbl">agent releases since June 2026</div></div>
+      <div class="stat"><div class="num"><span data-count="3">3</span><small>OS</small></div><div class="lbl">Windows, macOS, Linux · 5 binaries</div></div>
+      <div class="stat"><div class="num" data-count="31">31</div><div class="lbl">parsers fuzzed every night</div></div>
+      <div class="stat"><div class="num" data-count="0">0</div><div class="lbl">runtime dependencies (no cgo)</div></div>
+      <div class="stat"><div class="num" data-count="8">8</div><div class="lbl">native package managers</div></div>
+      <div class="stat"><div class="num"><span data-count="4">4</span><small>GiB</small></div><div class="lbl">verified installer uploads</div></div>
+    </div>
+  </div>
+
+  <!-- ============ WHY ============ -->
+  <span id="features" class="anchor" aria-hidden="true"></span>
+  <section id="why">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Why SentinelGo</span>
+        <h2>The agent you'd design if you had to <span class="grad">trust it with root.</span></h2>
+        <p>Most endpoint tools ship a heavy stack: a kernel module here, a scripting runtime there, a different installer per OS. SentinelGo goes the other way: one small, auditable, static binary that does its job and gets out of the way.</p>
       </div>
-      <div class="grid c3">
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
-          <h3>Zero dependencies</h3>
-          <p>Every build is a <code>CGO_ENABLED=0</code> static binary. No runtime, no shared libraries. Drop one file on a machine and it runs.</p>
+      <div class="bento">
+        <div class="card spot b-wide reveal">
+          <div class="ico"><svg class="i"><use href="#i-box"/></svg></div>
+          <h3>One static binary per platform</h3>
+          <p>Every build is <code>CGO_ENABLED=0</code>, so there are no shared libraries, no interpreter and no kernel driver. A CI gate rejects any change that adds cgo. All targets cross-compile from one machine.</p>
+          <div class="binlist">
+            <span>windows-amd64.exe</span><span>darwin-arm64</span><span>darwin-amd64</span><span>linux-amd64</span><span>linux-arm64</span>
+          </div>
         </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div>
-          <h3>Stays current on its own</h3>
-          <p>Built-in self-update downloads the right signed binary for the platform, verifies it and replaces itself atomically.</p>
+        <div class="card spot b-wide reveal">
+          <div class="ico"><svg class="i"><use href="#i-refresh"/></svg></div>
+          <h3>Updates itself, safely</h3>
+          <p>The agent finds its next release through the backend, then checks the SHA-256 and Ed25519 signature. It replaces itself atomically and rolls back if the swap fails. It refuses unsigned updates.</p>
+          <div class="big">Ed25519<small>signed releases</small></div>
         </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
-          <h3>A first-class service</h3>
-          <p>Native Windows Service, systemd unit and launchd daemon. Installs with one command, survives reboots and restarts on failure.</p>
+        <div class="card spot b-third reveal">
+          <div class="ico"><svg class="i"><use href="#i-monitor"/></svg></div>
+          <h3>A real OS service</h3>
+          <p>Runs as a Windows Service, systemd unit or launchd daemon. It survives reboots, restarts on failure and shuts down gracefully.</p>
         </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></div>
-          <h3>Built for compliance</h3>
-          <p>Durable, at-least-once audit-log delivery backed by a local SQLite queue. Events survive outages and reboots instead of being dropped.</p>
+        <div class="card spot b-third reveal">
+          <div class="ico"><svg class="i"><use href="#i-db"/></svg></div>
+          <h3>Nothing gets dropped</h3>
+          <p>Audit logs are checkpointed and queued on disk, then delivered at least once. Payloads survive outages and reboots, and retries are de-duplicated.</p>
         </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></div>
-          <h3>Tiny footprint</h3>
-          <p>A single background process designed for minimal CPU and memory impact. Built to monitor, not to get in the way.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
-          <h3>Secure by design</h3>
-          <p>Per-agent JWT authentication, HTTPS-only transport, Row Level Security on every endpoint and PII redaction before data leaves the machine.</p>
+        <div class="card spot b-third reveal">
+          <div class="ico"><svg class="i"><use href="#i-eye"/></svg></div>
+          <h3>Private by default</h3>
+          <p>No credential material is collected. Credential-like and PII patterns are redacted from task output before upload, and the agent only talks HTTPS.</p>
         </div>
       </div>
     </div>
   </section>
 
-  <section id="captures">
+  <!-- ============ PLATFORM EXPLORER ============ -->
+  <span id="captures" class="anchor" aria-hidden="true"></span>
+  <section id="platform" style="padding-top:40px">
     <div class="wrap">
-      <div class="section-head">
-        <h2>What it captures</h2>
-        <p>A live, structured picture of every endpoint, far beyond "is it online".</p>
+      <div class="section-head reveal">
+        <span class="kicker">The platform</span>
+        <h2>The agent is the hands and eyes.<br><span class="grad">The console is the brain.</span></h2>
+        <p>Most of the work happens server-side. The agent reports facts and carries out signed actions; the platform turns those facts into risk, compliance, alerts and automation.</p>
       </div>
-      <div class="grid c3">
-        <div class="card">
-          <h3>Hardware &amp; system</h3>
-          <p>CPU, memory, per-disk capacity and health, GPUs, RAM modules, displays, audio devices, printers and peripherals. OS version, architecture, locale, uptime and last boot.</p>
+
+      <div class="explorer reveal">
+        <div class="tablist" role="tablist" aria-label="Platform capabilities">
+          <button class="tab" role="tab" id="t-inv" aria-controls="p-inv" aria-selected="true"><svg class="i"><use href="#i-cpu"/></svg>Inventory</button>
+          <button class="tab" role="tab" id="t-pos" aria-controls="p-pos" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-target"/></svg>Posture &amp; CVEs</button>
+          <button class="tab" role="tab" id="t-cmp" aria-controls="p-cmp" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-checks"/></svg>Compliance</button>
+          <button class="tab" role="tab" id="t-pol" aria-controls="p-pol" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-flow"/></svg>Policies &amp; workflows</button>
+          <button class="tab" role="tab" id="t-act" aria-controls="p-act" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-terminal"/></svg>Remote actions</button>
+          <button class="tab" role="tab" id="t-sw" aria-controls="p-sw" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-apps"/></svg>Software deployment</button>
+          <button class="tab" role="tab" id="t-alr" aria-controls="p-alr" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-bell"/></svg>Alerts &amp; remediation</button>
+          <button class="tab" role="tab" id="t-acc" aria-controls="p-acc" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-key"/></svg>Access &amp; audit</button>
         </div>
-        <div class="card">
-          <h3>Security posture</h3>
-          <ul>
-            <li>Disk encryption: BitLocker, FileVault, LUKS</li>
-            <li>Antivirus and firewall state</li>
-            <li>Secure Boot, VBS/HVCI, SIP, SELinux/AppArmor</li>
-            <li>Listening ports by process; TPM and firmware</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>Network</h3>
-          <p>Per-adapter MAC, link speed and status, IPv4/IPv6 addressing, DHCP, gateway, DNS servers, and Wi-Fi SSID with signal strength.</p>
-        </div>
-        <div class="card">
-          <h3>Software inventory</h3>
-          <p>Installed applications from Windows, Microsoft Store, Debian/RPM/Snap/Flatpak, Homebrew and the Mac App Store, with change tracking. Plus browser extensions for Chrome, Firefox, Edge and Brave.</p>
-        </div>
-        <div class="card">
-          <h3>Audit log streaming</h3>
-          <p>Normalized events from Windows Event Log, Linux auth/syslog and journald, and the macOS unified log. Categorized, severity-tagged, checkpointed and uploaded in batches.</p>
-        </div>
-        <div class="card">
-          <h3>Local accounts</h3>
-          <p>Local user accounts with group membership, without collecting any credential material.</p>
+
+        <div>
+          <!-- Inventory -->
+          <div class="card panel" role="tabpanel" id="p-inv" aria-labelledby="t-inv">
+            <div>
+              <h3>Know every device, down to the partition.</h3>
+              <p class="desc">A live, structured picture of the fleet that goes far beyond "is it online".</p>
+              <ul class="ticks">
+                <li>CPU, GPU, RAM modules, disks and partitions, displays, audio, printers, peripherals</li>
+                <li>Software for every user account: native, Store, Homebrew, APT/RPM/Snap/Flatpak, plus browser extensions</li>
+                <li>OS services (systemd, Windows Services, launchd), local accounts, network adapters and Wi-Fi</li>
+                <li>Device groups, tags, and devices mapped to the employees who own them</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Devices · 1,284 · Engineering</span></div>
+              <div class="mock-body inv">
+                <div class="row" style="grid-template-columns:24px 1fr auto auto"><span class="os"><svg class="i"><use href="#i-mac"/></svg></span><div><div class="mono">mac-design-04</div><div class="sub">M3 Pro · 36 GB · macOS 15.6</div></div><span class="pill ok">FileVault</span><span class="sub">now</span></div>
+                <div class="row" style="grid-template-columns:24px 1fr auto auto"><span class="os"><svg class="i"><use href="#i-windows"/></svg></span><div><div class="mono">win-fin-017</div><div class="sub">i7-1365U · 32 GB · Win 11 24H2</div></div><span class="pill ok">BitLocker</span><span class="sub">2m</span></div>
+                <div class="row" style="grid-template-columns:24px 1fr auto auto"><span class="os"><svg class="i"><use href="#i-linux"/></svg></span><div><div class="mono">lnx-build-09</div><div class="sub">EPYC 9354 · 128 GB · Ubuntu 24.04</div></div><span class="pill warn">LUKS off</span><span class="sub">4m</span></div>
+                <div class="row" style="grid-template-columns:24px 1fr auto auto"><span class="os"><svg class="i"><use href="#i-windows"/></svg></span><div><div class="mono">win-ops-221</div><div class="sub">Ryzen 7 · 16 GB · Win 11 23H2</div></div><span class="pill ok">BitLocker</span><span class="sub">5m</span></div>
+                <div class="row" style="grid-template-columns:24px 1fr auto auto"><span class="os"><svg class="i"><use href="#i-mac"/></svg></span><div><div class="mono">mac-sales-12</div><div class="sub">M2 · 16 GB · macOS 14.7</div></div><span class="pill info">syncing</span><span class="sub">just enrolled</span></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Posture -->
+          <div class="card panel" role="tabpanel" id="p-pos" aria-labelledby="t-pos">
+            <div>
+              <h3>See risk before it becomes an incident.</h3>
+              <p class="desc">Posture and vulnerability data, cross-checked against public sources.</p>
+              <ul class="ticks">
+                <li>Encryption per partition: BitLocker, FileVault, LUKS</li>
+                <li>Firewall, antivirus/EDR presence, Secure Boot, SIP, SELinux/AppArmor, TPM</li>
+                <li>Installed software matched to CVEs from the National Vulnerability Database</li>
+                <li>OS end-of-life tracking and patch status, with fleet-wide risk views</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Vulnerabilities · fleet risk</span></div>
+              <div class="mock-body">
+                <div style="display:flex;gap:18px;align-items:center;margin-bottom:12px">
+                  <div class="donut"></div>
+                  <div class="legend">
+                    <div><i style="background:var(--danger)"></i>Critical · 8%</div>
+                    <div><i style="background:var(--warn)"></i>High · 19%</div>
+                    <div><i style="background:var(--accent-2)"></i>Medium · 22%</div>
+                    <div><i style="background:var(--ok)"></i>Clean · 51%</div>
+                  </div>
+                </div>
+                <div class="row" style="grid-template-columns:auto 1fr auto"><span class="pill bad">Critical</span><div class="mono">Browser · out-of-date build</div><span class="sub">41 devices</span></div>
+                <div class="row" style="grid-template-columns:auto 1fr auto"><span class="pill warn">High</span><div class="mono">Archive utility · RCE</div><span class="sub">12 devices</span></div>
+                <div class="row" style="grid-template-columns:auto 1fr auto"><span class="pill vio">EOL</span><div class="mono">Windows 10 22H2</div><span class="sub">7 devices</span></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Compliance -->
+          <div class="card panel" role="tabpanel" id="p-cmp" aria-labelledby="t-cmp">
+            <div>
+              <h3>Compliance you define, evidence you can show.</h3>
+              <p class="desc">Checks are configuration, not code: categories, severities, evidence rules and version operators, managed in the console.</p>
+              <ul class="ticks">
+                <li>Per-device pass/fail with the evidence behind it</li>
+                <li>Fleet percentages per check, ready for an auditor</li>
+                <li>New checks roll out without an agent release</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Compliance · Baseline</span></div>
+              <div class="mock-body">
+                <div class="kpis"><div class="kpi"><b>94.2%</b><span>compliant</span></div><div class="kpi"><b>74</b><span>failing</span></div><div class="kpi"><b>12</b><span>checks</span></div></div>
+                <div class="row" style="grid-template-columns:130px 1fr 44px"><span class="sub">Disk encryption</span><div class="bar"><i style="--w:98%"></i></div><span class="mono">98%</span></div>
+                <div class="row" style="grid-template-columns:130px 1fr 44px"><span class="sub">EDR running</span><div class="bar"><i style="--w:99%"></i></div><span class="mono">99%</span></div>
+                <div class="row" style="grid-template-columns:130px 1fr 44px"><span class="sub">Firewall on</span><div class="bar"><i style="--w:96%"></i></div><span class="mono">96%</span></div>
+                <div class="row" style="grid-template-columns:130px 1fr 44px"><span class="sub">Screen lock ≤ 5m</span><div class="bar"><i style="--w:91%"></i></div><span class="mono">91%</span></div>
+                <div class="row" style="grid-template-columns:130px 1fr 44px"><span class="sub">OS patched ≤ 30d</span><div class="bar warn"><i style="--w:84%"></i></div><span class="mono">84%</span></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Policies -->
+          <div class="card panel" role="tabpanel" id="p-pol" aria-labelledby="t-pol">
+            <div>
+              <h3>Automate the boring, recurring work.</h3>
+              <p class="desc">A visual policy editor and a drag-and-drop workflow builder for joiner/leaver and custom IT flows.</p>
+              <ul class="ticks">
+                <li>Policies assigned to device groups, run on a schedule or a recurrence</li>
+                <li>Workflows triggered manually, on a schedule, or by an alert</li>
+                <li>Steps to run commands, enforce policies, branch on conditions and wait</li>
+                <li>Full execution history for every run</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Workflow · New joiner (Engineering)</span></div>
+              <div class="mock-body flow">
+                <div class="fnode"><span class="ico"><svg class="i"><use href="#i-users"/></svg></span><div><b>Trigger: employee joins</b><span>from the HR directory sync</span></div></div>
+                <div class="flink"></div>
+                <div class="fnode"><span class="ico"><svg class="i"><use href="#i-apps"/></svg></span><div><b>Install the team app bundle</b><span>winget · brew · apt, per OS</span></div></div>
+                <div class="flink"></div>
+                <div class="fbranch">
+                  <div class="fnode"><span class="ico"><svg class="i"><use href="#i-lock"/></svg></span><div><b>Enforce encryption</b><span>policy · Baseline</span></div></div>
+                  <div class="fnode"><span class="ico"><svg class="i"><use href="#i-shield"/></svg></span><div><b>Firewall on</b><span>native task</span></div></div>
+                </div>
+                <div class="flink"></div>
+                <div class="fnode"><span class="ico"><svg class="i"><use href="#i-checks"/></svg></span><div><b>Wait, then verify compliance</b><span>branch on result</span></div></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Remote actions -->
+          <div class="card panel" role="tabpanel" id="p-act" aria-labelledby="t-act">
+            <div>
+              <h3>Act on one device or a thousand.</h3>
+              <p class="desc">PowerShell, Bash and shell scripts, reusable templates with variables, and built-in native tasks.</p>
+              <ul class="ticks">
+                <li>Target a device or a whole group</li>
+                <li>Describe a script in plain English and get a draft from the AI assistant</li>
+                <li>Native tasks such as reboot and firewall on/off, with per-task timeouts</li>
+                <li>Structured results: exit code, output, reboot required</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Run script · Finance (42 devices)</span></div>
+              <div class="mock-body">
+<div class="term"><span class="d"># template: rotate-local-admin  ·  vars: {length: 24}</span>
+<span class="a">▸</span> dispatched to 42 devices
+<span class="g">✓</span> win-fin-001   exit 0   1.8s
+<span class="g">✓</span> win-fin-002   exit 0   2.1s
+<span class="g">✓</span> win-fin-017   exit 0   1.6s   <span class="y">reboot required</span>
+<span class="d">…</span>
+<span class="g">✓</span> 41 succeeded  <span class="y">1 offline · queued</span></div>
+                <div style="margin-top:10px" class="row"><div class="bar"><i style="--w:97%"></i></div></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Software -->
+          <div class="card panel" role="tabpanel" id="p-sw" aria-labelledby="t-sw">
+            <div>
+              <h3>Ship software the native way.</h3>
+              <p class="desc">A curated catalog across eight package managers, plus your own installer files.</p>
+              <ul class="ticks">
+                <li>winget, Chocolatey, Homebrew, APT, DNF, YUM, Snap and Flatpak</li>
+                <li>Upload installers up to 4 GiB with resumable uploads; hashed on the server, verified on the device</li>
+                <li>Install from the catalog, on a single device, or through a policy</li>
+                <li>Uninstall, and keep the software inventory reconciled</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>App catalog</span></div>
+              <div class="mock-body">
+                <div class="tiles">
+                  <div class="tile"><div class="logo" style="background:#2f5bea">Br</div><b>Browser</b><span>winget · brew</span></div>
+                  <div class="tile"><div class="logo" style="background:#7c3aed">Ed</div><b>Code editor</b><span>winget · snap</span></div>
+                  <div class="tile"><div class="logo" style="background:#0e9f6e">Vp</div><b>VPN client</b><span>.msi · .pkg</span></div>
+                  <div class="tile"><div class="logo" style="background:#d97706">Ch</div><b>Team chat</b><span>flatpak · brew</span></div>
+                  <div class="tile"><div class="logo" style="background:#db2777">Pw</div><b>Password mgr</b><span>choco · apt</span></div>
+                  <div class="tile"><div class="logo" style="background:#0891b2">Dk</div><b>Containers</b><span>dnf · apt</span></div>
+                </div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Alerts -->
+          <div class="card panel" role="tabpanel" id="p-alr" aria-labelledby="t-alr">
+            <div>
+              <h3>From alert to fixed, in one click.</h3>
+              <p class="desc">Rules built from device state, hardware, software and services, with a gallery of enterprise templates.</p>
+              <ul class="ticks">
+                <li>A rule wizard plus AI-assisted rule writing</li>
+                <li>Severity, acknowledge/resolve and recurrence tracking</li>
+                <li>Remediation commands linked to rules, runnable straight from the resolve step</li>
+                <li>Telemetry export to Wazuh SIEM over TLS</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Alerts · open</span></div>
+              <div class="mock-body">
+                <div class="alertcard">
+                  <div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><span class="pill bad">High</span><span class="sub">recurring · 3rd time</span></div>
+                  <div style="margin-top:8px;font-weight:600">Firewall disabled</div>
+                  <div class="sub">win-ops-221 · rule: Baseline / network</div>
+                </div>
+                <div class="steps-mini">
+                  <div><b>Detected</b> · heartbeat reported firewall off</div>
+                  <div><b>Acknowledged</b> · on-call admin</div>
+                  <div><b>Remediation run</b> · native task: firewall on</div>
+                  <div><b>Resolved</b> · next heartbeat confirms compliant</div>
+                </div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
+
+          <!-- Access -->
+          <div class="card panel" role="tabpanel" id="p-acc" aria-labelledby="t-acc">
+            <div>
+              <h3>Least privilege, with a paper trail.</h3>
+              <p class="desc">Enterprise access control for the people who manage the fleet.</p>
+              <ul class="ticks">
+                <li>Custom roles with a permission matrix grouped by resource</li>
+                <li>Scoped assignments: organisation, department, device group, site, device</li>
+                <li>Just-in-time roles with an approval flow</li>
+                <li>Full admin activity trail with diffs, saved filters and CSV export; Azure SSO</li>
+              </ul>
+            </div>
+            <div class="mock" aria-hidden="true">
+              <div class="mock-bar"><i></i><i></i><i></i><span>Roles · Helpdesk (scoped: Site Dhaka)</span></div>
+              <div class="mock-body">
+                <table class="matrix">
+                  <thead><tr><th>Resource</th><th>View</th><th>Run</th><th>Edit</th></tr></thead>
+                  <tbody>
+                    <tr><td>Devices</td><td class="yes">●</td><td class="yes">●</td><td class="no">○</td></tr>
+                    <tr><td>Scripts</td><td class="yes">●</td><td class="yes">●</td><td class="no">○</td></tr>
+                    <tr><td>Policies</td><td class="yes">●</td><td class="no">○</td><td class="no">○</td></tr>
+                    <tr><td>Roles</td><td class="no">○</td><td class="no">○</td><td class="no">○</td></tr>
+                  </tbody>
+                </table>
+                <div class="row" style="grid-template-columns:auto 1fr auto;margin-top:8px"><span class="pill vio">JIT</span><div class="sub">Policy editor for 2h · reason: incident</div><span class="pill warn">awaiting approval</span></div>
+              </div>
+              <div class="mock-note">ILLUSTRATIVE INTERFACE</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <section class="alt" id="platforms">
-    <div class="wrap">
-      <div class="section-head">
-        <h2>Runs everywhere your fleet does</h2>
-        <p>Every target is cross-compiled from a single host into a static binary. No per-platform build farm required.</p>
-      </div>
-      <div class="card table-card">
-        <table>
-          <thead><tr><th>Platform</th><th>Architectures</th><th>Service model</th></tr></thead>
-          <tbody>
-            <tr><td><strong>Windows</strong></td><td><code>amd64</code></td><td>Windows Service</td></tr>
-            <tr><td><strong>macOS</strong></td><td><code>arm64</code> (Apple Silicon) · <code>amd64</code> (Intel)</td><td>launchd daemon</td></tr>
-            <tr><td><strong>Linux</strong></td><td><code>amd64</code> · <code>arm64</code></td><td>systemd unit</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
+  <!-- ============ HOW IT WORKS ============ -->
   <section id="how">
     <div class="wrap">
-      <div class="section-head">
-        <h2>How it works</h2>
-        <p>The agent authenticates, reports, streams and keeps itself up to date, with no hand-holding after install.</p>
+      <div class="section-head center reveal">
+        <span class="kicker">How it works</span>
+        <h2>Facts flow up. <span class="grad">Signed actions flow down.</span></h2>
+        <p>The agent authenticates, reports, streams and keeps itself current, with no hand-holding after install.</p>
       </div>
-      <div class="grid c2 steps">
-        <div class="card step">
-          <h3>Authenticate</h3>
-          <p>The agent logs in to a Supabase Edge Function and receives a short-lived JWT, refreshed automatically in the background.</p>
-        </div>
-        <div class="card step">
-          <h3>Report</h3>
-          <p>System metrics are sent as a heartbeat on a configurable interval (default 5 minutes), plus periodic full hardware and software inventory.</p>
-        </div>
-        <div class="card step">
-          <h3>Stream</h3>
-          <p>Audit logs are collected from OS-native sources, normalized, durably queued in SQLite and uploaded with at-least-once delivery.</p>
-        </div>
-        <div class="card step">
-          <h3>Stay current</h3>
-          <p>The agent polls for new releases, downloads and verifies the signed binary, replaces itself atomically and restarts cleanly.</p>
-        </div>
+      <div class="card pipeline reveal" aria-label="Diagram: endpoint agent sends telemetry to the backend; the backend sends signed actions back; the console reads from and drives the backend">
+        <svg class="wires" viewBox="0 0 1100 300" role="img" aria-hidden="true">
+          <defs>
+            <linearGradient id="wireGrad" x1="0" x2="1"><stop offset="0" stop-color="#00d4aa"/><stop offset="1" stop-color="#5b8cff"/></linearGradient>
+            <linearGradient id="wireGrad2" x1="0" x2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="1" stop-color="#5b8cff"/></linearGradient>
+            <radialGradient id="coreGrad"><stop offset="0" stop-color="#00d4aa" stop-opacity=".55"/><stop offset="1" stop-color="#00d4aa" stop-opacity="0"/></radialGradient>
+          </defs>
+          <path class="wire live" d="M220 118 C 335 118, 335 108, 450 108"/>
+          <path class="wire back" d="M450 192 C 335 192, 335 182, 220 182" style="animation-direction:normal"/>
+          <path class="wire live" d="M650 108 C 765 108, 765 118, 880 118"/>
+          <path class="wire back" d="M880 182 C 765 182, 765 192, 650 192" style="animation-direction:normal"/>
+          <text class="plabel acc" x="335" y="92" text-anchor="middle">heartbeat · inventory · logs →</text>
+          <text class="plabel vio" x="335" y="218" text-anchor="middle">← signed tasks · updates</text>
+          <text class="plabel acc" x="765" y="92" text-anchor="middle">risk · compliance · alerts →</text>
+          <text class="plabel vio" x="765" y="218" text-anchor="middle">← policies · commands</text>
+          <g class="pnode"><rect x="20" y="85" width="200" height="130" rx="18"/><text x="120" y="140" text-anchor="middle">Endpoint</text><text class="s" x="120" y="164" text-anchor="middle">SentinelGo agent</text><text class="s" x="120" y="184" text-anchor="middle">Win · macOS · Linux</text></g>
+          <g class="pnode"><circle class="core" cx="550" cy="150" r="125"/><rect x="450" y="70" width="200" height="160" rx="18"/><text x="550" y="135" text-anchor="middle">Backend</text><text class="s" x="550" y="160" text-anchor="middle">auth · queue · storage</text><text class="s" x="550" y="180" text-anchor="middle">release distribution</text></g>
+          <g class="pnode"><rect x="880" y="85" width="200" height="130" rx="18"/><text x="980" y="140" text-anchor="middle">Console</text><text class="s" x="980" y="164" text-anchor="middle">admins · helpdesk</text><text class="s" x="980" y="184" text-anchor="middle">employee portal</text></g>
+        </svg>
+        <ol class="pipe-mobile">
+          <li><b>Endpoint</b><span>SentinelGo agent · Win · macOS · Linux</span></li>
+          <li class="up">heartbeat · inventory · logs ↓ &nbsp; ↑ signed tasks · updates</li>
+          <li><b>Backend</b><span>auth · queue · storage · release distribution</span></li>
+          <li class="up">risk · compliance · alerts ↓ &nbsp; ↑ policies · commands</li>
+          <li><b>Console</b><span>admins · helpdesk · employee portal</span></li>
+        </ol>
+      </div>
+      <div class="grid c4 howsteps">
+        <div class="card spot reveal"><h3>Authenticate</h3><p>Each agent signs in with its own identity and receives short-lived tokens, renewed in the background. A rejected session recovers once, automatically.</p></div>
+        <div class="card spot reveal"><h3>Report</h3><p>A heartbeat every few minutes (default 5) plus periodic full hardware, software and posture inventory, with fast first sync after enrollment.</p></div>
+        <div class="card spot reveal"><h3>Act</h3><p>The agent polls for tasks, fetches and verifies any installer files, runs the task with timeouts, and returns structured results.</p></div>
+        <div class="card spot reveal"><h3>Stay current</h3><p>It checks for signed releases for its platform and architecture, verifies them, swaps itself atomically and restarts cleanly.</p></div>
       </div>
     </div>
   </section>
 
-  <section class="alt" id="install">
+  <!-- ============ TRUST ============ -->
+  <span id="security" class="anchor" aria-hidden="true"></span>
+  <section id="trust">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Get started</h2>
-        <p>Download a release for your platform from <a href="https://github.com/BrainStation-23/SentinelGo/releases/latest">GitHub Releases</a>, verify it, create a <code>config.json</code> and install the service.</p>
+      <div class="section-head center reveal">
+        <span class="kicker">Supply-chain trust</span>
+        <h2>Verifiable from <span class="grad">commit to device.</span></h2>
+        <p>An agent that runs with elevated privileges on every machine has to earn trust. Every release follows the same chain, and every link can be checked independently.</p>
       </div>
-      <div class="quick">
-        <div class="card">
-          <h3>Install as a service</h3>
-          <div class="code"><button class="copy" type="button">Copy</button><pre><code># Verify the download against the published checksums
-sha256sum -c SHA256SUMS --ignore-missing
+      <div class="chain">
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-code"/></svg></div><h4>Source</h4><p>Every change scanned and its untrusted-input parsers fuzzed.</p><div class="chips"><span class="chip">CodeQL</span><span class="chip">Semgrep</span><span class="chip">govulncheck</span><span class="chip">31 fuzzers</span></div></div>
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-layers"/></svg></div><h4>Build</h4><p>Static, cgo-free and reproducible: rebuild it yourself and compare.</p><div class="chips"><span class="chip">CGO_ENABLED=0</span><span class="chip">-race in CI</span></div></div>
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-pen"/></svg></div><h4>Sign</h4><p>Binaries and installers signed, with published checksums.</p><div class="chips"><span class="chip">Ed25519</span><span class="chip">SHA256SUMS</span></div></div>
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-file-check"/></svg></div><h4>Attest</h4><p>Build provenance and a bill of materials for every binary.</p><div class="chips"><span class="chip">provenance</span><span class="chip">CycloneDX SBOM</span><span class="chip">licence gate</span></div></div>
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-send"/></svg></div><h4>Deliver</h4><p>Served from the platform's own release storage in signed bundles.</p><div class="chips"><span class="chip">per-arch bundles</span><span class="chip">HTTPS only</span></div></div>
+        <div class="link reveal"><div class="ring"><svg class="i"><use href="#i-shield-check"/></svg></div><h4>Verify</h4><p>The agent checks hash and signature, swaps atomically and rolls back on failure.</p><div class="chips"><span class="chip">refuses unsigned</span><span class="chip">atomic swap</span></div></div>
+      </div>
+      <div class="badges reveal">
+        <a href="https://scorecard.dev/viewer/?uri=github.com/BrainStation-23/SentinelGo"><img src="https://api.scorecard.dev/projects/github.com/BrainStation-23/SentinelGo/badge" alt="OpenSSF Scorecard" loading="lazy"></a>
+        <a href="https://sonarcloud.io/summary/new_code?id=BrainStation-23_SentinelGo"><img src="https://sonarcloud.io/api/project_badges/measure?project=BrainStation-23_SentinelGo&amp;metric=alert_status" alt="SonarCloud quality gate" loading="lazy"></a>
+        <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0" loading="lazy"></a>
+        <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/docs/assurance-case.md"><img src="https://img.shields.io/badge/assurance%20case-published-00d4aa" alt="Security assurance case published" loading="lazy"></a>
+      </div>
+    </div>
+  </section>
 
-# Linux / macOS (as root)
-sudo ./sentinelgo -install
+  <!-- ============ PLATFORMS ============ -->
+  <section id="platforms" style="padding-top:40px">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Runs everywhere</span>
+        <h2>Native on every OS your fleet runs.</h2>
+        <p>Cross-compiled from a single host into static binaries. No per-platform build farm, no per-platform runtime.</p>
+      </div>
+      <div class="grid c3 plat">
+        <div class="card spot reveal"><div class="os-big"><svg class="i"><use href="#i-windows"/></svg></div><h3>Windows</h3><span class="svc">Windows Service</span>
+          <dl><dt>Arch</dt><dd><code>amd64</code></dd><dt>Encryption</dt><dd>BitLocker, with central key escrow</dd><dt>Logs</dt><dd>Windows Event Log</dd><dt>Packages</dt><dd>winget, Chocolatey, MSI</dd></dl></div>
+        <div class="card spot reveal"><div class="os-big"><svg class="i"><use href="#i-mac"/></svg></div><h3>macOS</h3><span class="svc">launchd daemon</span>
+          <dl><dt>Arch</dt><dd><code>arm64</code> · <code>amd64</code></dd><dt>Encryption</dt><dd>FileVault</dd><dt>Logs</dt><dd>Unified log</dd><dt>Packages</dt><dd>Homebrew, PKG</dd></dl></div>
+        <div class="card spot reveal"><div class="os-big"><svg class="i"><use href="#i-linux"/></svg></div><h3>Linux</h3><span class="svc">systemd unit</span>
+          <dl><dt>Arch</dt><dd><code>amd64</code> · <code>arm64</code></dd><dt>Encryption</dt><dd>LUKS</dd><dt>Logs</dt><dd>journald, auth/syslog</dd><dt>Packages</dt><dd>APT, DNF, YUM, Snap, Flatpak</dd></dl></div>
+      </div>
+    </div>
+  </section>
 
-# Windows (as Administrator)
-.\sentinelgo.exe -install
-
-# Run in the foreground for debugging
-./sentinelgo -run</code></pre></div>
-          <p style="margin-top:14px">Full per-OS walkthrough: <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/installation-doc/INSTALLATION.md">INSTALLATION.md</a></p>
-        </div>
-        <div class="card">
-          <h3>Configure</h3>
-          <p>The agent reads one JSON file at <code>/opt/sentinelgo/.sentinelgo/config.json</code> (Linux, macOS) or <code>C:\sentinelgo\.sentinelgo\config.json</code> (Windows).</p>
-          <div class="code"><button class="copy" type="button">Copy</button><pre><code>{
-  "supabase_url":         "https://&lt;your-project&gt;.supabase.co",
-  "supabase_key":         "&lt;anon-key&gt;",
-  "agent_secret":         "&lt;agent-login-secret&gt;",
-  "auto_update":          true,
-  "update_interval":      "5m",
-  "audit_logs_enabled":   true
-}</code></pre></div>
-          <p style="margin-top:14px">Full reference: <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/docs/02-config-module.md">configuration docs</a></p>
-        </div>
+  <!-- ============ ROADMAP ============ -->
+  <section id="roadmap">
+    <div class="wrap">
+      <div class="section-head center reveal">
+        <span class="kicker">Public roadmap</span>
+        <h2>From first commit <span class="grad">to native MDM.</span></h2>
+        <p>Everything we've shipped since May 2026 across the agent and the platform, where we are right now, and what comes next, including what we've deliberately decided <em>not</em> to build.</p>
       </div>
 
-      <div class="card" style="margin-top:18px">
-        <h3 style="margin-top:0">Build from source</h3>
-        <p>Requires Go 1.26 or newer. All builds are <code>CGO_ENABLED=0</code> static binaries.</p>
-        <div class="code"><button class="copy" type="button">Copy</button><pre><code>git clone https://github.com/BrainStation-23/SentinelGo.git
+      <div class="rm-tools reveal" role="group" aria-label="Filter roadmap">
+        <button class="fchip" type="button" data-filter="all" aria-pressed="true">Everything</button>
+        <button class="fchip" type="button" data-filter="agent" aria-pressed="false">Agent</button>
+        <button class="fchip" type="button" data-filter="platform" aria-pressed="false">Platform</button>
+        <button class="fchip" type="button" data-filter="planned" aria-pressed="false">Planned</button>
+      </div>
+      <div class="rm-legend" aria-hidden="true">
+        <span><i style="background:var(--accent)"></i>Agent (open source)</span>
+        <span><i style="background:var(--accent-2)"></i>Platform</span>
+        <span><i style="border:2px dashed var(--accent-3)"></i>Planned</span>
+      </div>
+
+      <div class="timeline">
+        <div class="rail" aria-hidden="true"></div>
+        <div class="fill" aria-hidden="true"></div>
+        <ol class="tl">
+          <li class="tl-era"><span>2026 · Delivered</span></li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-05">May 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Platform foundation</h3>
+              <p>The console is born: devices, users, remote commands, an app catalog, and vulnerability scanning on day one.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Admin console: dashboard, device list and detail, users, settings, device logs</li>
+                <li>Agent registration and per-agent installer issuing; employee directory sync and bulk import</li>
+                <li>Remote commands with AI-assisted script writing; app catalog; employee "My Devices" portal</li>
+                <li>Device groups, policies and alert rules</li>
+                <li>NVD CVE scanning, OS end-of-life tracking, agent releases page, integrations hub</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item agent" data-kind="agent">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-06">June 2026</time><span class="tag agent">Agent</span><span class="tag ver">v2.1.17 → v2.2.1</span></div>
+              <h3>One agent, three operating systems</h3>
+              <p>A cross-platform agent running as a native service everywhere, with rich inventory and audit-log collection on all three OSes.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Windows Service, systemd and launchd service modes</li>
+                <li>Extended network, system and timezone inventory</li>
+                <li>Reworked audit-log collectors: Windows Event Log, journald, macOS unified log</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item agent" data-kind="agent">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-06">June 2026</time><span class="tag agent">Agent</span><span class="tag ver">v3.0.0</span></div>
+              <h3>Signed self-update</h3>
+              <p>Every release is signed with Ed25519. The agent verifies checksum and signature before installing, and refuses anything unsigned.</p>
+            </article>
+          </li>
+
+          <li class="tl-item agent" data-kind="agent">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-06">June 2026</time><span class="tag agent">Agent</span><span class="tag ver">v3.0.1 → v3.2.6</span></div>
+              <h3>Remote tasks, one-click installers, posture</h3>
+              <p>The agent learns to act: a native task framework, remote reboot and firewall control, double-click installers for every desktop OS, and cross-platform security-posture assessment.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Native task framework with per-task timeouts and a watchdog</li>
+                <li>USB mass-storage detection, peripheral and app-usage detection</li>
+                <li>Updates served from the platform's own release storage</li>
+                <li>Session recovery, emergency logging, de-duplicated delivery with retries</li>
+                <li>OS-services inventory, security posture and patch compliance on all three OSes</li>
+                <li>Diagnostics dump, redaction of sensitive values, software for every user account</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-06">June 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Workflows and self-hosting</h3>
+              <p>A drag-and-drop workflow builder for joiner/leaver processes, and a Docker deployment with automatic migrations so the platform can run anywhere.</p>
+            </article>
+          </li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-07">July 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Enterprise access control</h3>
+              <p>Custom roles, scoped and just-in-time assignments with approvals, and a full admin activity trail.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Role-based access with a permission matrix, scoped assignments and JIT roles</li>
+                <li>Admin activity log with timeline, diffs, saved filters and CSV export</li>
+                <li>Fully configurable compliance checks; alert-rule wizard with a template gallery</li>
+                <li>Default "Standard" device group; generic workflows; first backup &amp; restore</li>
+                <li>Agent v3.2.7: browser extensions reported with stable IDs and names</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-08">August 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Endpoint Management</h3>
+              <p>The console grows up: a modular dashboard, BitLocker recovery-key vault, policy engine v2 and SIEM export.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Widget dashboard with OS breakdown, security overview and risk</li>
+                <li>BitLocker enablement with recovery keys in an encrypted vault</li>
+                <li>Policy engine v2: recurrence and app installs</li>
+                <li>Wazuh SIEM export over TLS; scheduled backups</li>
+                <li>Faster first sync after enrollment; more accurate patch alerts</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item agent" data-kind="agent">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-09">September 2026</time><span class="tag agent">Agent</span><span class="tag ver">v3.2.8</span></div>
+              <h3>Hardening</h3>
+              <p>HTTPS-only connections, restrictive permissions on the installation, system tools invoked by absolute path, and a code-quality sweep across ~30 files.</p>
+            </article>
+          </li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-09">September 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Production-ready deployment</h3>
+              <p>Software-inventory reconciliation, a first-admin setup wizard, a production container image and a dedicated installer project.</p>
+            </article>
+          </li>
+
+          <li class="tl-item agent" data-kind="agent">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-10">October 2026</time><span class="tag agent">Agent</span><span class="tag ver">v3.3.0 · v3.4.0</span></div>
+              <h3>Supply-chain security and continuous fuzzing</h3>
+              <p>Provenance attestations and an SBOM for every binary, pinned CI, 31 nightly fuzz targets, and one in-house backend client.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>OpenSSF Scorecard, SHA-pinned Actions, least-privilege CI tokens, licence allow-list</li>
+                <li>Build-provenance attestations and CycloneDX SBOMs per binary</li>
+                <li>31 Go fuzz targets over every untrusted-input parser, run nightly</li>
+                <li>All backend access through one typed client with reliable session renewal and retries</li>
+                <li>12 bugs found and fixed while raising test coverage; project website and governance</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item agent platform joint" data-kind="agent platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-10">October 2026</time><span class="tag agent">Agent</span><span class="tag platform">Platform</span><span class="tag ver">v3.5.0</span></div>
+              <h3>Installer files for every OS</h3>
+              <p>Upload installers up to 4 GiB, and have them hashed on the server, verified on the device, and installed from the catalog, a device or a policy. Built jointly against one written contract.</p>
+              <details><summary>What shipped</summary><ul>
+                <li>Resumable uploads, server-side hashing, install-command templates per installer type</li>
+                <li>Agent downloads and verifies artifacts before the script runs</li>
+                <li>Capability negotiation and structured results (exit code, reboot required)</li>
+                <li>Reproducible builds, race detection in CI, published security assurance case</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item platform" data-kind="platform">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time datetime="2026-10">October 2026</time><span class="tag platform">Platform</span></div>
+              <h3>Remediation, backups and sign-in hardening</h3>
+              <p>One-click remediation from alerts, rebuilt backup &amp; restore (S3, SFTP, SMB), signed installer bundles and hardened sign-in.</p>
+            </article>
+          </li>
+
+          <li class="tl-now" id="now">
+            <div class="here"><span class="pulse" aria-hidden="true"></span>You are here <small>· October 2026 · <span data-version>v3.5.0</span></small></div>
+          </li>
+
+          <li class="tl-era"><span>Now · Q4 2026</span></li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q4 2026</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span></div>
+              <h3>Security hardening</h3>
+              <p>Every remote-action path integrity-protected before the platform's powers grow further.</p>
+              <details><summary>Scope</summary><ul>
+                <li>Agent credentials in the OS credential store (Windows, macOS Keychain), without cgo</li>
+                <li>Signed task execution: database access alone can't produce a runnable task</li>
+                <li>Installation self-check at startup, reported fleet-wide</li>
+              </ul><div class="exit"><b>Done when:</b> unsigned or tampered tasks are rejected and reported, and copied credentials are useless elsewhere.</div></details>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q4 2026</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span></div>
+              <h3>OS-native code signing</h3>
+              <p>Apple Developer ID signing and notarization, Windows Authenticode, and signed release tags. These are prerequisites for MDM package deployment and macOS privacy grants.</p>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q4 2026 → Q1 2027</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span><span class="tag platform">Platform</span></div>
+              <h3>Enrollment v1</h3>
+              <p>One generic signed package per OS (<code>.pkg</code>, <code>.msi</code>, <code>.deb</code>/<code>.rpm</code>) plus single-use enrollment tokens, deployable by MDM, GPO or any package tool.</p>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q4 2026 → Q1 2027</time><span class="tag planned">Planned</span><span class="tag platform">Platform</span></div>
+              <h3>Desired-state compliance</h3>
+              <p>Compliance checks and policies unified into one definition of "compliant" that is both measured and, later, enforced, with per-device evidence and a starter baseline.</p>
+              <details><summary>Starter baseline</summary><ul>
+                <li>Disk encryption, firewall, screen lock, OS updates within N days, EDR running, agent current</li>
+                <li>USB mass storage disabled or encrypted-only; no personal cloud-sync clients</li>
+                <li>Removable-drive encryption; MDM enrolled (macOS)</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Ongoing</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span></div>
+              <h3>Reliability &amp; project health</h3>
+              <p>Rollback when an update installs but won't start, coverage to 90%, OpenSSF Best Practices silver, SPDX headers.</p>
+            </article>
+          </li>
+
+          <li class="tl-era"><span>Next · Q1–Q2 2027</span></li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q1–Q2 2027</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span><span class="tag platform">Platform</span></div>
+              <h3>Enforcement with drift correction</h3>
+              <p>On Windows and Linux: if a setting drifts, it is detected and put back within one cycle, rolled out in rings, with a kill switch per check.</p>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>Q1–Q2 2027</time><span class="tag planned">Planned</span><span class="tag platform">Platform</span></div>
+              <h3>Native macOS MDM pilot</h3>
+              <p>Apple's built-in MDM, served by our own backend: FileVault with key escrow, passcode and firewall profiles, silent privacy grants for the agent, and agent deployment through MDM.</p>
+              <details><summary>Why MDM, and why macOS first</summary><ul>
+                <li>Since macOS 11, configuration profiles can't be installed silently except through MDM</li>
+                <li>On Windows and Linux the agent already enforces settings directly</li>
+                <li>Built in our existing TypeScript backend, with a permanent device-facing hostname</li>
+              </ul></details>
+            </article>
+          </li>
+
+          <li class="tl-era"><span>Later · H2 2027</span></li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>H2 2027</time><span class="tag planned">Planned</span><span class="tag platform">Platform</span></div>
+              <h3>MDM at scale</h3>
+              <p>Zero-touch enrollment through Apple Business Manager, Declarative Device Management for OS updates, hardware-attested device identities, and lock/erase behind just-in-time approval.</p>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>H2 2027</time><span class="tag planned">Planned</span><span class="tag agent">Agent</span></div>
+              <h3>DLP visibility</h3>
+              <p>USB and removable-media events, print auditing, and an opt-in data-at-rest scan that reports types and counts, never content.</p>
+            </article>
+          </li>
+
+          <li class="tl-item planned" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><time>H2 2027</time><span class="tag planned">Planned</span></div>
+              <h3>Independent security review</h3>
+              <p>An external review of the agent, updater, release pipeline and device-facing backend, plus a second maintainer for the agent repository.</p>
+            </article>
+          </li>
+
+          <li class="tl-era"><span>Parked, on purpose</span></li>
+
+          <li class="tl-item planned parked" data-kind="planned">
+            <span class="tl-dot"></span>
+            <article class="card tl-card spot">
+              <div class="tl-meta"><span class="tag parked">Parked</span></div>
+              <h3>Content-aware DLP, kernel drivers, browser extension</h3>
+              <p>High cost and fleet-wide crash risk, and they would break the single static binary. <a href="#decisions">Read why ↓</a></p>
+            </article>
+          </li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DECISIONS ============ -->
+  <section id="decisions" style="padding-top:40px">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Decisions, in the open</span>
+        <h2>What we build next, and what we <span class="grad">won't.</span></h2>
+        <p>A roadmap is only as good as the things it says no to. Both of these decisions are written up in full on the project wiki.</p>
+      </div>
+      <div class="grid c2 decide">
+        <article class="card spot reveal">
+          <span class="verdict go">● Building next</span>
+          <h3>Native MDM for macOS</h3>
+          <p style="color:var(--muted)">On Windows and Linux, an agent running as SYSTEM/root can enforce policy itself. macOS routes that authority through Apple's MDM protocol, so we're adding it to the backend we already run.</p>
+          <div class="cmp" role="table" aria-label="Who can enforce policy, per platform">
+            <div class="h" role="columnheader">Platform</div><div class="h" role="columnheader">Agent can enforce</div><div class="h" role="columnheader">Needs MDM</div>
+            <div class="k" role="cell">Windows</div><div role="cell"><span class="pill ok">Mostly yes</span></div><div role="cell"><span class="pill info">Optional</span></div>
+            <div class="k" role="cell">Linux</div><div role="cell"><span class="pill ok">Yes</span></div><div role="cell"><span class="pill info">No standard</span></div>
+            <div class="k" role="cell">macOS</div><div role="cell"><span class="pill warn">Mostly no</span></div><div role="cell"><span class="pill vio">Yes</span></div>
+          </div>
+          <p style="margin-top:18px"><a href="https://github.com/BrainStation-23/SentinelGo/wiki/MDM-Assessment">Read the MDM assessment →</a></p>
+        </article>
+        <article class="card spot reveal">
+          <span class="verdict no">● Deferred</span>
+          <h3>Content-aware DLP</h3>
+          <p style="color:var(--muted)">Most of DLP's real-world value comes cheap: USB control, encryption and posture, which are already on the roadmap. Real-time content blocking needs kernel drivers on Windows and macOS. That cost is high and the return is low.</p>
+          <div class="tiers" aria-label="DLP tiers: effort versus decision">
+            <div class="tier"><span class="t">0 · Posture</span><div class="bar"><i style="--w:10%"></i></div><span class="v" style="color:var(--ok)">DOING</span></div>
+            <div class="tier"><span class="t">1 · Visibility</span><div class="bar"><i style="--w:35%"></i></div><span class="v" style="color:var(--accent-2)">LATER</span></div>
+            <div class="tier"><span class="t">2 · OS controls</span><div class="bar"><i style="--w:40%"></i></div><span class="v" style="color:var(--ok)">DOING</span></div>
+            <div class="tier"><span class="t">3 · Blocking</span><div class="bar warn"><i style="--w:100%"></i></div><span class="v" style="color:var(--warn)">PARKED</span></div>
+          </div>
+          <p class="sub" style="margin-top:8px;color:var(--dim);font-size:12.5px">Bar length = relative engineering effort.</p>
+          <p style="margin-top:14px"><a href="https://github.com/BrainStation-23/SentinelGo/wiki/DLP-Assessment">Read the DLP assessment →</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ INSTALL ============ -->
+  <section id="install">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <span class="kicker">Get started</span>
+        <h2>Verify, install, done.</h2>
+        <p>Every device installs from a <strong>device bundle</strong> downloaded from your console. It holds the agent, a <code>config.json</code> with that device's credentials, the installers and <code>SHA256SUMS</code>. The installer puts the agent in place, installs the config and starts the service.</p>
+      </div>
+      <ol class="grid c3 install-steps">
+        <li class="card spot reveal"><h3>Download the bundle</h3><p>In the console, open the agent download, pick the OS and CPU architecture, and unzip the bundle on the device.</p></li>
+        <li class="card spot reveal"><h3>Verify it</h3><p>Check every file against <code>SHA256SUMS</code>. The installers also verify the agent binary themselves, and refuse to run without the checksum file.</p></li>
+        <li class="card spot reveal"><h3>Run the installer</h3><p>Use the terminal steps below, or double-click <code>install.command</code> (macOS), <code>install.bat</code> (Windows) or <code>sentinelgo-install.desktop</code> (Linux).</p></li>
+      </ol>
+      <div class="install-grid">
+        <div class="reveal">
+          <div class="ostabs" role="tablist" aria-label="Operating system">
+            <button class="ostab" role="tab" id="o-lin" aria-controls="c-lin" aria-selected="true"><svg class="i"><use href="#i-linux"/></svg>Linux</button>
+            <button class="ostab" role="tab" id="o-mac" aria-controls="c-mac" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-mac"/></svg>macOS</button>
+            <button class="ostab" role="tab" id="o-win" aria-controls="c-win" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-windows"/></svg>Windows</button>
+          </div>
+          <div class="code" role="tabpanel" id="c-lin" aria-labelledby="o-lin" data-label="Linux"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle</span>
+<span class="p">$ </span>sha256sum -c SHA256SUMS --ignore-missing
+
+<span class="c"># Installs to /opt/sentinelgo, adds config.json, starts systemd</span>
+<span class="p">$ </span>chmod +x install.sh
+<span class="p">$ </span>sudo ./install.sh
+
+<span class="c"># Confirm the service is running</span>
+<span class="p">$ </span>sudo ./install.sh status</code></pre></div>
+          <div class="code" role="tabpanel" id="c-mac" aria-labelledby="o-mac" data-label="macOS"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle</span>
+<span class="p">$ </span>shasum -a 256 -c SHA256SUMS --ignore-missing
+
+<span class="c"># Picks the right binary for this Mac, installs to</span>
+<span class="c"># /opt/sentinelgo, adds config.json, loads launchd</span>
+<span class="p">$ </span>chmod +x install.sh
+<span class="p">$ </span>sudo ./install.sh
+
+<span class="c"># Confirm the service is running</span>
+<span class="p">$ </span>sudo ./install.sh status</code></pre></div>
+          <div class="code" role="tabpanel" id="c-win" aria-labelledby="o-win" data-label="Windows"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle; compare each hash</span>
+<span class="c"># with its line in SHA256SUMS</span>
+<span class="p">PS&gt; </span>Get-FileHash .\install.bat -Algorithm SHA256
+<span class="p">PS&gt; </span>Get-FileHash .\sentinelgo-windows-amd64.exe -Algorithm SHA256
+
+<span class="c"># From an elevated prompt (or double-click: it asks</span>
+<span class="c"># for admin rights). Installs the agent and config.json</span>
+<span class="c"># and starts the Windows Service.</span>
+<span class="p">PS&gt; </span>.\install.bat</code></pre></div>
+          <p style="margin-top:14px;color:var(--muted);font-size:14.5px">Updating, uninstalling, provenance checks and troubleshooting: <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/installation-doc/INSTALLATION.md">INSTALLATION.md</a></p>
+        </div>
+        <div class="grid" style="align-content:start">
+          <div class="card spot reveal">
+            <div class="ico"><svg class="i"><use href="#i-eye"/></svg></div>
+            <h3>See what it collects, first</h3>
+            <p>Any release binary prints everything it would report, without a config, uploading nothing:</p>
+            <div class="code" style="margin-top:14px"><button class="copy" type="button">Copy</button><pre><code>./sentinelgo-linux-amd64 -debug-dump</code></pre></div>
+          </div>
+          <div class="card spot reveal">
+            <div class="ico"><svg class="i"><use href="#i-code"/></svg></div>
+            <h3>Build it yourself</h3>
+            <p>Requires Go 1.26+. Builds are reproducible, so you can compare your binary with the published checksums.</p>
+            <div class="code" style="margin-top:14px"><button class="copy" type="button">Copy</button><pre class="wrap-lines"><code>git clone https://github.com/BrainStation-23/SentinelGo.git
 cd SentinelGo
-make build     # dev build -> bin/sentinelgo
-make test      # run the test suite</code></pre></div>
-      </div>
-    </div>
-  </section>
-
-  <section id="security">
-    <div class="wrap">
-      <div class="section-head">
-        <h2>Security &amp; privacy</h2>
-        <p>An agent that runs with elevated privileges on every machine has to earn trust. Here is how SentinelGo does it.</p>
-      </div>
-      <div class="grid c2">
-        <div class="card">
-          <h3 style="margin-top:0">In the agent</h3>
-          <ul>
-            <li>All backend traffic is HTTPS with a per-agent JWT obtained at runtime. No credentials are embedded in the binary.</li>
-            <li>Account inventory captures usernames and groups only, never credential material.</li>
-            <li>PII and credential-like patterns are redacted from task output before upload.</li>
-            <li>Updates are signed and verified before the binary is replaced.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3 style="margin-top:0">In the project</h3>
-          <ul>
-            <li>Every release ships a <code>SHA256SUMS</code> file; installers refuse to run without it.</li>
-            <li>CI runs CodeQL, gosec, govulncheck, Trivy and SonarCloud on every change.</li>
-            <li>Parsers of untrusted input are fuzzed nightly.</li>
-            <li>Vulnerabilities are reported privately. See the <a href="https://github.com/BrainStation-23/SentinelGo/security/policy">security policy</a>.</li>
-          </ul>
+make build        <span class="c"># -> bin/sentinelgo</span>
+make test
+make verify-cross <span class="c"># every OS/arch, cgo off</span></code></pre></div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <section class="alt" id="community">
+  <!-- ============ FAQ ============ -->
+  <section id="faq" style="padding-top:40px">
     <div class="wrap">
-      <div class="section-head">
-        <h2>Get involved</h2>
-        <p>SentinelGo is open source under the Apache 2.0 license. Bug reports, feature requests, documentation and code are all welcome.</p>
+      <div class="section-head center reveal">
+        <span class="kicker">FAQ</span>
+        <h2>Questions, answered straight.</h2>
       </div>
-      <div class="grid c3 links">
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml">Report a bug →</a>
-          <p>Found something broken? Open an issue using the bug report template.</p>
+      <div class="faq reveal">
+        <details><summary>Is SentinelGo an MDM?</summary><div class="a">
+          <p>Today it is agent-based endpoint management: inventory, posture, CVEs, compliance, policies, workflows, software deployment and remote actions on Windows, macOS and Linux. On Windows and Linux the agent can apply settings directly.</p>
+          <p>Native Apple MDM is on the <a href="#roadmap">roadmap</a> as the next major step, because macOS only allows certain controls (configuration profiles, privacy grants, FileVault escrow) through MDM.</p></div></details>
+        <details><summary>Does it install a kernel driver or system extension?</summary><div class="a">
+          <p>No. The agent is a user-space service written in pure Go with cgo disabled. That's a deliberate rule enforced in CI: it keeps the binary static, cross-compilable and free of the crash risk that comes with kernel code.</p></div></details>
+        <details><summary>What data does the agent collect?</summary><div class="a">
+          <p>Hardware and software inventory, OS services, network configuration, security posture and OS audit logs. It does not collect credential material, and it redacts credential-like and PII patterns from task output before upload.</p>
+          <p>Run <code>-debug-dump</code> to print everything the agent would send, with nothing uploaded.</p></div></details>
+        <details><summary>How are updates kept safe?</summary><div class="a">
+          <p>Releases are built reproducibly, signed with Ed25519, listed in <code>SHA256SUMS</code>, and shipped with provenance attestations and an SBOM. The agent verifies the signature and checksum before an atomic swap, and refuses unsigned binaries.</p></div></details>
+        <details><summary>Which platforms are supported?</summary><div class="a">
+          <p>Windows (amd64), macOS (Apple silicon and Intel) and Linux (amd64 and arm64), running as a Windows Service, launchd daemon or systemd unit.</p></div></details>
+        <details><summary>How do I report a security issue?</summary><div class="a">
+          <p>Please report it privately through the <a href="https://github.com/BrainStation-23/SentinelGo/security/policy">security policy</a>, not as a public issue.</p></div></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ COMMUNITY / CTA ============ -->
+  <section id="community" style="padding-top:40px;padding-bottom:0">
+    <div class="wrap">
+      <div class="final reveal">
+        <h2>Help us build the endpoint agent <span class="grad">you'd actually trust.</span></h2>
+        <p>The agent is open source under Apache 2.0. Bug reports, feature requests, docs and code are all welcome.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/BrainStation-23/SentinelGo"><svg class="i"><use href="#i-github"/></svg>Star on GitHub</a>
+          <a class="btn" href="https://github.com/BrainStation-23/SentinelGo/blob/main/CONTRIBUTING.md">Contribute <svg class="i"><use href="#i-arrow"/></svg></a>
         </div>
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/issues/new?template=feature_request.yml">Request a feature →</a>
-          <p>Tell us what would make SentinelGo more useful for your fleet.</p>
-        </div>
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/discussions">Ask a question →</a>
-          <p>Start a discussion for questions, ideas and help with deployments.</p>
-        </div>
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/CONTRIBUTING.md">Contribute code →</a>
-          <p>Development workflow, commit style and the pull request checklist.</p>
-        </div>
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/security/policy">Report a vulnerability →</a>
-          <p>Please report security issues privately, not as public issues.</p>
-        </div>
-        <div class="card">
-          <a href="https://github.com/BrainStation-23/SentinelGo/tree/main/docs">Read the docs →</a>
-          <p>Architecture, modules, the audit-log pipeline and the update flow.</p>
-        </div>
+      </div>
+      <div class="grid c3 links" style="margin-top:18px">
+        <div class="card spot reveal"><a class="go" href="https://github.com/BrainStation-23/SentinelGo/issues/new?template=bug_report.yml">Report a bug →</a><p>Found something broken? Use the bug report template.</p></div>
+        <div class="card spot reveal"><a class="go" href="https://github.com/BrainStation-23/SentinelGo/issues/new?template=feature_request.yml">Request a feature →</a><p>Tell us what would make SentinelGo more useful for your fleet.</p></div>
+        <div class="card spot reveal"><a class="go" href="https://github.com/BrainStation-23/SentinelGo/wiki">Read the wiki →</a><p>Roadmap, design decisions, security process and how we work.</p></div>
       </div>
     </div>
   </section>
@@ -515,30 +996,34 @@ make test      # run the test suite</code></pre></div>
 <footer>
   <div class="wrap">
     <div>
-      © SentinelGo contributors · Licensed under <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/LICENSE">Apache 2.0</a><br>
-      Sponsored by <a href="https://brainstation-23.com">BrainStation-23</a>
+      <a class="brand" href="#top" style="margin-bottom:12px">
+        <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.4 5.1 13.4 12 15 6.9-1.6 12-7.6 12-15V7z" fill="url(#bg1)"/><path d="m11 16 3.5 3.5L21.5 12" stroke="#060a11" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        SentinelGo
+      </a>
+      <p>Every endpoint. Seen, secured, and kept that way.</p>
+      <p class="fine">© SentinelGo contributors · Agent licensed under <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/LICENSE">Apache 2.0</a><br>Sponsored by <a href="https://brainstation-23.com">BrainStation-23</a></p>
     </div>
-    <nav aria-label="Footer">
-      <a href="https://github.com/BrainStation-23/SentinelGo">GitHub</a>
-      <a href="https://github.com/BrainStation-23/SentinelGo/releases">Releases</a>
-      <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/CODE_OF_CONDUCT.md">Code of Conduct</a>
-      <a href="https://github.com/BrainStation-23/SentinelGo/security/policy">Security</a>
-    </nav>
+    <div><h4>Project</h4><ul>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo">Source</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/releases">Releases</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+    </ul></div>
+    <div><h4>Docs</h4><ul>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/wiki">Wiki</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/tree/main/docs">Architecture docs</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/installation-doc/INSTALLATION.md">Installation</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/docs/assurance-case.md">Assurance case</a></li>
+    </ul></div>
+    <div><h4>Community</h4><ul>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/GOVERNANCE.md">Governance</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/blob/main/CODE_OF_CONDUCT.md">Code of Conduct</a></li>
+      <li><a href="https://github.com/BrainStation-23/SentinelGo/security/policy">Security policy</a></li>
+    </ul></div>
   </div>
 </footer>
 
-<script>
-  document.querySelectorAll('.copy').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var text = btn.parentElement.querySelector('pre').innerText;
-      navigator.clipboard.writeText(text).then(function () {
-        btn.textContent = 'Copied';
-        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
-      }, function () {
-        btn.textContent = 'Press Ctrl+C';
-      });
-    });
-  });
-</script>
+<script src="assets/site.js" defer></script>
 </body>
 </html>
