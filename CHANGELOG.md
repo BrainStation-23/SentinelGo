@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.5.0] - 2026-10-13
+
 ### Added
 
 - `docs/assurance-case.md`: the security assurance case (requirements, threat model, trust boundaries, secure-design principles and the weaknesses countered).
@@ -301,7 +303,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...HEAD
+[v3.5.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.4.0...v3.5.0
 [v3.4.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.3.0...v3.4.0
 [v3.3.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.2.8...v3.3.0
 [v3.2.8]: https://github.com/BrainStation-23/SentinelGo/compare/v3.2.7...v3.2.8
