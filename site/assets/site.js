@@ -4,7 +4,8 @@
   'use strict';
 
   var doc = document.documentElement;
-  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var reduceMotion = motionQuery.matches;
 
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
@@ -244,7 +245,7 @@
     var W = 0, H = 0, dpr = 1, cx = 0, cy = 0, R = 0;
     var C = {};
     var nodes = [], packets = [], rings = [];
-    var running = false, visible = true, last = 0, nextBeat = 0, nextIncident = 1600;
+    var running = false, visible = true, last = 0, nextBeat = 0, nextIncident = 1600, rafId = 0;
 
     var INCIDENTS = [
       { host: 'win-fin-017', bad: 'Firewall disabled', fix: 'Firewall re-enabled by native task' },
@@ -452,11 +453,21 @@
       rings = rings.filter(function (r) { r.t += dt / 900; return r.t < 1; });
 
       draw(now);
-      requestAnimationFrame(tick);
+      rafId = requestAnimationFrame(tick);
     }
 
-    function start() { if (running || reduceMotion || !visible || document.hidden) return; running = true; last = 0; requestAnimationFrame(tick); }
-    function stop() { running = false; }
+    // Exactly one frame is ever pending: stop() cancels it, so resuming after a
+    // hidden tab can't leave a second loop running alongside the new one.
+    function start() { if (running || reduceMotion || !visible || document.hidden) return; running = true; last = 0; rafId = requestAnimationFrame(tick); }
+    function stop() { running = false; cancelAnimationFrame(rafId); rafId = 0; }
+
+    function staticFrame() {
+      // One calm frame with a few packets in flight, for reduced motion.
+      nodes.forEach(place);
+      packets = []; rings = [];
+      for (var i = 0; i < 14; i++) packets.push({ node: nodes[(i * 7) % nodes.length], dir: 'up', t: (i % 5) / 5 + .1, color: C.accent });
+      draw(performance.now());
+    }
 
     build(); refreshColors(); resize();
     window.addEventListener('resize', resize);
@@ -465,15 +476,12 @@
     if ('IntersectionObserver' in window) {
       new IntersectionObserver(function (e) { visible = e[0].isIntersecting; if (visible) start(); else stop(); }).observe(canvas);
     }
-    if (reduceMotion) {
-      // One calm, static frame with a few packets in flight.
-      nodes.forEach(place);
-      for (var i = 0; i < 14; i++) { var p = { node: nodes[(i * 7) % nodes.length], dir: 'up', t: (i % 5) / 5 + .1, color: C.accent }; packets.push(p); }
-      nodes[3].state = 'bad';
-      draw(performance.now());
-    } else {
-      start();
-    }
+    // Follow the reduced-motion setting live, not just at page load.
+    motionQuery.addEventListener('change', function (m) {
+      reduceMotion = m.matches;
+      if (reduceMotion) { stop(); staticFrame(); } else { packets = []; start(); }
+    });
+    if (reduceMotion) staticFrame(); else start();
     return { refreshColors: refreshColors };
   })();
 
