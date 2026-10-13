@@ -113,6 +113,11 @@ header.nav.scrolled {
 .nav-links a { display: block; color: var(--muted); font-size: 14.5px; font-weight: 500; padding: 8px 12px; border-radius: 9px; }
 .nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--surface-3); text-decoration: none; }
 .nav-actions { display: flex; align-items: center; gap: 8px; }
+.nav .wrap { position: relative; }
+.nav .menu-btn { display: none; }
+.menu-btn .close-i { display: none; }
+header.nav.open .menu-btn .open-i { display: none; }
+header.nav.open .menu-btn .close-i { display: block; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--surface); color: var(--muted); cursor: pointer;
@@ -486,6 +491,7 @@ section { padding: 120px 0; position: relative; }
 .code .c { color: #6b7a8c; } .code .p { color: #00d4aa; user-select: none; } .code .s { color: #f5b84b; }
 .copy { position: absolute; top: 12px; right: 12px; cursor: pointer; background: #121a26; color: #c6d0dc; border: 1px solid #2a3544; border-radius: 8px; font: 600 12px var(--font-sans); padding: 5px 11px; }
 .copy:hover { border-color: #00d4aa; color: #fff; }
+.code pre.wrap-lines { white-space: pre-wrap; overflow-wrap: anywhere; }
 .install-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; }
 .install-grid > * { min-width: 0; }
 
@@ -517,14 +523,46 @@ footer a { color: var(--muted); }
 footer a:hover { color: var(--text); }
 footer .fine { margin-top: 14px; color: var(--dim); font-size: 13px; }
 
-/* ---------- Reveal ---------- */
-.reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s cubic-bezier(.2,.8,.2,1), transform .7s cubic-bezier(.2,.8,.2,1); }
-.reveal.in { opacity: 1; transform: none; }
-.no-js .reveal { opacity: 1; transform: none; }
+/* ---------- Reveal ----------
+   Content is visible by default. site.js adds .js-ready to <html> only once its
+   observer is running, so a failed or blocked script never hides anything. */
+.js-ready .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s cubic-bezier(.2,.8,.2,1), transform .7s cubic-bezier(.2,.8,.2,1); }
+.js-ready .reveal.in { opacity: 1; transform: none; }
+
+/* ---------- Without JavaScript ----------
+   Tabs can't switch, so show every panel stacked and drop the tab buttons. */
+html:not(.js-ready) [role="tablist"] { display: none; }
+html:not(.js-ready) .explorer { grid-template-columns: 1fr; }
+html:not(.js-ready) .panel + .panel { margin-top: 18px; }
+html:not(.js-ready) .code[data-label] + .code[data-label] { margin-top: 18px; }
+html:not(.js-ready) .code[data-label]::before { content: attr(data-label); display: block; padding: 14px 22px 0; font: 600 13px var(--font-sans); color: #c6d0dc; }
+html:not(.js-ready) .nav .menu-btn, html:not(.js-ready) .theme-toggle, html:not(.js-ready) .copy { display: none; }
+@media (max-width: 1080px) {
+  html:not(.js-ready) .nav .wrap { flex-wrap: wrap; height: auto; padding-block: 12px; row-gap: 6px; }
+  html:not(.js-ready) .nav-links {
+    display: flex; position: static; order: 3; width: 100%; flex-direction: row; overflow-x: auto;
+    padding: 0; border: 0; background: none; box-shadow: none; scrollbar-width: none;
+  }
+  html:not(.js-ready) .nav-links a { white-space: nowrap; padding: 8px 12px; font-size: 14.5px; }
+}
+html:not(.js-ready) .code pre { padding-right: 22px; }
+
+/* ---------- Install steps ---------- */
+.install-steps { list-style: none; margin: 0 0 18px; padding: 0; counter-reset: is; }
+.install-steps .card { padding: 22px; }
+.install-steps h3 { margin-top: 0; font-size: 17px; }
+.install-steps .card::after { counter-increment: is; content: "0" counter(is); position: absolute; top: 18px; right: 20px; font: 600 12px var(--font-mono); color: var(--dim); }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1080px) {
-  .nav-links { display: none; }
+  .nav .menu-btn { display: inline-grid; }
+  .nav-links {
+    display: none; position: absolute; top: calc(100% + 6px); left: 16px; right: 16px; flex-direction: column; gap: 2px;
+    padding: 8px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--surface); box-shadow: var(--shadow);
+  }
+  .nav-links a { padding: 12px 14px; font-size: 16px; }
+  header.nav.open .nav-links { display: flex; }
+  header.nav.open { background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom-color: var(--border); }
   .nav-actions { margin-left: auto; }
   .stats .wrap { grid-template-columns: repeat(3, 1fr); }
   .stat:nth-child(4) { border-left: 0; }
@@ -575,5 +613,5 @@ footer .fine { margin-top: 14px; color: var(--dim); font-size: 13px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
-  .reveal { opacity: 1; transform: none; }
+  .js-ready .reveal { opacity: 1; transform: none; }
 }

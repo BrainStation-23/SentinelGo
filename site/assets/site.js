@@ -44,6 +44,24 @@
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('resize', function () { measureNow(); onScroll(); });
 
+  /* ---------- Mobile section menu ---------- */
+  var menuBtn = $('.menu-btn');
+  var menu = $('#nav-menu');
+  function setMenu(open, refocus) {
+    nav.classList.toggle('open', open);
+    menuBtn.setAttribute('aria-expanded', String(open));
+    menuBtn.setAttribute('aria-label', open ? 'Close section menu' : 'Open section menu');
+    if (open) { var first = $('a', menu); if (first) first.focus(); }
+    else if (refocus) menuBtn.focus();
+  }
+  if (menuBtn && menu) {
+    menuBtn.addEventListener('click', function () { setMenu(!nav.classList.contains('open')); });
+    menu.addEventListener('click', function (e) { if (e.target.closest('a')) setMenu(false); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && nav.classList.contains('open')) setMenu(false, true); });
+    document.addEventListener('click', function (e) { if (nav.classList.contains('open') && !nav.contains(e.target)) setMenu(false); });
+    window.matchMedia('(min-width: 1081px)').addEventListener('change', function (m) { if (m.matches) setMenu(false); });
+  }
+
   /* Highlight the nav link of the section in view. */
   var navLinks = $$('.nav-links a');
   if ('IntersectionObserver' in window) {
@@ -59,6 +77,8 @@
   /* ---------- Reveal on scroll ---------- */
   var reveals = $$('.reveal');
   if ('IntersectionObserver' in window && !reduceMotion) {
+    // Anything already on screen is shown at once, so it doesn't blink out and back.
+    reveals.forEach(function (el) { if (el.getBoundingClientRect().top < window.innerHeight) el.classList.add('in'); });
     var revObs = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
         if (!e.isIntersecting) return;
@@ -68,7 +88,7 @@
         revObs.unobserve(e.target);
       });
     }, { rootMargin: '0px 0px -8% 0px' });
-    reveals.forEach(function (el) { revObs.observe(el); });
+    reveals.forEach(function (el) { if (!el.classList.contains('in')) revObs.observe(el); });
   } else {
     reveals.forEach(function (el) { el.classList.add('in'); });
   }
@@ -95,7 +115,7 @@
   /* ---------- Tabs (ARIA, keyboard) ---------- */
   function setupTabs(list) {
     var tabs = $$('[role="tab"]', list);
-    function select(tab, focus) {
+    function select(tab, focus, quiet) {
       tabs.forEach(function (t) {
         var on = t === tab;
         t.setAttribute('aria-selected', String(on));
@@ -103,10 +123,12 @@
         var p = document.getElementById(t.getAttribute('aria-controls'));
         if (!p) return;
         p.hidden = !on;
-        if (on && p.classList.contains('panel')) { p.classList.remove('anim'); void p.offsetWidth; p.classList.add('anim'); }
+        if (on && !quiet && p.classList.contains('panel')) { p.classList.remove('anim'); void p.offsetWidth; p.classList.add('anim'); }
       });
       if (focus) tab.focus();
     }
+    var initial = tabs.filter(function (t) { return t.getAttribute('aria-selected') === 'true'; })[0] || tabs[0];
+    if (initial) select(initial, false, true);
     tabs.forEach(function (t, i) {
       t.addEventListener('click', function () { select(t); });
       t.addEventListener('keydown', function (e) {
@@ -144,17 +166,22 @@
 
   /* ---------- Latest release (falls back to the static text) ---------- */
   (function () {
+    var TTL = 60 * 60 * 1000;
     function apply(tag) { $$('[data-version]').forEach(function (el) { el.textContent = tag; }); }
     var cached = null;
-    try { cached = sessionStorage.getItem('sg-latest'); } catch (e) {}
-    if (cached) { apply(cached); return; }
+    try { cached = JSON.parse(localStorage.getItem('sg-latest') || 'null'); } catch (e) {}
+    if (cached && typeof cached.tag === 'string' && /^v\d+\.\d+\.\d+$/.test(cached.tag)) {
+      apply(cached.tag);
+      // A timestamp in the future (clock moved back) counts as stale.
+      if (typeof cached.t === 'number' && cached.t <= Date.now() && Date.now() - cached.t < TTL) return;
+    }
     if (!window.fetch) return;
     fetch('https://api.github.com/repos/BrainStation-23/SentinelGo/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j || !/^v\d+\.\d+\.\d+$/.test(j.tag_name || '')) return;
         apply(j.tag_name);
-        try { sessionStorage.setItem('sg-latest', j.tag_name); } catch (e) {}
+        try { localStorage.setItem('sg-latest', JSON.stringify({ tag: j.tag_name, t: Date.now() })); } catch (e) {}
       })
       .catch(function () {});
   })();
@@ -450,5 +477,6 @@
     return { refreshColors: refreshColors };
   })();
 
+  doc.classList.add('js-ready');
   onScroll();
 })();
