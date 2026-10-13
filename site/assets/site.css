@@ -79,6 +79,7 @@ p { margin: 0; }
 .wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
 .skip { position: absolute; left: -999px; top: 12px; z-index: 100; background: var(--surface); padding: 8px 14px; border-radius: 8px; }
 .skip:focus { left: 16px; }
+.anchor { display: block; height: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* Page-wide grid texture */
