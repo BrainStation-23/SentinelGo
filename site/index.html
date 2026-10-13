@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="no-js">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,7 +18,6 @@
 <script>
   // Apply the saved theme before first paint to avoid a flash.
   (function () {
-    document.documentElement.classList.remove('no-js');
     try { var t = localStorage.getItem('sg-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
   })();
 </script>
@@ -28,6 +27,8 @@
   <defs>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/></symbol>
     <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
@@ -73,7 +74,7 @@
       SentinelGo
       <span class="ver" data-version>v3.5.0</span>
     </a>
-    <ul class="nav-links">
+    <ul class="nav-links" id="nav-menu">
       <li><a href="#platform">Platform</a></li>
       <li><a href="#how">How it works</a></li>
       <li><a href="#trust">Trust</a></li>
@@ -82,6 +83,9 @@
       <li><a href="#faq">FAQ</a></li>
     </ul>
     <div class="nav-actions">
+      <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="nav-menu" aria-label="Open section menu">
+        <svg class="i open-i"><use href="#i-menu"/></svg><svg class="i close-i"><use href="#i-x"/></svg>
+      </button>
       <button class="icon-btn theme-toggle" type="button" aria-label="Toggle colour theme">
         <svg class="i moon"><use href="#i-moon"/></svg><svg class="i sun"><use href="#i-sun"/></svg>
       </button>
@@ -223,7 +227,7 @@
           </div>
 
           <!-- Posture -->
-          <div class="card panel" role="tabpanel" id="p-pos" aria-labelledby="t-pos" hidden>
+          <div class="card panel" role="tabpanel" id="p-pos" aria-labelledby="t-pos">
             <div>
               <h3>See risk before it becomes an incident.</h3>
               <p class="desc">Posture and vulnerability data, cross-checked against public sources.</p>
@@ -255,7 +259,7 @@
           </div>
 
           <!-- Compliance -->
-          <div class="card panel" role="tabpanel" id="p-cmp" aria-labelledby="t-cmp" hidden>
+          <div class="card panel" role="tabpanel" id="p-cmp" aria-labelledby="t-cmp">
             <div>
               <h3>Compliance you define, evidence you can show.</h3>
               <p class="desc">Checks are configuration, not code: categories, severities, evidence rules and version operators, managed in the console.</p>
@@ -280,7 +284,7 @@
           </div>
 
           <!-- Policies -->
-          <div class="card panel" role="tabpanel" id="p-pol" aria-labelledby="t-pol" hidden>
+          <div class="card panel" role="tabpanel" id="p-pol" aria-labelledby="t-pol">
             <div>
               <h3>Automate the boring, recurring work.</h3>
               <p class="desc">A visual policy editor and a drag-and-drop workflow builder for joiner/leaver and custom IT flows.</p>
@@ -310,7 +314,7 @@
           </div>
 
           <!-- Remote actions -->
-          <div class="card panel" role="tabpanel" id="p-act" aria-labelledby="t-act" hidden>
+          <div class="card panel" role="tabpanel" id="p-act" aria-labelledby="t-act">
             <div>
               <h3>Act on one device or a thousand.</h3>
               <p class="desc">PowerShell, Bash and shell scripts, reusable templates with variables, and built-in native tasks.</p>
@@ -338,7 +342,7 @@
           </div>
 
           <!-- Software -->
-          <div class="card panel" role="tabpanel" id="p-sw" aria-labelledby="t-sw" hidden>
+          <div class="card panel" role="tabpanel" id="p-sw" aria-labelledby="t-sw">
             <div>
               <h3>Ship software the native way.</h3>
               <p class="desc">A curated catalog across eight package managers, plus your own installer files.</p>
@@ -366,7 +370,7 @@
           </div>
 
           <!-- Alerts -->
-          <div class="card panel" role="tabpanel" id="p-alr" aria-labelledby="t-alr" hidden>
+          <div class="card panel" role="tabpanel" id="p-alr" aria-labelledby="t-alr">
             <div>
               <h3>From alert to fixed, in one click.</h3>
               <p class="desc">Rules built from device state, hardware, software and services, with a gallery of enterprise templates.</p>
@@ -397,7 +401,7 @@
           </div>
 
           <!-- Access -->
-          <div class="card panel" role="tabpanel" id="p-acc" aria-labelledby="t-acc" hidden>
+          <div class="card panel" role="tabpanel" id="p-acc" aria-labelledby="t-acc">
             <div>
               <h3>Least privilege, with a paper trail.</h3>
               <p class="desc">Enterprise access control for the people who manage the fleet.</p>
@@ -874,8 +878,13 @@
       <div class="section-head reveal">
         <span class="kicker">Get started</span>
         <h2>Verify, install, done.</h2>
-        <p>Download the device bundle from your console, or grab a release from <a href="https://github.com/BrainStation-23/SentinelGo/releases/latest">GitHub Releases</a>. Every file is listed in <code>SHA256SUMS</code>, and the installers refuse to run without it.</p>
+        <p>Every device installs from a <strong>device bundle</strong> downloaded from your console. It holds the agent, a <code>config.json</code> with that device's credentials, the installers and <code>SHA256SUMS</code>. The installer puts the agent in place, installs the config and starts the service.</p>
       </div>
+      <ol class="grid c3 install-steps">
+        <li class="card spot reveal"><h3>Download the bundle</h3><p>In the console, open the agent download, pick the OS and CPU architecture, and unzip the bundle on the device.</p></li>
+        <li class="card spot reveal"><h3>Verify it</h3><p>Check every file against <code>SHA256SUMS</code>. The installers also verify the agent binary themselves, and refuse to run without the checksum file.</p></li>
+        <li class="card spot reveal"><h3>Run the installer</h3><p>Use the terminal steps below, or double-click <code>install.command</code> (macOS), <code>install.bat</code> (Windows) or <code>sentinelgo-install.desktop</code> (Linux).</p></li>
+      </ol>
       <div class="install-grid">
         <div class="reveal">
           <div class="ostabs" role="tablist" aria-label="Operating system">
@@ -883,42 +892,53 @@
             <button class="ostab" role="tab" id="o-mac" aria-controls="c-mac" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-mac"/></svg>macOS</button>
             <button class="ostab" role="tab" id="o-win" aria-controls="c-win" aria-selected="false" tabindex="-1"><svg class="i"><use href="#i-windows"/></svg>Windows</button>
           </div>
-          <div class="code" role="tabpanel" id="c-lin" aria-labelledby="o-lin"><button class="copy" type="button">Copy</button><pre><code><span class="c"># Verify the download against the published checksums</span>
+          <div class="code" role="tabpanel" id="c-lin" aria-labelledby="o-lin" data-label="Linux"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle</span>
 <span class="p">$ </span>sha256sum -c SHA256SUMS --ignore-missing
-<span class="p">$ </span>chmod +x sentinelgo-linux-amd64
 
-<span class="c"># Install and start as a systemd service</span>
-<span class="p">$ </span>sudo ./sentinelgo-linux-amd64 -install
+<span class="c"># Installs to /opt/sentinelgo, adds config.json, starts systemd</span>
+<span class="p">$ </span>chmod +x install.sh
+<span class="p">$ </span>sudo ./install.sh
 
-<span class="c"># See exactly what it collects, without uploading</span>
-<span class="p">$ </span>sudo ./sentinelgo-linux-amd64 -debug-dump</code></pre></div>
-          <div class="code" role="tabpanel" id="c-mac" aria-labelledby="o-mac" hidden><button class="copy" type="button">Copy</button><pre><code><span class="c"># Apple silicon shown; use darwin-amd64 on Intel</span>
+<span class="c"># Confirm the service is running</span>
+<span class="p">$ </span>sudo ./install.sh status</code></pre></div>
+          <div class="code" role="tabpanel" id="c-mac" aria-labelledby="o-mac" data-label="macOS"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle</span>
 <span class="p">$ </span>shasum -a 256 -c SHA256SUMS --ignore-missing
-<span class="p">$ </span>chmod +x sentinelgo-darwin-arm64
 
-<span class="c"># Install and start as a launchd daemon</span>
-<span class="p">$ </span>sudo ./sentinelgo-darwin-arm64 -install
+<span class="c"># Picks the right binary for this Mac, installs to</span>
+<span class="c"># /opt/sentinelgo, adds config.json, loads launchd</span>
+<span class="p">$ </span>chmod +x install.sh
+<span class="p">$ </span>sudo ./install.sh
 
-<span class="c"># Or double-click install.command from the device bundle</span></code></pre></div>
-          <div class="code" role="tabpanel" id="c-win" aria-labelledby="o-win" hidden><button class="copy" type="button">Copy</button><pre><code><span class="c"># In an elevated PowerShell</span>
+<span class="c"># Confirm the service is running</span>
+<span class="p">$ </span>sudo ./install.sh status</code></pre></div>
+          <div class="code" role="tabpanel" id="c-win" aria-labelledby="o-win" data-label="Windows"><button class="copy" type="button">Copy</button><pre><code><span class="c"># In the unzipped device bundle; compare each hash</span>
+<span class="c"># with its line in SHA256SUMS</span>
+<span class="p">PS&gt; </span>Get-FileHash .\install.bat -Algorithm SHA256
 <span class="p">PS&gt; </span>Get-FileHash .\sentinelgo-windows-amd64.exe -Algorithm SHA256
-<span class="c"># compare with the matching line in SHA256SUMS</span>
 
-<span class="c"># Install and start as a Windows Service</span>
-<span class="p">PS&gt; </span>.\sentinelgo-windows-amd64.exe -install
-
-<span class="c"># Or run install.bat from the device bundle</span></code></pre></div>
-          <p style="margin-top:14px;color:var(--muted);font-size:14.5px">Full per-OS walkthrough: <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/installation-doc/INSTALLATION.md">INSTALLATION.md</a></p>
+<span class="c"># From an elevated prompt (or double-click: it asks</span>
+<span class="c"># for admin rights). Installs the agent and config.json</span>
+<span class="c"># and starts the Windows Service.</span>
+<span class="p">PS&gt; </span>.\install.bat</code></pre></div>
+          <p style="margin-top:14px;color:var(--muted);font-size:14.5px">Updating, uninstalling, provenance checks and troubleshooting: <a href="https://github.com/BrainStation-23/SentinelGo/blob/main/installation-doc/INSTALLATION.md">INSTALLATION.md</a></p>
         </div>
-        <div class="card spot reveal">
-          <div class="ico"><svg class="i"><use href="#i-code"/></svg></div>
-          <h3>Build it yourself</h3>
-          <p>Requires Go 1.26+. Builds are reproducible, so you can compare your binary with the published checksums.</p>
-          <div class="code" style="margin-top:14px"><button class="copy" type="button">Copy</button><pre><code>git clone https://github.com/BrainStation-23/SentinelGo.git
+        <div class="grid" style="align-content:start">
+          <div class="card spot reveal">
+            <div class="ico"><svg class="i"><use href="#i-eye"/></svg></div>
+            <h3>See what it collects, first</h3>
+            <p>Any release binary prints everything it would report, without a config, uploading nothing:</p>
+            <div class="code" style="margin-top:14px"><button class="copy" type="button">Copy</button><pre><code>./sentinelgo-linux-amd64 -debug-dump</code></pre></div>
+          </div>
+          <div class="card spot reveal">
+            <div class="ico"><svg class="i"><use href="#i-code"/></svg></div>
+            <h3>Build it yourself</h3>
+            <p>Requires Go 1.26+. Builds are reproducible, so you can compare your binary with the published checksums.</p>
+            <div class="code" style="margin-top:14px"><button class="copy" type="button">Copy</button><pre class="wrap-lines"><code>git clone https://github.com/BrainStation-23/SentinelGo.git
 cd SentinelGo
 make build        <span class="c"># -> bin/sentinelgo</span>
 make test
 make verify-cross <span class="c"># every OS/arch, cgo off</span></code></pre></div>
+          </div>
         </div>
       </div>
     </div>
