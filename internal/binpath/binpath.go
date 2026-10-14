@@ -41,6 +41,14 @@ var knownPaths = func() map[string][]string {
 		"codesign":        {"/usr/bin/codesign"},
 		"spctl":           {"/usr/sbin/spctl"},
 		"system_profiler": {"/usr/sbin/system_profiler"},
+		"defaults":        {"/usr/bin/defaults"},
+		"dscl":            {"/usr/bin/dscl"},
+		"plutil":          {"/usr/bin/plutil"},
+		"pmset":           {"/usr/bin/pmset"},
+		"pwpolicy":        {"/usr/bin/pwpolicy"},
+		"sysadminctl":     {"/usr/sbin/sysadminctl"},
+		"systemsetup":     {"/usr/sbin/systemsetup"},
+		"tmutil":          {"/usr/bin/tmutil"},
 
 		// Linux
 		"systemctl":  {"/usr/bin/systemctl", "/bin/systemctl"},
@@ -53,12 +61,28 @@ var knownPaths = func() map[string][]string {
 		"sudo":       {"/usr/bin/sudo"},
 		"env":        {"/usr/bin/env", "/bin/env"},
 
+		// Linux compliance probes (osinfo/security, osinfo/users)
+		"auditctl":         {"/usr/sbin/auditctl", "/sbin/auditctl"},
+		"chronyc":          {"/usr/bin/chronyc", "/bin/chronyc"},
+		"gsettings":        {"/usr/bin/gsettings", "/bin/gsettings"},
+		"lastlog":          {"/usr/bin/lastlog", "/bin/lastlog"},
+		"lastlog2":         {"/usr/bin/lastlog2", "/bin/lastlog2"},
+		"loginctl":         {"/usr/bin/loginctl", "/bin/loginctl"},
+		"needrestart":      {"/usr/sbin/needrestart", "/sbin/needrestart"},
+		"needs-restarting": {"/usr/bin/needs-restarting", "/bin/needs-restarting"},
+		"ntpq":             {"/usr/bin/ntpq", "/usr/sbin/ntpq"},
+		"runuser":          {"/usr/sbin/runuser", "/sbin/runuser", "/usr/bin/runuser"},
+		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
+
 		// Linux + macOS (candidates cover both; order doesn't matter since
 		// only one OS's paths will ever exist on a given host)
 		"bash":    {"/bin/bash", "/usr/bin/bash"},
 		"python3": {"/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"},
 		"ps":      {"/bin/ps", "/usr/bin/ps"},
 		"kill":    {"/bin/kill", "/usr/bin/kill"},
+		"groups":  {"/usr/bin/groups", "/bin/groups"},
+		"id":      {"/usr/bin/id", "/bin/id"},
+		"stat":    {"/usr/bin/stat", "/bin/stat"},
 
 		// Windows - System32 is writable only by admins/TrustedInstaller.
 		"powershell": {filepath.Join(sys32, "WindowsPowerShell", "v1.0", "powershell.exe")},
@@ -66,6 +90,10 @@ var knownPaths = func() map[string][]string {
 		"tasklist":   {filepath.Join(sys32, "tasklist.exe")},
 		"netsh":      {filepath.Join(sys32, "netsh.exe")},
 		"cmd":        {filepath.Join(sys32, "cmd.exe")},
+		"auditpol":   {filepath.Join(sys32, "auditpol.exe")},
+		"reg":        {filepath.Join(sys32, "reg.exe")},
+		"sc.exe":     {filepath.Join(sys32, "sc.exe")},
+		"secedit":    {filepath.Join(sys32, "secedit.exe")},
 
 		// shutdown exists on all three OSes, at different paths.
 		"shutdown": {"/sbin/shutdown", "/usr/sbin/shutdown", filepath.Join(sys32, "shutdown.exe")},

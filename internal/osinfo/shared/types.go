@@ -228,6 +228,12 @@ type UserWithGroup struct {
 	GID      string   `json:"gid,omitempty"`
 	HomeDir  string   `json:"home_dir,omitempty"`
 	Shell    string   `json:"shell,omitempty"`
+
+	// Compliance telemetry (#172); each is left out when it can't be read.
+	// PasswordLastSet is ISO 8601 UTC.
+	IsEnabled       *bool      `json:"is_enabled,omitempty"`
+	LastLogon       *LastLogon `json:"last_logon,omitempty"`
+	PasswordLastSet string     `json:"password_last_set,omitempty"`
 }
 
 // SecurityInfo aggregates all collected security telemetry.
@@ -250,6 +256,88 @@ type SecurityInfo struct {
 	IdentityAccessControl IdentityAccessControlInfo `json:"identity_access_control"`
 	NetworkExposureAccess NetworkExposureAccessInfo `json:"network_exposure_access"`
 	PostureSummary        SecurityPostureSummary    `json:"posture_summary"`
+
+	// Compliance telemetry (#172), defined by the "Compliance telemetry"
+	// section of sentinel-ops docs/agent-ingestion.md. Every key is optional:
+	// nil means the agent could not read it, and the key is left out so the
+	// server shows the matching check as unknown rather than failing.
+	ScreenLock          *ScreenLockInfo     `json:"screen_lock,omitempty"`
+	PasswordPolicy      *PasswordPolicyInfo `json:"password_policy,omitempty"`
+	AutoLoginEnabled    *bool               `json:"auto_login_enabled,omitempty"`
+	GuestAccountEnabled *bool               `json:"guest_account_enabled,omitempty"`
+	RemoteAccess        *RemoteAccessInfo   `json:"remote_access,omitempty"`
+	Patching            *PatchingInfo       `json:"patching,omitempty"`
+	AuditLogging        *AuditLoggingInfo   `json:"audit_logging,omitempty"`
+	TimeSync            *TimeSyncInfo       `json:"time_sync,omitempty"`
+	Backup              *BackupInfo         `json:"backup,omitempty"`
+}
+
+// ScreenLockInfo describes the idle screen lock. IdleTimeoutSeconds is how
+// long the device sits idle before it locks.
+type ScreenLockInfo struct {
+	Enabled               *bool `json:"enabled,omitempty"`
+	IdleTimeoutSeconds    *int  `json:"idle_timeout_seconds,omitempty"`
+	RequirePasswordOnWake *bool `json:"require_password_on_wake,omitempty"`
+}
+
+// PasswordPolicyInfo is the local account password policy. MaxAgeDays,
+// History and LockoutThreshold use 0 for "none" (never expires, no history,
+// never locks out).
+type PasswordPolicyInfo struct {
+	MinLength        *int  `json:"min_length,omitempty"`
+	Complexity       *bool `json:"complexity,omitempty"`
+	MaxAgeDays       *int  `json:"max_age_days,omitempty"`
+	History          *int  `json:"history,omitempty"`
+	LockoutThreshold *int  `json:"lockout_threshold,omitempty"`
+}
+
+// RemoteAccessInfo reports which remote-access services accept connections.
+type RemoteAccessInfo struct {
+	RDPEnabled           *bool `json:"rdp_enabled,omitempty"`
+	RDPNLARequired       *bool `json:"rdp_nla_required,omitempty"`
+	SMB1Enabled          *bool `json:"smb1_enabled,omitempty"`
+	SSHEnabled           *bool `json:"ssh_enabled,omitempty"`
+	ScreenSharingEnabled *bool `json:"screen_sharing_enabled,omitempty"`
+}
+
+// PatchingInfo reports OS update state. LastUpdateInstalledAt is ISO 8601
+// UTC. MissingUpdates is a pointer so that "checked, none missing" ([]) and
+// "could not check" (key left out) stay distinct.
+type PatchingInfo struct {
+	LastUpdateInstalledAt string           `json:"last_update_installed_at,omitempty"`
+	PendingReboot         *bool            `json:"pending_reboot,omitempty"`
+	AutoUpdateEnabled     *bool            `json:"auto_update_enabled,omitempty"`
+	MissingUpdates        *[]MissingUpdate `json:"missing_updates,omitempty"`
+}
+
+// MissingUpdate is one available update that is not installed.
+type MissingUpdate struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// AuditLoggingInfo reports whether security auditing is on and what it covers.
+type AuditLoggingInfo struct {
+	Enabled      *bool    `json:"enabled,omitempty"`
+	Categories   []string `json:"categories,omitempty"`
+	LogMaxSizeMB *int     `json:"log_max_size_mb,omitempty"`
+}
+
+// TimeSyncInfo reports network time synchronisation. OffsetMS is the clock's
+// offset from the time source; it changes every reading, so the scheduler's
+// change fingerprint ignores it.
+type TimeSyncInfo struct {
+	Enabled  *bool  `json:"enabled,omitempty"`
+	Source   string `json:"source,omitempty"`
+	OffsetMS *int64 `json:"offset_ms,omitempty"`
+}
+
+// BackupInfo reports the backup product found on the device.
+// LastSuccessAt is ISO 8601 UTC.
+type BackupInfo struct {
+	Product       string `json:"product,omitempty"`
+	Enabled       *bool  `json:"enabled,omitempty"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
 }
 
 // 1. Firewall Security

@@ -80,7 +80,7 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		Disks:           s.Disks,
 		NetworkAdapters: s.NetworkAdapters,
 		LocalUsers:      s.LocalUsers,
-		SecurityInfo:    s.SecurityInfo,
+		SecurityInfo:    stableSecurityInfo(s.SecurityInfo),
 		GPUs:            s.GPUs,
 		Displays:        s.Displays,
 		AudioDevices:    s.AudioDevices,
@@ -90,6 +90,18 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 	data, _ := json.Marshal(fp)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// stableSecurityInfo returns sec without the clock offset, which differs on
+// every reading and would otherwise force an upload each cycle. The original
+// is not modified.
+func stableSecurityInfo(sec shared.SecurityInfo) shared.SecurityInfo {
+	if sec.TimeSync != nil && sec.TimeSync.OffsetMS != nil {
+		ts := *sec.TimeSync
+		ts.OffsetMS = nil
+		sec.TimeSync = &ts
+	}
+	return sec
 }
 
 // Task represents a scheduled task with dependencies

@@ -28,16 +28,34 @@ func getLocalUsers() []shared.UserWithGroup {
 			groups = parseDarwinIDGroups(groupOut)
 		}
 
-		result = append(result, shared.UserWithGroup{
+		u := shared.UserWithGroup{
 			Username: username,
 			Groups:   groups,
 			UID:      getUserProperty(username, "UniqueID"),
 			GID:      getUserProperty(username, "PrimaryGroupID"),
 			HomeDir:  parseDarwinProperty(homeOut),
 			Shell:    getUserProperty(username, "UserShell"),
-		})
+		}
+		applyDarwinAccountState(&u)
+		result = append(result, u)
 	}
 	return result
+}
+
+// applyDarwinAccountState adds is_enabled and password_last_set (#172).
+// last_logon is left out: macOS keeps no per-account record of it that
+// can be read reliably.
+func applyDarwinAccountState(u *shared.UserWithGroup) {
+	if out, err := shared.RunCommand("dscl", ".", "read", usersDir+u.Username, "AuthenticationAuthority"); err == nil {
+		if enabled, ok := parseDarwinAccountEnabled(out); ok {
+			u.IsEnabled = &enabled
+		}
+	}
+	if out, err := shared.RunCommand("dscl", ".", "read", usersDir+u.Username, "accountPolicyData"); err == nil {
+		if t, ok := parseDarwinPasswordLastSet(out); ok {
+			u.PasswordLastSet = shared.ISOTime(t)
+		}
+	}
 }
 
 func getUserProperty(username, property string) string {

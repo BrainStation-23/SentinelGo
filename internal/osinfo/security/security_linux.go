@@ -72,7 +72,7 @@ func collectSecurity() shared.SecurityInfo {
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
-	return shared.SecurityInfo{
+	info := shared.SecurityInfo{
 		AntivirusProducts:     avProducts,
 		FirewallEnabled:       fwEnabled,
 		FirewallProfiles:      profiles,
@@ -91,6 +91,8 @@ func collectSecurity() shared.SecurityInfo {
 		NetworkExposureAccess: netExposure,
 		PostureSummary:        posture,
 	}
+	applyCompliance(&info)
+	return info
 }
 
 // anyFirewallEnabled reports whether at least one firewall profile is enabled.
