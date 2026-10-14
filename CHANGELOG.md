@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.5.1] - 2026-10-14
+
 ### Added
 
 - Compliance telemetry in the inventory payload, for the server's compliance checks: `security_info` now reports `screen_lock`, `password_policy`, `auto_login_enabled`, `guest_account_enabled`, `remote_access`, `patching`, `audit_logging`, `time_sync` and `backup`, and each `local_users` entry adds `is_enabled`, `last_logon` and `password_last_set`. All of these keys are optional: a value the agent can't read is left out, so the server shows that check as unknown instead of failing it. Settings that only suggest an answer are left out too: a Windows backup agent whose service starts manually, Windows Update or time sync whose settings couldn't be read, and a screen-lock timeout when one of the idle or lock-delay settings couldn't be read. Windows reads them from the registry, `secedit`, `auditpol`, Windows Update and `Get-LocalUser`; macOS from `pwpolicy`, `sysadminctl`, the login window, Software Update and Time Machine settings; Linux from PAM, `/etc/shadow`, `lastlog`, display-manager config, systemd units, the package manager, auditd and the time daemon (#172).
@@ -319,7 +321,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...HEAD
+[v3.5.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.4.0...v3.5.0
 [v3.4.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.3.0...v3.4.0
 [v3.3.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.2.8...v3.3.0
