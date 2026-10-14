@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -70,9 +69,18 @@ func consoleUser() (name, uid string, ok bool) {
 // asUser runs a command in the console user's session; preference reads and
 // sysadminctl -screenLock only answer for the user they run as. launchctl
 // and sudo would search PATH for the programs they start, so sudo and the
-// command are passed resolved.
+// command are passed resolved, and the call is skipped when either isn't
+// at its fixed path.
 func asUser(name, uid, cmd string, args ...string) (string, int, error) {
-	full := append([]string{"asuser", uid, binpath.Resolve("sudo"), "-u", name, binpath.Resolve(cmd)}, args...)
+	sudo, err := darwinLookupBinary("sudo")
+	if err != nil {
+		return "", -1, err
+	}
+	bin, err := darwinLookupBinary(cmd)
+	if err != nil {
+		return "", -1, err
+	}
+	full := append([]string{"asuser", uid, sudo, "-u", name, bin}, args...)
 	return darwinRunCommandOutput("launchctl", full...)
 }
 
@@ -142,7 +150,9 @@ func collectMacPasswordPolicy() *shared.PasswordPolicyInfo {
 }
 
 // collectMacLoginWindow reads autoLoginUser and GuestEnabled from the login
-// window preferences. Without the file neither is configured.
+// window preferences. Without the file, or without the key, neither is
+// configured (macOS leaves the guest account off by default); a
+// GuestEnabled value that isn't a boolean leaves guest unknown.
 func collectMacLoginWindow() (autoLogin, guest *bool) {
 	const path = "/Library/Preferences/com.apple.loginwindow.plist"
 	if _, err := darwinStat(path); err != nil {
@@ -153,8 +163,15 @@ func collectMacLoginWindow() (autoLogin, guest *bool) {
 		return nil, nil
 	}
 	user, _ := prefs["autoLoginUser"].(string)
-	g, _ := shared.PlistBool(prefs["GuestEnabled"])
-	return shared.Bool(strings.TrimSpace(user) != ""), shared.Bool(g)
+	autoLogin = shared.Bool(strings.TrimSpace(user) != "")
+	raw, set := prefs["GuestEnabled"]
+	if !set {
+		return autoLogin, shared.Bool(false)
+	}
+	if g, ok := shared.PlistBool(raw); ok {
+		guest = shared.Bool(g)
+	}
+	return autoLogin, guest
 }
 
 // launchdLoaded reports whether a system launchd job is loaded, which for

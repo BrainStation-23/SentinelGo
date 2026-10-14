@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -94,15 +93,25 @@ func collectLinuxScreenLock() *shared.ScreenLockInfo {
 	if err != nil {
 		return nil
 	}
+	// runuser and env would search PATH for the programs they start, so
+	// those are passed resolved, and nothing runs when either isn't at its
+	// fixed path.
+	env, err := securityLookupBinary("env")
+	if err != nil {
+		return nil
+	}
+	gsettings, err := securityLookupBinary("gsettings")
+	if err != nil {
+		return nil
+	}
 	runtime := "/run/user/" + s.UID
 	get := func(schema, key string) string {
 		// gsettings reads the user's dconf database, so run it as that user
-		// with their home and session bus. runuser and env would search PATH
-		// for the programs they start, so those are passed resolved.
-		out, err := securityRunCommand("runuser", "-u", s.User, "--", binpath.Resolve("env"),
+		// with their home and session bus.
+		out, err := securityRunCommand("runuser", "-u", s.User, "--", env,
 			"HOME="+home, "XDG_RUNTIME_DIR="+runtime,
 			"DBUS_SESSION_BUS_ADDRESS=unix:path="+runtime+"/bus",
-			binpath.Resolve("gsettings"), "get", schema, key)
+			gsettings, "get", schema, key)
 		if err != nil {
 			return ""
 		}

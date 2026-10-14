@@ -41,7 +41,8 @@ const (
 // stubDarwinProcesses when stdout and stderr must be told apart.
 func stubDarwinSecurityCommands(t *testing.T, responses map[string]string) *[]string {
 	t.Helper()
-	orig, origOut := darwinRunCommand, darwinRunCommandOutput
+	orig, origOut, origLookup := darwinRunCommand, darwinRunCommandOutput, darwinLookupBinary
+	darwinLookupBinary = fakeLookupBinary
 	var calls []string
 	darwinRunCommand = func(name string, args ...string) (string, error) {
 		key := strings.Join(append([]string{name}, args...), " ")
@@ -59,7 +60,9 @@ func stubDarwinSecurityCommands(t *testing.T, responses map[string]string) *[]st
 		}
 		return "", -1, errors.New("command failed: " + key)
 	}
-	t.Cleanup(func() { darwinRunCommand, darwinRunCommandOutput = orig, origOut })
+	t.Cleanup(func() {
+		darwinRunCommand, darwinRunCommandOutput, darwinLookupBinary = orig, origOut, origLookup
+	})
 	return &calls
 }
 

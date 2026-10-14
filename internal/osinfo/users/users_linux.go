@@ -3,7 +3,6 @@ package users
 import (
 	"time"
 
-	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -45,10 +44,15 @@ func applyLinuxAccountState(users []shared.UserWithGroup) {
 
 // readLastlog runs lastlog (or lastlog2, which replaces it on newer
 // distributions) in the C locale so the date column has a fixed format. env
-// would search PATH for it, so lastlog is passed resolved.
+// would search PATH for it, so lastlog is passed resolved, and skipped when
+// it isn't at its fixed path.
 func readLastlog() map[string]*shared.LastLogon {
 	for _, cmd := range []string{"lastlog", "lastlog2"} {
-		if out, err := shared.RunCommand("env", "LC_ALL=C", binpath.Resolve(cmd)); err == nil {
+		bin, err := shared.LookupBinary(cmd)
+		if err != nil {
+			continue
+		}
+		if out, err := shared.RunCommand("env", "LC_ALL=C", bin); err == nil {
 			return parseLastlog(out)
 		}
 	}

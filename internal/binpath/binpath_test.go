@@ -27,6 +27,26 @@ func TestResolve_KnownNameFallsBackWhenCandidatesDontExist(t *testing.T) {
 	}
 }
 
+func TestLookup(t *testing.T) {
+	if got, ok := Lookup("some-binary-with-no-known-candidates-xyz"); !ok || got != "some-binary-with-no-known-candidates-xyz" {
+		t.Errorf("Lookup(unknown) = %q, %v; want the name unchanged, true", got, ok)
+	}
+	// A known tool with no installed candidate must not fall back to PATH.
+	if runtime.GOOS != "darwin" {
+		if got, ok := Lookup("launchctl"); ok || got != "" {
+			t.Errorf("Lookup(\"launchctl\") on %s = %q, %v; want \"\", false", runtime.GOOS, got, ok)
+		}
+	}
+	name := "sh"
+	if runtime.GOOS == "windows" {
+		name = "cmd"
+	}
+	got, ok := Lookup(name)
+	if !ok || !filepath.IsAbs(got) {
+		t.Errorf("Lookup(%q) = %q, %v; want an absolute path", name, got, ok)
+	}
+}
+
 func TestResolve_ReturnsRealExistingCandidateOnThisHost(t *testing.T) {
 	// Pick a binary this test process itself is proof exists: on Windows,
 	// cmd.exe backs every subprocess call chain; on Unix, /bin/sh is used

@@ -16,6 +16,7 @@ import (
 var (
 	securityRunCommand       = shared.RunCommand
 	securityRunCommandOutput = shared.RunCommandOutput
+	securityLookupBinary     = shared.LookupBinary
 	securityHostRoot         = ""
 )
 

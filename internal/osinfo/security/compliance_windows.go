@@ -230,10 +230,10 @@ func collectWindowsPatching(lastUpdate *int64, updates missingUpdatesResult) *sh
 		LastUpdateInstalledAt: unixISOTime(lastUpdate),
 		PendingReboot: shared.Bool(regKeyExists(registry.LOCAL_MACHINE, rebootRequired) ||
 			regKeyExists(registry.LOCAL_MACHINE, rebootPending)),
-		AutoUpdateEnabled: shared.Bool(windowsAutoUpdate(
+		AutoUpdateEnabled: windowsAutoUpdate(
 			regInt(registry.LOCAL_MACHINE, auPolicy, "NoAutoUpdate"),
 			regInt(registry.LOCAL_MACHINE, auPolicy, "AUOptions"),
-			serviceStart("wuauserv"))),
+			serviceStart("wuauserv")),
 	}
 	if updates.ok {
 		missing := updates.updates
@@ -296,13 +296,16 @@ var windowsBackupServices = []struct {
 	{"inSyncCPHService", "Druva inSync"},
 }
 
-// collectWindowsBackup reports the first known backup agent installed; it is
-// enabled unless its service is disabled. With none found the key is left
-// out: an unrecognised product may still be backing the machine up.
+// collectWindowsBackup reports the first known backup agent installed. It is
+// enabled when its service starts automatically (Start 0-2) and disabled
+// when the service is (Start=4); a manual-start service (Start=3) may be
+// installed with no backups running, so Enabled is left out then. With none
+// found the key is left out: an unrecognised product may still be backing
+// the machine up.
 func collectWindowsBackup() *shared.BackupInfo {
 	for _, b := range windowsBackupServices {
 		if start := serviceStart(b.service); start >= 0 {
-			return &shared.BackupInfo{Product: b.product, Enabled: shared.Bool(start != 4)}
+			return &shared.BackupInfo{Product: b.product, Enabled: windowsBackupEnabled(start)}
 		}
 	}
 	return nil
