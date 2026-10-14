@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/sanitize"
 )
 
@@ -33,11 +34,15 @@ func RunPowerShell(script string) (string, error) {
 	return RunCommand("powershell", "-NoProfile", "-Command", script)
 }
 
+// RunCommand runs name with args and returns stdout. A well-known system
+// tool is run from its fixed install path (binpath.Resolve), not looked up
+// in PATH, so a writable PATH directory can't substitute it while the agent
+// runs as root/SYSTEM.
 func RunCommand(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// #nosec G204 - name and args are controlled internal parameters
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, binpath.Resolve(name), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -51,12 +56,12 @@ func RunCommand(name string, args ...string) (string, error) {
 // failures (command not found, timeout) return a non-nil error. Exit code -1 is
 // returned when the process could not be started or timed out.
 // This is needed for tools like yum check-update that signal "updates available"
-// via exit code 100 rather than exit 0.
+// via exit code 100 rather than exit 0. name is resolved like RunCommand's.
 func RunCommandOutput(name string, args ...string) (output string, exitCode int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// #nosec G204 - name and args are controlled internal parameters
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, binpath.Resolve(name), args...)
 	out, runErr := cmd.CombinedOutput()
 	// Strip NUL bytes so downstream payloads stay valid for Postgres text/jsonb.
 	output = sanitize.StripNUL(string(out))
