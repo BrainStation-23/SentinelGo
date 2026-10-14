@@ -93,8 +93,8 @@ func collectMacScreenLock() *shared.ScreenLockInfo {
 		"/Library/Managed Preferences/"+name+"/com.apple.screensaver.plist")
 
 	saverIdle := -1
-	if n, ok := shared.PlistNumber(managed["idleTime"]); ok {
-		saverIdle = int(n)
+	if n, ok := shared.PlistInt(managed["idleTime"]); ok {
+		saverIdle = n
 	} else if out, code, err := asUser(name, uid, "defaults", "-currentHost", "read", "com.apple.screensaver", "idleTime"); err == nil && code == 0 {
 		if n, err := strconv.Atoi(strings.TrimSpace(out)); err == nil {
 			saverIdle = n
@@ -121,8 +121,8 @@ func macPasswordAfterLock(name, uid string, managed map[string]any) (password *b
 	if b, ok := shared.PlistBool(managed["askForPassword"]); ok {
 		password = shared.Bool(b)
 	}
-	if n, ok := shared.PlistNumber(managed["askForPasswordDelay"]); ok {
-		delay = int(n)
+	if n, ok := shared.PlistInt(managed["askForPasswordDelay"]); ok {
+		delay = n
 	}
 	if password != nil && delay >= 0 {
 		return password, delay

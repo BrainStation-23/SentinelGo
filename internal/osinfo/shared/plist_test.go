@@ -83,3 +83,30 @@ func TestPlistNumberAndBool(t *testing.T) {
 		}
 	}
 }
+
+func TestPlistInt(t *testing.T) {
+	cases := []struct {
+		in     any
+		want   int
+		wantOK bool
+	}{
+		{int64(300), 300, true},
+		{int64(-5), -5, true},
+		{int64(1) << 40, 0, false},
+		{int64(-1) << 40, 0, false},
+		{1.9, 1, true},
+		{1e12, 0, false},
+		{" 60 ", 60, true},
+		{"9999999999", 0, false},
+		{"NaN", 0, false},
+		{"abc", 0, false},
+		{true, 0, false},
+		{nil, 0, false},
+	}
+	for _, c := range cases {
+		got, ok := PlistInt(c.in)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("PlistInt(%#v) = %d, %v; want %d, %v", c.in, got, ok, c.want, c.wantOK)
+		}
+	}
+}

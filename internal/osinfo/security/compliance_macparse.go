@@ -4,7 +4,6 @@ package security
 // compliance_darwin.go calls them.
 
 import (
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -110,11 +109,9 @@ func pwpolicyEntries(root any) []map[string]any {
 // or 0 when none is set or the value is out of range.
 func pwpolicyParam(params map[string]any, names ...string) int {
 	for _, n := range names {
-		if f, ok := shared.PlistNumber(params[n]); ok {
-			if f < math.MinInt32 || f > math.MaxInt32 {
-				return 0
-			}
-			return int(f)
+		if _, ok := shared.PlistNumber(params[n]); ok {
+			v, _ := shared.PlistInt(params[n])
+			return v
 		}
 	}
 	return 0
