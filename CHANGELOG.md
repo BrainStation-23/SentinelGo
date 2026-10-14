@@ -13,6 +13,22 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Compliance telemetry in the inventory payload, for the server's compliance checks: `security_info` now reports `screen_lock`, `password_policy`, `auto_login_enabled`, `guest_account_enabled`, `remote_access`, `patching`, `audit_logging`, `time_sync` and `backup`, and each `local_users` entry adds `is_enabled`, `last_logon` and `password_last_set`. All of these keys are optional: a value the agent can't read is left out, so the server shows that check as unknown instead of failing it. Settings that only suggest an answer are left out too: a Windows backup agent whose service starts manually, Windows Update or time sync whose settings couldn't be read, and a screen-lock timeout when one of the idle or lock-delay settings couldn't be read. Windows reads them from the registry, `secedit`, `auditpol`, Windows Update and `Get-LocalUser`; macOS from `pwpolicy`, `sysadminctl`, the login window, Software Update and Time Machine settings; Linux from PAM, `/etc/shadow`, `lastlog`, display-manager config, systemd units, the package manager, auditd and the time daemon (#172).
+
+### Changed
+
+- Windows `critical_kbs_missing` matches Security and Critical updates by category ID instead of by category name, so it also works on Windows installs in other languages. The Windows Update search now runs once per collection and also feeds `patching.missing_updates` (#172).
+
+### Fixed
+
+- macOS compliance collection range-checks the integers it reads from property lists (password-policy parameters, screen-saver idle time, password delay). An out-of-range value is now treated as unreadable instead of overflowing when converted (#176).
+
+### Security
+
+- The OS info collectors run system tools from their fixed install paths (`internal/binpath`) instead of looking them up in `PATH`, so a writable `PATH` directory can't substitute a tool while the agent runs as root or SYSTEM (CWE-426/427). This now covers the compliance probes and every other tool `binpath` knows, including programs started through `runuser`, `env`, `sudo` and `launchctl asuser`. A known tool that isn't installed at its fixed path is skipped, and is no longer looked up in `PATH` (#172).
+
 ## [v3.5.0] - 2026-10-13
 
 ### Added

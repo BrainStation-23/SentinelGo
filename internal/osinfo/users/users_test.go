@@ -4,7 +4,11 @@ package users
 // platform. All functions under test live in parse.go which is also suffix-free.
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
+
+	"sentinelgo/internal/osinfo/shared"
 )
 
 // ── parsePasswdContent ────────────────────────────────────────────────────────
@@ -368,6 +372,138 @@ func TestParseWindowsGroupLines_BlankLines(t *testing.T) {
 func TestParseWindowsGroupLines_Empty(t *testing.T) {
 	if got := parseWindowsGroupLines(""); len(got) != 0 {
 		t.Errorf("expected 0 groups for empty input, got %d", len(got))
+	}
+}
+
+// ── account state (#172) ──────────────────────────────────────────────────────
+
+func userJSON(t *testing.T, u shared.UserWithGroup) string {
+	t.Helper()
+	b, err := json.Marshal(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestParseWindowsUserExtrasJSON(t *testing.T) {
+	out := `[{"SID":"S-1-5-21-1-1001","Enabled":true,"LastLogon":1760342520,"PasswordLastSet":1754042400},` +
+		`{"SID":"S-1-5-21-1-1002","Enabled":false,"LastLogon":null,"PasswordLastSet":null},` +
+		`{"SID":"S-1-5-21-1-1003"},{"Enabled":true}]`
+	extras := parseWindowsUserExtrasJSON(out)
+	if len(extras) != 3 {
+		t.Fatalf("expected 3 rows with a SID, got %d", len(extras))
+	}
+	apply := func(sid string) string {
+		e := extras[sid]
+		return userJSON(t, shared.UserWithGroup{Username: "u", IsEnabled: e.Enabled, LastLogon: e.LastLogon, PasswordLastSet: e.PasswordLastSet})
+	}
+	if e := extras["S-1-5-21-1-1001"]; e.Enabled == nil || !*e.Enabled || e.LastLogon == nil ||
+		shared.ISOTime(e.LastLogon.At) != "2025-10-13T08:02:00Z" || e.PasswordLastSet != shared.ISOTime(time.Unix(1754042400, 0)) {
+		t.Errorf("full row = %s", apply("S-1-5-21-1-1001"))
+	}
+	// A null LastLogon means "never logged on" and must be sent as null.
+	if got, want := apply("S-1-5-21-1-1002"), `{"username":"u","is_enabled":false,"last_logon":null}`; got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	// Missing keys stay unknown and are left out.
+	if got, want := apply("S-1-5-21-1-1003"), `{"username":"u"}`; got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	if parseWindowsUserExtrasJSON("Get-LocalUser : not recognized") != nil {
+		t.Error("non-JSON output should give nil")
+	}
+}
+
+func TestParseShadowAndAccountState(t *testing.T) {
+	shadow := parseShadow(`root:*:19000:0:99999:7:::
+alice:$y$j9T$abc:20300:0:99999:7:::
+bob:!$y$j9T$abc:20300:0:99999:7:::
+carol:$y$j9T$abc:0:0:99999:7::20000:
+dave:!!:::::::
+short:x
+`)
+	now := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC) // day 20740
+	cases := []struct {
+		user      string
+		enabled   bool
+		changedAt string
+	}{
+		{"alice", true, "2025-07-31T00:00:00Z"},
+		{"bob", false, "2025-07-31T00:00:00Z"}, // locked with passwd -l
+		{"carol", false, ""},                   // expired; 0 = must change at next login
+		{"dave", false, ""},                    // RHEL "never set" lock
+	}
+	for _, c := range cases {
+		e, ok := shadow[c.user]
+		if !ok {
+			t.Fatalf("%s missing from %v", c.user, shadow)
+		}
+		st := accountStateFromShadow(e, now)
+		if st.Enabled != c.enabled || st.ChangedAt != c.changedAt {
+			t.Errorf("%s: got %+v, want enabled=%v changedAt=%q", c.user, st, c.enabled, c.changedAt)
+		}
+	}
+	if _, ok := shadow["short"]; ok {
+		t.Error("malformed line parsed")
+	}
+	if e := shadow["alice"]; e.Expire != -1 {
+		t.Errorf("empty expiry should be -1, got %d", e.Expire)
+	}
+}
+
+func TestParseLastlog(t *testing.T) {
+	out := `Username         Port     From             Latest
+root                                       **Never logged in**
+alice            pts/0    10.0.0.5         Mon Oct 13 08:02:00 +0000 2026
+bob              tty1                      Fri Oct  3 21:15:09 +0600 2025
+garbage line
+`
+	got := parseLastlog(out)
+	if got["root"] == nil || !got["root"].At.IsZero() {
+		t.Errorf("root should be never-logged-on, got %+v", got["root"])
+	}
+	if got["alice"] == nil || shared.ISOTime(got["alice"].At) != "2026-10-13T08:02:00Z" {
+		t.Errorf("alice = %+v", got["alice"])
+	}
+	if got["bob"] == nil || shared.ISOTime(got["bob"].At) != "2025-10-03T15:15:09Z" {
+		t.Errorf("bob (empty From column, space-padded day) = %+v", got["bob"])
+	}
+	if _, ok := got["garbage"]; ok || len(got) != 3 {
+		t.Errorf("unexpected entries: %v", got)
+	}
+}
+
+func TestParseDarwinAccountState(t *testing.T) {
+	if enabled, ok := parseDarwinAccountEnabled("AuthenticationAuthority: ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2> ;SecureToken;"); !ok || !enabled {
+		t.Errorf("active account: enabled=%v ok=%v", enabled, ok)
+	}
+	if enabled, ok := parseDarwinAccountEnabled("AuthenticationAuthority: ;DisabledUser;;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2>"); !ok || enabled {
+		t.Errorf("disabled account: enabled=%v ok=%v", enabled, ok)
+	}
+	if _, ok := parseDarwinAccountEnabled("No such key: AuthenticationAuthority"); ok {
+		t.Error("missing attribute should give ok=false")
+	}
+
+	policy := `accountPolicyData:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>creationTime</key>
+	<real>1700000000.123</real>
+	<key>failedLoginCount</key>
+	<integer>0</integer>
+	<key>passwordLastSetTime</key>
+	<real>1754042400.5</real>
+</dict>
+</plist>`
+	got, ok := parseDarwinPasswordLastSet(policy)
+	if !ok || shared.ISOTime(got) != "2025-08-01T10:00:00Z" {
+		t.Errorf("passwordLastSetTime = %v ok=%v", got, ok)
+	}
+	if _, ok := parseDarwinPasswordLastSet("accountPolicyData:\n<plist><dict/></plist>"); ok {
+		t.Error("missing passwordLastSetTime should give ok=false")
 	}
 }
 

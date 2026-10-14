@@ -100,6 +100,27 @@ func TestSysInfoFingerprint_IgnoresVolatileFields(t *testing.T) {
 	}
 }
 
+func TestSysInfoFingerprint_IgnoresTimeSyncOffset(t *testing.T) {
+	withOffset := func(ms int64) *shared.SystemInfo {
+		s := &shared.SystemInfo{Hostname: "host-1"}
+		s.SecurityInfo.TimeSync = &shared.TimeSyncInfo{Enabled: shared.Bool(true), Source: "pool.ntp.org", OffsetMS: shared.Int64(ms)}
+		return s
+	}
+	a, b := withOffset(3), withOffset(-12)
+	if sysInfoFingerprint(a) != sysInfoFingerprint(b) {
+		t.Error("a different clock offset changed the fingerprint; every cycle would upload")
+	}
+	if *a.SecurityInfo.TimeSync.OffsetMS != 3 {
+		t.Error("fingerprinting modified the caller's TimeSync")
+	}
+
+	c := withOffset(3)
+	c.SecurityInfo.TimeSync.Source = "time.windows.com"
+	if sysInfoFingerprint(a) == sysInfoFingerprint(c) {
+		t.Error("a different time source left the fingerprint unchanged")
+	}
+}
+
 // ── handleAgentInfoUpdate ────────────────────────────────────────────────────
 
 func TestHandleAgentInfoUpdate_AuthDegradedSkips(t *testing.T) {

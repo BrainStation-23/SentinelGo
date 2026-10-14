@@ -27,7 +27,8 @@ type fakeProc struct {
 // without an error. Commands not in procs fail to start.
 func stubDarwinProcesses(t *testing.T, procs map[string]fakeProc) {
 	t.Helper()
-	orig, origOut := darwinRunCommand, darwinRunCommandOutput
+	orig, origOut, origLookup := darwinRunCommand, darwinRunCommandOutput, darwinLookupBinary
+	darwinLookupBinary = fakeLookupBinary
 	darwinRunCommand = func(name string, args ...string) (string, error) {
 		key := strings.Join(append([]string{name}, args...), " ")
 		p, ok := procs[key]
@@ -47,7 +48,9 @@ func stubDarwinProcesses(t *testing.T, procs map[string]fakeProc) {
 		}
 		return p.stdout + p.stderr, p.exit, nil
 	}
-	t.Cleanup(func() { darwinRunCommand, darwinRunCommandOutput = orig, origOut })
+	t.Cleanup(func() {
+		darwinRunCommand, darwinRunCommandOutput, darwinLookupBinary = orig, origOut, origLookup
+	})
 }
 
 // Issue #110 (1): `profiles status -type bootstraptoken` prints

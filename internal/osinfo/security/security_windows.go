@@ -60,12 +60,13 @@ func collectSecurity() shared.SecurityInfo {
 	}
 	devEnc := collectDeviceEncryption()
 	hwSec := collectHardwareSecurity()
-	idAccess := collectIdentityAccessControl(coreIsolation)
+	updates := searchMissingUpdates()
+	idAccess := collectIdentityAccessControl(coreIsolation, updates)
 	netExposure := analyzeNetworkExposure(ports)
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
-	return shared.SecurityInfo{
+	info := shared.SecurityInfo{
 		AntivirusProducts:     avProducts,
 		FirewallEnabled:       fwEnabled,
 		FirewallProfiles:      profiles,
@@ -84,6 +85,8 @@ func collectSecurity() shared.SecurityInfo {
 		NetworkExposureAccess: netExposure,
 		PostureSummary:        posture,
 	}
+	applyCompliance(&info, updates)
+	return info
 }
 
 func collectWindowsDefenderDetails() *shared.WindowsDefenderDetails {
@@ -438,7 +441,7 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	return hw
 }
 
-func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.IdentityAccessControlInfo {
+func collectIdentityAccessControl(core shared.CoreIsolationInfo, updates missingUpdatesResult) shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
 
 	helloEnabled := queryRegistryBool(`HKLM\SOFTWARE\Policies\Microsoft\PassportForWork`, "Enabled") ||
@@ -466,23 +469,53 @@ func collectIdentityAccessControl(core shared.CoreIsolationInfo) shared.Identity
 		id.UACStatus = "Enabled"
 	}
 
-	// Query Windows missing Security and Critical updates via COM
-	updOut, err := shared.RunPowerShell(
-		`$Session = New-Object -ComObject Microsoft.Update.Session; $Searcher = $Session.CreateUpdateSearcher(); $Searcher.Search("IsInstalled=0 and Type='Software'").Updates | Where-Object { $_.Categories | Where-Object { $_.Name -eq 'Security Updates' -or $_.Name -eq 'Critical Updates' } } | Measure-Object | Select-Object -ExpandProperty Count`)
-
 	id.PatchComplianceStatus = "Compliant"
 	id.CriticalKBsMissing = 0
-	if err == nil {
-		var count int
-		if _, errSc := fmt.Sscanf(strings.TrimSpace(updOut), "%d", &count); errSc == nil {
-			id.CriticalKBsMissing = count
-			if count > 0 {
-				id.PatchComplianceStatus = "Non-Compliant"
-			}
+	if updates.ok {
+		id.CriticalKBsMissing = updates.critical
+		if updates.critical > 0 {
+			id.PatchComplianceStatus = "Non-Compliant"
 		}
 	}
 
 	return id
+}
+
+// missingUpdatesResult is one Windows Update search, shared by
+// critical_kbs_missing and patching.missing_updates so the slow search runs
+// once per collection. ok is false when the search failed.
+type missingUpdatesResult struct {
+	updates  []shared.MissingUpdate
+	critical int
+	ok       bool
+}
+
+// windowsNonPatchKBs are the Defender definition and platform updates and
+// the malicious software removal tool. They install daily or monthly, aren't
+// OS patches, and would make a machine look freshly patched (or churn the
+// missing-updates list), so the patching probes skip them.
+const windowsNonPatchKBs = `KB2267602|KB4052623|KB890830|KB915597`
+
+// missingUpdatesScript lists software updates that are not installed,
+// except windowsNonPatchKBs. An update counts as critical when it is in the
+// Security Updates or Critical Updates category, matched by category ID
+// because the names are localised.
+const missingUpdatesScript = `$r = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software'"); ` +
+	`$list = foreach ($u in $r.Updates) { if ($u.Title -match '` + windowsNonPatchKBs + `') { continue }; ` +
+	`$kb = @($u.KBArticleIDs) | Select-Object -First 1; ` +
+	`[pscustomobject]@{ Id = $(if ($kb) { 'KB' + $kb } else { $u.Identity.UpdateID }); Title = $u.Title; ` +
+	`Critical = [bool]($u.Categories | Where-Object { $_.CategoryID -eq '0fa1201d-4330-4fa8-8ae9-b877473b6441' -or $_.CategoryID -eq 'e6cf1350-c01b-414d-a61f-263d14d133b4' }) } }; ` +
+	`ConvertTo-Json -InputObject @($list) -Compress`
+
+// searchMissingUpdates queries the Windows Update Agent for updates that are
+// not installed.
+func searchMissingUpdates() missingUpdatesResult {
+	out, err := shared.RunPowerShell(missingUpdatesScript)
+	if err != nil {
+		return missingUpdatesResult{}
+	}
+	updates, critical, ok := parseWindowsMissingUpdates(out)
+	return missingUpdatesResult{updates: updates, critical: critical, ok: ok}
 }
 
 func queryRegistry(keyPath, valueName string) string {
@@ -559,15 +592,7 @@ func parseAVProductsJSON(output string) []shared.AntivirusProduct {
 // objects. PowerShell emits a bare JSON object when there is exactly one
 // product, or an array when there are multiple; either shape is accepted.
 func decodeAVProductsJSON(output string) []map[string]interface{} {
-	var raw []map[string]interface{}
-	if err := json.Unmarshal([]byte(output), &raw); err == nil {
-		return raw
-	}
-	var single map[string]interface{}
-	if json.Unmarshal([]byte(output), &single) != nil {
-		return nil
-	}
-	return []map[string]interface{}{single}
+	return decodePSObjects(output)
 }
 
 // avProductStateFlags decodes the SecurityCenter2 productState bitmask:
