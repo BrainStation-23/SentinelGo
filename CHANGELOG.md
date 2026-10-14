@@ -21,6 +21,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - Windows `critical_kbs_missing` matches Security and Critical updates by category ID instead of by category name, so it also works on Windows installs in other languages. The Windows Update search now runs once per collection and also feeds `patching.missing_updates` (#172).
 
+### Fixed
+
+- macOS compliance collection range-checks the integers it reads from property lists (password-policy parameters, screen-saver idle time, password delay). An out-of-range value is now treated as unreadable instead of overflowing when converted (#176).
+
 ### Security
 
 - The OS info collectors run system tools from their fixed install paths (`internal/binpath`) instead of looking them up in `PATH`, so a writable `PATH` directory can't substitute a tool while the agent runs as root or SYSTEM (CWE-426/427). This now covers the compliance probes and every other tool `binpath` knows, including programs started through `runuser`, `env`, `sudo` and `launchctl asuser`. A known tool that isn't installed at its fixed path is skipped, and is no longer looked up in `PATH` (#172).
