@@ -250,25 +250,53 @@ func firstSet(vals ...int) int {
 // notify to install and restart), or when the wuauserv service is disabled
 // (Start=4). AUOptions 4 (scheduled install), 5 (local admin chooses) or
 // unset leave Windows' automatic install on. Pass -1 for a value that isn't
-// set.
-func windowsAutoUpdate(noAutoUpdate, auOptions, wuauservStart int) bool {
+// set. Unset policy values are normal (Windows' default applies), but an
+// unreadable wuauserv service leaves the answer unknown (nil) unless policy
+// already turns automatic install off.
+func windowsAutoUpdate(noAutoUpdate, auOptions, wuauservStart int) *bool {
 	switch auOptions {
 	case 1, 2, 3, 7:
-		return false
+		return shared.Bool(false)
 	}
-	return noAutoUpdate != 1 && wuauservStart != 4
+	switch {
+	case noAutoUpdate == 1 || wuauservStart == 4:
+		return shared.Bool(false)
+	case wuauservStart < 0:
+		return nil
+	}
+	return shared.Bool(true)
+}
+
+// windowsBackupEnabled maps a backup agent's service Start value: automatic
+// (0-2) is on, disabled (4) is off, and manual (3) is unknown.
+func windowsBackupEnabled(start int) *bool {
+	switch {
+	case start >= 0 && start <= 2:
+		return shared.Bool(true)
+	case start == 4:
+		return shared.Bool(false)
+	}
+	return nil
 }
 
 // windowsTimeSync builds time_sync from the W32Time Parameters Type and
 // NtpServer values and the service's start type (-1 if unknown). Type
-// NoSync, or a disabled service, means no synchronisation. Returns nil when
-// nothing could be read.
+// NoSync, or a disabled service, means no synchronisation; a network sync
+// Type (NTP, NT5DS, AllSync) on a service that isn't disabled means it's on.
+// Otherwise (Type unread or unrecognised) Enabled is left out. Returns nil
+// when nothing could be read.
 func windowsTimeSync(syncType, ntpServer string, serviceStart int) *shared.TimeSyncInfo {
 	t := strings.ToUpper(strings.TrimSpace(syncType))
 	if t == "" && serviceStart < 0 {
 		return nil
 	}
-	info := &shared.TimeSyncInfo{Enabled: shared.Bool(t != "NOSYNC" && serviceStart != 4)}
+	info := &shared.TimeSyncInfo{}
+	switch {
+	case t == "NOSYNC" || serviceStart == 4:
+		info.Enabled = shared.Bool(false)
+	case t == "NTP" || t == "NT5DS" || t == "ALLSYNC":
+		info.Enabled = shared.Bool(true)
+	}
 	switch t {
 	case "NTP", "ALLSYNC":
 		// "time.windows.com,0x9 pool.ntp.org,0x1": first server, flags dropped.

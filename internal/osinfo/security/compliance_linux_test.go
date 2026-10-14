@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -28,10 +27,10 @@ func stubLookupHomeDir(t *testing.T, homes map[string]string) {
 }
 
 // gsettingsCmd is the command line collectLinuxScreenLock runs. env and
-// gsettings are passed as resolved paths, as on the host running the test.
+// gsettings are passed as resolved paths (fakeLookupBinary's).
 func gsettingsCmd(key string) string {
-	return "runuser -u alice -- " + binpath.Resolve("env") + " HOME=/home/alice XDG_RUNTIME_DIR=/run/user/1000 " +
-		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus " + binpath.Resolve("gsettings") + " get " + key
+	return "runuser -u alice -- /fixed/env HOME=/home/alice XDG_RUNTIME_DIR=/run/user/1000 " +
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /fixed/gsettings get " + key
 }
 
 func complianceJSON(t *testing.T, info shared.SecurityInfo) map[string]string {

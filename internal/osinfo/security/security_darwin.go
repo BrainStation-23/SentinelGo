@@ -15,6 +15,7 @@ import (
 var (
 	darwinRunCommand       = shared.RunCommand
 	darwinRunCommandOutput = shared.RunCommandOutput
+	darwinLookupBinary     = shared.LookupBinary
 	darwinStat             = os.Stat
 	darwinReadFile         = os.ReadFile
 )

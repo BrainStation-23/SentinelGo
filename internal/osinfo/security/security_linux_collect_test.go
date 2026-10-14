@@ -30,11 +30,13 @@ type linuxCmdResult struct {
 // followed by stderr (mirroring the real helpers' Output vs CombinedOutput).
 func stubLinuxSecurityCommands(t *testing.T, outputs map[string]linuxCmdResult) {
 	t.Helper()
-	origRun, origOut := securityRunCommand, securityRunCommandOutput
+	origRun, origOut, origLookup := securityRunCommand, securityRunCommandOutput, securityLookupBinary
 	t.Cleanup(func() {
 		securityRunCommand = origRun
 		securityRunCommandOutput = origOut
+		securityLookupBinary = origLookup
 	})
+	securityLookupBinary = fakeLookupBinary
 	lookup := func(name string, args []string) (linuxCmdResult, bool) {
 		r, ok := outputs[strings.Join(append([]string{name}, args...), " ")]
 		return r, ok

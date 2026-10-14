@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/osinfo/shared"
 )
 
@@ -19,10 +18,10 @@ func plistXML(body string) string {
 func plutilCmd(path string) string { return "plutil -convert xml1 -o - " + path }
 
 // asAlice is the command line asUser runs for alice: sudo and the command
-// are passed as resolved paths, as on the host running the test.
+// are passed as resolved paths (fakeLookupBinary's).
 func asAlice(cmd string) string {
 	name, args, _ := strings.Cut(cmd, " ")
-	return "launchctl asuser 501 " + binpath.Resolve("sudo") + " -u alice " + binpath.Resolve(name) + " " + args
+	return "launchctl asuser 501 /fixed/sudo -u alice /fixed/" + name + " " + args
 }
 
 func darwinComplianceJSON(t *testing.T, info shared.SecurityInfo) map[string]string {
@@ -137,11 +136,32 @@ func TestCollectMacLoginWindow_AutoLogin(t *testing.T) {
 	}
 }
 
+// A GuestEnabled value that isn't a boolean leaves guest unknown; a missing
+// one is macOS' default, off.
+func TestCollectMacLoginWindow_Guest(t *testing.T) {
+	const loginwindow = "/Library/Preferences/com.apple.loginwindow.plist"
+	for _, c := range []struct{ dict, want string }{
+		{`<key>lastUserName</key><string>alice</string>`, "false"},
+		{`<key>GuestEnabled</key><string>maybe</string>`, "null"},
+		{`<key>GuestEnabled</key><false/>`, "false"},
+	} {
+		stubDarwinSecurityFS(t, []string{loginwindow}, nil)
+		stubDarwinProcesses(t, map[string]fakeProc{
+			plutilCmd(loginwindow): {stdout: plistXML(`<dict>` + c.dict + `</dict>`)},
+		})
+		_, guest := collectMacLoginWindow()
+		if b, _ := json.Marshal(guest); string(b) != c.want {
+			t.Errorf("%s: guest = %s, want %s", c.dict, b, c.want)
+		}
+	}
+}
+
 func TestCollectMacScreenLock_ManagedProfileWins(t *testing.T) {
 	stubDarwinSecurityFS(t, nil, nil)
 	stubDarwinProcesses(t, map[string]fakeProc{
 		"stat -f %Su /dev/console": {stdout: "alice\n"},
 		"id -u alice":              {stdout: "501\n"},
+		"pmset -g":                 {stdout: " displaysleep         0\n"},
 		plutilCmd("/Library/Managed Preferences/com.apple.screensaver.plist"): {stdout: plistXML(
 			`<dict><key>idleTime</key><integer>600</integer><key>askForPassword</key><integer>1</integer><key>askForPasswordDelay</key><integer>5</integer></dict>`)},
 		// The user's own settings say otherwise; MDM must win.
@@ -161,6 +181,7 @@ func TestCollectMacScreenLock_ManagedPasswordWithoutDelay(t *testing.T) {
 	stubDarwinProcesses(t, map[string]fakeProc{
 		"stat -f %Su /dev/console": {stdout: "alice\n"},
 		"id -u alice":              {stdout: "501\n"},
+		"pmset -g":                 {stdout: " displaysleep         0\n"},
 		plutilCmd("/Library/Managed Preferences/com.apple.screensaver.plist"): {stdout: plistXML(
 			`<dict><key>idleTime</key><integer>600</integer><key>askForPassword</key><true/></dict>`)},
 		asAlice("sysadminctl -screenLock status"): {stderr: "screenLock delay is 300 seconds\n"},

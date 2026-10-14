@@ -228,10 +228,14 @@ func linuxInterfaceType(tran string) string {
 // return an error and discard stdout. We call exec directly to capture stdout regardless
 // of exit code.
 func linuxHealthStatus(devPath string) string {
+	smartctl, ok := binpath.Lookup("smartctl")
+	if !ok {
+		return "Unknown"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// #nosec G204 — devPath is constructed from lsblk output, always "/dev/<name>"
-	out, _ := exec.CommandContext(ctx, binpath.Resolve("smartctl"), "-H", devPath).Output()
+	out, _ := exec.CommandContext(ctx, smartctl, "-H", devPath).Output()
 	if len(out) == 0 {
 		return "Unknown"
 	}

@@ -208,21 +208,33 @@ func TestWindowsRDP(t *testing.T) {
 func TestWindowsAutoUpdate(t *testing.T) {
 	cases := []struct {
 		noAuto, auOpt, start int
-		want                 bool
+		want                 string
 	}{
-		{-1, -1, 3, true},
-		{1, -1, 3, false},
-		{-1, 1, 3, false},
-		{-1, 2, 3, false}, // notify before download
-		{-1, 3, 3, false}, // download, notify before install
-		{-1, 7, 3, false}, // notify to install and restart
-		{-1, 4, 3, true},  // scheduled install
-		{-1, 5, 3, true},  // local admin chooses
-		{-1, -1, 4, false},
+		{-1, -1, 3, "true"},
+		{1, -1, 3, "false"},
+		{-1, 1, 3, "false"},
+		{-1, 2, 3, "false"}, // notify before download
+		{-1, 3, 3, "false"}, // download, notify before install
+		{-1, 7, 3, "false"}, // notify to install and restart
+		{-1, 4, 3, "true"},  // scheduled install
+		{-1, 5, 3, "true"},  // local admin chooses
+		{-1, -1, 4, "false"},
+		{-1, -1, -1, "null"}, // wuauserv unreadable: unknown
+		{1, -1, -1, "false"}, // policy off is enough
+		{-1, 2, -1, "false"},
 	}
 	for _, c := range cases {
-		if got := windowsAutoUpdate(c.noAuto, c.auOpt, c.start); got != c.want {
-			t.Errorf("windowsAutoUpdate(%d,%d,%d) = %v", c.noAuto, c.auOpt, c.start, got)
+		b, _ := json.Marshal(windowsAutoUpdate(c.noAuto, c.auOpt, c.start))
+		if string(b) != c.want {
+			t.Errorf("windowsAutoUpdate(%d,%d,%d) = %s, want %s", c.noAuto, c.auOpt, c.start, b, c.want)
+		}
+	}
+}
+
+func TestWindowsBackupEnabled(t *testing.T) {
+	for start, want := range map[int]string{2: "true", 0: "true", 3: "null", 4: "false", -1: "null"} {
+		if b, _ := json.Marshal(windowsBackupEnabled(start)); string(b) != want {
+			t.Errorf("windowsBackupEnabled(%d) = %s, want %s", start, b, want)
 		}
 	}
 }
@@ -232,6 +244,9 @@ func TestWindowsTimeSync(t *testing.T) {
 	assertJSON(t, windowsTimeSync("NT5DS", "", 2), `{"enabled":true,"source":"domain hierarchy"}`)
 	assertJSON(t, windowsTimeSync("NoSync", "time.windows.com,0x9", 3), `{"enabled":false}`)
 	assertJSON(t, windowsTimeSync("NTP", "x", 4), `{"enabled":false,"source":"x"}`)
+	// Type unreadable: the service start type alone doesn't say it syncs.
+	assertJSON(t, windowsTimeSync("", "", 3), `{}`)
+	assertJSON(t, windowsTimeSync("", "", 4), `{"enabled":false}`)
 	if windowsTimeSync("", "", -1) != nil {
 		t.Error("nothing readable should give nil")
 	}
@@ -380,6 +395,7 @@ func TestGnomeScreenLock(t *testing.T) {
 		{"lock off", "false", "false", "uint32 300", "uint32 0", `{"enabled":false,"require_password_on_wake":false}`},
 		{"lockdown disables the lock screen", "true", "true", "uint32 300", "uint32 0", `{"enabled":false,"require_password_on_wake":false}`},
 		{"idle unreadable", "true", "", "", "", `{"require_password_on_wake":true}`},
+		{"lock-delay unreadable", "true", "false", "uint32 300", "", `{"enabled":true,"require_password_on_wake":true}`},
 		{"not GNOME", "", "", "uint32 300", "", "null"},
 	}
 	for _, c := range cases {
@@ -782,7 +798,9 @@ func TestMacScreenLock(t *testing.T) {
 		{"saver first plus delay", 300, 0, yes, 5, `{"enabled":true,"idle_timeout_seconds":305,"require_password_on_wake":true}`},
 		{"password off", 300, 10, no, 0, `{"enabled":false,"require_password_on_wake":false}`},
 		{"never idle", 0, 0, yes, 0, `{"enabled":false,"require_password_on_wake":true}`},
-		{"password unknown", 300, -1, nil, 0, `{"idle_timeout_seconds":300}`},
+		{"password unknown", 300, 10, nil, 0, `{"idle_timeout_seconds":300}`},
+		// The unread display sleep could lock sooner: no timeout.
+		{"display sleep unknown", 300, -1, yes, 0, `{"enabled":true,"require_password_on_wake":true}`},
 		{"idle unknown", -1, -1, yes, 0, `{"require_password_on_wake":true}`},
 		{"nothing known", -1, -1, nil, 0, "null"},
 		// One idle source off and the other unread could still lock: don't claim off.

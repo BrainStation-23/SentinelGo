@@ -4,6 +4,7 @@ package security
 // compliance_darwin.go calls them.
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -106,10 +107,13 @@ func pwpolicyEntries(root any) []map[string]any {
 }
 
 // pwpolicyParam returns the first of the named policyParameters as an int,
-// or 0 when none is set.
+// or 0 when none is set or the value is out of range.
 func pwpolicyParam(params map[string]any, names ...string) int {
 	for _, n := range names {
 		if f, ok := shared.PlistNumber(params[n]); ok {
+			if f < math.MinInt32 || f > math.MaxInt32 {
+				return 0
+			}
 			return int(f)
 		}
 	}
@@ -203,7 +207,8 @@ func parsePmsetDisplaySleep(output string) (minutes int, ok bool) {
 // Enabled is only reported false on firm evidence: no password is required,
 // or both idle sources are known to be off. One source off and the other
 // unread could still lock, so Enabled is left out then. The timeout is left
-// out when the delay is unknown.
+// out when the delay or either idle source is unknown, since the unread
+// source could lock sooner.
 func macScreenLock(saverIdle, displaySleepMin int, password *bool, delaySeconds int) *shared.ScreenLockInfo {
 	idleKnown := saverIdle >= 0 || displaySleepMin >= 0
 	if password == nil && !idleKnown {
@@ -220,7 +225,7 @@ func macScreenLock(saverIdle, displaySleepMin int, password *bool, delaySeconds 
 	case password != nil && idle > 0:
 		info.Enabled = shared.Bool(true)
 	}
-	if idle > 0 && (password == nil || *password) && delaySeconds >= 0 {
+	if idle > 0 && saverIdle >= 0 && displaySleepMin >= 0 && (password == nil || *password) && delaySeconds >= 0 {
 		info.IdleTimeoutSeconds = shared.Int(idle + delaySeconds)
 	}
 	return info

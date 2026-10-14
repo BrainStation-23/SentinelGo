@@ -269,6 +269,7 @@ func parseGSettingsUint(v string) (int, bool) {
 // (org.gnome.desktop.session idle-delay > 0, 0 = never); it locks
 // lock-delay seconds after the screen blanks, and always asks for the
 // password. Nil when lock-enabled couldn't be read (not a GNOME desktop).
+// The timeout is left out when lock-delay couldn't be read.
 func gnomeScreenLock(lockEnabled, lockScreenDisabled, idleDelay, lockDelay string) *shared.ScreenLockInfo {
 	if lockEnabled != "true" && lockEnabled != "false" {
 		return nil
@@ -281,8 +282,9 @@ func gnomeScreenLock(lockEnabled, lockScreenDisabled, idleDelay, lockDelay strin
 	}
 	info.Enabled = shared.Bool(locks && idle > 0)
 	if *info.Enabled {
-		delay, _ := parseGSettingsUint(lockDelay)
-		info.IdleTimeoutSeconds = shared.Int(idle + delay)
+		if delay, ok := parseGSettingsUint(lockDelay); ok {
+			info.IdleTimeoutSeconds = shared.Int(idle + delay)
+		}
 	}
 	return info
 }

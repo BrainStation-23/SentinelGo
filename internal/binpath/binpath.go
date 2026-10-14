@@ -113,3 +113,20 @@ func Resolve(name string) string {
 	}
 	return name
 }
+
+// Lookup is the strict form of Resolve: for a known tool it returns the
+// first candidate path that exists, and ok=false when none does, so the
+// caller skips the tool instead of searching PATH for it. A name with no
+// known candidates is returned unchanged with ok=true.
+func Lookup(name string) (path string, ok bool) {
+	candidates, known := knownPaths[name]
+	if !known {
+		return name, true
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}
