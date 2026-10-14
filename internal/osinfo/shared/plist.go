@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -137,6 +138,36 @@ func PlistNumber(v any) (float64, bool) {
 		return f, err == nil
 	}
 	return 0, false
+}
+
+// PlistInt returns a plist integer or real as an int. ok is false when v is
+// not a number or lies outside the int32 range, so a hostile or corrupt plist
+// can't overflow the conversion on any platform.
+func PlistInt(v any) (int, bool) {
+	f, ok := v.(float64)
+	if s, isStr := v.(string); isStr {
+		var err error
+		f, err = strconv.ParseFloat(strings.TrimSpace(s), 64)
+		ok = err == nil
+	}
+	if ok {
+		if math.IsNaN(f) || f < math.MinInt32 || f > math.MaxInt32 {
+			return 0, false
+		}
+		return int32Int(int64(f))
+	}
+	if n, isInt := v.(int64); isInt {
+		return int32Int(n)
+	}
+	return 0, false
+}
+
+// int32Int narrows n to an int when it fits in an int32.
+func int32Int(n int64) (int, bool) {
+	if n < math.MinInt32 || n > math.MaxInt32 {
+		return 0, false
+	}
+	return int(n), true
 }
 
 // PlistBool returns a plist boolean, also accepting 0/1 numbers and
