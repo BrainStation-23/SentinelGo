@@ -95,16 +95,25 @@ jobs:
       # Scan the binaries that will ship, not the source: each records the Go
       # that built it, so no CI setup mistake can hide a vulnerable toolchain
       # or dependency. Any reachable vulnerability stops the release before
-      # anything is signed. Pinned; bump by hand (Dependabot can't see it).
+      # anything is signed. Only counts are logged: this log is public and the
+      # previous release likely has the same findings (coordinated disclosure,
+      # see SECURITY.md); run the command below locally for details. Pinned;
+      # bump by hand (Dependabot can't see it).
       - name: Scan release binaries with govulncheck
         run: |
-          for bin in build/windows/sentinelgo-windows-amd64.exe \
-                     build/linux/sentinelgo-linux-amd64 build/linux/sentinelgo-linux-arm64 \
-                     build/darwin/sentinelgo-darwin-amd64 build/darwin/sentinelgo-darwin-arm64; do
-            echo "::group::$bin ($(go version "$bin" | awk '{print $NF}'))"
-            go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$bin"
-            echo "::endgroup::"
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          failed=0
+          for bin in build/windows/sentinelgo-windows-amd64.exe                      build/linux/sentinelgo-linux-amd64 build/linux/sentinelgo-linux-arm64                      build/darwin/sentinelgo-darwin-amd64 build/darwin/sentinelgo-darwin-arm64; do
+            label="$bin ($(go version "$bin" | awk '{print $NF}'))"
+            if govulncheck -mode=binary "$bin" > report.txt 2>&1; then
+              echo "$label: no vulnerabilities found"
+            else
+              failed=1
+              echo "::error::$label: $(grep -c '^Vulnerability #' report.txt || true) reachable vulnerabilities. Details withheld from this public log; build the release locally and run: govulncheck -mode=binary <binary>"
+            fi
           done
+          rm -f report.txt
+          exit "$failed"
 
       # The installers run as root/Administrator, so they are signed, checksummed
       # and attested exactly like the binaries, and the release publishes these

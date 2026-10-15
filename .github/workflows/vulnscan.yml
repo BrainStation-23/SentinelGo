@@ -12,6 +12,13 @@ name: Vulnerability Scan
 # Any reachable vulnerability fails the run and opens an issue (or comments on
 # the open one), since a failed scheduled run alone only emails whoever last
 # edited the cron line.
+#
+# Disclosure: this repository is public, so its logs, run summaries and issues
+# are too. SECURITY.md promises coordinated disclosure, so nothing public says
+# which vulnerabilities affect which release or how the agent reaches them:
+# only how many were found where. The issue gives maintainers the commands to
+# see the details locally. (GITHUB_TOKEN can't open a private security
+# advisory, which would be the private channel.)
 
 on:
   schedule:
@@ -59,6 +66,8 @@ jobs:
             -p sentinelgo-darwin-amd64 -p sentinelgo-darwin-arm64 \
             -p sentinelgo-windows-amd64.exe
 
+      # govulncheck's report stays in a file that is never printed or
+      # uploaded; only the count reaches the log and the summary.
       - name: Scan
         id: scan
         env:
@@ -68,22 +77,15 @@ jobs:
           : > findings.md
           scan() { # scan <label> <govulncheck args...>
             label=$1; shift
-            echo "::group::$label"
-            if govulncheck "$@" > out.txt 2>&1; then
-              cat out.txt
+            if govulncheck "$@" > report.txt 2>&1; then
+              echo "$label: no vulnerabilities found"
             else
-              cat out.txt
               failed=1
-              {
-                echo "### $label"
-                echo
-                echo '```'
-                grep -E '^(Vulnerability #|    Found in|    Fixed in|Your code is affected)' out.txt || tail -n 20 out.txt
-                echo '```'
-                echo
-              } >> findings.md
+              count=$(grep -c '^Vulnerability #' report.txt || true)
+              echo "::warning::$label: ${count} reachable vulnerabilities (details withheld; see SECURITY.md)"
+              echo "- $label: **${count}** reachable vulnerabilities" >> findings.md
             fi
-            echo "::endgroup::"
+            rm -f report.txt
           }
           scan "main source ($(go env GOVERSION))" ./...
           for bin in release-bin/*; do
@@ -96,13 +98,22 @@ jobs:
         if: steps.scan.outputs.failed == '1'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
-            echo "The [weekly vulnerability scan]($RUN_URL) found vulnerabilities that the agent's code can reach."
-            echo "Fix the source (usually a Go toolchain or dependency bump), then release, so installed agents get the fix."
+            echo "The [weekly vulnerability scan]($RUN_URL) found vulnerabilities that the agent's code can reach:"
             echo
             cat findings.md
+            echo
+            echo "Details are deliberately not published here (coordinated disclosure, see SECURITY.md). To see them, run locally:"
+            echo
+            echo '```sh'
+            echo 'go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...'
+            echo "gh release download $TAG -p 'sentinelgo-*-amd64*' -D /tmp/sg && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary /tmp/sg/sentinelgo-linux-amd64"
+            echo '```'
+            echo
+            echo "Fix it (usually a Go toolchain or dependency bump in a PR), then release so installed agents get the fix. If a finding is exploitable in the agent, track it in a private security advisory rather than here."
           } > body.md
           num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$ISSUE_TITLE\" in:title" \
                   --json number,title --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")

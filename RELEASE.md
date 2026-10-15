@@ -147,7 +147,9 @@ only reproduce on a GitHub Actions runner.
   behind `main`. Fix the check, or run Trigger Release again with the same version.
 - **The govulncheck scan of the release binaries fails.** A Go or dependency
   version in the release has a known vulnerability the agent can reach. The
-  log names each one and the version that fixes it. Bump the `toolchain` line
+  public log shows only how many: build the release locally (`make all`) and
+  run `govulncheck -mode=binary` on a binary to see which ones and the
+  versions that fix them. Bump the `toolchain` line
   in `go.mod` or the dependency in a PR, delete the tag and run **Tag Release**
   again, or release the next patch version.
 - **Verify CI passed fails.** CI on the tagged commit failed or never ran. If
