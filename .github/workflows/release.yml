@@ -9,20 +9,61 @@ on:
 permissions:
   contents: read
 
-env:
-  GO_VERSION: '1.26.0'
+# Go comes from go.mod's toolchain line (setup-go's go-version-file reads it),
+# the single place the version is set. Builds, tests and govulncheck can't
+# drift apart: govulncheck once ran a newer Go than releases were built with
+# and missed 28 standard-library vulnerabilities (#183).
 
 jobs:
-  # ── 1. Reuse the full CI pipeline ──────────────────────────────────────────
-  # Runs lint (all 3 OSes), security scan, tests (Linux/macOS/Windows), and a
-  # compile check for all 5 release targets. No logic is duplicated here.
-  ci:
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
+  # ── 1. Require CI to have passed on the tagged commit ─────────────────────
+  # The tag is always a commit on main, which only accepts pull requests that
+  # passed the required checks, and the push to main runs CI on that exact
+  # commit. Tag Release pushes the tag from that same push, so CI is usually
+  # still running: wait for its "CI passed" job instead of running the whole
+  # pipeline a third time. A tag on a commit without a green "CI passed"
+  # (e.g. a tag pushed by hand to an untested commit) publishes nothing.
+  verify-ci:
+    name: Verify CI passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
-      contents: read
-      pull-requests: write
-      security-events: write
+      checks: read  # the "CI passed" check runs
+      actions: read # the CI workflow runs for the commit
+    steps:
+      # Passes as soon as any "CI passed" check on the commit succeeded. A
+      # failed check alone doesn't end the wait: it fails only when no CI run
+      # for the commit is queued or running and none has succeeded, for 5
+      # minutes in a row. A re-run of failed CI jobs puts its run back in
+      # progress, and the grace period covers the moment between starting a
+      # re-run and GitHub registering it.
+      - name: Wait for "CI passed" on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          checks="repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20passed"
+          runs="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA"
+          idle=0
+          for _ in $(seq 1 110); do
+            if gh api "$checks" --jq '[.check_runs[].conclusion]' | jq -e 'any(. == "success")' > /dev/null; then
+              echo "CI passed on $GITHUB_SHA."
+              exit 0
+            fi
+            active=$(gh api "$runs" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+            total=$(gh api "$runs" --jq '.total_count')
+            echo "$(date -u +%T) CI runs for $GITHUB_SHA: $total, still queued or running: $active"
+            if [ "$total" -gt 0 ] && [ "$active" -eq 0 ]; then
+              idle=$((idle + 1))
+              if [ "$idle" -ge 10 ]; then
+                echo "::error::CI finished on $GITHUB_SHA without passing. If the failure was flaky, re-run the failed CI jobs on main, then re-run this workflow; otherwise fix main and release a new version."
+                exit 1
+              fi
+            else
+              idle=0
+            fi
+            sleep 30
+          done
+          echo "::error::No successful \"CI passed\" check on $GITHUB_SHA after 55 minutes. Is this tag on a commit pushed to main?"
+          exit 1
 
   # ── 2. Build release artifacts ─────────────────────────────────────────────
   # One job, one runner. `make all` cross-compiles all 5 targets sequentially
@@ -31,13 +72,14 @@ jobs:
   build:
     name: Build all platforms
     runs-on: ubuntu-latest
-    needs: ci
+    needs: verify-ci
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       # Fail before building if the tag has no CHANGELOG.md section to publish.
@@ -49,6 +91,29 @@ jobs:
 
       - name: Build all platforms
         run: make all VERSION="${GITHUB_REF#refs/tags/}"
+
+      # Scan the binaries that will ship, not the source: each records the Go
+      # that built it, so no CI setup mistake can hide a vulnerable toolchain
+      # or dependency. Any reachable vulnerability stops the release before
+      # anything is signed. Only counts are logged: this log is public and the
+      # previous release likely has the same findings (coordinated disclosure,
+      # see SECURITY.md); run the command below locally for details. Pinned;
+      # bump by hand (Dependabot can't see it).
+      - name: Scan release binaries with govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          failed=0
+          for bin in build/windows/sentinelgo-windows-amd64.exe                      build/linux/sentinelgo-linux-amd64 build/linux/sentinelgo-linux-arm64                      build/darwin/sentinelgo-darwin-amd64 build/darwin/sentinelgo-darwin-arm64; do
+            label="$bin ($(go version "$bin" | awk '{print $NF}'))"
+            if govulncheck -mode=binary "$bin" > report.txt 2>&1; then
+              echo "$label: no vulnerabilities found"
+            else
+              failed=1
+              echo "::error::$label: $(grep -c '^Vulnerability #' report.txt || true) reachable vulnerabilities. Details withheld from this public log; build the release locally and run: govulncheck -mode=binary <binary>"
+            fi
+          done
+          rm -f report.txt
+          exit "$failed"
 
       # The installers run as root/Administrator, so they are signed, checksummed
       # and attested exactly like the binaries, and the release publishes these
@@ -104,6 +169,7 @@ jobs:
     name: Attest (${{ matrix.binary }})
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write     # OIDC token for the Sigstore signing certificate
@@ -142,6 +208,7 @@ jobs:
     name: Attest installers and SHA256SUMS
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write     # OIDC token for the Sigstore signing certificate
@@ -169,6 +236,7 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [build, attest, attest-installers]
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -176,7 +244,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: false
 
       # The release body is the tag's CHANGELOG.md section, written and reviewed

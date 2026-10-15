@@ -4,13 +4,21 @@ name: Fuzz
 # don't need this: the seed corpora already run as plain tests in ci.yml.
 #
 # A `list` job discovers every target (statically, for all OSes) via
-# scripts/fuzz, then one matrix job per target fuzzes it on the matching runner.
-# A failing target uploads its crasher from testdata/fuzz/ and prints the repro
-# command in the job summary. Commit the crasher together with the fix.
+# scripts/fuzz and groups them into a few shards per OS, at most 9 targets each.
+# Each shard fuzzes its targets one after another on one runner and reports
+# every failing target. Failing inputs are uploaded from testdata/fuzz/ and the
+# repro commands are printed in the job summary. Commit a crasher together
+# with its fix.
+#
+# Scheduled runs use main, which only changes when dev is merged into it, so
+# the nightly run is skipped when main hasn't changed since the last successful
+# scheduled run. The weekly run always fuzzes, for longer, to keep growing the
+# corpus.
 
 on:
   schedule:
-    - cron: '0 1 * * *' # nightly 01:00 UTC
+    - cron: '0 1 * * 1-6' # nightly 01:00 UTC, Monday–Saturday: only if main changed
+    - cron: '0 1 * * 0'   # weekly 01:00 UTC Sunday: always, longer
   workflow_dispatch:
     inputs:
       fuzztime:
@@ -22,98 +30,145 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.0'
   CGO_ENABLED: '0'
+  WEEKLY_CRON: '0 1 * * 0'
 
 jobs:
   list:
     name: List fuzz targets
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # look up the last successful scheduled run
     outputs:
+      run: ${{ steps.changed.outputs.run }}
       matrix: ${{ steps.list.outputs.matrix }}
+      fuzztime: ${{ steps.changed.outputs.fuzztime }}
     steps:
+      - name: Decide whether to fuzz
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_FUZZTIME: ${{ inputs.fuzztime }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "fuzztime=${INPUT_FUZZTIME:-5m}" >> "$GITHUB_OUTPUT"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$SCHEDULE" = "$WEEKLY_CRON" ]; then
+            echo "fuzztime=5m" >> "$GITHUB_OUTPUT"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "fuzztime=2m" >> "$GITHUB_OUTPUT"
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow fuzz.yml --event schedule \
+                   --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "main is still at ${GITHUB_SHA}, already fuzzed by a successful scheduled run; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: steps.changed.outputs.run == 'true'
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changed.outputs.run == 'true'
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          go-version-file: go.mod
+          cache: false
 
       - name: Discover targets
         id: list
-        run: echo "matrix=$(go run ./scripts/fuzz -matrix)" >> "$GITHUB_OUTPUT"
+        if: steps.changed.outputs.run == 'true'
+        run: echo "matrix=$(go run ./scripts/fuzz -matrix -shard-size=9)" >> "$GITHUB_OUTPUT"
 
   fuzz:
-    name: ${{ matrix.target }} (${{ matrix.os }})
+    name: Fuzz ${{ matrix.name }} (${{ matrix.count }} targets)
     needs: list
+    if: needs.list.outputs.run == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # 9 targets × 5m, plus compiling each package.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.list.outputs.matrix) }}
     env:
-      FUZZ_PKG: ${{ matrix.pkg }}
-      FUZZ_DIR: ${{ matrix.dir }}
-      FUZZ_TARGET: ${{ matrix.target }}
-      FUZZ_OS: ${{ matrix.os }}
-      FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+      FUZZ_TARGETS: ${{ matrix.targets }}
+      FUZZTIME: ${{ needs.list.outputs.fuzztime }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
+      # No Go build cache: it would be saved with the fuzz corpus inside it
+      # (GOCACHE/fuzz). The corpus has its own cache below.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          go-version-file: go.mod
+          cache: false
 
       - name: Locate fuzz cache
         id: gocache
         shell: bash
         run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
 
-      # The generated corpus lives in GOCACHE/fuzz; carrying it across nightly
-      # runs lets each run build on what earlier runs discovered.
+      # The generated corpus lives in GOCACHE/fuzz; carrying it across runs
+      # lets each run build on what earlier runs discovered.
       - name: Restore generated corpus
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.gocache.outputs.dir }}
-          key: fuzz-${{ matrix.os }}-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: fuzz-${{ matrix.os }}-${{ matrix.target }}-
+          key: fuzz-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.name }}-
 
-      # The Go fuzzer can end with "context deadline exceeded" when -fuzztime
-      # runs out while a slow input is still executing. That is not a finding:
-      # a real failure always writes the input to testdata/fuzz/. Only treat
-      # the run as failed if it did.
+      # scripts/fuzz fuzzes every target in the shard, treats the fuzzer's
+      # "context deadline exceeded" quirk as a pass, and exits non-zero if any
+      # target found a failing input. (shell: bash runs with -o pipefail, so
+      # the step fails when scripts/fuzz does, despite the tee.)
       - name: Fuzz
         shell: bash
-        run: |
-          set +e
-          go test -run='^$' -fuzz="^${FUZZ_TARGET}\$" -fuzztime="${FUZZTIME}" "${FUZZ_PKG}" 2>&1 | tee fuzz.log
-          status=${PIPESTATUS[0]}
-          crashers="${FUZZ_DIR}/testdata/fuzz/${FUZZ_TARGET}"
-          if [ "$status" -ne 0 ] && grep -q "context deadline exceeded" fuzz.log \
-             && [ -z "$(git status --porcelain --untracked-files=all -- "$crashers")" ]; then
-            echo "::warning title=${FUZZ_TARGET}::fuzzer hit its deadline mid-input without a failing input; treating as a pass"
-            exit 0
-          fi
-          exit "$status"
+        run: go run ./scripts/fuzz -fuzztime="$FUZZTIME" -targets="$FUZZ_TARGETS" 2>&1 | tee fuzz.log
 
-      - name: Upload crasher
+      # Failing inputs are the new, untracked files under testdata/fuzz/. A
+      # failure can also leave none (a compile error, a failing ordinary
+      # test), so an empty match must not end the step (bash runs with
+      # pipefail) before the log excerpt reaches the summary.
+      - name: Collect failing inputs
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p crashers
+          { git ls-files --others --exclude-standard | grep -E '(^|/)testdata/fuzz/' || true; } | while read -r f; do
+            mkdir -p "crashers/$(dirname "$f")"
+            cp "$f" "crashers/$f"
+          done
+          {
+            echo "### Fuzz ${{ matrix.name }} found failing inputs"
+            echo
+            echo '```'
+            if grep -q 'fuzz targets failed:' fuzz.log; then
+              sed -n '/fuzz targets failed:/,$p' fuzz.log
+            else
+              tail -n 40 fuzz.log
+            fi
+            echo '```'
+            echo
+            echo "Download the \`fuzz-crash-${{ matrix.name }}\` artifact, copy its files into the repository at the same paths, reproduce with the commands above, then commit the input as a regression seed with the fix."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload failing inputs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-crash-${{ matrix.target }}-${{ matrix.os }}
-          path: ${{ matrix.dir }}/testdata/fuzz/${{ matrix.target }}/
+          name: fuzz-crash-${{ matrix.name }}
+          path: crashers/
           if-no-files-found: warn
-
-      - name: Repro instructions
-        if: failure()
-        shell: bash
-        run: |
-          {
-            echo "### ${FUZZ_TARGET} found a failing input"
-            echo
-            echo "1. Download the \`fuzz-crash-${FUZZ_TARGET}-${FUZZ_OS}\` artifact into \`${FUZZ_DIR}/testdata/fuzz/${FUZZ_TARGET}/\`."
-            echo "2. Reproduce: \`go test -run='^${FUZZ_TARGET}\$/<file name>' ${FUZZ_PKG}\`"
-            echo "3. Fix the bug and commit the input file as a regression seed."
-          } >> "$GITHUB_STEP_SUMMARY"

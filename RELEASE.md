@@ -63,13 +63,21 @@ repository.
 
 The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
-1. Runs the full CI pipeline (lint, security scans and tests on Linux, macOS and Windows).
-2. Builds every target with `CGO_ENABLED=0` and the version injected via `-ldflags`.
-3. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
+1. Waits for the **CI passed** check on the tagged commit. The push to `main`
+   that the tag came from runs CI on that exact commit, after its pull request
+   already passed lint, security scans and tests on Linux, macOS and Windows.
+   The release stops if CI didn't pass, so nothing is built from an untested
+   commit.
+2. Builds every target with `CGO_ENABLED=0` and the version injected via `-ldflags`,
+   using the Go version from `go.mod`'s `toolchain` line.
+3. Scans every built binary with `govulncheck -mode=binary`. Any reachable
+   vulnerability, in the Go toolchain or a dependency, stops the release before
+   anything is signed.
+4. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
    CycloneDX SBOM per binary.
-4. Creates build provenance and SBOM attestations.
-5. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
+5. Creates build provenance and SBOM attestations.
+6. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
    description, plus all of the artifacts below.
 
 The backend syncs release assets from GitHub Releases, and agents pick up the
@@ -137,6 +145,16 @@ only reproduce on a GitHub Actions runner.
   example an expired `RELEASE_PAT`), then run **Tag Release** manually.
 - **The release PR doesn't merge.** A required check failed or the branch fell
   behind `main`. Fix the check, or run Trigger Release again with the same version.
+- **The govulncheck scan of the release binaries fails.** A Go or dependency
+  version in the release has a known vulnerability the agent can reach. The
+  public log shows only how many: build the release locally (`make all`) and
+  run `govulncheck -mode=binary` on a binary to see which ones and the
+  versions that fix them. Bump the `toolchain` line
+  in `go.mod` or the dependency in a PR, delete the tag and run **Tag Release**
+  again, or release the next patch version.
+- **Verify CI passed fails.** CI on the tagged commit failed or never ran. If
+  the failure was flaky, re-run the failed CI jobs on `main`, then re-run the
+  release workflow. Otherwise fix it in a PR and release the next version.
 - **The release workflow fails after tagging.** Fix the cause in a PR, delete
   the tag (`git push --delete origin vX.Y.Z`) and run **Tag Release** manually
   to tag `main` again. Or release the next patch version instead.

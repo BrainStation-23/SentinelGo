@@ -132,7 +132,7 @@ Every pull request and release runs:
 | Static analysis and coverage | SonarCloud | Quality gate reported on every pull request |
 | Static analysis | gosec | Findings uploaded to the GitHub Security tab (advisory only) |
 | Secret scanning | GitGuardian | Required check |
-| Dependency vulnerability scan | `govulncheck` | Build fails on known vulnerabilities |
+| Dependency and Go toolchain vulnerability scan | `govulncheck` | Pull requests and releases fail on any reachable vulnerability. Each release binary is scanned before signing, and a weekly scan checks `main` and the latest release |
 | Filesystem/secret/misconfiguration scan | Trivy (CRITICAL + HIGH) | Build fails |
 | Module integrity | `go mod verify` | Build fails on tampered modules |
 | CGO enforcement | Custom grep | Build fails if `import "C"` is introduced |
