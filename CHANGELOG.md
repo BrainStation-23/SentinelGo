@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.6.0] - 2026-10-15
+
 ### Added
 
 - Every partition of every disk in the inventory payload, as `disks[].partitions[]`, with the disk's `disk_number`. Each partition reports its number, type (EFI, MSR, Recovery, Basic or the platform's type name), drive letter, mount point, label, volume GUID, file system, size, free space, boot/system flags and its own encryption state (`full`, `partial`, `none`, `encrypting`, `decrypting` or `unknown`) with provider, method, protection status and progress. Windows lists all partitions, lettered or not, from `Get-Partition` and matches them to `Get-BitLockerVolume`; Linux reads the `lsblk` tree, so a LUKS partition and the file system inside it are reported together; macOS reads `diskutil` and reports each APFS volume with its FileVault state. A BitLocker volume reports its RecoveryPassword protector id as `key_protector_id` so the server can link it to an escrowed key; the recovery password itself is never collected. Partition data previously came from the server's `disk-partition-inventory` script (#179).
@@ -334,7 +336,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...HEAD
+[v3.6.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...v3.6.0
 [v3.5.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.4.0...v3.5.0
 [v3.4.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.3.0...v3.4.0
