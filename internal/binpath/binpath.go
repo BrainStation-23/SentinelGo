@@ -42,6 +42,7 @@ var knownPaths = func() map[string][]string {
 		"spctl":           {"/usr/sbin/spctl"},
 		"system_profiler": {"/usr/sbin/system_profiler"},
 		"defaults":        {"/usr/bin/defaults"},
+		"diskutil":        {"/usr/sbin/diskutil"},
 		"dscl":            {"/usr/bin/dscl"},
 		"plutil":          {"/usr/bin/plutil"},
 		"pmset":           {"/usr/bin/pmset"},

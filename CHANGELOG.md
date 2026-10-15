@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Every partition of every disk in the inventory payload, as `disks[].partitions[]`, with the disk's `disk_number`. Each partition reports its number, type (EFI, MSR, Recovery, Basic or the platform's type name), drive letter, mount point, label, volume GUID, file system, size, free space, boot/system flags and its own encryption state (`full`, `partial`, `none`, `encrypting`, `decrypting` or `unknown`) with provider, method, protection status and progress. Windows lists all partitions, lettered or not, from `Get-Partition` and matches them to `Get-BitLockerVolume`; Linux reads the `lsblk` tree, so a LUKS partition and the file system inside it are reported together; macOS reads `diskutil` and reports each APFS volume with its FileVault state. A BitLocker volume reports its RecoveryPassword protector id as `key_protector_id` so the server can link it to an escrowed key; the recovery password itself is never collected. Partition data previously came from the server's `disk-partition-inventory` script (#179).
+
+### Fixed
+
+- A BitLocker volume that is fully encrypted but has protection suspended (common during Windows updates and firmware changes) no longer reports the disk's `encryption_status` as `disabled`. The disk-level status now comes from whether the OS or data volume is actually encrypted (`VolumeStatus`), not from `ProtectionStatus`, and a Windows install without the BitLocker module (Windows Home) reports `unknown` instead of `disabled`. On Linux, a disk is no longer reported as encrypted just because some other disk has an open dm-crypt mapping (#179).
+
 ## [v3.5.1] - 2026-10-14
 
 ### Added

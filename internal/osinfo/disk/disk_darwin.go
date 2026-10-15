@@ -28,7 +28,9 @@ func getDisks() []shared.DiskDevice {
 	}
 
 	// FileVault and T2/Apple Silicon are system-wide properties — computed once outside the loop.
-	encStatus, encType := macSystemEncryption()
+	fdesetup, fdeErr := shared.RunCommand("fdesetup", "status")
+	encStatus, encType := macSystemEncryption(fdesetup, fdeErr)
+	layout := macDiskLayout(fdesetup)
 
 	for _, s := range storageArr {
 		sm, ok := s.(map[string]any)
@@ -37,17 +39,37 @@ func getDisks() []shared.DiskDevice {
 		}
 		entry := parseMacStorageEntry(sm)
 		pd := parseMacPhysicalDrive(sm)
-		disks = append(disks, buildMacDiskDevice(entry, pd, encStatus, encType))
+		disks = append(disks, buildMacDiskDevice(entry, pd, encStatus, encType, layout))
 	}
 	return deduplicateBySerial(disks)
+}
+
+// macDiskLayout reads every physical disk's partitions and APFS volumes from
+// diskutil. fdesetup is `fdesetup status` output. On failure the layout is
+// empty and disks report no partitions.
+func macDiskLayout(fdesetup string) macLayout {
+	listOut, err := shared.RunCommand("diskutil", "list", "-plist")
+	if err != nil {
+		return macLayout{}
+	}
+	list, ok := shared.PlistFromOutput(listOut)
+	if !ok {
+		return macLayout{}
+	}
+	// Without APFS data the physical partitions are still listed.
+	var apfs any
+	if apfsOut, err := shared.RunCommand("diskutil", "apfs", "list", "-plist"); err == nil {
+		apfs, _ = shared.PlistFromOutput(apfsOut)
+	}
+	return parseMacLayout(list, apfs, fdesetup)
 }
 
 // macSystemEncryption reports FileVault status and, when enabled, whether the
 // encryption is hardware- or software-backed. FileVault and T2/Apple Silicon are
 // system-wide properties, so this is queried once rather than per storage entry.
-func macSystemEncryption() (status, encType string) {
+// out and err are the result of `fdesetup status`.
+func macSystemEncryption(out string, err error) (status, encType string) {
 	status, encType = "unknown", "unknown"
-	out, err := shared.RunCommand("fdesetup", "status")
 	if err != nil {
 		return status, encType
 	}
@@ -76,6 +98,7 @@ func macSystemEncryption() (status, encType string) {
 
 // macStorageEntry bundles the basic fields parsed from one SPStorageDataType entry.
 type macStorageEntry struct {
+	bsdName     string
 	description string
 	fileSystem  string
 	mountPoint  string
@@ -88,6 +111,9 @@ func parseMacStorageEntry(sm map[string]any) macStorageEntry {
 	var entry macStorageEntry
 	if v, ok := sm["_name"].(string); ok {
 		entry.description = v
+	}
+	if v, ok := sm["bsd_name"].(string); ok {
+		entry.bsdName = strings.TrimSpace(v)
 	}
 	if v, ok := sm["size_in_bytes"].(float64); ok {
 		entry.totalBytes = uint64(v)
@@ -137,8 +163,14 @@ func parseMacPhysicalDrive(sm map[string]any) macPhysicalDriveInfo {
 }
 
 // buildMacDiskDevice assembles a shared.DiskDevice from one SPStorageDataType entry's
-// parsed volume and physical-drive details plus the system-wide encryption status.
-func buildMacDiskDevice(entry macStorageEntry, pd macPhysicalDriveInfo, encStatus, encType string) shared.DiskDevice {
+// parsed volume and physical-drive details, the system-wide encryption status, and
+// the partitions of the physical disk the entry's volume lives on.
+func buildMacDiskDevice(entry macStorageEntry, pd macPhysicalDriveInfo, encStatus, encType string, layout macLayout) shared.DiskDevice {
+	physical := macPhysicalDiskFor(entry.bsdName, layout)
+	parts := layout.partitions[physical]
+	if parts == nil {
+		parts = []shared.DiskPartition{}
+	}
 	return shared.DiskDevice{
 		FreeCapacity:     entry.freeBytes,
 		Description:      entry.description,
@@ -153,6 +185,8 @@ func buildMacDiskDevice(entry macStorageEntry, pd macPhysicalDriveInfo, encStatu
 		InterfaceType:    pd.interfaceType,
 		FileSystem:       entry.fileSystem,
 		MountPoint:       entry.mountPoint,
+		DiskNumber:       macDiskNumber(physical),
+		Partitions:       parts,
 	}
 }
 
