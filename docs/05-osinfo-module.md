@@ -65,7 +65,13 @@ A single call touches, roughly in this order:
    usage percent, plus the detailed per-CPU breakdown
    (`CPUInfoDetailed`).
 3. **RAM** (`ram.Get`) — DIMM count, per-stick size and speed.
-4. **Disks** (`disk.Get`) — every block device, model, size.
+4. **Disks** (`disk.Get`) — every block device, model, size, and every
+   partition on it (`disks[].partitions[]`) with its own encryption state
+   (`full` / `partial` / `none` / `encrypting` / `decrypting` /
+   `unknown`). Windows reads `Get-Partition` + `Get-BitLockerVolume`,
+   Linux `lsblk -J`, macOS `diskutil list` / `diskutil apfs list`.
+   Only a BitLocker key protector's id is reported, never the recovery
+   password.
 5. **GPUs**, **displays**, **audio devices**, **printers**,
    **peripherals** — each a one-shot read of OS inventory APIs.
 6. **Network adapters** (`network.Get`) — the rich per-adapter

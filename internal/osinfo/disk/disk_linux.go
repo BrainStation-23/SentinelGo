@@ -3,6 +3,7 @@ package disk
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -28,6 +29,8 @@ func getDisks() []shared.DiskDevice {
 		return disks
 	}
 
+	layouts := linuxDiskLayouts()
+	diskNumber := 0
 	for _, dev := range raw.Blockdevices {
 		if t, _ := dev["type"].(string); t != "disk" {
 			continue
@@ -65,8 +68,15 @@ func getDisks() []shared.DiskDevice {
 		tran, _ := dev["tran"].(string)
 		devPath := "/dev/" + name
 
-		encryptionStatus, encryptionType := linuxEncryptionStatus(devPath)
-		fileSystem, mountPoint, freeBytes := linuxPartitionInfo(devPath)
+		layout, ok := layouts[name]
+		if !ok {
+			layout.partitions = []shared.DiskPartition{}
+		}
+		encryptionStatus, encryptionType := linuxEncryptionStatus(devPath, layout)
+		var freeBytes uint64
+		if layout.mountPoint != "" {
+			freeBytes = linuxFreeBytesForMount(layout.mountPoint)
+		}
 
 		disks = append(disks, shared.DiskDevice{
 			FreeCapacity:     freeBytes,
@@ -80,94 +90,272 @@ func getDisks() []shared.DiskDevice {
 			DriveType:        linuxDriveType(name, rota),
 			HealthStatus:     linuxHealthStatus(devPath),
 			InterfaceType:    linuxInterfaceType(tran),
-			FileSystem:       fileSystem,
-			MountPoint:       mountPoint,
+			FileSystem:       layout.fileSystem,
+			MountPoint:       layout.mountPoint,
+			DiskNumber:       diskNumber,
+			Partitions:       layout.partitions,
 		})
+		diskNumber++
 	}
 	return disks
 }
 
-func linuxEncryptionStatus(devPath string) (status, encType string) {
-	status, encType = "unknown", "unknown"
-	if out, err := shared.RunCommand("lsblk", "-o", "FSTYPE", "-n", devPath); err == nil {
-		status = "disabled"
-		encType = "none"
-		if strings.Contains(out, "crypto_LUKS") {
-			status = "enabled"
-			encType = "software"
-		}
-	}
-	if status != "enabled" {
-		if out, err := shared.RunCommand("dmsetup", "status", "--target", "crypt"); err == nil {
-			if strings.TrimSpace(out) != "" {
-				status = "enabled"
-				encType = "software"
-			}
-		}
-	}
-	if encType != "software" {
-		if out, err := shared.RunCommand("sedutil-cli", "--query", devPath); err == nil {
-			lower := strings.ToLower(out)
-			if strings.Contains(lower, "locking enabled") || strings.Contains(lower, "locked") {
-				status = "enabled"
-				encType = "hardware"
-			}
-		}
-	}
-	return
+// lsblk column sets for the partition tree. PARTTYPENAME needs util-linux
+// 2.33 and PARTN 2.39, and lsblk rejects an unknown column outright, so older
+// systems are retried with the basic set (the partition number then comes
+// from the device name).
+const (
+	lsblkTreeColumns      = "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,LABEL,UUID,PARTTYPENAME,PARTN"
+	lsblkTreeColumnsBasic = "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,LABEL,UUID"
+)
+
+// lsblkNode is one device in `lsblk -J` output. SIZE and PARTN are numbers or
+// strings depending on the util-linux version; null strings decode as "".
+type lsblkNode struct {
+	Name         string      `json:"name"`
+	Type         string      `json:"type"`
+	Size         any         `json:"size"`
+	FSType       string      `json:"fstype"`
+	MountPoint   string      `json:"mountpoint"`
+	Label        string      `json:"label"`
+	UUID         string      `json:"uuid"`
+	PartTypeName string      `json:"parttypename"`
+	PartN        any         `json:"partn"`
+	Children     []lsblkNode `json:"children"`
 }
 
-// linuxPartitionInfo returns the filesystem type, primary mount point, and free bytes for
-// the first mounted partition on devPath. Prefers "/" over other mount points.
-func linuxPartitionInfo(devPath string) (fileSystem, mountPoint string, freeBytes uint64) {
-	// -n suppresses header, -l gives flat list including child partitions and dm-crypt mappers.
-	out, err := shared.RunCommand("lsblk", "-o", "FSTYPE,MOUNTPOINT", "-nl", devPath)
+// linuxDiskLayout is what the partition tree says about one disk.
+type linuxDiskLayout struct {
+	partitions []shared.DiskPartition
+	// fileSystem and mountPoint are the disk's primary mount: "/" if it is
+	// anywhere on the disk, else the first mounted device (swap excluded).
+	fileSystem string
+	mountPoint string
+	// luks is true when the disk or anything on it is a LUKS container, which
+	// also covers LUKS on the whole disk, where there are no partitions.
+	luks bool
+	// wholeDiskFS is the file system written straight onto the disk, with no
+	// partition table (common on VMs and WSL).
+	wholeDiskFS string
+}
+
+// linuxDiskLayouts runs lsblk once for every disk and returns each disk's
+// layout keyed by device name ("sda", "nvme0n1"). Free space is filled in from
+// df for every mounted partition.
+func linuxDiskLayouts() map[string]linuxDiskLayout {
+	out, err := shared.RunCommand("lsblk", "-J", "-b", "-o", lsblkTreeColumns)
 	if err != nil {
-		return
+		if out, err = shared.RunCommand("lsblk", "-J", "-b", "-o", lsblkTreeColumnsBasic); err != nil {
+			return nil
+		}
 	}
-
-	fileSystem, mountPoint = selectPrimaryPartition(out)
-	if mountPoint == "" {
-		return
+	layouts := parseLinuxDiskLayouts(out)
+	for _, l := range layouts {
+		for i := range l.partitions {
+			if mp := l.partitions[i].MountPoint; mp != "" {
+				l.partitions[i].FreeBytes = linuxFreeBytesForMount(mp)
+			}
+		}
 	}
-	freeBytes = linuxFreeBytesForMount(mountPoint)
-	return
+	return layouts
 }
 
-// selectPrimaryPartition scans lsblk's flat "FSTYPE MOUNTPOINT" listing and picks the
-// primary mounted partition: the first one found, overridden by "/" if present.
-// Unmounted partitions and swap are skipped.
-func selectPrimaryPartition(lsblkOut string) (fileSystem, mountPoint string) {
-	for _, line := range strings.Split(lsblkOut, "\n") {
-		fs, mp := parsePartitionLine(line)
-		if mp == "" || mp == "[SWAP]" {
+// parseLinuxDiskLayouts parses `lsblk -J -b -o <lsblkTreeColumns>` output into
+// per-disk layouts. Devices that aren't disks (loop, rom) are skipped.
+func parseLinuxDiskLayouts(out string) map[string]linuxDiskLayout {
+	var raw struct {
+		Blockdevices []lsblkNode `json:"blockdevices"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &raw) != nil {
+		return nil
+	}
+	layouts := map[string]linuxDiskLayout{}
+	for _, disk := range raw.Blockdevices {
+		if disk.Type != "disk" || disk.Name == "" {
 			continue
 		}
-		// Take first found; override if we find "/"
-		if mountPoint == "" || mp == "/" {
-			fileSystem = fs
-			mountPoint = mp
+		l := linuxDiskLayout{partitions: []shared.DiskPartition{}, luks: hasLUKS(disk), wholeDiskFS: strings.TrimSpace(disk.FSType)}
+		for _, child := range disk.Children {
+			if child.Type == "part" {
+				l.partitions = append(l.partitions, linuxPartition(child))
+			}
 		}
+		l.fileSystem, l.mountPoint = primaryMount(disk)
+		layouts[disk.Name] = l
+	}
+	return layouts
+}
+
+// linuxPartition converts one lsblk "part" node. A LUKS partition is "full"
+// whether or not it is open; when it is open, the file system and mount point
+// come from the mapper device on top of it, which is what the admin sees. A
+// partition with no file system lsblk can identify is "unknown".
+func linuxPartition(n lsblkNode) shared.DiskPartition {
+	p := shared.DiskPartition{
+		PartitionNumber: linuxPartitionNumber(n),
+		PartitionType:   strings.TrimSpace(n.PartTypeName),
+		VolumeLabel:     strings.TrimSpace(n.Label),
+		VolumeGUID:      strings.TrimSpace(n.UUID),
+		FileSystem:      strings.TrimSpace(n.FSType),
+		SizeBytes:       lsblkUint(n.Size),
+	}
+	fs, mp := primaryMount(n)
+	p.MountPoint = mp
+	if p.FileSystem == "" || p.FileSystem == "crypto_LUKS" {
+		if fs == "" {
+			fs = firstFileSystem(n.Children)
+		}
+		if fs != "" {
+			p.FileSystem = fs
+		}
+	}
+	p.IsBoot = hasMount(n, "/")
+	pt := strings.ToLower(p.PartitionType)
+	p.IsSystem = pt == "efi system" || mp == "/boot/efi" || mp == "/efi"
+
+	switch {
+	case hasLUKS(n):
+		p.EncryptionState = encStateFull
+		p.EncryptionProvider = "LUKS"
+	case p.FileSystem == "":
+		p.EncryptionState = encStateUnknown
+	default:
+		p.EncryptionState = encStateNone
+	}
+	return p
+}
+
+// linuxPartitionNumber returns PARTN when lsblk reported it, else the trailing
+// digits of the device name (sda3 -> 3, nvme0n1p3 -> 3).
+func linuxPartitionNumber(n lsblkNode) int {
+	if v := lsblkUint(n.PartN); v > 0 && v <= math.MaxInt32 {
+		return int(v)
+	}
+	i := len(n.Name)
+	for i > 0 && n.Name[i-1] >= '0' && n.Name[i-1] <= '9' {
+		i--
+	}
+	v, err := strconv.ParseUint(n.Name[i:], 10, 31)
+	if err != nil {
+		return 0
+	}
+	return int(v)
+}
+
+// lsblkUint reads a SIZE/PARTN value, which lsblk emits as a number or a
+// numeric string depending on its version.
+func lsblkUint(v any) uint64 {
+	switch t := v.(type) {
+	case float64:
+		n, _ := shared.JSONUint64(t)
+		return n
+	case string:
+		n, _ := strconv.ParseUint(strings.TrimSpace(t), 10, 64)
+		return n
+	}
+	return 0
+}
+
+// usableMount returns n's mount point, or "" for swap ("[SWAP]") and unmounted.
+func usableMount(n lsblkNode) string {
+	mp := strings.TrimSpace(n.MountPoint)
+	if strings.HasPrefix(mp, "[") {
+		return ""
+	}
+	return mp
+}
+
+// primaryMount walks n and its descendants in lsblk order and returns the
+// file system and mount point of the device mounted at "/", or failing that
+// the first mounted one.
+func primaryMount(n lsblkNode) (fileSystem, mountPoint string) {
+	if mp := usableMount(n); mp != "" {
+		fileSystem, mountPoint = strings.TrimSpace(n.FSType), mp
 		if mp == "/" {
-			break
+			return fileSystem, mountPoint
+		}
+	}
+	for _, c := range n.Children {
+		fs, mp := primaryMount(c)
+		if mp == "/" {
+			return fs, mp
+		}
+		if mountPoint == "" && mp != "" {
+			fileSystem, mountPoint = fs, mp
 		}
 	}
 	return fileSystem, mountPoint
 }
 
-// parsePartitionLine parses one "FSTYPE MOUNTPOINT" line from `lsblk -nl`. FSTYPE may be
-// empty, in which case only MOUNTPOINT is present (e.g. "   /boot/efi" → ["/boot/efi"]).
-func parsePartitionLine(line string) (fileSystem, mountPoint string) {
-	fields := strings.Fields(line)
-	switch len(fields) {
-	case 2:
-		return fields[0], fields[1]
-	case 1:
-		if strings.HasPrefix(fields[0], "/") {
-			return "", fields[0]
+// firstFileSystem returns the first file system found among nodes and their
+// descendants, e.g. the file system inside an open but unmounted LUKS mapper.
+func firstFileSystem(nodes []lsblkNode) string {
+	for _, c := range nodes {
+		if fs := strings.TrimSpace(c.FSType); fs != "" && fs != "crypto_LUKS" {
+			return fs
+		}
+		if fs := firstFileSystem(c.Children); fs != "" {
+			return fs
 		}
 	}
-	return "", ""
+	return ""
+}
+
+// hasLUKS reports whether n or any descendant is a LUKS container or an open
+// dm-crypt mapping (LUKS on a partition, on LVM, or on the whole disk).
+func hasLUKS(n lsblkNode) bool {
+	if n.FSType == "crypto_LUKS" || n.Type == "crypt" {
+		return true
+	}
+	for _, c := range n.Children {
+		if hasLUKS(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasMount reports whether n or any descendant is mounted at mountPoint.
+func hasMount(n lsblkNode, mountPoint string) bool {
+	if usableMount(n) == mountPoint {
+		return true
+	}
+	for _, c := range n.Children {
+		if hasMount(c, mountPoint) {
+			return true
+		}
+	}
+	return false
+}
+
+// linuxEncryptionStatus derives the disk-level encryption status from the
+// disk's layout. The partitions decide when they can, LUKS anywhere on the
+// disk (including the whole disk, with no partitions) counts as software
+// encryption, and a self-encrypting drive with locking on as hardware. A
+// plain file system on the whole disk is unencrypted.
+func linuxEncryptionStatus(devPath string, layout linuxDiskLayout) (status, encType string) {
+	status, _ = summarizeDiskEncryption(layout.partitions)
+	if status == "enabled" || layout.luks {
+		return "enabled", "software"
+	}
+	if linuxSEDLocking(devPath) {
+		return "enabled", "hardware"
+	}
+	if status == "disabled" || (len(layout.partitions) == 0 && layout.wholeDiskFS != "") {
+		return "disabled", "none"
+	}
+	return "unknown", "unknown"
+}
+
+// linuxSEDLocking reports whether sedutil-cli says devPath is a
+// self-encrypting drive with locking enabled.
+func linuxSEDLocking(devPath string) bool {
+	out, err := shared.RunCommand("sedutil-cli", "--query", devPath)
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(out)
+	return strings.Contains(lower, "locking enabled") || strings.Contains(lower, "locked")
 }
 
 // linuxFreeBytesForMount runs `df -B1` against mountPoint and parses the free-bytes
