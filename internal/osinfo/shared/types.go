@@ -88,6 +88,41 @@ type DiskDevice struct {
 	InterfaceType    string `json:"interface_type"`
 	FileSystem       string `json:"file_system,omitempty"`
 	MountPoint       string `json:"mount_point,omitempty"`
+	// DiskNumber is the OS's index for the disk: the Windows disk number,
+	// N in macOS diskN, or the disk's position in lsblk's list on Linux.
+	DiskNumber int `json:"disk_number"`
+	// Partitions lists every partition on the disk, mounted or not. It is
+	// always an array (never null) so the server can expand it directly.
+	Partitions []DiskPartition `json:"partitions"`
+}
+
+// DiskPartition is one partition (or, on macOS, one APFS volume) of a disk.
+// Field names match sentinel-ops' agent_disk_partitions columns one-to-one.
+//
+// It never carries a BitLocker recovery password: KeyProtectorID is the
+// RecoveryPassword protector's id, which is not secret and is how the
+// console links a partition to its escrowed key.
+type DiskPartition struct {
+	PartitionNumber int    `json:"partition_number"`
+	PartitionType   string `json:"partition_type"`         // "EFI", "MSR", "Recovery", "Basic", or the platform's type name
+	DriveLetter     string `json:"drive_letter,omitempty"` // bare letter, no colon: "C"
+	MountPoint      string `json:"mount_point,omitempty"`
+	VolumeLabel     string `json:"volume_label,omitempty"`
+	VolumeGUID      string `json:"volume_guid,omitempty"`
+	FileSystem      string `json:"file_system,omitempty"`
+	SizeBytes       uint64 `json:"size_bytes"`
+	FreeBytes       uint64 `json:"free_bytes,omitempty"`
+	IsBoot          bool   `json:"is_boot"`   // holds the running OS
+	IsSystem        bool   `json:"is_system"` // EFI / boot loader partition
+	// EncryptionState is full, partial, none, encrypting, decrypting or
+	// unknown. unknown means the agent couldn't tell, never "not encrypted".
+	EncryptionState      string   `json:"encryption_state"`
+	EncryptionPercentage *float64 `json:"encryption_percentage,omitempty"`
+	EncryptionProvider   string   `json:"encryption_provider,omitempty"` // BitLocker | FileVault | LUKS
+	EncryptionMethod     string   `json:"encryption_method,omitempty"`
+	ProtectionStatus     string   `json:"protection_status,omitempty"` // on | off | unknown
+	KeyProtectorID       string   `json:"key_protector_id,omitempty"`
+	KeyProtectorTypes    []string `json:"key_protector_types,omitempty"`
 }
 
 type OSLastBootTime struct {

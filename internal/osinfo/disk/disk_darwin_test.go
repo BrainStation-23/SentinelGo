@@ -170,5 +170,6 @@ func TestGetDisks_Integration(t *testing.T) {
 		t.Logf("disk[%d]: %s | type=%s iface=%s health=%s enc=%s/%s mount=%s fs=%s",
 			i, d.Description, d.DriveType, d.InterfaceType, d.HealthStatus,
 			d.EncryptionStatus, d.EncryptionType, d.MountPoint, d.FileSystem)
+		logPartitions(t, i, d)
 	}
 }
