@@ -30,7 +30,6 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.9'
   CGO_ENABLED: '0'
   WEEKLY_CRON: '0 1 * * 0'
 
@@ -83,7 +82,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.changed.outputs.run == 'true'
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: false
 
       - name: Discover targets
@@ -103,7 +102,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.list.outputs.matrix) }}
     env:
-      FUZZ_RUN: ${{ matrix.run }}
+      FUZZ_TARGETS: ${{ matrix.targets }}
       FUZZTIME: ${{ needs.list.outputs.fuzztime }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -114,7 +113,7 @@ jobs:
       # (GOCACHE/fuzz). The corpus has its own cache below.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: false
 
       - name: Locate fuzz cache
@@ -137,15 +136,18 @@ jobs:
       # the step fails when scripts/fuzz does, despite the tee.)
       - name: Fuzz
         shell: bash
-        run: go run ./scripts/fuzz -fuzztime="$FUZZTIME" -run="$FUZZ_RUN" 2>&1 | tee fuzz.log
+        run: go run ./scripts/fuzz -fuzztime="$FUZZTIME" -targets="$FUZZ_TARGETS" 2>&1 | tee fuzz.log
 
-      # Failing inputs are the new, untracked files under testdata/fuzz/.
+      # Failing inputs are the new, untracked files under testdata/fuzz/. A
+      # failure can also leave none (a compile error, a failing ordinary
+      # test), so an empty match must not end the step (bash runs with
+      # pipefail) before the log excerpt reaches the summary.
       - name: Collect failing inputs
         if: failure()
         shell: bash
         run: |
           mkdir -p crashers
-          git ls-files --others --exclude-standard | grep '/testdata/fuzz/' | while read -r f; do
+          { git ls-files --others --exclude-standard | grep -E '(^|/)testdata/fuzz/' || true; } | while read -r f; do
             mkdir -p "crashers/$(dirname "$f")"
             cp "$f" "crashers/$f"
           done
@@ -153,7 +155,11 @@ jobs:
             echo "### Fuzz ${{ matrix.name }} found failing inputs"
             echo
             echo '```'
-            sed -n '/fuzz targets failed:/,$p' fuzz.log
+            if grep -q 'fuzz targets failed:' fuzz.log; then
+              sed -n '/fuzz targets failed:/,$p' fuzz.log
+            else
+              tail -n 40 fuzz.log
+            fi
             echo '```'
             echo
             echo "Download the \`fuzz-crash-${{ matrix.name }}\` artifact, copy its files into the repository at the same paths, reproduce with the commands above, then commit the input as a regression seed with the fix."

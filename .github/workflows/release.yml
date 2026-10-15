@@ -9,8 +9,10 @@ on:
 permissions:
   contents: read
 
-env:
-  GO_VERSION: '1.26.9'
+# Go comes from go.mod's toolchain line (setup-go's go-version-file reads it),
+# the single place the version is set. Builds, tests and govulncheck can't
+# drift apart: govulncheck once ran a newer Go than releases were built with
+# and missed 28 standard-library vulnerabilities (#183).
 
 jobs:
   # ── 1. Require CI to have passed on the tagged commit ─────────────────────
@@ -25,23 +27,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      checks: read
+      checks: read  # the "CI passed" check runs
+      actions: read # the CI workflow runs for the commit
     steps:
+      # Passes as soon as any "CI passed" check on the commit succeeded. A
+      # failed check alone doesn't end the wait: it fails only when no CI run
+      # for the commit is queued or running and none has succeeded, for 5
+      # minutes in a row. A re-run of failed CI jobs puts its run back in
+      # progress, and the grace period covers the moment between starting a
+      # re-run and GitHub registering it.
       - name: Wait for "CI passed" on the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          url="repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20passed"
+          checks="repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20passed"
+          runs="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA"
+          idle=0
           for _ in $(seq 1 110); do
-            runs=$(gh api "$url" --jq '[.check_runs[] | {status, conclusion}]')
-            echo "$(date -u +%T) CI passed: $runs"
-            if echo "$runs" | jq -e 'any(.[]; .conclusion == "success")' > /dev/null; then
+            if gh api "$checks" --jq '[.check_runs[].conclusion]' | jq -e 'any(. == "success")' > /dev/null; then
               echo "CI passed on $GITHUB_SHA."
               exit 0
             fi
-            if echo "$runs" | jq -e 'length > 0 and all(.[]; .status == "completed")' > /dev/null; then
-              echo "::error::CI finished on $GITHUB_SHA without passing. If the failure was flaky, re-run the failed CI jobs on main and then re-run this workflow; otherwise fix main and release a new version."
-              exit 1
+            active=$(gh api "$runs" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+            total=$(gh api "$runs" --jq '.total_count')
+            echo "$(date -u +%T) CI runs for $GITHUB_SHA: $total, still queued or running: $active"
+            if [ "$total" -gt 0 ] && [ "$active" -eq 0 ]; then
+              idle=$((idle + 1))
+              if [ "$idle" -ge 10 ]; then
+                echo "::error::CI finished on $GITHUB_SHA without passing. If the failure was flaky, re-run the failed CI jobs on main, then re-run this workflow; otherwise fix main and release a new version."
+                exit 1
+              fi
+            else
+              idle=0
             fi
             sleep 30
           done
@@ -62,7 +79,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       # Fail before building if the tag has no CHANGELOG.md section to publish.
@@ -74,6 +91,20 @@ jobs:
 
       - name: Build all platforms
         run: make all VERSION="${GITHUB_REF#refs/tags/}"
+
+      # Scan the binaries that will ship, not the source: each records the Go
+      # that built it, so no CI setup mistake can hide a vulnerable toolchain
+      # or dependency. Any reachable vulnerability stops the release before
+      # anything is signed. Pinned; bump by hand (Dependabot can't see it).
+      - name: Scan release binaries with govulncheck
+        run: |
+          for bin in build/windows/sentinelgo-windows-amd64.exe \
+                     build/linux/sentinelgo-linux-amd64 build/linux/sentinelgo-linux-arm64 \
+                     build/darwin/sentinelgo-darwin-amd64 build/darwin/sentinelgo-darwin-arm64; do
+            echo "::group::$bin ($(go version "$bin" | awk '{print $NF}'))"
+            go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$bin"
+            echo "::endgroup::"
+          done
 
       # The installers run as root/Administrator, so they are signed, checksummed
       # and attested exactly like the binaries, and the release publishes these
@@ -204,7 +235,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: false
 
       # The release body is the tag's CHANGELOG.md section, written and reviewed

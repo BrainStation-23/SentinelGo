@@ -68,12 +68,16 @@ The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.ym
    already passed lint, security scans and tests on Linux, macOS and Windows.
    The release stops if CI didn't pass, so nothing is built from an untested
    commit.
-2. Builds every target with `CGO_ENABLED=0` and the version injected via `-ldflags`.
-3. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
+2. Builds every target with `CGO_ENABLED=0` and the version injected via `-ldflags`,
+   using the Go version from `go.mod`'s `toolchain` line.
+3. Scans every built binary with `govulncheck -mode=binary`. Any reachable
+   vulnerability, in the Go toolchain or a dependency, stops the release before
+   anything is signed.
+4. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
    CycloneDX SBOM per binary.
-4. Creates build provenance and SBOM attestations.
-5. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
+5. Creates build provenance and SBOM attestations.
+6. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
    description, plus all of the artifacts below.
 
 The backend syncs release assets from GitHub Releases, and agents pick up the
@@ -141,6 +145,11 @@ only reproduce on a GitHub Actions runner.
   example an expired `RELEASE_PAT`), then run **Tag Release** manually.
 - **The release PR doesn't merge.** A required check failed or the branch fell
   behind `main`. Fix the check, or run Trigger Release again with the same version.
+- **The govulncheck scan of the release binaries fails.** A Go or dependency
+  version in the release has a known vulnerability the agent can reach. The
+  log names each one and the version that fixes it. Bump the `toolchain` line
+  in `go.mod` or the dependency in a PR, delete the tag and run **Tag Release**
+  again, or release the next patch version.
 - **Verify CI passed fails.** CI on the tagged commit failed or never ran. If
   the failure was flaky, re-run the failed CI jobs on `main`, then re-run the
   release workflow. Otherwise fix it in a PR and release the next version.

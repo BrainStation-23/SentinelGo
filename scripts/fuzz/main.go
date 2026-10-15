@@ -8,6 +8,7 @@
 // Usage:
 //
 //	go run ./scripts/fuzz [-fuzztime=30s] [-run=<regexp>]  # fuzz every host-OS target in turn
+//	go run ./scripts/fuzz -targets='<pkg>:<Target> ...'     # fuzz exactly these targets (CI shards)
 //	go run ./scripts/fuzz -list                             # print "<package> <target>" for the host OS
 //	go run ./scripts/fuzz -matrix [-shard-size=9]           # print the CI matrix (JSON) for all OSes
 //
@@ -51,8 +52,11 @@ type shard struct {
 	Name   string `json:"name"`   // e.g. linux-2
 	OS     string `json:"os"`     // GOOS the targets build for
 	Runner string `json:"runner"` // GitHub runner label
-	Run    string `json:"run"`    // -run regexp selecting exactly these targets
-	Count  int    `json:"count"`  // number of targets
+	// Targets lists the shard's targets as space-separated "<pkg>:<Target>"
+	// pairs for -targets. The package is part of each entry because Go allows
+	// two packages to define fuzz targets with the same name.
+	Targets string `json:"targets"`
+	Count   int    `json:"count"` // number of targets
 }
 
 // target is one fuzz function and the package that holds it.
@@ -67,6 +71,7 @@ type target struct {
 func main() {
 	fuzztime := flag.String("fuzztime", "30s", "time to fuzz each target (passed to go test -fuzztime)")
 	runFilter := flag.String("run", "", "only fuzz targets whose name matches this regexp")
+	only := flag.String("targets", "", `only fuzz these targets: space- or comma-separated "<pkg>:<Target>" pairs`)
 	list := flag.Bool("list", false, "list host-OS targets instead of fuzzing them")
 	matrix := flag.Bool("matrix", false, "print the CI matrix as JSON for linux, darwin and windows")
 	shardSize := flag.Int("shard-size", 9, "with -matrix: the most targets one CI job fuzzes")
@@ -90,6 +95,12 @@ func main() {
 			fail("invalid -run regexp: %v", err)
 		}
 		targets = filter(targets, re)
+	}
+	if *only != "" {
+		targets, err = selectTargets(targets, *only)
+		if err != nil {
+			fail("%v", err)
+		}
 	}
 
 	if *list {
@@ -175,8 +186,6 @@ func printMatrix(shardSize int) {
 		}
 	}
 
-	requireUniqueNames(all)
-
 	byOS := map[string][]target{}
 	for _, t := range all {
 		oses := byKey[t.Pkg+" "+t.Target]
@@ -199,21 +208,7 @@ func printMatrix(shardSize int) {
 	}
 }
 
-// requireUniqueNames fails if two packages define a fuzz target with the same
-// name: shards select targets by name, so both would be fuzzed by each shard.
-func requireUniqueNames(all []target) {
-	pkgOf := map[string]string{}
-	for _, t := range all {
-		if p, dup := pkgOf[t.Target]; dup && p != t.Pkg {
-			fail("fuzz target %s exists in both %s and %s; rename one", t.Target, p, t.Pkg)
-		}
-		pkgOf[t.Target] = t.Pkg
-	}
-}
-
 // shards splits one OS's targets into near-equal groups of at most size.
-// Target names are unique within the repository, so a -run regexp of exact
-// names selects exactly the group.
 func shards(ts []target, size int) []shard {
 	if len(ts) == 0 {
 		return nil
@@ -222,16 +217,16 @@ func shards(ts []target, size int) []shard {
 	out := make([]shard, 0, n)
 	for i := 0; i < n; i++ {
 		group := ts[i*len(ts)/n : (i+1)*len(ts)/n]
-		names := make([]string, len(group))
+		pairs := make([]string, len(group))
 		for j, t := range group {
-			names[j] = regexp.QuoteMeta(t.Target)
+			pairs[j] = t.Pkg + ":" + t.Target
 		}
 		out = append(out, shard{
-			Name:   fmt.Sprintf("%s-%d", group[0].OS, i+1),
-			OS:     group[0].OS,
-			Runner: group[0].Runner,
-			Run:    "^(" + strings.Join(names, "|") + ")$",
-			Count:  len(group),
+			Name:    fmt.Sprintf("%s-%d", group[0].OS, i+1),
+			OS:      group[0].OS,
+			Runner:  group[0].Runner,
+			Targets: strings.Join(pairs, " "),
+			Count:   len(group),
 		})
 	}
 	return out
@@ -313,6 +308,33 @@ func isTestingF(expr ast.Expr) bool {
 	}
 	pkg, ok := sel.X.(*ast.Ident)
 	return ok && pkg.Name == "testing" && sel.Sel.Name == "F"
+}
+
+// selectTargets keeps the targets named by spec, a list of "<pkg>:<Target>"
+// pairs. It fails if a pair names a target that doesn't build on this OS, so a
+// shard can never silently fuzz less than it was given.
+func selectTargets(ts []target, spec string) ([]target, error) {
+	want := map[string]bool{}
+	for _, pair := range strings.FieldsFunc(spec, func(r rune) bool { return r == ' ' || r == ',' }) {
+		want[pair] = true
+	}
+	var out []target
+	for _, t := range ts {
+		key := t.Pkg + ":" + t.Target
+		if want[key] {
+			out = append(out, t)
+			delete(want, key)
+		}
+	}
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for k := range want {
+			missing = append(missing, k)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("no such fuzz target for GOOS=%s: %s", runtime.GOOS, strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 func filter(ts []target, re *regexp.Regexp) []target {
