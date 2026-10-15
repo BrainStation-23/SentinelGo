@@ -242,12 +242,19 @@ func TestParseMacLayout_FileVaultOn(t *testing.T) {
 		checkPartitionInvariants(t, p)
 	}
 	data := parts[2]
-	if data.VolumeGUID != "D3D3D3D3-0000-4000-8000-0000000000A5" || data.PartitionNumber != 5 || data.FileSystem != "APFS" ||
+	if data.VolumeGUID != "D3D3D3D3-0000-4000-8000-0000000000A5" || data.PartitionNumber != 2 || data.FileSystem != "APFS" ||
 		data.SizeBytes != 494384795648 || data.FreeBytes != 250000000000 || data.EncryptionProvider != "FileVault" {
 		t.Errorf("Data = %+v", data)
 	}
 	if parts[0].VolumeGUID != "A1A1A1A1-0000-4000-8000-000000000001" || parts[0].SizeBytes != 524288000 {
 		t.Errorf("disk0s1 = %+v", parts[0])
+	}
+	// Volumes take their physical partition's number: disk3 is on disk0s2 and
+	// disk2 on disk0s3, so neither collides with disk0s1.
+	for i, want := range []int{1, 2, 2, 2, 3} {
+		if parts[i].PartitionNumber != want {
+			t.Errorf("parts[%d].PartitionNumber = %d, want %d", i, parts[i].PartitionNumber, want)
+		}
 	}
 	if got := layout.physicalDisk["disk3"]; got != "disk0" {
 		t.Errorf("disk3 is on %q, want disk0", got)
@@ -271,6 +278,10 @@ func TestParseMacLayout_Variants(t *testing.T) {
 		{"decrypting", macDataEncrypting, "FileVault is Off.\nDecryption in progress: Percent completed = 58\n", encStateDecrypting, 58},
 		{"locked", `<key>Locked</key><true/>`, "", encStateFull, -1},
 		{"no flags", ``, "", encStateUnknown, -1},
+		// Hardware encryption without FileVault (T2 / Apple Silicon): the key
+		// isn't password-protected, so it isn't reported as encrypted.
+		{"encrypted at rest without FileVault", `<key>Encryption</key><true/><key>FileVault</key><false/>`, "FileVault is Off.", encStateNone, -1},
+		{"Encryption flag only", `<key>Encryption</key><true/>`, "", encStateFull, -1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -318,6 +329,19 @@ func TestParseMacLayout_IntelEFI(t *testing.T) {
 	efi := decodeMacLayout(t, list, macAPFSList(macDataFileVaultOn), "").partitions["disk0"][0]
 	if efi.PartitionType != "EFI" || !efi.IsSystem || efi.EncryptionState != encStateNone || efi.VolumeGUID != "EFI-VOLUME-UUID" || efi.PartitionNumber != 1 {
 		t.Errorf("EFI = %+v", efi)
+	}
+}
+
+// TestParseMacLayout_EmptyContainer keeps the partition of an APFS container
+// that has no volumes.
+func TestParseMacLayout_EmptyContainer(t *testing.T) {
+	apfs := `<plist version="1.0"><dict><key>Containers</key><array><dict>` +
+		`<key>ContainerReference</key><string>disk3</string><key>CapacityCeiling</key><integer>494384795648</integer>` +
+		`<key>PhysicalStores</key><array><dict><key>DeviceIdentifier</key><string>disk0s2</string></dict></array>` +
+		`<key>Volumes</key><array/></dict></array></dict></plist>`
+	parts := decodeMacLayout(t, macDiskutilList, apfs, "").partitions["disk0"]
+	if len(parts) != 3 || parts[1].PartitionType != "Apple_APFS" || parts[1].PartitionNumber != 2 || parts[1].SizeBytes != 494384795648 {
+		t.Errorf("parts = %+v, want disk0s2 kept as a partition", parts)
 	}
 }
 

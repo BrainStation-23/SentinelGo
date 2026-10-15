@@ -121,9 +121,13 @@ func TestParseLinuxDiskLayouts_BasicColumns(t *testing.T) {
 	if sda.partitions[2].FileSystem != "crypto_LUKS" || sda.partitions[2].EncryptionProvider != "LUKS" {
 		t.Errorf("locked LUKS = %+v", sda.partitions[2])
 	}
-	// The root file system decides: unencrypted, though another partition is LUKS.
-	if s, _ := summarizeDiskEncryption(sda.partitions); s != "disabled" {
-		t.Errorf("status = %s, want disabled", s)
+	// The root file system decides: unencrypted, though another partition is
+	// a LUKS vault.
+	if !sda.luks {
+		t.Error("luks = false, want true for the LUKS vault")
+	}
+	if s, typ := linuxEncryptionStatus("/dev/sda", sda); s != "disabled" || typ != "none" {
+		t.Errorf("encryption = %s/%s, want disabled/none", s, typ)
 	}
 }
 

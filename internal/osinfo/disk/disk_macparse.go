@@ -78,13 +78,15 @@ func parseMacLayout(list, apfs any, fdesetup string) macLayout {
 func macDiskPartitions(disk map[string]any, byStore map[string]macAPFSContainer, mounts map[string]string, fdesetup string) []shared.DiskPartition {
 	parts := []shared.DiskPartition{}
 	for _, sm := range plistMaps(disk["Partitions"]) {
-		c, isStore := byStore[plistString(sm, "DeviceIdentifier")]
-		if !isStore {
+		id := plistString(sm, "DeviceIdentifier")
+		c, isStore := byStore[id]
+		// An empty container still occupies its partition, so keep the slice.
+		if !isStore || len(c.volumes) == 0 {
 			parts = append(parts, macSlicePartition(sm))
 			continue
 		}
 		for _, v := range c.volumes {
-			parts = append(parts, macAPFSVolume(v, c, mounts, fdesetup))
+			parts = append(parts, macAPFSVolume(v, macSliceNumber(id), c, mounts, fdesetup))
 		}
 	}
 	return parts
@@ -142,13 +144,16 @@ func macVolumeMount(vm map[string]any) string {
 	return ""
 }
 
-// macAPFSVolume converts one APFS volume. Volumes share their container's
-// space, so the size and free space are the container's (as Finder shows
-// them).
-func macAPFSVolume(v map[string]any, c macAPFSContainer, mounts map[string]string, fdesetup string) shared.DiskPartition {
+// macAPFSVolume converts one APFS volume of the container on physical
+// partition partNumber. Volumes report that partition's number, since their
+// own slice numbers (disk3s1) count within the container disk and would
+// collide with the physical disk's; the volume UUID tells them apart.
+// Volumes share their container's space, so the size and free space are the
+// container's (as Finder shows them).
+func macAPFSVolume(v map[string]any, partNumber int, c macAPFSContainer, mounts map[string]string, fdesetup string) shared.DiskPartition {
 	id := plistString(v, "DeviceIdentifier")
 	p := shared.DiskPartition{
-		PartitionNumber: macSliceNumber(id),
+		PartitionNumber: partNumber,
 		PartitionType:   "APFS Volume",
 		MountPoint:      mounts[id],
 		VolumeLabel:     plistString(v, "Name"),
@@ -179,6 +184,13 @@ func macAPFSVolume(v map[string]any, c macAPFSContainer, mounts map[string]strin
 // "decrypting" when fdesetup says so and "encrypting" otherwise. A locked
 // volume is necessarily encrypted. With no FileVault or Encryption flag at
 // all the state is "unknown".
+//
+// FileVault decides over Encryption: on T2 and Apple Silicon Macs every
+// volume is encrypted by the hardware, but without FileVault the key isn't
+// protected by a password, so anyone who boots the Mac reads the data.
+// Encryption alone would report those volumes as "full" while fdesetup
+// says FileVault is off. diskutil reports a password-encrypted external
+// APFS volume as FileVault too, so that case is still "full".
 func macVolumeEncryptionState(v map[string]any, fdesetup string) string {
 	if on, ok := shared.PlistBool(v["CryptoMigrationOn"]); ok && on {
 		if strings.Contains(strings.ToLower(fdesetup), "decryption in progress") {

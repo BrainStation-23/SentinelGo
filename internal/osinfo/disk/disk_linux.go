@@ -329,13 +329,14 @@ func hasMount(n lsblkNode, mountPoint string) bool {
 }
 
 // linuxEncryptionStatus derives the disk-level encryption status from the
-// disk's layout. The partitions decide when they can, LUKS anywhere on the
-// disk (including the whole disk, with no partitions) counts as software
-// encryption, and a self-encrypting drive with locking on as hardware. A
-// plain file system on the whole disk is unencrypted.
+// disk's layout. The partitions decide when they can, so an unencrypted root
+// stays disabled even if another partition is a LUKS vault. When they can't
+// (LUKS or a file system on the whole disk, with no partitions), LUKS counts
+// as software encryption and a plain file system as unencrypted. A
+// self-encrypting drive with locking on counts as hardware encryption.
 func linuxEncryptionStatus(devPath string, layout linuxDiskLayout) (status, encType string) {
 	status, _ = summarizeDiskEncryption(layout.partitions)
-	if status == "enabled" || layout.luks {
+	if status == "enabled" || (status == "unknown" && layout.luks) {
 		return "enabled", "software"
 	}
 	if linuxSEDLocking(devPath) {
