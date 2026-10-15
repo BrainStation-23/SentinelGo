@@ -162,7 +162,7 @@ jobs:
       # Gosec: insight only — uploads findings to GitHub Security tab but does not
       # gate the build. govulncheck and Trivy are the enforcing gates below.
       - name: Run Gosec
-        uses: securego/gosec@9e6a9843d7a4a6e3e9a8539b02612c8a4aa3f889 # v2.27.1
+        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
         with:
           # scripts/ holds release/CI tooling that takes paths from argv by design;
           # it is never shipped in the agent binary.
