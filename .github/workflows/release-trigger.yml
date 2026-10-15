@@ -57,6 +57,7 @@ jobs:
     name: Open release pull request
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 15
     # Pushes and PR calls authenticate with RELEASE_PAT, so GITHUB_TOKEN itself
     # only needs read access.
     permissions:

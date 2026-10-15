@@ -10,19 +10,43 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.0'
+  GO_VERSION: '1.26.9'
 
 jobs:
-  # ── 1. Reuse the full CI pipeline ──────────────────────────────────────────
-  # Runs lint (all 3 OSes), security scan, tests (Linux/macOS/Windows), and a
-  # compile check for all 5 release targets. No logic is duplicated here.
-  ci:
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
+  # ── 1. Require CI to have passed on the tagged commit ─────────────────────
+  # The tag is always a commit on main, which only accepts pull requests that
+  # passed the required checks, and the push to main runs CI on that exact
+  # commit. Tag Release pushes the tag from that same push, so CI is usually
+  # still running: wait for its "CI passed" job instead of running the whole
+  # pipeline a third time. A tag on a commit without a green "CI passed"
+  # (e.g. a tag pushed by hand to an untested commit) publishes nothing.
+  verify-ci:
+    name: Verify CI passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
-      contents: read
-      pull-requests: write
-      security-events: write
+      checks: read
+    steps:
+      - name: Wait for "CI passed" on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url="repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20passed"
+          for _ in $(seq 1 110); do
+            runs=$(gh api "$url" --jq '[.check_runs[] | {status, conclusion}]')
+            echo "$(date -u +%T) CI passed: $runs"
+            if echo "$runs" | jq -e 'any(.[]; .conclusion == "success")' > /dev/null; then
+              echo "CI passed on $GITHUB_SHA."
+              exit 0
+            fi
+            if echo "$runs" | jq -e 'length > 0 and all(.[]; .status == "completed")' > /dev/null; then
+              echo "::error::CI finished on $GITHUB_SHA without passing. If the failure was flaky, re-run the failed CI jobs on main and then re-run this workflow; otherwise fix main and release a new version."
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::No successful \"CI passed\" check on $GITHUB_SHA after 55 minutes. Is this tag on a commit pushed to main?"
+          exit 1
 
   # ── 2. Build release artifacts ─────────────────────────────────────────────
   # One job, one runner. `make all` cross-compiles all 5 targets sequentially
@@ -31,7 +55,8 @@ jobs:
   build:
     name: Build all platforms
     runs-on: ubuntu-latest
-    needs: ci
+    needs: verify-ci
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -104,6 +129,7 @@ jobs:
     name: Attest (${{ matrix.binary }})
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write     # OIDC token for the Sigstore signing certificate
@@ -142,6 +168,7 @@ jobs:
     name: Attest installers and SHA256SUMS
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write     # OIDC token for the Sigstore signing certificate
@@ -169,6 +196,7 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [build, attest, attest-installers]
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

@@ -190,7 +190,7 @@ Before marking your PR ready for review, confirm:
 
 Every change reaches `main` through a pull request. The `main` branch ruleset enforces this for everyone, maintainers included, with no bypass.
 
-**How review works.** The required checks run automatically: builds and tests on all three OSes, the race detector, CodeQL, Semgrep, secret scanning and the changelog check. Automated reviewers (GitHub Copilot and CodeRabbit) comment on the diff. Then a maintainer reviews it. GitHub requests the review from the maintainers listed in [`CODEOWNERS`](.github/CODEOWNERS). While the project has a single maintainer, the maintainer's own pull requests are merged after the checks pass and the automated review comments are addressed. See [`GOVERNANCE.md`](GOVERNANCE.md).
+**How review works.** The required checks run automatically. **CI passed** sums up the CI workflow (lint for each OS, builds for every release target, tests on all three OSes, the race detector and the security scans); a pull request that only changes `site/`, `docs/` or Markdown skips the Go jobs. CodeQL, Semgrep, secret scanning and the changelog check run alongside it. Automated reviewers (GitHub Copilot and CodeRabbit) comment on the diff. Then a maintainer reviews it. GitHub requests the review from the maintainers listed in [`CODEOWNERS`](.github/CODEOWNERS). While the project has a single maintainer, the maintainer's own pull requests are merged after the checks pass and the automated review comments are addressed. See [`GOVERNANCE.md`](GOVERNANCE.md).
 
 **What the reviewer checks:**
 

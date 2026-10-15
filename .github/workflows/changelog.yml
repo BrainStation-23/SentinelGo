@@ -10,10 +10,24 @@ on:
 permissions:
   contents: read
 
+# Label churn (Dependabot adds two labels as it opens a PR) supersedes the
+# previous run instead of stacking up.
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   changelog:
     name: Changelog
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Dependabot PRs are exempt, so a label event on one can't change the
+    # result; skip it. Every other label event still runs: a skipped required
+    # check counts as passing, so skipping on, say, an unrelated label added to
+    # a PR that fails this check would let it merge.
+    if: >-
+      !(contains(fromJSON('["labeled", "unlabeled"]'), github.event.action) &&
+        github.event.pull_request.user.login == 'dependabot[bot]')
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

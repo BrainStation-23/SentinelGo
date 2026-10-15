@@ -15,6 +15,13 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    # Few PRs a week: both rulesets require branches to be up to date, so
+    # separate PRs would each rerun full CI every time another one merged.
+    # A dependency joins the first group that matches it. gopsutil and sqlite
+    # stay together with their companion modules for every update, majors
+    # included, because they must move in step. Everything else gets one
+    # PR for minor and patch bumps; other major versions stay separate PRs,
+    # since they can break the build.
     groups:
       gopsutil:
         patterns:
@@ -24,12 +31,12 @@ updates:
           - "github.com/power-devops/perfstat"
           - "github.com/tklauser/*"
           - "github.com/yusufpapurcu/wmi"
-      supabase:
-        patterns:
-          - "github.com/supabase-community/*"
       sqlite:
         patterns:
           - "modernc.org/*"
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -44,8 +51,12 @@ updates:
       - "dependencies"
       - "ci"
     # GitHub doesn't support mixing CodeQL Action versions in one workflow,
-    # so its sub-actions are always bumped together.
+    # so its sub-actions are always bumped together, majors included. Every
+    # other action gets one PR for minor and patch bumps.
     groups:
       codeql-action:
         patterns:
           - "github/codeql-action*"
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
