@@ -203,7 +203,7 @@ make release VERSION=vX.Y.Z
 - **HTTPS only**, with a per-agent token issued at runtime. Nothing secret is embedded in the binary.
 - **Signed releases.** Every binary is signed and checksummed, and both the updater and the installers verify it before running anything.
 - **Privacy first.** Account inventory never includes credentials, and personal data is redacted from task output before upload.
-- **Continuously checked.** CodeQL, gosec, govulncheck, Trivy and SonarCloud run on every change, and parsers are fuzzed nightly.
+- **Continuously checked.** CodeQL, gosec, govulncheck, Trivy and SonarCloud run on every change, release binaries are scanned with govulncheck before they are signed, and parsers are fuzzed on a schedule.
 
 Found a vulnerability? Please report it privately. See **[SECURITY.md](SECURITY.md)**.
 

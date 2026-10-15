@@ -77,7 +77,7 @@ or launchd, SYSTEM via the Windows service manager) on each managed device. It:
 | Boundary | Crossing | Controls |
 |---|---|---|
 | **B1** device ↔ backend | Telemetry, tasks, scripts, updates | HTTPS enforced at config load (`internal/config`); Go `crypto/tls` (TLS 1.2+, verified certificates); per-agent JWT with refresh; every call goes through `internal/supabase` with typed errors and one re-auth retry; RLS on the backend |
-| **B2** local users → agent | Files, logs, extension manifests, account and adapter names read by a privileged process | Parsers validate their input and are fuzz-tested (`*_fuzz_test.go`, nightly fuzzing); values passed to PowerShell are quoted with `shared.PSQuote`; Go is memory-safe |
+| **B2** local users → agent | Files, logs, extension manifests, account and adapter names read by a privileged process | Parsers validate their input and are fuzz-tested (`*_fuzz_test.go`, scheduled fuzzing); values passed to PowerShell are quoted with `shared.PSQuote`; Go is memory-safe |
 | **B3** agent → OS commands | The agent runs system tools to collect data | `internal/binpath` resolves tools to fixed absolute paths in administrator-only directories, not via `PATH`; arguments are passed as argv; timeouts on every command |
 | **B4** release pipeline → devices | New agent binaries | Ed25519 signature (key compiled in, `internal/updater/pubkey.go`) and SHA-256 must both verify; strictly newer versions only; backup and rollback on a failed replace |
 
@@ -103,7 +103,7 @@ How the [Saltzer and Schroeder principles](https://en.wikipedia.org/wiki/Saltzer
 | Memory corruption (CWE-787, 125, 416) | Go is memory-safe; cgo is banned and checked in CI (`make check-no-cgo`). `unsafe` is used only for Win32 API calls in the Windows event-log collector. | `Makefile`, `CLAUDE.md` |
 | OS command injection (CWE-78) | Commands get argv lists, not shell strings. The few PowerShell scripts that include device values quote them with `shared.PSQuote`, which is fuzz-tested. | `internal/osinfo/shared/psquote.go` |
 | Untrusted search path (CWE-426/427) | `internal/binpath` resolves system tools to fixed absolute paths. | `internal/binpath` |
-| Improper input validation (CWE-20) | Parsers of command output, logs, EDID data, extension manifests, versions and signatures have fuzz targets run nightly; malformed values are rejected. | `.github/workflows/fuzz.yml` |
+| Improper input validation (CWE-20) | Parsers of command output, logs, EDID data, extension manifests, versions and signatures have fuzz targets run on a schedule (nightly when `main` changes, weekly regardless); malformed values are rejected. | `.github/workflows/fuzz.yml` |
 | Download without integrity check (CWE-494) | Updater requires SHA-256 and an Ed25519 signature; installers require `SHA256SUMS`. | `internal/updater` |
 | Cleartext transmission (CWE-319) | HTTPS enforced at config load; no HTTP fallback. | `internal/config` |
 | Incorrect permissions (CWE-732) | Config and install directories get owner-only permissions on every platform. | `internal/config/secure_*.go`, `internal/winsec` |
@@ -111,12 +111,12 @@ How the [Saltzer and Schroeder principles](https://en.wikipedia.org/wiki/Saltzer
 | Sensitive data in logs or output (CWE-532) | `internal/sanitize` redacts credential-like strings and PII from task output and log lines. | `internal/sanitize` |
 | Race conditions (CWE-362) | Tests run with the race detector in CI. | `.github/workflows/ci.yml` |
 | Resource exhaustion (CWE-400) | Timeouts on every HTTP request and command; scripts over 10 MiB rejected; circuit breaker on failing calls. | `internal/httpx`, `internal/resilience` |
-| Vulnerable dependencies (CWE-1395) | Dependabot, `govulncheck` and Trivy in CI; `go mod verify`; GitHub Actions pinned to commit SHAs. | `.github/` |
+| Vulnerable dependencies (CWE-1395) | Dependabot, `govulncheck` and Trivy in CI; `govulncheck` on every release binary before signing and weekly on `main` and the latest release; the Go version is set once, in `go.mod`; `go mod verify`; GitHub Actions pinned to commit SHAs. | `.github/` |
 
 ## 7. How the claims are kept true
 
 - **Static analysis on every pull request:** CodeQL (high-severity alerts block merging), Semgrep (required), gosec, `go vet`, golangci-lint and SonarCloud.
-- **Dynamic analysis:** nightly fuzzing; the race detector on every pull request.
+- **Dynamic analysis:** scheduled fuzzing; the race detector on every pull request.
 - **Supply chain:** reproducible builds, signed releases, build-provenance and SBOM attestations, and OpenSSF Scorecard.
 - **Process:** security-relevant changes are listed under **Security** in [`CHANGELOG.md`](../CHANGELOG.md), and vulnerabilities are handled as described in [`SECURITY.md`](../SECURITY.md).
 

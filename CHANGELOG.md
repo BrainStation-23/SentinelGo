@@ -24,6 +24,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 ### Security
 
 - Release binaries are built with Go 1.26.9 instead of 1.26.0. Go 1.26.0's standard library has 28 known vulnerabilities that the agent's code can reach, among them IPv6 host parsing in `net/url` and certificate name-constraint checks in `crypto/x509`, which the updater and Supabase client use. `go.mod` now names the toolchain (`toolchain go1.26.9`), so local builds use it too. CI missed these because govulncheck ran with the latest Go (1.27) instead of the version releases are built with; it now runs with the release Go version (#183).
+- Releases can no longer ship a vulnerable Go toolchain or dependency unnoticed. The release workflow scans every built binary with `govulncheck -mode=binary` and stops before signing if any reachable vulnerability is found. Each binary records the Go that built it, so this works whatever the CI setup. A weekly scan also checks `main` and the latest published release, and opens an issue when it finds something. The Go version is now set only in `go.mod`, so builds and scans can't use different versions.
 
 ## [v3.5.1] - 2026-10-14
 

@@ -75,7 +75,7 @@ make fuzz                                    # fuzz each target for 30s, one at 
 make fuzz FUZZTIME=5m FUZZ_RUN=EDID          # longer, and only targets matching a regexp
 ```
 
-CI fuzzes every target nightly (`.github/workflows/fuzz.yml`). When a target fails, Go writes the input to `testdata/fuzz/<FuzzName>/`. Commit that file together with the fix so it stays as a regression seed. New parsers of untrusted input should come with a fuzz target.
+CI fuzzes every target nightly when `main` has changed, and weekly regardless (`.github/workflows/fuzz.yml`). When a target fails, Go writes the input to `testdata/fuzz/<FuzzName>/`. Commit that file together with the fix so it stays as a regression seed. New parsers of untrusted input should come with a fuzz target.
 
 ---
 
@@ -190,7 +190,7 @@ Before marking your PR ready for review, confirm:
 
 Every change reaches `main` through a pull request. The `main` branch ruleset enforces this for everyone, maintainers included, with no bypass.
 
-**How review works.** The required checks run automatically. **CI passed** sums up the CI workflow (lint for each OS, builds for every release target, tests on all three OSes, the race detector and the security scans); a pull request that only changes `site/`, `docs/` or Markdown skips the Go jobs. CodeQL, Semgrep, secret scanning and the changelog check run alongside it. Automated reviewers (GitHub Copilot and CodeRabbit) comment on the diff. Then a maintainer reviews it. GitHub requests the review from the maintainers listed in [`CODEOWNERS`](.github/CODEOWNERS). While the project has a single maintainer, the maintainer's own pull requests are merged after the checks pass and the automated review comments are addressed. See [`GOVERNANCE.md`](GOVERNANCE.md).
+**How review works.** The required checks run automatically. **CI passed** sums up the CI workflow (lint for each OS, builds for every release target, tests on all three OSes, the race detector and the security scans); a pull request that only changes `site/`, `docs/` or Markdown skips the Go jobs. CodeQL (GitHub's default setup, with the extended security queries), Semgrep, secret scanning and the changelog check run alongside it. Automated reviewers (GitHub Copilot and CodeRabbit) comment on the diff. Then a maintainer reviews it. GitHub requests the review from the maintainers listed in [`CODEOWNERS`](.github/CODEOWNERS). While the project has a single maintainer, the maintainer's own pull requests are merged after the checks pass and the automated review comments are addressed. See [`GOVERNANCE.md`](GOVERNANCE.md).
 
 **What the reviewer checks:**
 
