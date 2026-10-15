@@ -21,6 +21,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - A BitLocker volume that is fully encrypted but has protection suspended (common during Windows updates and firmware changes) no longer reports the disk's `encryption_status` as `disabled`. The disk-level status now comes from whether the OS or data volume is actually encrypted (`VolumeStatus`), not from `ProtectionStatus`, and a Windows install without the BitLocker module (Windows Home) reports `unknown` instead of `disabled`. On Linux, a disk is no longer reported as encrypted just because some other disk has an open dm-crypt mapping (#179).
 
+### Security
+
+- Release binaries are built with Go 1.26.9 instead of 1.26.0. Go 1.26.0's standard library has 28 known vulnerabilities that the agent's code can reach, among them IPv6 host parsing in `net/url` and certificate name-constraint checks in `crypto/x509`, which the updater and Supabase client use. `go.mod` now names the toolchain (`toolchain go1.26.9`), so local builds use it too. CI missed these because govulncheck ran with the latest Go (1.27) instead of the version releases are built with; it now runs with the release Go version (#183).
+
 ## [v3.5.1] - 2026-10-14
 
 ### Added

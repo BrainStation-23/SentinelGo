@@ -2,6 +2,8 @@ module sentinelgo
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/yusufpapurcu/wmi v1.2.4

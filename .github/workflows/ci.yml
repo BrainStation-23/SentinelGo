@@ -1,24 +1,74 @@
 name: CI
 
+# Pull requests run everything. A push to main (always the merge of a pull
+# request that already passed, since both rulesets require branches to be up
+# to date) only re-runs what needs a branch run of its own: the tests feeding
+# SonarCloud's main-branch baseline, the security scan that keeps main's code
+# scanning alerts current, and "CI passed", which release.yml looks for on the
+# tagged commit. dev has no push trigger: its PRs already tested the same tree.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: [main, dev]
-  workflow_call: # allows release.yml to reuse this workflow directly
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels that PR's previous run. Push runs get a
+# group of their own, so they are never cancelled or queued behind each other.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
-  GO_VERSION: '1.26.0'
+  GO_VERSION: '1.26.9'
   CGO_ENABLED: '0'
 
 jobs:
+  # ── what changed ─────────────────────────────────────────────────────────────
+  # A pull request that only touches the website, docs or Markdown can't affect
+  # the build, so the Go jobs are skipped. "CI passed" counts a skipped job as
+  # a pass, which is why it, not the individual jobs, is the required check.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # On a pull request HEAD is the merge commit, so HEAD^1..HEAD is exactly
+      # the PR's change. Anything unrecognised (or an empty diff) runs the jobs.
+      - name: Filter paths
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only HEAD^1 HEAD)
+          echo "$files"
+          if printf '%s\n' "$files" | grep -qvE '^(site|docs)/|\.md$|^LICENSE$|^\.github/ISSUE_TEMPLATE/'; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only docs, site or Markdown changed: skipping the Go jobs."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # ── fast, platform-agnostic checks ──────────────────────────────────────────
   static-checks:
     name: Static Checks
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -53,6 +103,9 @@ jobs:
   lint:
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -81,9 +134,12 @@ jobs:
           version: v2.12.2
 
   # ── security: independent — runs in parallel with lint ───────────────────────
+  # Runs for every pull request, docs-only included (Trivy also scans for
+  # secrets and misconfiguration), and on main so code scanning stays current.
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -117,8 +173,13 @@ jobs:
           sarif_file: gosec-results.sarif
           category: gosec
 
+      # Run with the Go set up above, the version releases are built with:
+      # govulncheck judges standard-library vulnerabilities by the Go that runs
+      # it. (golang/govulncheck-action installs the latest Go instead, caches
+      # it per PR and installs govulncheck@latest.) Pinned; Dependabot doesn't
+      # see versions in a run step, so bump it by hand.
       - name: Run govulncheck
-        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: Run Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -129,12 +190,22 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 1
           format: table
+          # Pull requests reuse main's daily DB cache instead of saving a
+          # ~90 MB copy per PR.
+          cache: ${{ github.event_name != 'pull_request' }}
 
   # ── tests on real OSes ───────────────────────────────────────────────────────
+  # On a pull request the tests wait for static checks and lint, so a lint
+  # failure doesn't start the macOS and Windows runners. On main those jobs are
+  # skipped, so this only requires that none of them failed.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: [static-checks, lint]
+    needs: [changes, static-checks, lint]
+    if: >-
+      !cancelled() && needs.changes.outputs.go == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
@@ -153,6 +224,15 @@ jobs:
         shell: bash
         run: go test -timeout=5m -coverprofile=coverage.out -coverpkg=./... -short ./...
 
+      # The race detector needs cgo, so only this step builds with
+      # CGO_ENABLED=1; the tests above still run the way releases are built.
+      # It shares this runner instead of starting its own.
+      - name: Run tests with -race
+        if: runner.os == 'Linux' && github.event_name == 'pull_request'
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race -timeout=10m -short ./...
+
       - name: Show coverage summary
         shell: bash
         run: go tool cover -func=coverage.out
@@ -167,71 +247,37 @@ jobs:
           path: coverage.out
           retention-days: 1
 
-  # ── race detector ─────────────────────────────────────────────────────────────
-  # The race detector needs cgo, so this job alone builds with CGO_ENABLED=1.
-  # Release binaries are unaffected: they're built by `make all` with cgo off.
-  race:
-    name: Race detector
-    runs-on: ubuntu-latest
-    needs: [static-checks, lint]
-    permissions:
-      contents: read
-    env:
-      CGO_ENABLED: '1'
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Run tests with -race
-        run: go test -race -timeout=10m -short ./...
-
   # ── cross-compile all targets ─────────────────────────────────────────────────
+  # One runner type-checks every release GOOS/GOARCH with cgo off.
   build:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: Build (all targets)
     runs-on: ubuntu-latest
-    needs: test
-    # Skip compilation check when called from release.yml — release does its
-    # own build with version injection, so re-running here would be redundant.
-    if: github.event_name != 'workflow_call'
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-        exclude:
-          - goos: windows
-            goarch: arm64
+    needs: [changes, test]
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      needs.changes.outputs.go == 'true' && needs.test.result == 'success'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          LDFLAGS="-X sentinelgo/cmd/sentinelgo.Version=${VERSION} -X sentinelgo/internal/config.Version=${VERSION}"
-          ext="${{ matrix.goos == 'windows' && '.exe' || '' }}"
-          go build -ldflags "${LDFLAGS}" -o sentinelgo-${{ matrix.goos }}-${{ matrix.goarch }}${ext} ./cmd/sentinelgo
+      - name: Build every release target
+        run: make verify-cross
 
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
-    needs: test
+    needs: [changes, test]
     # Dependabot runs get no repository secrets, so SONAR_TOKEN is empty and the
     # scan can only fail; SonarCloud's own app still analyses those PRs.
-    if: github.event_name != 'workflow_call' && github.actor != 'dependabot[bot]'
+    if: >-
+      !cancelled() && needs.changes.outputs.go == 'true' &&
+      needs.test.result == 'success' && github.actor != 'dependabot[bot]'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -249,7 +295,7 @@ jobs:
             /^mode:/ { next }
             {
               key = $1 " " $2
-              count = $3 + 0
+              count = ($3 + 0) > 0 ? 1 : 0
               if (!(key in best) || count > best[key]) best[key] = count
             }
             END {
@@ -264,3 +310,23 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ── the required check ───────────────────────────────────────────────────────
+  # The rulesets require this one job instead of each job by name, so jobs can
+  # be skipped (docs-only PRs, push runs) or renamed without blocking merges.
+  # It passes only if every job it depends on passed or was skipped on purpose.
+  # SonarQube is left out: a SonarCloud outage shouldn't block merging.
+  # release.yml checks for this job's success on the tagged commit.
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [changes, static-checks, lint, security, test, build]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Check job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

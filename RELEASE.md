@@ -63,7 +63,11 @@ repository.
 
 The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
-1. Runs the full CI pipeline (lint, security scans and tests on Linux, macOS and Windows).
+1. Waits for the **CI passed** check on the tagged commit. The push to `main`
+   that the tag came from runs CI on that exact commit, after its pull request
+   already passed lint, security scans and tests on Linux, macOS and Windows.
+   The release stops if CI didn't pass, so nothing is built from an untested
+   commit.
 2. Builds every target with `CGO_ENABLED=0` and the version injected via `-ldflags`.
 3. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
@@ -137,6 +141,9 @@ only reproduce on a GitHub Actions runner.
   example an expired `RELEASE_PAT`), then run **Tag Release** manually.
 - **The release PR doesn't merge.** A required check failed or the branch fell
   behind `main`. Fix the check, or run Trigger Release again with the same version.
+- **Verify CI passed fails.** CI on the tagged commit failed or never ran. If
+  the failure was flaky, re-run the failed CI jobs on `main`, then re-run the
+  release workflow. Otherwise fix it in a PR and release the next version.
 - **The release workflow fails after tagging.** Fix the cause in a PR, delete
   the tag (`git push --delete origin vX.Y.Z`) and run **Tag Release** manually
   to tag `main` again. Or release the next patch version instead.
