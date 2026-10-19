@@ -16,6 +16,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/osinfo"
+	"sentinelgo/internal/osinfo/power"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/sanitize"
 	agentsvc "sentinelgo/internal/service/agent"
@@ -33,6 +34,19 @@ var (
 	agentLastHash  string
 	agentLastForce time.Time
 )
+
+// powerWindow accumulates CPU usage between successful inventory uploads
+// for power_telemetry (#198). It is sampled on every agent-info tick and
+// only reset after an upload succeeds.
+var powerWindow power.Window
+
+// samplePowerWindow adds the time since the previous agent-info tick to
+// powerWindow. A failed read is skipped; the next one covers the gap.
+func samplePowerWindow(now time.Time) {
+	if t, err := power.ReadCPUTimes(); err == nil {
+		powerWindow.Sample(now, t)
+	}
+}
 
 // sysInfoFingerprint hashes the stable (non-volatile) fields of SystemInfo.
 // Volatile fields (CPU/memory/disk usage, uptime, timestamp) are excluded so
@@ -628,6 +642,10 @@ func handleAutoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.
 const collectTimeout = 90 * time.Second
 
 func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+	// Sample on every tick, including ones that skip the upload, so the
+	// window covers all the time since the last successful upload.
+	samplePowerWindow(time.Now())
+
 	if authSvc != nil && !authSvc.Healthy() {
 		// Session is unrecoverable right now (breaker open or credentials rejected).
 		// Skip the upload instead of firing a request that is guaranteed to 401 —
@@ -669,6 +687,11 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 		return nil
 	}
 
+	// Not part of the fingerprint: the hourly forced resend already
+	// carries each window, so this adds no uploads.
+	telemetry, powerMark := powerWindow.Snapshot(cfg.GetAgentInfoUpdateInterval())
+	sysInfo.PowerTelemetry = telemetry
+
 	agentSvc := agentsvc.NewAgentService()
 	var sendErr error
 	if authSvc == nil {
@@ -683,6 +706,7 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 		return sendErr
 	}
 
+	powerWindow.Commit(powerMark)
 	agentInfoMu.Lock()
 	agentLastHash = hash
 	agentLastForce = time.Now()
