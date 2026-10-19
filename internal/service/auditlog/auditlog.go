@@ -151,7 +151,7 @@ func (s *AuditLogService) ProcessBatchLogs(ctx context.Context, batchData map[st
 		auditLog.Source = source
 
 		if err := s.sendToSupabase(ctx, auditLog); err != nil {
-			log.Printf("warning: failed to send batch log entry: %v", err)
+			log.Printf("warning: failed to send batch log entry: %v", sanitize.ForLog(err.Error()))
 			continue
 		}
 

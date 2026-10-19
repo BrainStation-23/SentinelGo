@@ -330,8 +330,12 @@
         if (el) { el.classList.add('fixed'); el.querySelector('.msg').textContent = inc.fix; }
       }
       // If the animation stopped meanwhile (e.g. reduced motion switched on),
-      // no packet would ever arrive, so resolve straight away.
-      setTimeout(function () { if (running) spawn(n, 'down', C.a3, resolve); else resolve(); }, 1000);
+      // no packet would ever arrive, so resolve straight away, and redraw the
+      // static frame so the node doesn't stay drawn as failed.
+      setTimeout(function () {
+        if (running) spawn(n, 'down', C.a3, resolve);
+        else { resolve(); if (reduceMotion) staticFrame(); }
+      }, 1000);
     }
 
     function drawShield(x, y, s, alpha) {

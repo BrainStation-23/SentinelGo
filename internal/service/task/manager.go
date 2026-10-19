@@ -10,6 +10,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo/system"
+	"sentinelgo/internal/sanitize"
 )
 
 // TokenRefresher is the interface for refreshing authentication tokens.
@@ -141,7 +142,7 @@ func (tm *TaskManager) pollTasks(ctx context.Context) {
 	log.Printf("TaskManager: Polling for tasks...")
 
 	if err := tm.pollingSvc.PollAndStoreTasks(ctx); err != nil {
-		log.Printf("TaskManager: Error polling tasks: %v", err)
+		log.Printf("TaskManager: Error polling tasks: %v", sanitize.ForLog(err.Error()))
 		return
 	}
 

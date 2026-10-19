@@ -12,6 +12,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/resilience"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/supabase"
 )
 
@@ -179,7 +180,7 @@ func (s *Service) doRefresh(ctx context.Context, cfg *config.Config) error {
 		session, err := s.sb.RefreshSession(ctx, refreshToken)
 		if err != nil {
 			lastErr = err
-			log.Printf("Auth: refresh attempt %d failed: %v", attempt+1, err)
+			log.Printf("Auth: refresh attempt %d failed: %v", attempt+1, sanitize.ForLog(err.Error()))
 			// A 4xx (invalid_grant, refresh_token_not_found, already used, rate
 			// limited) will not succeed on retry with the same token: give up
 			// now so recovery falls through to agent-login.
@@ -265,7 +266,7 @@ func (s *Service) doRecover(ctx context.Context, cfg *config.Config) error {
 			s.needsReprovision.Store(false)
 			return nil
 		} else {
-			log.Printf("Auth: refresh failed during recovery (%v); falling back to agent-login", err)
+			log.Printf("Auth: refresh failed during recovery (%v); falling back to agent-login", sanitize.ForLog(err.Error()))
 		}
 	}
 

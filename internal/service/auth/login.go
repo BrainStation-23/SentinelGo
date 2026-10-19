@@ -10,6 +10,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/supabase"
 )
 
@@ -101,7 +102,7 @@ func (s *Service) login(ctx context.Context, cfg *config.Config, persist bool) e
 				// off — its reset window matches the server's rate-limit window.
 				return fmt.Errorf("agent-login not retryable: %w", err)
 			}
-			log.Printf("Auth: agent-login attempt %d failed: %v", attempt+1, err)
+			log.Printf("Auth: agent-login attempt %d failed: %v", attempt+1, sanitize.ForLog(err.Error()))
 			continue
 		}
 

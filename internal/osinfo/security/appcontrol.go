@@ -117,7 +117,7 @@ type appLockerPolicyXML struct {
 // audit when the only collections with rules are AuditOnly, and off when no
 // collection has rules. ok is false when the output isn't a policy.
 func parseAppLockerPolicy(policyXML string) (mode string, ok bool) {
-	policyXML = strings.TrimSpace(strings.TrimPrefix(policyXML, "ï»¿"))
+	policyXML = strings.TrimSpace(strings.TrimPrefix(policyXML, "\ufeff"))
 	if policyXML == "" {
 		return "", false
 	}
