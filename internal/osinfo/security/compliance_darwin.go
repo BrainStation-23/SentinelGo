@@ -20,6 +20,18 @@ func applyCompliance(info *shared.SecurityInfo) {
 	info.AuditLogging = collectMacAuditLogging()
 	info.TimeSync = collectMacTimeSync()
 	info.Backup = collectMacBackup()
+	info.ApplicationControl = collectMacAppControl()
+}
+
+// collectMacAppControl reports Gatekeeper. spctl exits 1 when assessments
+// are disabled, so the output is read whatever the exit code. macOS has no
+// AutoRun, so security_info.autorun is never sent.
+func collectMacAppControl() *shared.ApplicationControlInfo {
+	out, _, err := darwinRunCommandOutput("spctl", "--status")
+	if err != nil {
+		return nil
+	}
+	return gatekeeperControl(out)
 }
 
 // readPlist converts a plist file (binary or XML) to XML with plutil and
