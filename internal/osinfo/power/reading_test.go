@@ -57,6 +57,7 @@ func TestLinuxPowerReading(t *testing.T) {
 		{"peripheral battery ignored", []linuxSupply{ac("1"), {Name: "hidpp_battery_0", Type: "Battery", Scope: "Device", Status: "Discharging", PowerNow: "100000"}}, "ac", 0, ""},
 		{"discharging without a reading", []linuxSupply{ac("0"), bat("Discharging", "", "", "")}, "battery", 0, ""},
 		{"implausible 0 W", []linuxSupply{ac("0"), bat("Discharging", "0", "", "")}, "battery", 0, ""},
+		{"power_now 0 falls back to current × voltage", []linuxSupply{ac("0"), bat("Discharging", "0", "1000000", "12000000")}, "battery", 12, SourceBattery},
 		{"implausible 900 W", []linuxSupply{ac("0"), bat("Discharging", "900000000", "", "")}, "battery", 0, ""},
 		{"garbage value", []linuxSupply{ac("0"), bat("Discharging", "lots", "", "")}, "battery", 0, ""},
 	}
@@ -195,6 +196,7 @@ func TestMacPowerReading(t *testing.T) {
 		{"on AC, not charging", ioregOnACFull, "ac", 8.42, SourceAppleSystemPower},
 		{"on AC, charging", ioregOnACCharging, "ac", 0, ""},
 		{"Intel on AC", ioregIntelOnAC, "ac", 0, ""},
+		{"on AC, IsCharging missing", `<plist><array><dict><key>ExternalConnected</key><true/><key>PowerTelemetryData</key><dict><key>SystemPowerIn</key><integer>48000</integer></dict></dict></array></plist>`, "ac", 0, ""},
 		{"desktop Mac: empty array", `<plist version="1.0"><array/></plist>`, "unknown", 0, ""},
 		{"no plist", "", "unknown", 0, ""},
 		{"no ExternalConnected", `<plist><array><dict><key>Voltage</key><integer>1</integer></dict></array></plist>`, "unknown", 0, ""},

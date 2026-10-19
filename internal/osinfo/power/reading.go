@@ -150,8 +150,10 @@ func readLinuxSupplies(root string) []linuxSupply {
 	return out
 }
 
+// linuxBatteryWatts prefers power_now. Some drivers leave it at 0 while
+// current_now and voltage_now are live, so 0 falls through to their product.
 func linuxBatteryWatts(b linuxSupply) (float64, bool) {
-	if p, ok := sysfsMicro(b.PowerNow); ok {
+	if p, ok := sysfsMicro(b.PowerNow); ok && p != 0 {
 		return math.Abs(p), true
 	}
 	i, iok := sysfsMicro(b.CurrentNow)
@@ -221,8 +223,10 @@ func windowsPowerReading(batteries []winBatteryStatus) Reading {
 // macPowerReading reads `ioreg -rn AppleSmartBattery -a`: an array with
 // the battery's properties. On battery (ExternalConnected false) the draw is
 // InstantAmperage (mA, negative while discharging) × Voltage (mV). On AC and
-// not charging it is PowerTelemetryData.SystemPowerIn (mW), which Apple
-// Silicon and T2 Macs report.
+// known not to be charging (IsCharging false) it is
+// PowerTelemetryData.SystemPowerIn (mW), which Apple Silicon and T2 Macs
+// report; while charging, or when IsCharging is missing, SystemPowerIn also
+// feeds the battery, so it isn't the machine's draw.
 func macPowerReading(plist any) Reading {
 	arr, ok := plist.([]any)
 	if !ok || len(arr) == 0 {
@@ -237,10 +241,10 @@ func macPowerReading(plist any) Reading {
 		return Reading{}
 	}
 	onAC := shared.Bool(external)
-	charging, _ := bat["IsCharging"].(bool)
+	charging, chargingKnown := bat["IsCharging"].(bool)
 
 	if external {
-		if charging {
+		if charging || !chargingKnown {
 			return Reading{OnAC: onAC}
 		}
 		tel, _ := bat["PowerTelemetryData"].(map[string]any)
