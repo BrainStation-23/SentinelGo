@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
-	"sentinelgo/internal/osinfo/system"
+	"sentinelgo/internal/osinfo/system"
 	"sentinelgo/internal/sanitize"
 )
 
