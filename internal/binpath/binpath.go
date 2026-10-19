@@ -44,6 +44,7 @@ var knownPaths = func() map[string][]string {
 		"defaults":        {"/usr/bin/defaults"},
 		"diskutil":        {"/usr/sbin/diskutil"},
 		"dscl":            {"/usr/bin/dscl"},
+		"ioreg":           {"/usr/sbin/ioreg"},
 		"plutil":          {"/usr/bin/plutil"},
 		"pmset":           {"/usr/bin/pmset"},
 		"pwpolicy":        {"/usr/bin/pwpolicy"},

@@ -41,10 +41,11 @@ var (
 var powerWindow power.Window
 
 // samplePowerWindow adds the time since the previous agent-info tick to
-// powerWindow. A failed read is skipped; the next one covers the gap.
+// powerWindow, and the measured power draw where the OS reports it (#199).
+// A failed CPU read is skipped; the next one covers the gap.
 func samplePowerWindow(now time.Time) {
 	if t, err := power.ReadCPUTimes(); err == nil {
-		powerWindow.Sample(now, t)
+		powerWindow.Sample(now, t, power.ReadPower())
 	}
 }
 

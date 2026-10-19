@@ -51,6 +51,22 @@ func TestDecodePlistXML_Errors(t *testing.T) {
 	}
 }
 
+// IOKit writes negative numbers as unsigned 64-bit (ioreg's InstantAmperage
+// while discharging); they wrap back to the signed value.
+func TestDecodePlistXML_UnsignedWrap(t *testing.T) {
+	v, err := DecodePlistXML([]byte(`<plist><dict><key>InstantAmperage</key><integer>18446744073709550616</integer><key>Max</key><integer>18446744073709551615</integer></dict></plist>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := v.(map[string]any)
+	if m["InstantAmperage"] != int64(-1000) || m["Max"] != int64(-1) {
+		t.Errorf("got %v", m)
+	}
+	if _, err := DecodePlistXML([]byte(`<plist><integer>18446744073709551616</integer></plist>`)); err == nil {
+		t.Error("a value beyond 64 bits must still fail")
+	}
+}
+
 func TestPlistFromOutput(t *testing.T) {
 	v, ok := PlistFromOutput("accountPolicyData:\n<?xml version=\"1.0\"?>\n<plist version=\"1.0\"><dict><key>a</key><integer>1</integer></dict></plist>\n")
 	if !ok || v.(map[string]any)["a"] != int64(1) {
