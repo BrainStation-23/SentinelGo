@@ -41,6 +41,10 @@ func applyCompliance(info *shared.SecurityInfo) {
 	if unitFiles != nil {
 		info.Backup = linuxBackup(unitFiles)
 	}
+	if active != nil && unitFiles != nil {
+		conf, err := readHostFile("/etc/fapolicyd/fapolicyd.conf")
+		info.ApplicationControl = fapolicydControl(active, unitFiles, conf, err == nil)
+	}
 }
 
 // readHostFile reads an absolute path under securityHostRoot.

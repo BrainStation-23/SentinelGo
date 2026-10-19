@@ -25,12 +25,15 @@ func applyCompliance(info *shared.SecurityInfo, updates missingUpdatesResult) {
 	info.AuditLogging = collectWindowsAuditLogging()
 	info.TimeSync = collectWindowsTimeSync()
 	info.Backup = collectWindowsBackup()
+	info.AutoRun = collectWindowsAutoRun()
+	info.ApplicationControl = collectWindowsAppControl(probe)
 }
 
 // winComplianceScript reads the values that have no registry source in one
 // PowerShell start: the built-in Guest account (RID 501, found by SID
 // because it can be renamed), SMB1 server support, and when the last OS
-// update was installed. Get-HotFix lists OS updates (with day precision);
+// update was installed, the WDAC enforcement status and the effective
+// AppLocker policy. Get-HotFix lists OS updates (with day precision);
 // Windows Update history, without windowsNonPatchKBs, is the fallback.
 // Each read is wrapped in try so one failure leaves only its own key out.
 var winComplianceScript = strings.Join([]string{
@@ -39,6 +42,8 @@ var winComplianceScript = strings.Join([]string{
 	`try { $r.SMB1 = [bool](Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol } catch {}`,
 	`try { $h = Get-HotFix -ErrorAction Stop | Where-Object { $_.InstalledOn } | Sort-Object InstalledOn -Descending | Select-Object -First 1; if ($h) { $r.LastUpdate = ([DateTimeOffset]$h.InstalledOn).ToUnixTimeSeconds() } } catch {}`,
 	`if (-not $r.ContainsKey('LastUpdate')) { try { $s = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher(); $n = $s.GetTotalHistoryCount(); if ($n -gt 0) { $e = $s.QueryHistory(0, [Math]::Min($n, 200)) | Where-Object { $_.Operation -eq 1 -and $_.ResultCode -eq 2 -and $_.Title -notmatch '` + windowsNonPatchKBs + `' } | Sort-Object Date -Descending | Select-Object -First 1; if ($e) { $r.LastUpdate = ([DateTimeOffset][DateTime]::SpecifyKind($e.Date, 'Utc')).ToUnixTimeSeconds() } } } catch {} }`,
+	`try { $r.WDAC = [int](Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction Stop).UsermodeCodeIntegrityPolicyEnforcementStatus } catch {}`,
+	`try { $r.AppLocker = [string](Get-AppLockerPolicy -Effective -Xml -ErrorAction Stop) } catch {}`,
 	`$r | ConvertTo-Json -Compress`,
 }, "; ")
 
@@ -309,4 +314,40 @@ func collectWindowsBackup() *shared.BackupInfo {
 		}
 	}
 	return nil
+}
+
+// collectWindowsAutoRun reads the machine AutoRun/AutoPlay policies and each
+// signed-in user's AutoPlay settings (see windowsAutoRun).
+func collectWindowsAutoRun() *shared.AutoRunInfo {
+	const (
+		explorerPolicy = `SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer`
+		handlers       = `\Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers`
+	)
+	var users []winAutoplayUser
+	for _, sid := range signedInUserSIDs() {
+		users = append(users, winAutoplayUser{
+			PolicyNoDriveType: regInt(registry.USERS, sid+`\`+explorerPolicy, "NoDriveTypeAutoRun"),
+			DisableAutoplay:   regInt(registry.USERS, sid+handlers, "DisableAutoplay"),
+		})
+	}
+	return windowsAutoRun(
+		regInt(registry.LOCAL_MACHINE, explorerPolicy, "NoDriveTypeAutoRun"),
+		regInt(registry.LOCAL_MACHINE, explorerPolicy, "NoAutorun"),
+		users)
+}
+
+// collectWindowsAppControl reports the stronger of WDAC and AppLocker. The
+// Application Identity service is only queried when AppLocker has rules.
+func collectWindowsAppControl(probe winComplianceProbe) *shared.ApplicationControlInfo {
+	var appLocker *shared.ApplicationControlInfo
+	if probe.AppLocker != nil {
+		mode, ok := parseAppLockerPolicy(*probe.AppLocker)
+		running := false
+		if ok && mode != shared.AppControlOff {
+			_, status, _ := queryServiceStatus("AppIDSvc")
+			running = status == "Running"
+		}
+		appLocker = appLockerControl(mode, ok, running)
+	}
+	return strongestAppControl(wdacControl(probe.WDAC), appLocker)
 }
