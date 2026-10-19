@@ -8,6 +8,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/network"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/service/auth"
 	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/store"
@@ -149,7 +150,7 @@ func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
 			note := fmt.Sprintf("Attempt %d of %d failed; retrying.",
 				t.AttemptCount+1, store.MaxRetryAttempts+1)
 			if err := s.updateTask(ctx, t.ID, "retrying", note, nil); err != nil {
-				log.Printf("TaskPolling: Failed to report retrying status for task %s: %v", t.ID, err)
+				log.Printf("TaskPolling: Failed to report retrying status for task %s: %v", t.ID, sanitize.ForLog(err.Error()))
 			}
 		}
 	}
@@ -286,7 +287,7 @@ func (s *TaskPollingService) SyncPendingTasks(ctx context.Context) error {
 	for _, task := range tasks {
 		log.Printf("TaskPolling: Syncing task %s...", task.ID)
 		if err := s.updateTask(ctx, task.ID, task.Status, task.Note, task.Result); err != nil {
-			log.Printf("TaskPolling: Failed to sync task %s: %v", task.ID, err)
+			log.Printf("TaskPolling: Failed to sync task %s: %v", task.ID, sanitize.ForLog(err.Error()))
 			continue
 		}
 		if err := s.store.MarkTaskSynced(task.ID); err != nil {

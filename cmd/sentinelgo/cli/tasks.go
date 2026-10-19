@@ -38,7 +38,7 @@ func HandleAgentTaskPolling(cfg *config.Config) {
 
 	ctx := context.Background()
 	if err := agentTaskPollingService.PollAndStoreTasks(ctx); err != nil {
-		log.Printf("Error polling tasks: %v", err)
+		log.Printf("Error polling tasks: %v", sanitize.ForLog(err.Error()))
 	}
 }
 

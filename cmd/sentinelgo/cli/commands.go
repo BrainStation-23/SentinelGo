@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/osinfo"
+	"sentinelgo/internal/sanitize"
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
 	"sentinelgo/internal/service/rpcutil"
@@ -193,7 +194,7 @@ func HandleAgentInfoUpdate(cfg *config.Config) {
 	if needLogin {
 		fmt.Println("Logging in for this command only (tokens are not saved)...")
 		if lerr := authSvc.LoginInMemory(ctx, cfg); lerr != nil {
-			fmt.Printf("Agent login failed: %v\n", lerr)
+			fmt.Printf("Agent login failed: %v\n", sanitize.ForLog(lerr.Error()))
 			return
 		}
 		err = update()

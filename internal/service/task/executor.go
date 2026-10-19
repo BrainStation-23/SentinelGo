@@ -16,6 +16,7 @@ import (
 	"sentinelgo/internal/artifact"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
@@ -152,7 +153,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
 	note, result, err := s.runTaskResult(ctx, task)
 	if err != nil {
-		log.Printf("Executor: Task %s failed: %v", task.ID, err)
+		log.Printf("Executor: Task %s failed: %v", task.ID, sanitize.ForLog(err.Error()))
 		statusNote := err.Error()
 		if note != "" {
 			statusNote = fmt.Sprintf("%s (Error: %v)", note, err)
