@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- AutoRun/AutoPlay and application-control state in the inventory payload, for the server's CIS, ISO 27001 and NIST CSF checks. `security_info.autorun` reports `autorun_disabled` and `autoplay_disabled` on Windows, from the AutoRun policies and each signed-in user's AutoPlay setting. `security_info.application_control` reports the strongest product and its mode (`enforced`, `audit` or `off`): WDAC and AppLocker on Windows, Gatekeeper on macOS and fapolicyd on Linux. WDAC is read from its user-mode status, because the kernel-mode status also counts Windows 11's built-in driver blocklist. AppLocker rules count only while the Application Identity service is running. A value the agent can't read is left out (#178).
+
 ## [v3.6.0] - 2026-10-15
 
 ### Added
