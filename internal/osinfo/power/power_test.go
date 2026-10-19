@@ -17,7 +17,7 @@ func TestFirstReadingOnlySetsBaseline(t *testing.T) {
 	if tel, _ := w.Snapshot(5 * time.Minute); tel != nil {
 		t.Fatalf("empty window must have no telemetry, got %+v", tel)
 	}
-	w.Sample(at(0), CPUTimes{Busy: 100, Total: 1000})
+	w.Sample(at(0), CPUTimes{Busy: 100, Total: 1000}, Reading{})
 	if tel, _ := w.Snapshot(5 * time.Minute); tel != nil {
 		t.Fatalf("no completed interval yet: telemetry must be omitted, got %+v", tel)
 	}
@@ -25,9 +25,9 @@ func TestFirstReadingOnlySetsBaseline(t *testing.T) {
 
 func TestAccumulatesOverWindow(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{Busy: 0, Total: 0})
-	w.Sample(at(5), CPUTimes{Busy: 30, Total: 300})   // 10%
-	w.Sample(at(10), CPUTimes{Busy: 120, Total: 600}) // 30%
+	w.Sample(at(0), CPUTimes{Busy: 0, Total: 0}, Reading{})
+	w.Sample(at(5), CPUTimes{Busy: 30, Total: 300}, Reading{})   // 10%
+	w.Sample(at(10), CPUTimes{Busy: 120, Total: 600}, Reading{}) // 30%
 	tel, _ := w.Snapshot(5 * time.Minute)
 	if tel == nil {
 		t.Fatal("expected telemetry")
@@ -45,14 +45,14 @@ func TestAccumulatesOverWindow(t *testing.T) {
 
 func TestCommitResetsAfterSuccess(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{0, 0})
-	w.Sample(at(5), CPUTimes{30, 300})
+	w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+	w.Sample(at(5), CPUTimes{30, 300}, Reading{})
 	_, m := w.Snapshot(5 * time.Minute)
 	w.Commit(m)
 	if tel, _ := w.Snapshot(5 * time.Minute); tel != nil {
 		t.Fatalf("window must be empty right after a successful upload, got %+v", tel)
 	}
-	w.Sample(at(10), CPUTimes{330, 600}) // 100% of this interval
+	w.Sample(at(10), CPUTimes{330, 600}, Reading{}) // 100% of this interval
 	tel, _ := w.Snapshot(5 * time.Minute)
 	if tel == nil || tel.Samples != 1 || tel.CPUUsageAvgPercent != 100 {
 		t.Fatalf("got %+v", tel)
@@ -64,10 +64,10 @@ func TestCommitResetsAfterSuccess(t *testing.T) {
 
 func TestFailedSendKeepsAccumulating(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{0, 0})
-	w.Sample(at(5), CPUTimes{30, 300})
+	w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+	w.Sample(at(5), CPUTimes{30, 300}, Reading{})
 	_, _ = w.Snapshot(5 * time.Minute) // upload failed: no Commit
-	w.Sample(at(10), CPUTimes{60, 600})
+	w.Sample(at(10), CPUTimes{60, 600}, Reading{})
 	tel, _ := w.Snapshot(5 * time.Minute)
 	if tel == nil || tel.Samples != 2 || tel.WindowStart != "2026-10-15T09:00:00Z" {
 		t.Fatalf("got %+v", tel)
@@ -76,10 +76,10 @@ func TestFailedSendKeepsAccumulating(t *testing.T) {
 
 func TestCommitKeepsSamplesTakenAfterSnapshot(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{0, 0})
-	w.Sample(at(5), CPUTimes{30, 300})
+	w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+	w.Sample(at(5), CPUTimes{30, 300}, Reading{})
 	_, m := w.Snapshot(5 * time.Minute)
-	w.Sample(at(10), CPUTimes{330, 600})
+	w.Sample(at(10), CPUTimes{330, 600}, Reading{})
 	w.Commit(m)
 	tel, _ := w.Snapshot(5 * time.Minute)
 	if tel == nil || tel.Samples != 1 || tel.CPUUsageAvgPercent != 100 {
@@ -89,8 +89,8 @@ func TestCommitKeepsSamplesTakenAfterSnapshot(t *testing.T) {
 
 func TestCommitOfEmptyMarkIsNoop(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{0, 0})
-	w.Sample(at(5), CPUTimes{30, 300})
+	w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+	w.Sample(at(5), CPUTimes{30, 300}, Reading{})
 	w.Commit(Mark{})
 	if tel, _ := w.Snapshot(5 * time.Minute); tel == nil || tel.Samples != 1 {
 		t.Fatalf("got %+v", tel)
@@ -110,10 +110,10 @@ func TestCounterWrapOrResetIsSkipped(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var w Window
-			w.Sample(at(0), CPUTimes{0, 0})
-			w.Sample(at(5), CPUTimes{30, 300})
-			w.Sample(at(10), c.next) // skipped, becomes the new baseline
-			w.Sample(at(15), CPUTimes{Busy: c.next.Busy + 60, Total: c.next.Total + 300})
+			w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+			w.Sample(at(5), CPUTimes{30, 300}, Reading{})
+			w.Sample(at(10), c.next, Reading{}) // skipped, becomes the new baseline
+			w.Sample(at(15), CPUTimes{Busy: c.next.Busy + 60, Total: c.next.Total + 300}, Reading{})
 			tel, _ := w.Snapshot(5 * time.Minute)
 			if tel == nil || tel.Samples != 2 {
 				t.Fatalf("got %+v", tel)
@@ -150,8 +150,8 @@ func TestReadCPUTimesOnHost(t *testing.T) {
 
 func TestTelemetryJSON(t *testing.T) {
 	var w Window
-	w.Sample(at(0), CPUTimes{0, 0})
-	w.Sample(at(5), CPUTimes{22.2, 300})
+	w.Sample(at(0), CPUTimes{0, 0}, Reading{})
+	w.Sample(at(5), CPUTimes{22.2, 300}, Reading{})
 	tel, _ := w.Snapshot(5 * time.Minute)
 	b, _ := json.Marshal(tel)
 	want := `{"window_start":"2026-10-15T09:00:00Z","window_end":"2026-10-15T09:05:00Z","samples":1,"sample_interval_seconds":300,"cpu_usage_avg_percent":7.4}`
