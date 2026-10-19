@@ -78,7 +78,12 @@ func parsePlistInteger(text string) (int64, error) {
 	if uerr != nil {
 		return 0, err
 	}
-	return int64(u), nil // #nosec G115 -- deliberate two's-complement wrap, see above
+	// ParseInt failed, so u > MaxInt64 and its complement fits in an int64:
+	// -^u - 1 is the two's-complement value without an unchecked conversion.
+	if c := ^u; c <= math.MaxInt64 {
+		return -int64(c) - 1, nil
+	}
+	return 0, err
 }
 
 func decodePlistDict(d *xml.Decoder) (map[string]any, error) {
