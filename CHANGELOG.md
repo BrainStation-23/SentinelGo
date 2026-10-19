@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Average CPU usage in the inventory payload, for the server's device energy estimate. Each upload carries a `power_telemetry` object covering the whole time since the previous successful upload: `window_start`, `window_end`, `samples` (agent-info ticks in the window, roughly the time the machine was awake) with `sample_interval_seconds`, and `cpu_usage_avg_percent`. The average comes from CPU time counters read on every agent-info tick, including ticks that don't upload. A failed upload keeps adding to the window, so no time is lost. The object isn't part of the change check, so inventory isn't uploaded more often. It is left out until the first interval after the agent starts has completed (#198).
+
 ## [v3.6.0] - 2026-10-15
 
 ### Added

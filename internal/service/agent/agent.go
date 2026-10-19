@@ -41,6 +41,9 @@ type AgentUpdatePayload struct {
 	Printers         interface{} `json:"printers,omitempty"`
 	OSInformation    interface{} `json:"os_information"`
 	SecurityInfo     interface{} `json:"security_info,omitempty"`
+	// PowerTelemetry covers the time since the last successful upload
+	// (#198); left out until a sampling interval has completed.
+	PowerTelemetry *shared.PowerTelemetry `json:"power_telemetry,omitempty"`
 	// Capabilities lists the task features this agent supports (contract
 	// v1 §6). Always sent, even empty, so the backend can tell "none" from
 	// an agent too old to report them.
@@ -92,6 +95,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		Printers:         sysInfo.Printers,
 		OSInformation:    sysInfo.OSInformation,
 		SecurityInfo:     sysInfo.SecurityInfo,
+		PowerTelemetry:   sysInfo.PowerTelemetry,
 		Capabilities:     constants.Capabilities(),
 	}
 

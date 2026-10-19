@@ -36,6 +36,23 @@ type SystemInfo struct {
 	Printers         []Printer          `json:"printers"`
 	OSInformation    OSInformation      `json:"os_information"`
 	SecurityInfo     SecurityInfo       `json:"security_info"`
+
+	// PowerTelemetry summarises the window since the last successful
+	// inventory upload (#198). The scheduler fills it in just before an
+	// upload; it is not part of the inventory fingerprint.
+	PowerTelemetry *PowerTelemetry `json:"power_telemetry,omitempty"`
+}
+
+// PowerTelemetry is the inventory payload's power_telemetry object: the
+// average CPU usage over the window since the last successful upload.
+// Samples counts completed sampling intervals, so Samples ×
+// SampleIntervalSeconds is roughly how long the machine was awake.
+type PowerTelemetry struct {
+	WindowStart           string  `json:"window_start"`
+	WindowEnd             string  `json:"window_end"`
+	Samples               int     `json:"samples"`
+	SampleIntervalSeconds int     `json:"sample_interval_seconds"`
+	CPUUsageAvgPercent    float64 `json:"cpu_usage_avg_percent"`
 }
 
 type CPUInfo struct {
