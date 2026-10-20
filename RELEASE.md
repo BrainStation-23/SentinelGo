@@ -49,6 +49,10 @@ Release again with the same version. It rebuilds the branch from the current
 When the release PR merges, **Tag Release**
 ([`.github/workflows/tag-release.yml`](.github/workflows/tag-release.yml)) sees
 that the newest version in `CHANGELOG.md` has no tag and pushes `v3.4.0`.
+It then opens a `main` -> `dev` pull request with auto-merge on, so `dev` picks
+up the `[v3.4.0]` heading. Let it merge (with a merge commit) before the next
+`dev` -> `main` PR. Otherwise git places `dev`'s new entries under `[v3.4.0]`
+instead of `[Unreleased]`.
 
 You can also cut a release by hand: run
 `make changelog-release VERSION=v3.4.0` on a branch and merge it in a PR. Tag
