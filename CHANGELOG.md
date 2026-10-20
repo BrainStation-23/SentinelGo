@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.6.1] - 2026-10-20
+
 ### Added
 
 - Measured power draw in `power_telemetry`, where the device reports one. A laptop running on battery reports its battery's discharge rate: `/sys/class/power_supply` on Linux, WMI `BatteryStatus` on Windows (read in-process, no PowerShell) and `ioreg` on macOS. Apple Silicon and T2 Macs also report the adapter's power to the system while on AC and not charging. The window adds `on_ac_samples`, `measured_samples`, `measured_watts_avg` and `measured_source` (`battery` or `apple_system_power`). Readings taken while charging aren't counted, because they include the charge current. Values outside 0–500 W are dropped. Desktops, VMs and non-Apple laptops on AC send no `measured_*` fields (#199).
@@ -346,7 +348,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...HEAD
+[v3.6.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...v3.6.1
 [v3.6.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...v3.6.0
 [v3.5.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...v3.5.1
 [v3.5.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.4.0...v3.5.0
