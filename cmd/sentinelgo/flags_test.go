@@ -19,6 +19,7 @@ func TestParseFlags_defaults(t *testing.T) {
 
 	if f == nil {
 		t.Fatal("parseFlags() returned nil")
+		return
 	}
 	if *f.install {
 		t.Error("install should default to false")
