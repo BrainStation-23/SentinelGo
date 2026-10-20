@@ -316,6 +316,10 @@ type winComplianceProbe struct {
 	GuestEnabled *bool  `json:"GuestEnabled"`
 	SMB1         *bool  `json:"SMB1"`
 	LastUpdate   *int64 `json:"LastUpdate"`
+	// WDAC is Win32_DeviceGuard.UsermodeCodeIntegrityPolicyEnforcementStatus
+	// and AppLocker the effective AppLocker policy XML (#178).
+	WDAC      *int    `json:"WDAC"`
+	AppLocker *string `json:"AppLocker"`
 }
 
 func parseWinComplianceProbe(output string) (winComplianceProbe, bool) {

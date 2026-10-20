@@ -36,6 +36,36 @@ type SystemInfo struct {
 	Printers         []Printer          `json:"printers"`
 	OSInformation    OSInformation      `json:"os_information"`
 	SecurityInfo     SecurityInfo       `json:"security_info"`
+
+	// PowerTelemetry summarises the window since the last successful
+	// inventory upload (#198). The scheduler fills it in just before an
+	// upload; it is not part of the inventory fingerprint.
+	PowerTelemetry *PowerTelemetry `json:"power_telemetry,omitempty"`
+}
+
+// PowerTelemetry is the inventory payload's power_telemetry object: the
+// average CPU usage over the window since the last successful upload.
+// Samples counts completed sampling intervals, so Samples ×
+// SampleIntervalSeconds is roughly how long the machine was awake.
+//
+// The rest is measured power (#199). OnACSamples counts ticks the OS
+// reported AC power, and is left out when it never reported a power source
+// (desktops and VMs without a battery). MeasuredSamples counts ticks with a
+// real reading of the machine's draw, MeasuredWattsAvg is their average and
+// MeasuredSource is where most of them came from ("battery" or
+// "apple_system_power"). The measured_* fields are left out when nothing was
+// measured.
+type PowerTelemetry struct {
+	WindowStart           string  `json:"window_start"`
+	WindowEnd             string  `json:"window_end"`
+	Samples               int     `json:"samples"`
+	SampleIntervalSeconds int     `json:"sample_interval_seconds"`
+	CPUUsageAvgPercent    float64 `json:"cpu_usage_avg_percent"`
+
+	OnACSamples      *int    `json:"on_ac_samples,omitempty"`
+	MeasuredSamples  int     `json:"measured_samples,omitempty"`
+	MeasuredWattsAvg float64 `json:"measured_watts_avg,omitempty"`
+	MeasuredSource   string  `json:"measured_source,omitempty"`
 }
 
 type CPUInfo struct {
@@ -305,6 +335,10 @@ type SecurityInfo struct {
 	AuditLogging        *AuditLoggingInfo   `json:"audit_logging,omitempty"`
 	TimeSync            *TimeSyncInfo       `json:"time_sync,omitempty"`
 	Backup              *BackupInfo         `json:"backup,omitempty"`
+
+	// AutoRun and ApplicationControl (#178) follow the same rules.
+	AutoRun            *AutoRunInfo            `json:"autorun,omitempty"`
+	ApplicationControl *ApplicationControlInfo `json:"application_control,omitempty"`
 }
 
 // ScreenLockInfo describes the idle screen lock. IdleTimeoutSeconds is how
@@ -373,6 +407,33 @@ type BackupInfo struct {
 	Product       string `json:"product,omitempty"`
 	Enabled       *bool  `json:"enabled,omitempty"`
 	LastSuccessAt string `json:"last_success_at,omitempty"`
+}
+
+// AutoRunInfo reports whether removable and network media can start
+// programs on their own (AutoRun, autorun.inf) and whether Windows offers to
+// open them (AutoPlay). Windows only.
+type AutoRunInfo struct {
+	AutoRunDisabled  *bool `json:"autorun_disabled,omitempty"`
+	AutoPlayDisabled *bool `json:"autoplay_disabled,omitempty"`
+}
+
+// Application control products and modes reported in ApplicationControlInfo.
+const (
+	AppControlWDAC       = "WDAC"
+	AppControlAppLocker  = "AppLocker"
+	AppControlGatekeeper = "Gatekeeper"
+	AppControlFapolicyd  = "fapolicyd"
+
+	AppControlEnforced = "enforced"
+	AppControlAudit    = "audit"
+	AppControlOff      = "off"
+)
+
+// ApplicationControlInfo reports the strongest application allow-listing
+// product on the device and its mode (enforced, audit or off).
+type ApplicationControlInfo struct {
+	Product string `json:"product"`
+	Mode    string `json:"mode"`
 }
 
 // 1. Firewall Security

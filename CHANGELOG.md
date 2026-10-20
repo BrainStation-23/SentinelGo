@@ -13,6 +13,16 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Measured power draw in `power_telemetry`, where the device reports one. A laptop running on battery reports its battery's discharge rate: `/sys/class/power_supply` on Linux, WMI `BatteryStatus` on Windows (read in-process, no PowerShell) and `ioreg` on macOS. Apple Silicon and T2 Macs also report the adapter's power to the system while on AC and not charging. The window adds `on_ac_samples`, `measured_samples`, `measured_watts_avg` and `measured_source` (`battery` or `apple_system_power`). Readings taken while charging aren't counted, because they include the charge current. Values outside 0–500 W are dropped. Desktops, VMs and non-Apple laptops on AC send no `measured_*` fields (#199).
+- AutoRun/AutoPlay and application-control state in the inventory payload, for the server's CIS, ISO 27001 and NIST CSF checks. `security_info.autorun` reports `autorun_disabled` and `autoplay_disabled` on Windows, from the AutoRun policies and each signed-in user's AutoPlay setting. `security_info.application_control` reports the strongest product and its mode (`enforced`, `audit` or `off`): WDAC and AppLocker on Windows, Gatekeeper on macOS and fapolicyd on Linux. WDAC is read from its user-mode status, because the kernel-mode status also counts Windows 11's built-in driver blocklist. AppLocker rules count only while the Application Identity service is running. A value the agent can't read is left out (#178).
+- Average CPU usage in the inventory payload, for the server's device energy estimate. Each upload carries a `power_telemetry` object covering the whole time since the previous successful upload: `window_start`, `window_end`, `samples` (agent-info ticks in the window, roughly the time the machine was awake) with `sample_interval_seconds`, and `cpu_usage_avg_percent`. The average comes from CPU time counters read on every agent-info tick, including ticks that don't upload. A failed upload keeps adding to the window, so no time is lost. The object isn't part of the change check, so inventory isn't uploaded more often. It is left out until the first interval after the agent starts has completed (#198).
+
+### Security
+
+- Errors from the backend are written to the agent's log with line breaks removed, so a crafted server response can't add forged lines to the log (CWE-117). This covers sign-in, token refresh, task polling and execution, and audit log upload errors.
+
 ## [v3.6.0] - 2026-10-15
 
 ### Added

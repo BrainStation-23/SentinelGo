@@ -101,7 +101,8 @@
     if (reduceMotion || end === 0) { el.textContent = String(end); return; }
     var t0 = performance.now(), dur = 1400;
     (function step(t) {
-      var p = Math.min(1, (t - t0) / dur);
+      // Reduced motion switched on mid-count: jump straight to the final value.
+      var p = reduceMotion ? 1 : Math.min(1, (t - t0) / dur);
       el.textContent = String(Math.round(end * (1 - Math.pow(1 - p, 3))));
       if (p < 1) requestAnimationFrame(step);
     })(t0);
@@ -323,12 +324,17 @@
       n.state = 'bad';
       rings.push({ x: n.x, y: n.y, node: n, t: 0, color: C.danger });
       var el = toast(inc);
+      function resolve() {
+        n.state = 'ok';
+        rings.push({ node: n, t: 0, color: C.ok });
+        if (el) { el.classList.add('fixed'); el.querySelector('.msg').textContent = inc.fix; }
+      }
+      // If the animation stopped meanwhile (e.g. reduced motion switched on),
+      // no packet would ever arrive, so resolve straight away, and redraw the
+      // static frame so the node doesn't stay drawn as failed.
       setTimeout(function () {
-        spawn(n, 'down', C.a3, function () {
-          n.state = 'ok';
-          rings.push({ node: n, t: 0, color: C.ok });
-          if (el) { el.classList.add('fixed'); el.querySelector('.msg').textContent = inc.fix; }
-        });
+        if (running) spawn(n, 'down', C.a3, resolve);
+        else { resolve(); if (reduceMotion) staticFrame(); }
       }, 1000);
     }
 
@@ -464,6 +470,8 @@
     function staticFrame() {
       // One calm frame with a few packets in flight, for reduced motion.
       nodes.forEach(place);
+      // Settle remediations still in flight so their nodes and toasts don't stay failed.
+      packets.forEach(function (p) { if (p.onArrive) p.onArrive(); });
       packets = []; rings = [];
       for (var i = 0; i < 14; i++) packets.push({ node: nodes[(i * 7) % nodes.length], dir: 'up', t: (i % 5) / 5 + .1, color: C.accent });
       draw(performance.now());

@@ -176,7 +176,7 @@ func (mi *MainIntegration) initAuth(ctx context.Context) {
 	}
 
 	if err := mi.authSvc.Login(ctx, mi.cfg); err != nil {
-		log.Printf("Warning: startup agent-login failed (will retry in background): %v", err)
+		log.Printf("Warning: startup agent-login failed (will retry in background): %v", sanitize.ForLog(err.Error()))
 	}
 }
 

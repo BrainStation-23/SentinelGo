@@ -203,3 +203,36 @@ func TestAgentUpdatePayload_EmptyCapabilitiesSent(t *testing.T) {
 		t.Errorf("payload = %s, want \"capabilities\":[]", b)
 	}
 }
+
+// TestUpdateAgentInfo_PowerTelemetry: power_telemetry is sent when the
+// scheduler filled it in and left out otherwise (#198).
+func TestUpdateAgentInfo_PowerTelemetry(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+
+	sysInfo := mockSysInfo()
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, sysInfo); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	if strings.Contains(string(body), "power_telemetry") {
+		t.Errorf("power_telemetry must be omitted when nil: %s", body)
+	}
+
+	sysInfo.PowerTelemetry = &shared.PowerTelemetry{
+		WindowStart: "2026-10-15T09:00:00Z", WindowEnd: "2026-10-15T10:00:00Z",
+		Samples: 12, SampleIntervalSeconds: 300, CPUUsageAvgPercent: 7.4,
+	}
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, sysInfo); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	want := `"power_telemetry":{"window_start":"2026-10-15T09:00:00Z","window_end":"2026-10-15T10:00:00Z","samples":12,"sample_interval_seconds":300,"cpu_usage_avg_percent":7.4}`
+	if !strings.Contains(string(body), want) {
+		t.Errorf("request body lacks %s: %s", want, body)
+	}
+}

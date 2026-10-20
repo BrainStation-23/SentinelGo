@@ -55,13 +55,35 @@ func decodePlistValue(d *xml.Decoder, se xml.StartElement) (any, error) {
 	case "string", "data":
 		return text, nil
 	case "integer":
-		return strconv.ParseInt(text, 10, 64)
+		return parsePlistInteger(text)
 	case "real":
 		return strconv.ParseFloat(text, 64)
 	case "date":
 		return time.Parse(time.RFC3339, text)
 	}
 	return nil, errPlistShape
+}
+
+// parsePlistInteger parses a plist integer. IOKit numbers are unsigned
+// 64-bit, so ioreg writes a negative value (a discharging battery's
+// InstantAmperage) as its two's complement, e.g. 18446744073709550616 for
+// -1000. Such a value is wrapped back to the signed number it stands for
+// instead of failing the whole plist.
+func parsePlistInteger(text string) (int64, error) {
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err == nil {
+		return n, nil
+	}
+	u, uerr := strconv.ParseUint(text, 10, 64)
+	if uerr != nil {
+		return 0, err
+	}
+	// ParseInt failed, so u > MaxInt64 and its complement fits in an int64:
+	// -^u - 1 is the two's-complement value without an unchecked conversion.
+	if c := ^u; c <= math.MaxInt64 {
+		return -int64(c) - 1, nil
+	}
+	return 0, err
 }
 
 func decodePlistDict(d *xml.Decoder) (map[string]any, error) {

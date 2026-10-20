@@ -121,6 +121,14 @@ func TestSysInfoFingerprint_IgnoresTimeSyncOffset(t *testing.T) {
 	}
 }
 
+func TestSysInfoFingerprint_IgnoresPowerTelemetry(t *testing.T) {
+	a := &shared.SystemInfo{Hostname: "host-1"}
+	b := &shared.SystemInfo{Hostname: "host-1", PowerTelemetry: &shared.PowerTelemetry{Samples: 12, CPUUsageAvgPercent: 7.4}}
+	if sysInfoFingerprint(a) != sysInfoFingerprint(b) {
+		t.Error("power_telemetry changed the fingerprint; it would trigger extra uploads")
+	}
+}
+
 // ── handleAgentInfoUpdate ────────────────────────────────────────────────────
 
 func TestHandleAgentInfoUpdate_AuthDegradedSkips(t *testing.T) {

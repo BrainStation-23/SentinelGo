@@ -2,8 +2,9 @@ package security
 
 // Fuzz target for the compliance telemetry parsers (#172). They read config
 // files and tool output on the host (PAM, login.defs, gsettings, pmset,
-// pwpolicy plists, secedit, auditpol, PowerShell JSON), which a local user
-// or package can shape, so the parsing must never panic on unexpected input.
+// pwpolicy plists, secedit, auditpol, PowerShell JSON, AppLocker XML, spctl,
+// fapolicyd.conf), which a local user or package can shape, so the parsing
+// must never panic on unexpected input.
 //
 // The seed corpus runs as an ordinary unit test under `go test ./...`.
 // To fuzz: go test -run='^$' -fuzz='^FuzzComplianceParsers$' -fuzztime=1m ./internal/osinfo/security/
@@ -23,6 +24,8 @@ func FuzzComplianceParsers(f *testing.F) {
 		"[daemon]\nAutomaticLoginEnable=true", "[Seat:*]\nautologin-user=", "server min protocol = NT1",
 		"<plist><dict><key>minimumLength</key><integer>99999999999999999999</integer></dict></plist>",
 		"<plist><dict><key>minimumLength</key><real>1e300</real></dict></plist>",
+		`<AppLockerPolicy><RuleCollection EnforcementMode="Enabled"><FilePathRule/></RuleCollection></AppLockerPolicy>`,
+		"<AppLockerPolicy><RuleCollection>", "assessments enabled", "permissive = 1",
 		"-a always,exit -k", "Leap status : Normal\nSystem time : 1e400 seconds", "*1.2.3.4 .GPS. 1 u 1 64 1 0.1 -1e309 0.1",
 		strings.Repeat("password required pam_unix.so ", 500),
 	} {
@@ -70,5 +73,10 @@ func FuzzComplianceParsers(f *testing.F) {
 		_, _, _ = parseAuditpolBackup(s)
 		_, _ = parseWinComplianceProbe(s)
 		_, _, _ = parseWindowsMissingUpdates(s)
+
+		// Application control (#178)
+		_, _ = parseAppLockerPolicy(s)
+		_ = gatekeeperControl(s)
+		_ = fapolicydControl(map[string]string{"fapolicyd.service": ""}, map[string]string{}, s, true)
 	})
 }
