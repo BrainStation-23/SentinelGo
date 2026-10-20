@@ -117,3 +117,93 @@ func TestWindowsExtDirGlobs(t *testing.T) {
 		t.Error("firefoxProfileGlobs returned empty slice")
 	}
 }
+
+func TestParsePowerShellOutputMetadata(t *testing.T) {
+	orig := windowsOSArch
+	windowsOSArch = func() string { return "AMD64" }
+	t.Cleanup(func() { windowsOSArch = orig })
+
+	t.Run("registry program", func(t *testing.T) {
+		input := `[
+			{"Name":"7-Zip","Version":"26.01","InstallLocation":"C:\\Program Files\\7-Zip\\","InstallDate":"20260801","Publisher":"Igor Pavlov","EstimatedSize":5771,"Wow64":false},
+			{"Name":"Etcher","Version":"2.1.6","InstallLocation":"","InstallDate":null,"Publisher":"Balena Ltd. <hello@balena.io>","EstimatedSize":null,"Wow64":true},
+			{"Name":"Bare","Version":"1.0","InstallLocation":"","InstallDate":"","Publisher":null,"EstimatedSize":0,"Wow64":false}
+		]`
+		var got []SoftwareInfo
+		if !parsePowerShellOutput([]byte(input), &got, sourcePrograms) {
+			t.Fatal("parse failed")
+		}
+		assertKnownSource(t, got)
+		if len(got) != 3 {
+			t.Fatalf("got %d items, want 3", len(got))
+		}
+		zip := got[0]
+		if zip.Publisher != "Igor Pavlov" || zip.InstallDate != "2026-08-01T00:00:00Z" ||
+			zip.FirstSeenAt != zip.InstallDate || zip.SizeBytes != 5771*1024 || zip.Architecture != "x64" {
+			t.Errorf("7-Zip metadata = %+v", zip)
+		}
+		etcher := got[1]
+		if etcher.Publisher != "Balena Ltd." || etcher.InstallDate != "" || etcher.SizeBytes != 0 || etcher.Architecture != "x86" {
+			t.Errorf("Etcher metadata = %+v", etcher)
+		}
+		bare := got[2]
+		if bare.Publisher != "" || bare.InstallDate != "" || bare.SizeBytes != 0 {
+			t.Errorf("Bare should have no metadata, got %+v", bare)
+		}
+	})
+
+	t.Run("appx package", func(t *testing.T) {
+		input := `[
+			{"Name":"Microsoft.WindowsCalculator","Version":"11.2311.0.0","InstallLocation":"C:\\Program Files\\WindowsApps\\Calc","Publisher":"CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US","Architecture":"X64","InstallDate":"2026-09-24T03:22:06.1234567Z"},
+			{"Name":"5319275A.WhatsAppDesktop","Version":"2.2640.100.0","InstallLocation":"","Publisher":"CN=24803D75-212C-471A-BC57-9EF86AB91435","Architecture":"Neutral","InstallDate":null}
+		]`
+		var got []SoftwareInfo
+		if !parsePowerShellOutput([]byte(input), &got, sourceMicrosoftStore) {
+			t.Fatal("parse failed")
+		}
+		assertKnownSource(t, got)
+		calc := got[0]
+		if calc.Publisher != "Microsoft Corporation" || calc.Architecture != "x64" || calc.InstallDate != "2026-09-24T03:22:06Z" {
+			t.Errorf("Calculator metadata = %+v", calc)
+		}
+		wa := got[1]
+		if wa.Publisher != "" || wa.Architecture != "noarch" || wa.InstallDate != "" {
+			t.Errorf("WhatsApp metadata = %+v", wa)
+		}
+	})
+}
+
+func TestRegistryArch(t *testing.T) {
+	cases := []struct {
+		wow64  bool
+		osArch string
+		want   string
+	}{
+		{true, "AMD64", "x86"},
+		{false, "AMD64", "x64"},
+		{false, "x86", "x86"},
+		{true, "ARM64", "x86"},
+		{false, "ARM64", ""}, // native view mixes x64 and arm64 programs
+		{false, "", ""},
+	}
+	for _, c := range cases {
+		if got := registryArch(c.wow64, c.osArch); got != c.want {
+			t.Errorf("registryArch(%v, %q) = %q, want %q", c.wow64, c.osArch, got, c.want)
+		}
+	}
+}
+
+func TestAppxPublisherName(t *testing.T) {
+	cases := map[string]string{
+		"CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US": "Microsoft Corporation",
+		"CN=Spotify AB, O=Spotify AB, C=SE":                                                "Spotify AB",
+		"CN=BS01218":                                                                       "BS01218",
+		"CN=24803D75-212C-471A-BC57-9EF86AB91435":                                          "",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := appxPublisherName(in); got != want {
+			t.Errorf("appxPublisherName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

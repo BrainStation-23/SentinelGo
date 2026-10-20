@@ -5,106 +5,112 @@ import (
 	"encoding/json"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 const mdlsBatchSize = 200
+
+// mdlsAttrs are the Spotlight attributes read for every application bundle, in
+// the order mdls -raw prints them.
+var mdlsAttrs = []string{
+	"kMDItemLastUsedDate",
+	"kMDItemDateAdded",
+	"kMDItemPhysicalSize",
+	"kMDItemCFBundleIdentifier",
+}
+
+// bundleMeta is the Spotlight metadata of one application bundle. Zero values
+// mean the attribute was (null) or unparsable.
+type bundleMeta struct {
+	LastUsed  string // RFC 3339
+	DateAdded string // RFC 3339
+	Size      int64
+	BundleID  string
+}
 
 // runCollectCmd runs an enumeration command under collectCmdTimeout so a hung tool
 // (e.g. a stalled system_profiler) errors out instead of blocking the sync goroutine.
 func runCollectCmd(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).Output()
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
+	return exec.CommandContext(ctx, binpath.Resolve(name), args...).Output()
 }
 
-// batchMdlsLastOpened queries Spotlight metadata for the last-used date of a
-// set of app paths. Returns a map of path → RFC3339 timestamp. Paths that were
-// never opened or whose metadata is unavailable are omitted from the map.
-func batchMdlsLastOpened(paths []string) map[string]string {
-	result := make(map[string]string, len(paths))
+// batchMdlsMetadata queries Spotlight metadata for a set of app paths. Returns
+// a map of path → metadata; paths whose batch failed are omitted.
+func batchMdlsMetadata(paths []string) map[string]bundleMeta {
+	result := make(map[string]bundleMeta, len(paths))
 	for i := 0; i < len(paths); i += mdlsBatchSize {
 		end := i + mdlsBatchSize
 		if end > len(paths) {
 			end = len(paths)
 		}
 		batch := paths[i:end]
-		args := append([]string{"-name", "kMDItemLastUsedDate"}, batch...)
+		args := []string{"-raw"}
+		for _, a := range mdlsAttrs {
+			args = append(args, "-name", a)
+		}
+		args = append(args, batch...)
 		out, err := runCollectCmd("mdls", args...)
 		if err != nil {
 			log.Printf("software: mdls batch failed: %v", err)
 			continue
 		}
-		parseMdlsOutput(string(out), batch, result)
+		if !parseMdlsRaw(out, batch, result) {
+			log.Printf("software: mdls batch returned an unexpected number of values; skipped")
+		}
 	}
 	return result
 }
 
-// parseMdlsOutput parses the output of `mdls -name kMDItemLastUsedDate path1 path2 ...`.
-// Each file block starts with the path followed by a colon, then the attribute line.
-func parseMdlsOutput(output string, paths []string, result map[string]string) {
-	pathSet := buildMdlsPathSet(paths)
-
-	var currentPath string
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Path header: "/Applications/Safari.app:"
-		if strings.HasSuffix(line, ":") {
-			currentPath = resolveMdlsPathHeader(line, pathSet)
-			continue
-		}
-		if currentPath == "" {
-			continue
-		}
-		if ts, ok := parseMdlsLastUsedLine(line); ok {
-			result[currentPath] = ts
-		}
+// parseMdlsRaw parses `mdls -raw -name A -name B … path1 path2 …` output: one
+// value per (path, attribute), path-major, "(null)" for a missing attribute.
+// mdls(1) documents -raw values as NUL-separated; output without any NUL is
+// split on newlines instead, which is safe because none of mdlsAttrs is
+// multi-line. It returns false, adding nothing, when the value count does not
+// match, since the values could then not be attributed to paths.
+func parseMdlsRaw(output []byte, paths []string, result map[string]bundleMeta) bool {
+	sep := "\x00"
+	if !strings.Contains(string(output), sep) {
+		sep = "\n"
 	}
+	values := strings.Split(string(output), sep)
+	want := len(paths) * len(mdlsAttrs)
+	if len(values) == want+1 && strings.TrimSpace(values[want]) == "" {
+		values = values[:want]
+	}
+	if want == 0 || len(values) != want {
+		return false
+	}
+	for i, p := range paths {
+		v := values[i*len(mdlsAttrs) : (i+1)*len(mdlsAttrs)]
+		var m bundleMeta
+		m.LastUsed = parseMdlsDate(v[0])
+		m.DateAdded = parseMdlsDate(v[1])
+		if n, err := strconv.ParseInt(strings.TrimSpace(v[2]), 10, 64); err == nil && n > 0 {
+			m.Size = n
+		}
+		if id := strings.TrimSpace(v[3]); id != "(null)" {
+			m.BundleID = id
+		}
+		result[p] = m
+	}
+	return true
 }
 
-// buildMdlsPathSet builds a quick lookup so path headers in `mdls` output can
-// be matched back to the original queried paths.
-func buildMdlsPathSet(paths []string) map[string]string {
-	pathSet := make(map[string]string, len(paths))
-	for _, p := range paths {
-		pathSet[p+":"] = p
-	}
-	return pathSet
-}
-
-// resolveMdlsPathHeader resolves a path-header line (e.g. "/Applications/Safari.app:")
-// back to the original path, or "" if it doesn't match one we queried.
-func resolveMdlsPathHeader(line string, pathSet map[string]string) string {
-	if orig, ok := pathSet[line]; ok {
-		return orig
-	}
-	return ""
-}
-
-// parseMdlsLastUsedLine parses an attribute line such as
-// "kMDItemLastUsedDate = 2025-06-10 08:42:11 +0000" (or "(null)") into an
-// RFC3339 timestamp. ok is false for non-matching, empty, or unparsable lines.
-func parseMdlsLastUsedLine(line string) (string, bool) {
-	if !strings.HasPrefix(line, "kMDItemLastUsedDate") {
-		return "", false
-	}
-	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 {
-		return "", false
-	}
-	val := strings.TrimSpace(parts[1])
-	if val == "(null)" || val == "" {
-		return "", false
-	}
-	t, err := time.Parse("2006-01-02 15:04:05 +0000", val)
+// parseMdlsDate parses an mdls date such as "2025-06-10 08:42:11 +0000" into
+// RFC 3339, or "" for "(null)" and unparsable values.
+func parseMdlsDate(val string) string {
+	t, err := time.Parse("2006-01-02 15:04:05 -0700", strings.TrimSpace(val))
 	if err != nil {
-		return "", false
+		return ""
 	}
-	return t.UTC().Format(time.RFC3339), true
+	return t.UTC().Format(time.RFC3339)
 }
 
 // platformSoftware collects currently installed software on macOS. It returns
@@ -117,8 +123,13 @@ func (s *SoftwareService) platformSoftware() ([]SoftwareInfo, bool) {
 	apps, appsOK := s.getMacApplications()
 	sw = append(sw, apps...)
 	brew, _ := s.getHomebrewPackages()
-	sw = append(sw, brew...)
 	cask, _ := s.getHomebrewCaskPackages()
+	if len(brew)+len(cask) > 0 {
+		formulae, casks := getHomebrewInfo()
+		applyHomebrewInfo(brew, formulae)
+		applyHomebrewInfo(cask, casks)
+	}
+	sw = append(sw, brew...)
 	sw = append(sw, cask...)
 
 	extStart := len(sw)
@@ -141,7 +152,7 @@ func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 		return nil, false
 	}
 
-	// Collect paths to batch-query last-opened metadata.
+	// Collect paths to batch-query Spotlight metadata.
 	paths := make([]string, 0, len(applications))
 	for _, app := range applications {
 		if app.FilePath != "" {
@@ -149,15 +160,24 @@ func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 		}
 	}
 	if len(paths) > 0 {
-		lastOpened := batchMdlsLastOpened(paths)
-		for i := range applications {
-			if ts, ok := lastOpened[applications[i].FilePath]; ok {
-				applications[i].LastOpened = ts
-			}
-		}
+		applyBundleMeta(applications, batchMdlsMetadata(paths))
 	}
 
 	return applications, true
+}
+
+// applyBundleMeta copies Spotlight metadata onto the applications it belongs to.
+func applyBundleMeta(applications []SoftwareInfo, meta map[string]bundleMeta) {
+	for i := range applications {
+		m, ok := meta[applications[i].FilePath]
+		if !ok {
+			continue
+		}
+		applications[i].LastOpened = m.LastUsed
+		applications[i].InstallDate = m.DateAdded
+		applications[i].SizeBytes = m.Size
+		applications[i].BundleID = m.BundleID
+	}
 }
 
 func (s *SoftwareService) getHomebrewPackages() ([]SoftwareInfo, bool) {
@@ -167,7 +187,7 @@ func (s *SoftwareService) getHomebrewPackages() ([]SoftwareInfo, bool) {
 		return nil, false
 	}
 	var packages []SoftwareInfo
-	parseHomebrewPackages(output, &packages, "homebrew")
+	parseHomebrewPackages(output, &packages, sourceHomebrew)
 	return packages, true
 }
 
@@ -178,18 +198,122 @@ func (s *SoftwareService) getHomebrewCaskPackages() ([]SoftwareInfo, bool) {
 		return nil, false
 	}
 	var packages []SoftwareInfo
-	parseHomebrewPackages(output, &packages, "homebrew_cask")
+	parseHomebrewPackages(output, &packages, sourceHomebrewCask)
 	return packages, true
+}
+
+// brewMeta is the install metadata brew keeps for one formula or cask.
+type brewMeta struct {
+	Tap         string
+	InstallDate string // RFC 3339
+}
+
+// getHomebrewInfo returns install metadata for every installed formula and
+// cask, keyed by name / token. Best-effort: on failure both maps are nil and
+// the packages are reported without it.
+func getHomebrewInfo() (formulae, casks map[string]brewMeta) {
+	output, err := runCollectCmd("brew", "info", "--json=v2", "--installed")
+	if err != nil {
+		log.Printf("software: brew info --json=v2 --installed failed: %v", err)
+		return nil, nil
+	}
+	return parseHomebrewInfo(output)
+}
+
+// parseHomebrewInfo parses `brew info --json=v2 --installed`. A formula's
+// install time is on its installed keg; a cask's is installed_time. Both are
+// Unix seconds.
+func parseHomebrewInfo(output []byte) (formulae, casks map[string]brewMeta) {
+	var info struct {
+		Formulae []struct {
+			Name      string `json:"name"`
+			Tap       string `json:"tap"`
+			Installed []struct {
+				Time int64 `json:"time"`
+			} `json:"installed"`
+		} `json:"formulae"`
+		Casks []struct {
+			Token         string `json:"token"`
+			Tap           string `json:"tap"`
+			InstalledTime int64  `json:"installed_time"`
+		} `json:"casks"`
+	}
+	if err := json.Unmarshal(output, &info); err != nil {
+		return nil, nil
+	}
+	formulae = make(map[string]brewMeta, len(info.Formulae))
+	for _, f := range info.Formulae {
+		m := brewMeta{Tap: f.Tap}
+		// The last keg is the most recently installed version.
+		if n := len(f.Installed); n > 0 {
+			m.InstallDate = unixToRFC3339(f.Installed[n-1].Time)
+		}
+		formulae[f.Name] = m
+	}
+	casks = make(map[string]brewMeta, len(info.Casks))
+	for _, c := range info.Casks {
+		casks[c.Token] = brewMeta{Tap: c.Tap, InstallDate: unixToRFC3339(c.InstalledTime)}
+	}
+	return formulae, casks
+}
+
+// applyHomebrewInfo copies brew metadata onto packages. The tap (e.g.
+// homebrew/core) is reported as the publisher, as flatpak's origin is on Linux.
+func applyHomebrewInfo(packages []SoftwareInfo, meta map[string]brewMeta) {
+	for i := range packages {
+		m, ok := meta[packages[i].Name]
+		if !ok {
+			continue
+		}
+		packages[i].Publisher = m.Tap
+		packages[i].InstallDate = m.InstallDate
+	}
+}
+
+func unixToRFC3339(sec int64) string {
+	if sec <= 0 {
+		return ""
+	}
+	return time.Unix(sec, 0).UTC().Format(time.RFC3339)
 }
 
 type systemProfilerOutput struct {
 	SPApplicationsDataType []struct {
-		Name         string `json:"_name"`
-		Version      string `json:"version"`
-		Path         string `json:"path"`
-		ObtainedFrom string `json:"obtained_from"`
-		LastModified string `json:"lastModified"`
+		Name         string   `json:"_name"`
+		Version      string   `json:"version"`
+		Path         string   `json:"path"`
+		ObtainedFrom string   `json:"obtained_from"`
+		LastModified string   `json:"lastModified"`
+		ArchKind     string   `json:"arch_kind"`
+		SignedBy     []string `json:"signed_by"`
 	} `json:"SPApplicationsDataType"`
+}
+
+// macPublisher derives an app's publisher from its code-signing chain. Apple's
+// own apps are signed "Software Signing"; Developer ID apps carry the developer
+// name in their leaf certificate, "Developer ID Application: Name (TEAMID)".
+// Mac App Store apps are re-signed by Apple, so their developer is not
+// available here and the publisher is left out.
+func macPublisher(obtainedFrom string, signedBy []string) string {
+	if obtainedFrom == "apple" {
+		return "Apple Inc."
+	}
+	if len(signedBy) == 0 {
+		return ""
+	}
+	leaf := strings.TrimSpace(signedBy[0])
+	if leaf == "Software Signing" {
+		return "Apple Inc."
+	}
+	name, ok := strings.CutPrefix(leaf, "Developer ID Application:")
+	if !ok {
+		return ""
+	}
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndex(name, " ("); i > 0 && strings.HasSuffix(name, ")") {
+		name = name[:i]
+	}
+	return strings.TrimSpace(name)
 }
 
 // parseSystemProfilerApps parses system_profiler JSON into applications. It
@@ -205,10 +329,10 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 		if app.Name == "" {
 			continue
 		}
-		source := "applications"
+		source := sourceApplications
 		appStoreApp := ""
 		if app.ObtainedFrom == "mac_app_store" {
-			source = "app_store"
+			source = sourceAppStore
 			appStoreApp = "true"
 		}
 		firstSeen := time.Now().UTC().Format(time.RFC3339)
@@ -224,6 +348,8 @@ func parseSystemProfilerApps(output []byte, applications *[]SoftwareInfo) bool {
 			Source:           source,
 			Type:             source,
 			FirstSeenAt:      firstSeen,
+			Publisher:        macPublisher(app.ObtainedFrom, app.SignedBy),
+			Architecture:     normalizeArch(app.ArchKind),
 		})
 	}
 	return true

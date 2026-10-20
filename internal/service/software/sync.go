@@ -15,6 +15,27 @@ import (
 
 const rpcTimeout = 60 * time.Second
 
+// maxMetadataLen caps the optional metadata strings. They come from package
+// metadata the agent does not control (a package names its own maintainer or
+// vendor), and no real value comes close to this length.
+const maxMetadataLen = 256
+
+// truncateRunes shortens s to at most n runes without splitting a character.
+// The result is always a prefix of s (an invalid byte counts as one rune).
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
 // SendByRPC sends the full software list to the agent_enqueue_software RPC.
 func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []SoftwareInfo, cfg *config.Config) error {
 	if s.supabaseURL == "" {
@@ -34,6 +55,11 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 		LastOpened       string `json:"last_opened,omitempty"`
 		FilePath         string `json:"file_path,omitempty"`
 		FirstSeenAt      string `json:"first_seen_at,omitempty"`
+		Publisher        string `json:"publisher,omitempty"`
+		InstallDate      string `json:"install_date,omitempty"`
+		SizeBytes        int64  `json:"size_bytes,omitempty"`
+		Architecture     string `json:"architecture,omitempty"`
+		BundleID         string `json:"bundle_id,omitempty"`
 	}
 
 	items := make([]softwareItem, 0, len(software))
@@ -49,6 +75,11 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 			LastOpened:       sw.LastOpened,
 			FilePath:         sw.FilePath,
 			FirstSeenAt:      sw.FirstSeenAt,
+			Publisher:        truncateRunes(sw.Publisher, maxMetadataLen),
+			InstallDate:      truncateRunes(sw.InstallDate, maxMetadataLen),
+			SizeBytes:        sw.SizeBytes,
+			Architecture:     truncateRunes(sw.Architecture, maxMetadataLen),
+			BundleID:         truncateRunes(sw.BundleID, maxMetadataLen),
 		})
 	}
 

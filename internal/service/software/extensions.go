@@ -32,7 +32,7 @@ func (s *SoftwareService) appendExtensions(sw *[]SoftwareInfo) {
 func (s *SoftwareService) getChromeExtensions() ([]SoftwareInfo, bool) {
 	var extensions []SoftwareInfo
 	for _, home := range userHomeDirs() {
-		extensions = append(extensions, scanChromiumExtensions(chromeExtDirGlobs(home), "chrome_extensions")...)
+		extensions = append(extensions, scanChromiumExtensions(chromeExtDirGlobs(home), sourceChromeExt)...)
 	}
 	return extensions, true
 }
@@ -66,7 +66,7 @@ func scanFirefoxProfile(profile string) []SoftwareInfo {
 		}
 		extID := entry.Name()
 		mPath := filepath.Join(extBase, extID, manifestFile)
-		if info := readExtensionManifest(mPath, "firefox_extensions", "firefox_extensions", extID); info != nil {
+		if info := readExtensionManifest(mPath, sourceFirefoxExt, sourceFirefoxExt, extID); info != nil {
 			extensions = append(extensions, *info)
 		}
 	}
@@ -77,7 +77,7 @@ func scanFirefoxProfile(profile string) []SoftwareInfo {
 func (s *SoftwareService) getEdgeExtensions() ([]SoftwareInfo, bool) {
 	var extensions []SoftwareInfo
 	for _, home := range userHomeDirs() {
-		extensions = append(extensions, scanChromiumExtensions(edgeExtDirGlobs(home), "edge_extensions")...)
+		extensions = append(extensions, scanChromiumExtensions(edgeExtDirGlobs(home), sourceEdgeExt)...)
 	}
 	return extensions, true
 }
@@ -86,7 +86,7 @@ func (s *SoftwareService) getEdgeExtensions() ([]SoftwareInfo, bool) {
 func (s *SoftwareService) getBraveExtensions() ([]SoftwareInfo, bool) {
 	var extensions []SoftwareInfo
 	for _, home := range userHomeDirs() {
-		extensions = append(extensions, scanChromiumExtensions(braveExtDirGlobs(home), "brave_extensions")...)
+		extensions = append(extensions, scanChromiumExtensions(braveExtDirGlobs(home), sourceBraveExt)...)
 	}
 	return extensions, true
 }
