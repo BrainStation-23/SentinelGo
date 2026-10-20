@@ -204,3 +204,58 @@ func TestSoftwareEnqueuePayloadShape(t *testing.T) {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
+
+// ── TestSoftwareEnqueueMetadataFields ────────────────────────────────────────
+
+// The optional metadata fields are sent under their own names when set and
+// left out entirely when the collector had no value.
+func TestSoftwareEnqueueMetadataFields(t *testing.T) {
+	var items []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Payload struct {
+				Software []map[string]any `json:"software"`
+			} `json:"payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		items = payload.Payload.Software
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"enqueued":true,"msg_id":3}`))
+	}))
+	defer server.Close()
+
+	svc := software.NewSoftwareService()
+	svc.SetSupabaseURL(server.URL)
+	list := []software.SoftwareInfo{
+		{
+			Name: "Slack", Source: "applications", Type: "applications",
+			Publisher: "Slack Technologies, Inc.", InstallDate: "2026-01-02T03:04:05Z",
+			SizeBytes: 123456, Architecture: "universal", BundleID: "com.tinyspeck.slackmacgap",
+		},
+		{Name: "bare", Source: "deb_packages", Type: "deb_packages"},
+	}
+	if err := svc.SendByRPC(context.Background(), "dev-1", list, nil); err != nil {
+		t.Fatalf("SendByRPC: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+
+	want := map[string]any{
+		"publisher":    "Slack Technologies, Inc.",
+		"install_date": "2026-01-02T03:04:05Z",
+		"size_bytes":   float64(123456),
+		"architecture": "universal",
+		"bundle_id":    "com.tinyspeck.slackmacgap",
+	}
+	for k, v := range want {
+		if items[0][k] != v {
+			t.Errorf("items[0][%q] = %v, want %v", k, items[0][k], v)
+		}
+		if _, ok := items[1][k]; ok {
+			t.Errorf("items[1] has %q; empty metadata must be omitted", k)
+		}
+	}
+}
