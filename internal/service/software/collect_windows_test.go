@@ -199,11 +199,66 @@ func TestAppxPublisherName(t *testing.T) {
 		"CN=Spotify AB, O=Spotify AB, C=SE":                                                "Spotify AB",
 		"CN=BS01218":                                                                       "BS01218",
 		"CN=24803D75-212C-471A-BC57-9EF86AB91435":                                          "",
-		"": "",
+		`CN="Acme, Inc.", O="Acme, Inc.", C=US`:                                            "Acme, Inc.",
+		`CN=Acme\, Inc., C=US`:                                                             "Acme, Inc.",
+		`O="Say ""Hi"", Ltd.", C=US`:                                                       `Say "Hi", Ltd.`,
+		`CN=Fallback; C=US`:                                                                "Fallback",
+		`O="Unbalanced, C=US`:                                                              "Unbalanced, C=US",
+		"":                                                                                 "",
 	}
 	for in, want := range cases {
 		if got := appxPublisherName(in); got != want {
 			t.Errorf("appxPublisherName(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// An x86 and an x64 install of one program must both reach the catalog, while
+// the same program listed under several hives is reported once.
+func TestParsePowerShellOutputMultiArch(t *testing.T) {
+	orig := windowsOSArch
+	windowsOSArch = func() string { return "AMD64" }
+	t.Cleanup(func() { windowsOSArch = orig })
+
+	t.Run("registry", func(t *testing.T) {
+		input := `[
+			{"Name":"ExampleTool","Version":"2.0","Wow64":false},
+			{"Name":"ExampleTool","Version":"1.0","Wow64":true},
+			{"Name":"Chrome","Version":"130","Wow64":false},
+			{"Name":"chrome","Version":"130","Wow64":false}
+		]`
+		var got []SoftwareInfo
+		if !parsePowerShellOutput([]byte(input), &got, sourcePrograms) {
+			t.Fatal("parse failed")
+		}
+		want := map[string]string{"ExampleTool:x64": "2.0", "ExampleTool:x86": "1.0", "Chrome": "130"}
+		if len(got) != len(want) {
+			t.Fatalf("got %d items %+v, want %d", len(got), got, len(want))
+		}
+		for _, sw := range got {
+			if v, ok := want[sw.Name]; !ok || v != sw.InstalledVersion {
+				t.Errorf("unexpected item %q version %q", sw.Name, sw.InstalledVersion)
+			}
+		}
+	})
+
+	t.Run("appx", func(t *testing.T) {
+		input := `[
+			{"Name":"Microsoft.VCLibs","Version":"14.0","Architecture":"X64"},
+			{"Name":"Microsoft.VCLibs","Version":"14.0","Architecture":"X86"},
+			{"Name":"Microsoft.Paint","Version":"11.0","Architecture":"X64"},
+			{"Name":"Microsoft.Paint","Version":"11.0","Architecture":"X64"}
+		]`
+		var got []SoftwareInfo
+		if !parsePowerShellOutput([]byte(input), &got, sourceMicrosoftStore) {
+			t.Fatal("parse failed")
+		}
+		names := make([]string, len(got))
+		for i, sw := range got {
+			names[i] = sw.Name
+		}
+		if strings.Join(names, ",") != "Microsoft.VCLibs:x64,Microsoft.VCLibs:x86,Microsoft.Paint" {
+			t.Errorf("names = %v", names)
+		}
+	})
 }

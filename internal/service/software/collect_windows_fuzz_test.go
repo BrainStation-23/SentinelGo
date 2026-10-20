@@ -22,6 +22,8 @@ func FuzzParsePowerShellOutput(f *testing.F) {
 	f.Add(`{"Name":"Calc","Publisher":"CN=Microsoft Corporation, O=Microsoft Corporation","Architecture":"X64","InstallDate":"2026-09-24T03:22:06.1234567Z"}`, true)
 	f.Add(`[{"Name":"x","EstimatedSize":-5,"InstallDate":99,"Wow64":"yes","Architecture":7}]`, false)
 	f.Add(`[{"Name":"x","EstimatedSize":1e300}]`, false)
+	f.Add(`[{"Name":"Tool","Wow64":false},{"Name":"Tool","Wow64":true},{"Name":"tool","Wow64":true}]`, false)
+	f.Add(`[{"Name":"Lib","Architecture":"X64"},{"Name":"Lib","Architecture":"X86"}]`, true)
 	f.Add(`not json`, false)
 	f.Add(``, true)
 	f.Fuzz(func(t *testing.T, s string, store bool) {
@@ -44,6 +46,9 @@ func FuzzAppxPublisherName(f *testing.F) {
 	f.Add("CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US")
 	f.Add("CN=24803D75-212C-471A-BC57-9EF86AB91435")
 	f.Add(`CN="Quoted, Inc.", O="Quoted, Inc."`)
+	f.Add(`CN=Escaped\, Inc.; O="Say ""Hi"""`)
+	f.Add(`O="unterminated, C=US`)
+	f.Add(`O=trailing\`)
 	f.Add("O=, CN=")
 	f.Add("=,=,,")
 	f.Add("")

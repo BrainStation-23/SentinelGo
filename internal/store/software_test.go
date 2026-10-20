@@ -191,3 +191,87 @@ func TestNewSoftwareStore_UnwritablePath(t *testing.T) {
 		t.Error("expected NewSoftwareStore to fail when the parent directory doesn't exist")
 	}
 }
+
+// The optional metadata must survive a catalog round-trip, and an update must
+// replace it.
+func TestSoftwareStore_MetadataRoundTrip(t *testing.T) {
+	s := openSoftwareStoreInMemory(t)
+
+	want := models.SoftwareInfo{
+		Name: "Safari", Source: "applications", Type: "applications",
+		Publisher: "Apple Inc.", InstallDate: "2026-01-02T03:04:05Z",
+		SizeBytes: 1234, Architecture: "universal", BundleID: "com.apple.Safari",
+	}
+	if err := s.Upsert("agent-1", []models.SoftwareInfo{want}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := s.GetAll("agent-1")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("GetAll = %v, %v; want 1 item", got, err)
+	}
+	if g := got[0]; g.Publisher != want.Publisher || g.InstallDate != want.InstallDate ||
+		g.SizeBytes != want.SizeBytes || g.Architecture != want.Architecture || g.BundleID != want.BundleID {
+		t.Errorf("metadata round-trip = %+v, want %+v", g, want)
+	}
+
+	updated := want
+	updated.SizeBytes = 5678
+	updated.Publisher = ""
+	if err := s.Upsert("agent-1", []models.SoftwareInfo{updated}); err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+	got, _ = s.GetAll("agent-1")
+	if got[0].SizeBytes != 5678 || got[0].Publisher != "" {
+		t.Errorf("after update: SizeBytes=%d Publisher=%q, want 5678 and empty", got[0].SizeBytes, got[0].Publisher)
+	}
+}
+
+// A catalog created before the metadata columns existed must upgrade in place
+// and keep its rows.
+func TestNewSoftwareStore_MigratesV1Catalog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "software.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := store.Migrate(db, []store.Migration{{Version: 1, SQL: `
+CREATE TABLE IF NOT EXISTS software (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_id          TEXT    NOT NULL,
+	name              TEXT    NOT NULL,
+	source            TEXT    NOT NULL DEFAULT '',
+	type              TEXT    NOT NULL DEFAULT '',
+	installed_version TEXT    NOT NULL DEFAULT '',
+	display_name      TEXT    NOT NULL DEFAULT '',
+	software_package  TEXT    NOT NULL DEFAULT '',
+	app_store_app     TEXT    NOT NULL DEFAULT '',
+	last_opened       TEXT    NOT NULL DEFAULT '',
+	file_path         TEXT    NOT NULL DEFAULT '',
+	first_seen_at     TEXT    NOT NULL DEFAULT '',
+	updated_at        TEXT    NOT NULL DEFAULT '',
+	UNIQUE(agent_id, name, source)
+);`}}); err != nil {
+		t.Fatalf("Migrate v1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO software (agent_id, name, source) VALUES ('agent-1', 'old', 'programs')`); err != nil {
+		t.Fatalf("seed v1 row: %v", err)
+	}
+	_ = db.Close()
+
+	s, err := store.NewSoftwareStore(path)
+	if err != nil {
+		t.Fatalf("NewSoftwareStore on a v1 catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Upsert("agent-1", []models.SoftwareInfo{{Name: "new", Source: "programs", SizeBytes: 42}}); err != nil {
+		t.Fatalf("Upsert after upgrade: %v", err)
+	}
+	got, err := s.GetAll("agent-1")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("GetAll after upgrade = %v, %v; want 2 items", got, err)
+	}
+	if got[0].Name != "new" || got[0].SizeBytes != 42 || got[1].Name != "old" || got[1].SizeBytes != 0 {
+		t.Errorf("rows after upgrade = %+v", got)
+	}
+}

@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os/exec"
 	"strconv"
@@ -34,11 +35,18 @@ type bundleMeta struct {
 
 // runCollectCmd runs an enumeration command under collectCmdTimeout so a hung tool
 // (e.g. a stalled system_profiler) errors out instead of blocking the sync goroutine.
+// The tool must be at one of its known paths (binpath.Lookup): PATH is never
+// searched, so a brew installed outside Homebrew's standard prefixes is skipped
+// rather than letting a substituted binary run with the agent's privileges.
 func runCollectCmd(name string, args ...string) ([]byte, error) {
+	path, ok := binpath.Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("%s not found at a known path", name)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
-	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	return exec.CommandContext(ctx, binpath.Resolve(name), args...).Output()
+	// #nosec G204 - binpath.Lookup returns a fixed, verified absolute path; not attacker input
+	return exec.CommandContext(ctx, path, args...).Output()
 }
 
 // batchMdlsMetadata queries Spotlight metadata for a set of app paths. Returns

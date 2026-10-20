@@ -33,8 +33,19 @@ CREATE TABLE IF NOT EXISTS software (
 CREATE INDEX IF NOT EXISTS idx_software_agent ON software(agent_id);
 `
 
+// softwareSchemaV2 adds the optional metadata columns (publisher, install date,
+// size, architecture, bundle ID) so a catalog round-trip keeps them.
+const softwareSchemaV2 = `
+ALTER TABLE software ADD COLUMN publisher     TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN install_date  TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN size_bytes    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE software ADD COLUMN architecture  TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN bundle_id     TEXT    NOT NULL DEFAULT '';
+`
+
 var softwareMigrations = []Migration{
 	{Version: 1, SQL: softwareSchemaV1},
+	{Version: 2, SQL: softwareSchemaV2},
 }
 
 // SoftwareStore is a SQLite-backed local cache for installed-software state.
@@ -79,8 +90,9 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO software
-			(agent_id, name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(agent_id, name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at, updated_at,
+			 publisher, install_date, size_bytes, architecture, bundle_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id, name, source) DO UPDATE SET
 			type              = excluded.type,
 			installed_version = excluded.installed_version,
@@ -89,7 +101,12 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 			app_store_app     = excluded.app_store_app,
 			last_opened       = excluded.last_opened,
 			file_path         = excluded.file_path,
-			updated_at        = excluded.updated_at
+			updated_at        = excluded.updated_at,
+			publisher         = excluded.publisher,
+			install_date      = excluded.install_date,
+			size_bytes        = excluded.size_bytes,
+			architecture      = excluded.architecture,
+			bundle_id         = excluded.bundle_id
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare upsert stmt: %w", err)
@@ -109,6 +126,7 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 			agentID, sw.Name, sw.Source, sw.Type, sw.InstalledVersion,
 			sw.DisplayName, sw.SoftwarePackage, sw.AppStoreApp, sw.LastOpened,
 			sw.FilePath, firstSeen, now,
+			sw.Publisher, sw.InstallDate, sw.SizeBytes, sw.Architecture, sw.BundleID,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert software %q: %w", sw.Name, err)
@@ -121,7 +139,8 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 // GetAll returns all software stored for agentID.
 func (s *SoftwareStore) GetAll(agentID string) ([]models.SoftwareInfo, error) {
 	rows, err := s.db.Query(`
-		SELECT name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at
+		SELECT name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at,
+			publisher, install_date, size_bytes, architecture, bundle_id
 		FROM software
 		WHERE agent_id = ?
 		ORDER BY source, name
@@ -141,6 +160,7 @@ func (s *SoftwareStore) GetAll(agentID string) ([]models.SoftwareInfo, error) {
 		if err := rows.Scan(
 			&sw.Name, &sw.Source, &sw.Type, &sw.InstalledVersion, &sw.DisplayName,
 			&sw.SoftwarePackage, &sw.AppStoreApp, &sw.LastOpened, &sw.FilePath, &sw.FirstSeenAt,
+			&sw.Publisher, &sw.InstallDate, &sw.SizeBytes, &sw.Architecture, &sw.BundleID,
 		); err != nil {
 			return nil, fmt.Errorf("scan software: %w", err)
 		}

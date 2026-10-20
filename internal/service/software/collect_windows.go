@@ -52,10 +52,12 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	// Single quotes only (no embedded double quotes / $()-in-string) so the script
 	// survives argument escaping intact. Per-user paths are built by concatenating
 	// each loaded hive's PSPath with a single-quoted suffix. Wow64 marks keys
-	// under Wow6432Node, i.e. 32-bit programs on a 64-bit OS.
+	// under Wow6432Node, i.e. 32-bit programs on a 64-bit OS. Duplicates are
+	// removed in parsePowerShellOutput by name and architecture, not here by
+	// name, so an x86 and an x64 install of one program are both kept.
 	const registryQuery = `$paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 $paths += Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $_.PSPath + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; $_.PSPath + '\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
-Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='Publisher';E={$_.Publisher}},@{N='EstimatedSize';E={$_.EstimatedSize}},@{N='Wow64';E={$_.PSPath -match 'Wow6432Node'}} | Sort-Object Name -Unique | ConvertTo-Json`
+Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='Publisher';E={$_.Publisher}},@{N='EstimatedSize';E={$_.EstimatedSize}},@{N='Wow64';E={$_.PSPath -match 'Wow6432Node'}} | Sort-Object Name | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
@@ -93,7 +95,7 @@ func (s *SoftwareService) queryAppxPackages(allUsers bool) ([]SoftwareInfo, bool
 	if allUsers {
 		enumerator += " -AllUsers"
 	}
-	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='Publisher';E={$_.Publisher}},@{N='Architecture';E={$_.Architecture.ToString()}},@{N='InstallDate';E={if ($_.InstallLocation) { $d = (Get-Item -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue).CreationTimeUtc; if ($d) { $d.ToString('o') } }}} | Sort-Object Name -Unique | ConvertTo-Json`
+	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='Publisher';E={$_.Publisher}},@{N='Architecture';E={$_.Architecture.ToString()}},@{N='InstallDate';E={if ($_.InstallLocation) { $d = (Get-Item -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue).CreationTimeUtc; if ($d) { $d.ToString('o') } }}} | Sort-Object Name | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
@@ -139,16 +141,16 @@ var guidCN = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[
 // appxPublisherName extracts a readable name from an Appx publisher
 // distinguished name such as "CN=Microsoft Corporation, O=Microsoft
 // Corporation, L=Redmond, S=Washington, C=US". O= is preferred, then CN=
-// unless it is a bare GUID. Values with quoted commas are rare and only lose
-// their tail.
+// unless it is a bare GUID. Values may be quoted (O="Acme, Inc.") or contain
+// backslash-escaped characters; see splitDN.
 func appxPublisherName(dn string) string {
 	var cn, o string
-	for _, part := range strings.Split(dn, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+	for _, part := range splitDN(dn) {
+		k, v, ok := strings.Cut(part, "=")
 		if !ok {
 			continue
 		}
-		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"`))
+		v = strings.TrimSpace(unquoteDNValue(strings.TrimSpace(v)))
 		switch strings.ToUpper(strings.TrimSpace(k)) {
 		case "O":
 			if o == "" {
@@ -170,6 +172,61 @@ func appxPublisherName(dn string) string {
 	return name
 }
 
+// splitDN splits a distinguished name into its attribute=value components at
+// the commas (or semicolons) that separate them, ignoring separators inside a
+// double-quoted value or escaped with a backslash. Components are returned
+// raw, with quotes and escapes left for unquoteDNValue.
+func splitDN(dn string) []string {
+	var parts []string
+	inQuotes, escaped := false, false
+	start := 0
+	for i := 0; i < len(dn); i++ {
+		c := dn[i]
+		switch {
+		case escaped:
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == '"':
+			inQuotes = !inQuotes
+		case (c == ',' || c == ';') && !inQuotes:
+			parts = append(parts, dn[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, dn[start:])
+}
+
+// unquoteDNValue removes the surrounding double quotes from a DN value and
+// resolves its escapes: a backslash escapes the next character, and inside
+// quotes a doubled quote ("") stands for one quote, as Windows writes it.
+func unquoteDNValue(v string) string {
+	quoted := len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"'
+	if quoted {
+		v = v[1 : len(v)-1]
+	}
+	if !strings.ContainsAny(v, `\"`) {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '\\' && i+1 < len(v):
+			i++
+			b.WriteByte(v[i])
+		case c == '"' && quoted && i+1 < len(v) && v[i+1] == '"':
+			i++
+			b.WriteByte('"')
+		case c == '"':
+			// A stray quote, e.g. from an unbalanced value; drop it.
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // parseWindowsInstallDate parses the registry InstallDate (yyyyMMdd) or the
 // round-trip ("o") timestamp the Appx query emits, returning RFC 3339 or "".
 func parseWindowsInstallDate(s string) string {
@@ -188,6 +245,12 @@ func parseWindowsInstallDate(s string) string {
 
 // parsePowerShellOutput parses a ConvertTo-Json software list into SoftwareInfo entries.
 // Returns false when the output could not be parsed as JSON.
+//
+// The same program can be listed more than once (e.g. under several users'
+// hives, or for several users with -AllUsers); only the first entry per name
+// (case-insensitive) and architecture is kept. A name left with more than one
+// architecture is qualified with it (see qualifyMultiArch) so the variants do
+// not overwrite each other in the catalog.
 func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source string) bool {
 	var psOutput []map[string]any
 	if err := json.Unmarshal(output, &psOutput); err != nil {
@@ -199,6 +262,9 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 	}
 
 	osArch := windowsOSArch()
+	var found []SoftwareInfo
+	var archs []string
+	seen := make(map[string]bool, len(psOutput))
 	for _, item := range psOutput {
 		name, ok := item["Name"].(string)
 		if !ok {
@@ -236,8 +302,16 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			wow64, _ := item["Wow64"].(bool)
 			sw.Architecture = registryArch(wow64, osArch)
 		}
-		*software = append(*software, sw)
+		key := strings.ToLower(name) + "\x00" + sw.Architecture
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		found = append(found, sw)
+		archs = append(archs, sw.Architecture)
 	}
+	qualifyMultiArch(found, archs)
+	*software = append(*software, found...)
 	return true
 }
 
