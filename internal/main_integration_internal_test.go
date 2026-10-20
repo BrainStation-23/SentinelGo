@@ -90,6 +90,7 @@ func TestBuildServicesTask_ReturnsConfiguredTask(t *testing.T) {
 	task := mi.buildServicesTask()
 	if task == nil {
 		t.Fatal("buildServicesTask() = nil, want a task backed by a fresh temp-dir store")
+		return
 	}
 	t.Cleanup(func() { _ = mi.servicesStore.Close() })
 	if task.Name != "services-collect" {
@@ -111,6 +112,7 @@ func TestServicesCollectHandler_SkipsWhenSyncDisabled(t *testing.T) {
 	task := mi.buildServicesTask()
 	if task == nil {
 		t.Fatal("buildServicesTask() = nil")
+		return
 	}
 	t.Cleanup(func() { _ = mi.servicesStore.Close() })
 
@@ -130,6 +132,7 @@ func TestServicesCollectHandler_RunsFullCycleWithoutAuthSvc(t *testing.T) {
 	task := mi.buildServicesTask()
 	if task == nil {
 		t.Fatal("buildServicesTask() = nil")
+		return
 	}
 	t.Cleanup(func() { _ = mi.servicesStore.Close() })
 
