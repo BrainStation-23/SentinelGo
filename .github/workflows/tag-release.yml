@@ -6,9 +6,14 @@ name: Tag Release
 # Run it manually to retry after a failed tag push, or to re-tag main after
 # deleting a tag whose release failed.
 #
-# The tag is pushed with RELEASE_PAT because a tag pushed with GITHUB_TOKEN
-# doesn't trigger other workflows. See release-trigger.yml for the token's
-# required permissions.
+# After tagging it opens a main -> dev pull request, so dev gets the new
+# [vX.Y.Z] heading before anything else merges from dev. Without it, the next
+# dev -> main merge puts dev's new [Unreleased] entries under the released
+# version (#211).
+#
+# The tag and the PR use RELEASE_PAT because a tag pushed or a PR opened with
+# GITHUB_TOKEN doesn't trigger other workflows. See release-trigger.yml for the
+# token's required permissions.
 on:
   push:
     branches: [main]
@@ -41,6 +46,7 @@ jobs:
           cache: false
 
       - name: Tag the newest CHANGELOG.md version
+        id: tag
         run: |
           TAG=$(go run ./scripts/changelog -latest)
           if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
@@ -58,4 +64,25 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
           git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Tagged $GITHUB_SHA as $TAG; release.yml will publish it." >> "$GITHUB_STEP_SUMMARY"
+
+      # Merge commit, not squash, so dev's history contains the release commit
+      # and git stops treating main's changelog edits as new.
+      - name: Merge main back into dev
+        if: steps.tag.outputs.tag != ''
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/dev; then
+            echo "dev already contains $TAG."
+            exit 0
+          fi
+          PR=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number')
+          if [ -z "$PR" ]; then
+            gh pr create --base dev --head main --title "Merge $TAG back into dev" \
+              --body "Brings the [$TAG] changelog heading from main into dev, so the next dev -> main merge keeps new entries under [Unreleased]. Merge it with a merge commit, not squash."
+          fi
+          gh pr merge main --auto --merge || echo "::warning::Could not enable auto-merge on the main -> dev PR; merge it by hand."
+          echo "Back-merge PR: $(gh pr view main --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
