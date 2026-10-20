@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 const mdlsBatchSize = 200
@@ -35,7 +37,8 @@ type bundleMeta struct {
 func runCollectCmd(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).Output()
+	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
+	return exec.CommandContext(ctx, binpath.Resolve(name), args...).Output()
 }
 
 // batchMdlsMetadata queries Spotlight metadata for a set of app paths. Returns
@@ -66,16 +69,22 @@ func batchMdlsMetadata(paths []string) map[string]bundleMeta {
 }
 
 // parseMdlsRaw parses `mdls -raw -name A -name B … path1 path2 …` output: one
-// NUL-separated value per (path, attribute), path-major, "(null)" for a missing
-// attribute. It returns false, adding nothing, when the value count does not
+// value per (path, attribute), path-major, "(null)" for a missing attribute.
+// mdls(1) documents -raw values as NUL-separated; output without any NUL is
+// split on newlines instead, which is safe because none of mdlsAttrs is
+// multi-line. It returns false, adding nothing, when the value count does not
 // match, since the values could then not be attributed to paths.
 func parseMdlsRaw(output []byte, paths []string, result map[string]bundleMeta) bool {
-	values := strings.Split(string(output), "\x00")
+	sep := "\x00"
+	if !strings.Contains(string(output), sep) {
+		sep = "\n"
+	}
+	values := strings.Split(string(output), sep)
 	want := len(paths) * len(mdlsAttrs)
-	if len(values) == want+1 && values[want] == "" {
+	if len(values) == want+1 && strings.TrimSpace(values[want]) == "" {
 		values = values[:want]
 	}
-	if len(values) != want {
+	if want == 0 || len(values) != want {
 		return false
 	}
 	for i, p := range paths {

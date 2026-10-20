@@ -51,6 +51,10 @@ var knownPaths = func() map[string][]string {
 		"sysadminctl":     {"/usr/sbin/sysadminctl"},
 		"systemsetup":     {"/usr/sbin/systemsetup"},
 		"tmutil":          {"/usr/bin/tmutil"},
+		"mdls":            {"/usr/bin/mdls"},
+		// Homebrew's own prefixes: Apple Silicon, then Intel. Neither is a
+		// system directory, but each is fixed, unlike a PATH search.
+		"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
 
 		// Linux
 		"systemctl":  {"/usr/bin/systemctl", "/bin/systemctl"},

@@ -3,6 +3,7 @@ package software
 import (
 	"context"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,10 +55,11 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	defer cancel()
 
 	// Tab-separated because Maintainer contains spaces and sometimes commas;
-	// dpkg-query expands the \t and \n escapes itself.
+	// dpkg-query expands the \t and \n escapes itself. The status column lets
+	// the parser drop removed packages dpkg still lists for their config files.
 	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
 	cmd := exec.CommandContext(ctx, binpath.Resolve("dpkg-query"), "-W",
-		`-f=${Package}\t${Version}\t${Installed-Size}\t${Architecture}\t${Maintainer}\n`)
+		`-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${Installed-Size}\t${Architecture}\t${Maintainer}\n`)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
@@ -124,6 +126,11 @@ func splitColumns(line string, splitWithout func(string) []string) []string {
 	if !strings.Contains(line, "\t") {
 		return splitWithout(line)
 	}
+	return splitTabs(line)
+}
+
+// splitTabs splits line on tabs and trims each column.
+func splitTabs(line string) []string {
 	parts := strings.Split(line, "\t")
 	for i := range parts {
 		parts[i] = strings.TrimSpace(parts[i])
@@ -132,43 +139,108 @@ func splitColumns(line string, splitWithout func(string) []string) []string {
 }
 
 // parseDebPackages parses dpkg-query lines of
-// Package<TAB>Version<TAB>Installed-Size<TAB>Architecture<TAB>Maintainer.
-// Comma-separated lines in the older Package,Version[,Installed-Size] format
-// are accepted too. The install date is the mtime of the package's file list.
+// Status-Abbrev<TAB>Package<TAB>Version<TAB>Installed-Size<TAB>Architecture<TAB>Maintainer.
+// Only installed packages are kept. The install date is the mtime of the
+// package's file list.
 func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
-	commas := func(l string) []string { return strings.Split(l, ",") }
+	var found []SoftwareInfo
+	var rawArchs []string
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := splitColumns(line, commas)
-		if len(parts) < 2 || parts[0] == "" {
-			continue
+		if sw, rawArch, ok := parseDebLine(splitTabs(line)); ok {
+			found = append(found, sw)
+			rawArchs = append(rawArchs, rawArch)
 		}
-		sw := SoftwareInfo{
-			Name:             parts[0],
-			InstalledVersion: parts[1],
-			SoftwarePackage:  parts[0],
-			Source:           sourceDebPackages,
-			Type:             sourceDebPackages,
+	}
+	qualifyMultiArch(found, rawArchs)
+	*packages = append(*packages, found...)
+}
+
+// parseDebLine builds the entry for one dpkg-query line split into columns,
+// returning the raw dpkg architecture alongside it. ok is false for packages
+// that are not installed and for malformed lines.
+func parseDebLine(parts []string) (sw SoftwareInfo, rawArch string, ok bool) {
+	if len(parts) < 3 || parts[1] == "" || !debInstalled(parts[0]) {
+		return SoftwareInfo{}, "", false
+	}
+	rawArch = column(parts, 4)
+	sw = SoftwareInfo{
+		Name:             parts[1],
+		InstalledVersion: parts[2],
+		SoftwarePackage:  parts[1],
+		Source:           sourceDebPackages,
+		Type:             sourceDebPackages,
+		SizeBytes:        kibToBytes(positiveInt(column(parts, 3))),
+		Architecture:     normalizeArch(rawArch),
+		Publisher:        stripEmail(column(parts, 5)),
+		InstallDate:      debInstallDate(parts[1], rawArch),
+	}
+	return sw, rawArch, true
+}
+
+// kibToBytes converts dpkg's Installed-Size (KiB) to bytes, returning 0 for a
+// value too large to be real rather than overflowing.
+func kibToBytes(kib int64) int64 {
+	if kib > math.MaxInt64/1024 {
+		return 0
+	}
+	return kib * 1024
+}
+
+// column returns parts[i], or "" when the line has fewer columns.
+func column(parts []string, i int) string {
+	if i < len(parts) {
+		return parts[i]
+	}
+	return ""
+}
+
+// positiveInt parses s as a decimal integer, returning 0 when it is not a
+// positive one.
+func positiveInt(s string) int64 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// debInstalled reports whether a ${db:Status-Abbrev} value ("ii ", "rc ", …)
+// describes a package whose files are on disk. The second letter is the
+// package state: n (not installed), c (only config files left) and H (half
+// installed) are dropped. Unpacked, half-configured and trigger-pending
+// packages are kept, as they are installed in all but configuration.
+func debInstalled(status string) bool {
+	if len(status) < 2 {
+		return false
+	}
+	switch status[1] {
+	case 'i', 'U', 'F', 'W', 't':
+		return true
+	}
+	return false
+}
+
+// qualifyMultiArch appends ":<arch>" to the names of packages installed for
+// more than one architecture (e.g. libc6 for amd64 and i386, or glibc for
+// x86_64 and i686), whose names would otherwise collide in the catalog, which
+// is keyed by name and source. rawArchs holds each package's architecture as
+// the package manager printed it. Names installed once are left as they are.
+func qualifyMultiArch(packages []SoftwareInfo, rawArchs []string) {
+	archs := make(map[string]map[string]bool, len(packages))
+	for i, p := range packages {
+		if archs[p.Name] == nil {
+			archs[p.Name] = map[string]bool{}
 		}
-		var rawArch string
-		if len(parts) > 2 {
-			// Installed-Size is in KiB.
-			if kb, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); err == nil && kb > 0 {
-				sw.SizeBytes = kb * 1024
-			}
+		archs[p.Name][rawArchs[i]] = true
+	}
+	for i := range packages {
+		if len(archs[packages[i].Name]) > 1 && rawArchs[i] != "" {
+			packages[i].Name += ":" + rawArchs[i]
 		}
-		if len(parts) > 3 {
-			rawArch = strings.TrimSpace(parts[3])
-			sw.Architecture = normalizeArch(rawArch)
-		}
-		if len(parts) > 4 {
-			sw.Publisher = stripEmail(parts[4])
-		}
-		sw.InstallDate = debInstallDate(sw.Name, rawArch)
-		*packages = append(*packages, sw)
 	}
 }
 
@@ -196,43 +268,52 @@ func debInstallDate(pkg, arch string) string {
 // separated lines in the older NAME VERSION SIZE INSTALLTIME format are
 // accepted too.
 func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
+	var found []SoftwareInfo
+	var rawArchs []string
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := splitColumns(line, strings.Fields)
-		if len(parts) < 2 || parts[0] == "" {
-			continue
+		if sw, rawArch, ok := parseRPMLine(splitColumns(line, strings.Fields)); ok {
+			found = append(found, sw)
+			rawArchs = append(rawArchs, rawArch)
 		}
-		sw := SoftwareInfo{
-			Name:             parts[0],
-			InstalledVersion: parts[1],
-			SoftwarePackage:  parts[0],
-			Source:           sourceRPMPackages,
-			Type:             sourceRPMPackages,
-		}
-		if len(parts) > 2 {
-			// %{SIZE} is in bytes.
-			if n, err := strconv.ParseInt(parts[2], 10, 64); err == nil && n > 0 {
-				sw.SizeBytes = n
-			}
-		}
-		if len(parts) > 3 {
-			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
-				installed := time.Unix(ts, 0).UTC().Format(time.RFC3339)
-				sw.FirstSeenAt = installed
-				sw.InstallDate = installed
-			}
-		}
-		if len(parts) > 4 {
-			sw.Architecture = normalizeArch(parts[4])
-		}
-		if len(parts) > 5 && parts[5] != "(none)" {
-			sw.Publisher = parts[5]
-		}
-		*packages = append(*packages, sw)
 	}
+	qualifyMultiArch(found, rawArchs)
+	*packages = append(*packages, found...)
+}
+
+// parseRPMLine builds the entry for one rpm line split into columns, returning
+// the raw rpm architecture alongside it. ok is false for malformed lines.
+func parseRPMLine(parts []string) (sw SoftwareInfo, rawArch string, ok bool) {
+	if len(parts) < 2 || parts[0] == "" {
+		return SoftwareInfo{}, "", false
+	}
+	rawArch = rpmValue(column(parts, 4))
+	sw = SoftwareInfo{
+		Name:             parts[0],
+		InstalledVersion: parts[1],
+		SoftwarePackage:  parts[0],
+		Source:           sourceRPMPackages,
+		Type:             sourceRPMPackages,
+		SizeBytes:        positiveInt(column(parts, 2)), // %{SIZE} is in bytes
+		Architecture:     normalizeArch(rawArch),
+		Publisher:        rpmValue(column(parts, 5)),
+	}
+	if ts := positiveInt(column(parts, 3)); ts > 0 {
+		sw.InstallDate = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+		sw.FirstSeenAt = sw.InstallDate
+	}
+	return sw, rawArch, true
+}
+
+// rpmValue maps rpm's "(none)" placeholder for an unset tag to "".
+func rpmValue(s string) string {
+	if s == "(none)" {
+		return ""
+	}
+	return s
 }
 
 // parseSnapPackages parses `snap list` output (Name Version Rev Tracking

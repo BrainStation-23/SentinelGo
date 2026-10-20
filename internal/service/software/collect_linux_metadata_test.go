@@ -36,9 +36,9 @@ func TestParseDebPackagesMetadata(t *testing.T) {
 	touch(t, filepath.Join(info, "curl.list"), 0, curlTime)
 	touch(t, filepath.Join(info, "libc6:amd64.list"), 0, libcTime)
 
-	input := "curl\t7.88.1\t512\tamd64\tUbuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>\n" +
-		"libc6\t2.39\t12000\tamd64\tGNU Libc Maintainers <debian-glibc@lists.debian.org>\n" +
-		"tzdata\t2024a\t\tall\t\n"
+	input := "ii \tcurl\t7.88.1\t512\tamd64\tUbuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>\n" +
+		"ii \tlibc6\t2.39\t12000\tamd64\tGNU Libc Maintainers <debian-glibc@lists.debian.org>\n" +
+		"ii \ttzdata\t2024a\t\tall\t\n"
 	var got []SoftwareInfo
 	parseDebPackages([]byte(input), &got)
 	assertKnownSource(t, got)
@@ -77,6 +77,30 @@ func TestParseRPMPackagesMetadata(t *testing.T) {
 	key := got[1]
 	if key.Publisher != "" || key.Architecture != "" || key.SizeBytes != 0 {
 		t.Errorf("(none) placeholders must be left out, got %+v", key)
+	}
+}
+
+// Multilib packages share a name across architectures; each must keep its own
+// catalog entry. Repeated names with one architecture (gpg-pubkey) are left as
+// they are.
+func TestParseRPMPackagesMultilib(t *testing.T) {
+	input := "glibc\t2.39\t100\t1700000000\tx86_64\tFedora Project\n" +
+		"glibc\t2.39\t90\t1700000000\ti686\tFedora Project\n" +
+		"gpg-pubkey\taaaa\t0\t1690000000\t(none)\t(none)\n" +
+		"gpg-pubkey\tbbbb\t0\t1690000000\t(none)\t(none)\n"
+	var got []SoftwareInfo
+	parseRPMPackages([]byte(input), &got)
+	want := []string{"glibc:x86_64", "glibc:i686", "gpg-pubkey", "gpg-pubkey"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d packages, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Name != w {
+			t.Errorf("[%d] Name = %q, want %q", i, got[i].Name, w)
+		}
+	}
+	if got[0].SoftwarePackage != "glibc" {
+		t.Errorf("SoftwarePackage = %q, want the unqualified name", got[0].SoftwarePackage)
 	}
 }
 

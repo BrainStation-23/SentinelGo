@@ -17,23 +17,33 @@ func TestParseDebPackages(t *testing.T) {
 		{name: "blank lines skipped", input: "\n\n", wantNames: nil},
 		{
 			name:      "single package",
-			input:     "curl,7.88.1\n",
+			input:     "ii \tcurl\t7.88.1\n",
 			wantNames: []string{"curl"},
 		},
 		{
 			name:      "package with size field",
-			input:     "bash,5.2.15,2348\n",
+			input:     "ii \tbash\t5.2.15\t2348\n",
 			wantNames: []string{"bash"},
 		},
 		{
 			name:      "multiple packages",
-			input:     "curl,7.88.1\nbash,5.2.15\n",
+			input:     "ii \tcurl\t7.88.1\nii \tbash\t5.2.15\n",
 			wantNames: []string{"curl", "bash"},
 		},
 		{
-			name:      "line with fewer than 2 fields skipped",
-			input:     "incomplete\ncurl,7.88.1\n",
+			name:      "line with fewer than 3 fields skipped",
+			input:     "incomplete\nii \tcurl\t7.88.1\n",
 			wantNames: []string{"curl"},
+		},
+		{
+			name:      "removed packages skipped",
+			input:     "rc \tneedrestart\t3.6\nun \tghost\t1.0\niH \thalf\t1.0\nii \tcurl\t7.88.1\niU \tunpacked\t2.0\n",
+			wantNames: []string{"curl", "unpacked"},
+		},
+		{
+			name:      "package installed for two architectures",
+			input:     "ii \tlibc6\t2.39\t12000\tamd64\nii \tlibc6\t2.39\t11000\ti386\nii \tcurl\t7.88.1\t512\tamd64\n",
+			wantNames: []string{"libc6:amd64", "libc6:i386", "curl"},
 		},
 	}
 

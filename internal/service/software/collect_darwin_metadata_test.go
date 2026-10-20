@@ -61,6 +61,15 @@ func TestParseMdlsRaw(t *testing.T) {
 		t.Error("parseMdlsRaw rejected output with a trailing NUL")
 	}
 
+	// Newline-separated output (no NUL at all) is parsed the same way.
+	result = map[string]bundleMeta{}
+	if !parseMdlsRaw([]byte(strings.ReplaceAll(out, "\x00", "\n")+"\n"), paths, result) {
+		t.Fatal("parseMdlsRaw rejected newline-separated output")
+	}
+	if result[paths[0]] != safari {
+		t.Errorf("newline-separated Safari = %+v, want %+v", result[paths[0]], safari)
+	}
+
 	// A value count that does not match cannot be attributed and is dropped.
 	result = map[string]bundleMeta{}
 	if parseMdlsRaw([]byte("(null)\x00(null)"), paths, result) || len(result) != 0 {

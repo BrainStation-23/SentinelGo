@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -147,7 +148,7 @@ func appxPublisherName(dn string) string {
 		if !ok {
 			continue
 		}
-		v = strings.Trim(strings.TrimSpace(v), `"`)
+		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"`))
 		switch strings.ToUpper(strings.TrimSpace(k)) {
 		case "O":
 			if o == "" {
@@ -159,13 +160,14 @@ func appxPublisherName(dn string) string {
 			}
 		}
 	}
-	if o != "" {
-		return o
+	name := o
+	if name == "" {
+		name = cn
 	}
-	if guidCN.MatchString(cn) {
+	if guidCN.MatchString(name) {
 		return ""
 	}
-	return cn
+	return name
 }
 
 // parseWindowsInstallDate parses the registry InstallDate (yyyyMMdd) or the
@@ -222,8 +224,8 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			InstallDate:      installDate,
 			Publisher:        stripEmail(publisher),
 		}
-		// EstimatedSize is a DWORD in KB.
-		if kb, ok := item["EstimatedSize"].(float64); ok && kb > 0 {
+		// EstimatedSize is a DWORD in KB; anything larger is not a real value.
+		if kb, ok := item["EstimatedSize"].(float64); ok && kb > 0 && kb <= math.MaxUint32 {
 			sw.SizeBytes = int64(kb) * 1024
 		}
 		if source == sourceMicrosoftStore {

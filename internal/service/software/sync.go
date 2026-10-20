@@ -15,6 +15,27 @@ import (
 
 const rpcTimeout = 60 * time.Second
 
+// maxMetadataLen caps the optional metadata strings. They come from package
+// metadata the agent does not control (a package names its own maintainer or
+// vendor), and no real value comes close to this length.
+const maxMetadataLen = 256
+
+// truncateRunes shortens s to at most n runes without splitting a character.
+// The result is always a prefix of s (an invalid byte counts as one rune).
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
 // SendByRPC sends the full software list to the agent_enqueue_software RPC.
 func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []SoftwareInfo, cfg *config.Config) error {
 	if s.supabaseURL == "" {
@@ -54,11 +75,11 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 			LastOpened:       sw.LastOpened,
 			FilePath:         sw.FilePath,
 			FirstSeenAt:      sw.FirstSeenAt,
-			Publisher:        sw.Publisher,
-			InstallDate:      sw.InstallDate,
+			Publisher:        truncateRunes(sw.Publisher, maxMetadataLen),
+			InstallDate:      truncateRunes(sw.InstallDate, maxMetadataLen),
 			SizeBytes:        sw.SizeBytes,
-			Architecture:     sw.Architecture,
-			BundleID:         sw.BundleID,
+			Architecture:     truncateRunes(sw.Architecture, maxMetadataLen),
+			BundleID:         truncateRunes(sw.BundleID, maxMetadataLen),
 		})
 	}
 

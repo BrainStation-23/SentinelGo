@@ -22,7 +22,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ### Fixed
 
-- Debian and Ubuntu devices report their installed packages. The `dpkg-query` format had no line separator, so the whole package list arrived as a single malformed entry (#209).
+- Debian and Ubuntu devices report their installed packages. The `dpkg-query` format had no line separator, so the whole package list arrived as a single malformed entry. Packages that were removed but still have configuration files are not reported (#209).
+- A deb or rpm package installed for two architectures (e.g. `libc6` for amd64 and i386, `glibc` for x86_64 and i686) is reported once per architecture, as `name:arch`, instead of one overwriting the other (#209).
 - Flatpak apps whose name contains a space are reported with their full name and version. The columns were split on whitespace instead of tabs (#209).
 
 ### Security
