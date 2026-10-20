@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.7.0] - 2026-10-20
+
 ### Added
 
 - Publisher, install date, size and architecture for each item in the software upload, as `publisher`, `install_date` (RFC 3339), `size_bytes` and `architecture`, plus `bundle_id` for macOS apps. Windows reads them from the uninstall keys (32-bit programs are those under `Wow6432Node`) and from `Get-AppxPackage`, where the install date is the creation time of the package's folder. macOS reads the signing certificate and `arch_kind` from `system_profiler`, the date added, size and bundle ID from Spotlight, and the tap and install time from `brew info`. Linux reads dpkg's maintainer, size and architecture (the install date is the time of the package's file list), rpm's vendor, size, install time and architecture, the snap publisher with the date and size of the installed revision, and the flatpak origin and architecture. `architecture` is one of `x64`, `x86`, `arm64`, `arm`, `universal` or `noarch`. A value the platform doesn't have is left out (#209).
@@ -358,7 +360,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...HEAD
+[v3.7.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...v3.7.0
 [v3.6.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...v3.6.1
 [v3.6.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...v3.6.0
 [v3.5.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.0...v3.5.1
