@@ -135,6 +135,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
         with:
           version: v2.12.2
+          # The action's cache key ignores GOOS, so the three matrix jobs would
+          # share one analysis cache and staticcheck reuses facts across
+          # targets (spurious SA5011 on darwin). Lint is fast; skip the cache.
+          skip-cache: true
 
   # ── security: independent — runs in parallel with lint ───────────────────────
   # Runs for every pull request, docs-only included (Trivy also scans for
