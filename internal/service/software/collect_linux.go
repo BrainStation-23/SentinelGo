@@ -3,13 +3,24 @@ package software
 import (
 	"context"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"sentinelgo/internal/binpath"
 )
+
+// dpkgInfoDir holds each installed package's file list (<pkg>.list); its mtime
+// is the package's install (or last upgrade) time. A var so tests can point it
+// at a temp dir.
+var dpkgInfoDir = "/var/lib/dpkg/info"
+
+// snapBlobDir holds the .snap file of every installed revision. A var so tests
+// can point it at a temp dir.
+var snapBlobDir = "/var/lib/snapd/snaps"
 
 // platformSoftware collects currently installed software on Linux. It returns
 // the aggregated list and whether the scan was complete (a system package
@@ -42,8 +53,11 @@ func (s *SoftwareService) getDebPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// Tab-separated because Maintainer contains spaces and sometimes commas;
+	// dpkg-query expands the \t and \n escapes itself.
 	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	cmd := exec.CommandContext(ctx, binpath.Resolve("dpkg-query"), "-W", "-f=${Package},${Version},${Installed-Size}")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("dpkg-query"), "-W",
+		`-f=${Package}\t${Version}\t${Installed-Size}\t${Architecture}\t${Maintainer}\n`)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: dpkg-query failed: %v", err)
@@ -58,8 +72,10 @@ func (s *SoftwareService) getRPMPackages() ([]SoftwareInfo, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectCmdTimeout)
 	defer cancel()
 
+	// Tab-separated because VENDOR contains spaces ("Red Hat, Inc.").
 	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	cmd := exec.CommandContext(ctx, binpath.Resolve("rpm"), "-qa", "--queryformat", "%{NAME} %{VERSION} %{SIZE} %{INSTALLTIME}\n")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("rpm"), "-qa", "--queryformat",
+		`%{NAME}\t%{VERSION}\t%{SIZE}\t%{INSTALLTIME}\t%{ARCH}\t%{VENDOR}\n`)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: rpm -qa failed: %v", err)
@@ -75,7 +91,7 @@ func (s *SoftwareService) getSnapPackages() ([]SoftwareInfo, bool) {
 	defer cancel()
 
 	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	cmd := exec.CommandContext(ctx, binpath.Resolve("snap"), "list", "--color=never")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("snap"), "list", "--color=never", "--unicode=never")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: snap list failed: %v", err)
@@ -91,7 +107,7 @@ func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
 	defer cancel()
 
 	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	cmd := exec.CommandContext(ctx, binpath.Resolve("flatpak"), "list", "--columns=application,name,version,origin")
+	cmd := exec.CommandContext(ctx, binpath.Resolve("flatpak"), "list", "--columns=application,name,version,origin,arch")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: flatpak list failed: %v", err)
@@ -102,53 +118,126 @@ func (s *SoftwareService) getFlatpakPackages() ([]SoftwareInfo, bool) {
 	return packages, true
 }
 
+// splitColumns splits a tab-separated line, falling back to splitWithout when
+// the line has no tab (the older formats these parsers also accept).
+func splitColumns(line string, splitWithout func(string) []string) []string {
+	if !strings.Contains(line, "\t") {
+		return splitWithout(line)
+	}
+	parts := strings.Split(line, "\t")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// parseDebPackages parses dpkg-query lines of
+// Package<TAB>Version<TAB>Installed-Size<TAB>Architecture<TAB>Maintainer.
+// Comma-separated lines in the older Package,Version[,Installed-Size] format
+// are accepted too. The install date is the mtime of the package's file list.
 func parseDebPackages(output []byte, packages *[]SoftwareInfo) {
+	commas := func(l string) []string { return strings.Split(l, ",") }
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, ",")
-		if len(parts) < 2 {
+		parts := splitColumns(line, commas)
+		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
-		*packages = append(*packages, SoftwareInfo{
+		sw := SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
-			Source:           "deb_packages",
-			Type:             "deb_packages",
-		})
+			Source:           sourceDebPackages,
+			Type:             sourceDebPackages,
+		}
+		var rawArch string
+		if len(parts) > 2 {
+			// Installed-Size is in KiB.
+			if kb, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); err == nil && kb > 0 {
+				sw.SizeBytes = kb * 1024
+			}
+		}
+		if len(parts) > 3 {
+			rawArch = strings.TrimSpace(parts[3])
+			sw.Architecture = normalizeArch(rawArch)
+		}
+		if len(parts) > 4 {
+			sw.Publisher = stripEmail(parts[4])
+		}
+		sw.InstallDate = debInstallDate(sw.Name, rawArch)
+		*packages = append(*packages, sw)
 	}
 }
 
+// debInstallDate returns the mtime of the package's dpkg file list as RFC 3339,
+// or "" when it cannot be read. Multi-arch "same" packages name the list
+// <pkg>:<arch>.list, everything else <pkg>.list.
+func debInstallDate(pkg, arch string) string {
+	if pkg == "" || strings.ContainsAny(pkg+arch, `/\`) {
+		return ""
+	}
+	candidates := []string{pkg + ".list"}
+	if arch != "" {
+		candidates = append([]string{pkg + ":" + arch + ".list"}, candidates...)
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(filepath.Join(dpkgInfoDir, c)); err == nil {
+			return fi.ModTime().UTC().Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+// parseRPMPackages parses rpm lines of
+// NAME<TAB>VERSION<TAB>SIZE<TAB>INSTALLTIME<TAB>ARCH<TAB>VENDOR. Whitespace-
+// separated lines in the older NAME VERSION SIZE INSTALLTIME format are
+// accepted too.
 func parseRPMPackages(output []byte, packages *[]SoftwareInfo) {
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		parts := splitColumns(line, strings.Fields)
+		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
-		firstSeen := ""
-		if len(parts) >= 4 {
-			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
-				firstSeen = time.Unix(ts, 0).UTC().Format(time.RFC3339)
-			}
-		}
-		*packages = append(*packages, SoftwareInfo{
+		sw := SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
-			Source:           "rpm_packages",
-			Type:             "rpm_packages",
-			FirstSeenAt:      firstSeen,
-		})
+			Source:           sourceRPMPackages,
+			Type:             sourceRPMPackages,
+		}
+		if len(parts) > 2 {
+			// %{SIZE} is in bytes.
+			if n, err := strconv.ParseInt(parts[2], 10, 64); err == nil && n > 0 {
+				sw.SizeBytes = n
+			}
+		}
+		if len(parts) > 3 {
+			if ts, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ts > 0 {
+				installed := time.Unix(ts, 0).UTC().Format(time.RFC3339)
+				sw.FirstSeenAt = installed
+				sw.InstallDate = installed
+			}
+		}
+		if len(parts) > 4 {
+			sw.Architecture = normalizeArch(parts[4])
+		}
+		if len(parts) > 5 && parts[5] != "(none)" {
+			sw.Publisher = parts[5]
+		}
+		*packages = append(*packages, sw)
 	}
 }
 
+// parseSnapPackages parses `snap list` output (Name Version Rev Tracking
+// Publisher Notes). The install date and size come from the installed
+// revision's .snap file, so the date is when that revision was installed.
 func parseSnapPackages(output []byte, packages *[]SoftwareInfo) {
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
@@ -159,33 +248,80 @@ func parseSnapPackages(output []byte, packages *[]SoftwareInfo) {
 		if len(parts) < 2 {
 			continue
 		}
-		*packages = append(*packages, SoftwareInfo{
+		sw := SoftwareInfo{
 			Name:             parts[0],
 			InstalledVersion: parts[1],
 			SoftwarePackage:  parts[0],
-			Source:           "snap_packages",
-			Type:             "snap_packages",
-		})
+			Source:           sourceSnapPackages,
+			Type:             sourceSnapPackages,
+		}
+		if len(parts) > 2 {
+			sw.InstallDate, sw.SizeBytes = snapRevisionInfo(parts[0], parts[2])
+		}
+		if len(parts) > 4 {
+			sw.Publisher = snapPublisher(parts[4])
+		}
+		*packages = append(*packages, sw)
 	}
 }
 
+// snapPublisher strips the verified / starred-developer marks snap appends to a
+// publisher ("**" or "*" with --unicode=never, "✓" or "✪" otherwise). "-"
+// means the snap has no publisher.
+func snapPublisher(p string) string {
+	p = strings.TrimRight(p, "*✓✪")
+	if p == "-" {
+		return ""
+	}
+	return p
+}
+
+// snapRevisionInfo returns the mtime (RFC 3339) and size of the .snap file for
+// name at revision rev, or zero values when it cannot be read.
+func snapRevisionInfo(name, rev string) (string, int64) {
+	if name == "" || rev == "" || strings.ContainsAny(name+rev, `/\`) {
+		return "", 0
+	}
+	fi, err := os.Stat(filepath.Join(snapBlobDir, name+"_"+rev+".snap"))
+	if err != nil {
+		return "", 0
+	}
+	return fi.ModTime().UTC().Format(time.RFC3339), fi.Size()
+}
+
+// parseFlatpakPackages parses `flatpak list --columns=application,name,version,origin,arch`.
+// flatpak separates columns with tabs when not writing to a terminal; names
+// contain spaces, so tabs are preferred and whitespace splitting is only a
+// fallback. flatpak keeps no install date. The origin (the remote, e.g.
+// flathub) is reported as the publisher.
 func parseFlatpakPackages(output []byte, packages *[]SoftwareInfo) {
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "application") {
 			continue
 		}
-		parts := strings.Fields(line)
+		parts := splitColumns(line, strings.Fields)
 		if len(parts) < 3 {
 			continue
 		}
-		*packages = append(*packages, SoftwareInfo{
-			Name:             parts[1],
+		name := parts[1]
+		if name == "" {
+			name = parts[0]
+		}
+		sw := SoftwareInfo{
+			Name:             name,
 			InstalledVersion: parts[2],
 			SoftwarePackage:  parts[0],
-			Source:           "flatpak_packages",
-			Type:             "flatpak_packages",
-		})
+			Source:           sourceFlatpakPackages,
+			Type:             sourceFlatpakPackages,
+		}
+		if len(parts) > 3 {
+			sw.Publisher = parts[3]
+		}
+		if len(parts) > 4 {
+			sw.Architecture = normalizeArch(parts[4])
+		}
+		*packages = append(*packages, sw)
 	}
 }
 

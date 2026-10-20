@@ -34,6 +34,11 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 		LastOpened       string `json:"last_opened,omitempty"`
 		FilePath         string `json:"file_path,omitempty"`
 		FirstSeenAt      string `json:"first_seen_at,omitempty"`
+		Publisher        string `json:"publisher,omitempty"`
+		InstallDate      string `json:"install_date,omitempty"`
+		SizeBytes        int64  `json:"size_bytes,omitempty"`
+		Architecture     string `json:"architecture,omitempty"`
+		BundleID         string `json:"bundle_id,omitempty"`
 	}
 
 	items := make([]softwareItem, 0, len(software))
@@ -49,6 +54,11 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 			LastOpened:       sw.LastOpened,
 			FilePath:         sw.FilePath,
 			FirstSeenAt:      sw.FirstSeenAt,
+			Publisher:        sw.Publisher,
+			InstallDate:      sw.InstallDate,
+			SizeBytes:        sw.SizeBytes,
+			Architecture:     sw.Architecture,
+			BundleID:         sw.BundleID,
 		})
 	}
 
