@@ -21,6 +21,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - `.bash` and `.zsh` task scripts on macOS and Linux run with `bash` and `zsh`, like `.sh`, instead of being executed directly. They no longer fail when the console's prepended lines push the shebang off line 1 (#222).
 
+### Security
+
+- Built with Go 1.26.10, which makes `crypto/x509` distrust compromised intermediate certificates (GO-2026-6809). This affects every TLS connection the agent makes to the backend.
+
 ## [v3.7.0] - 2026-10-20
 
 ### Added
