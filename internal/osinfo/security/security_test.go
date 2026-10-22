@@ -88,7 +88,7 @@ func TestAnalyzeNetworkExposure(t *testing.T) {
 		{Protocol: "tcp", Port: 5900, Address: "0.0.0.0", ProcessName: "vncserver"},
 	}
 
-	info := analyzeNetworkExposure(ports)
+	info := analyzeNetworkExposure(ports, nil)
 	if info.TotalListeningPorts != 4 {
 		t.Errorf("expected 4 listening ports, got %d", info.TotalListeningPorts)
 	}
@@ -104,17 +104,15 @@ func TestAnalyzeNetworkExposure(t *testing.T) {
 		t.Errorf("expected sorted active network services, first should be 'node', got %q", info.ActiveNetworkServices[0])
 	}
 
-	// Remote access detection: sshd (22), termservice (3389), vncserver (5900)
-	if len(info.RemoteAccessServices) != 3 {
-		t.Errorf("expected 3 remote access services, got %d", len(info.RemoteAccessServices))
+	// Remote access detection: sshd (22) and vncserver (5900); termservice
+	// listens on loopback only, so nothing on the network can reach it.
+	if len(info.RemoteAccessServices) != 2 {
+		t.Errorf("expected 2 remote access services, got %v", info.RemoteAccessServices)
 	}
 
-	// Admin ports: 22 (SSH), 3389 (RDP), 5900 (VNC)
-	if len(info.OpenAdministrativePorts) != 3 {
-		t.Errorf("expected 3 open admin ports, got %d", len(info.OpenAdministrativePorts))
-	}
-	if info.OpenAdministrativePorts[0] != 22 || info.OpenAdministrativePorts[1] != 3389 || info.OpenAdministrativePorts[2] != 5900 {
-		t.Errorf("expected sorted administrative ports [22, 3389, 5900], got %v", info.OpenAdministrativePorts)
+	// Admin ports: 22 (SSH) and 5900 (VNC); 3389 is loopback-only.
+	if len(info.OpenAdministrativePorts) != 2 || info.OpenAdministrativePorts[0] != 22 || info.OpenAdministrativePorts[1] != 5900 {
+		t.Errorf("expected sorted administrative ports [22, 5900], got %v", info.OpenAdministrativePorts)
 	}
 }
 
