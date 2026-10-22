@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Security
+
+- Built with Go 1.26.10, which makes `crypto/x509` distrust compromised intermediate certificates (GO-2026-6809). This affects every TLS connection the agent makes to the backend.
+
 ## [v3.7.0] - 2026-10-20
 
 ### Added
