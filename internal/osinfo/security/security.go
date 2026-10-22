@@ -1,10 +1,8 @@
 package security
 
 import (
-	"fmt"
 	"log"
 	"math"
-	"sort"
 	"strings"
 
 	gnet "github.com/shirou/gopsutil/v4/net"
@@ -41,92 +39,6 @@ func collectFirewallSecurity(profiles []shared.FirewallProfile) shared.FirewallS
 		f.FirewallState = "Partially Enabled"
 	}
 	return f
-}
-
-// isLocalAddress reports whether addr is a loopback address, used to decide
-// whether a listening port counts as publicly bound.
-func isLocalAddress(addr string) bool {
-	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
-}
-
-// remoteAccessProcessKeywords are process-name substrings that indicate a
-// remote-access tool (case-insensitive match against the process name).
-var remoteAccessProcessKeywords = []string{
-	"ssh", "rdp", "vnc", "anydesk", "teamviewer", "remote", "pcanywhere",
-}
-
-// isRemoteAccessPort reports whether p looks like a remote-access service,
-// either by its process name or by listening on a well-known remote-access port.
-func isRemoteAccessPort(p shared.ListeningPort) bool {
-	procLower := strings.ToLower(p.ProcessName)
-	for _, kw := range remoteAccessProcessKeywords {
-		if strings.Contains(procLower, kw) {
-			return true
-		}
-	}
-	return p.Port == 22 || p.Port == 3389 || (p.Port >= 5900 && p.Port <= 5906)
-}
-
-// isAdminPort reports whether port is a well-known administrative service port.
-func isAdminPort(port uint16) bool {
-	switch port {
-	case 21, 22, 23, 139, 445, 3389, 5985, 5986:
-		return true
-	}
-	return port >= 5900 && port <= 5906
-}
-
-func analyzeNetworkExposure(ports []shared.ListeningPort) shared.NetworkExposureAccessInfo {
-	var info shared.NetworkExposureAccessInfo
-	info.TotalListeningPorts = len(ports)
-
-	activeServicesMap := make(map[string]bool)
-	remoteAccessMap := make(map[string]bool)
-	adminPortsMap := make(map[uint16]bool)
-
-	for _, p := range ports {
-		if !isLocalAddress(p.Address) {
-			info.PubliclyBoundPorts++
-		}
-
-		if p.ProcessName != "" {
-			activeServicesMap[p.ProcessName] = true
-		}
-
-		if isRemoteAccessPort(p) {
-			name := p.ProcessName
-			if name == "" {
-				name = fmt.Sprintf("Unknown service on port %d", p.Port)
-			}
-			remoteAccessMap[name] = true
-		}
-
-		if isAdminPort(p.Port) {
-			adminPortsMap[p.Port] = true
-		}
-	}
-
-	info.ActiveNetworkServices = []string{}
-	for s := range activeServicesMap {
-		info.ActiveNetworkServices = append(info.ActiveNetworkServices, s)
-	}
-	sort.Strings(info.ActiveNetworkServices)
-
-	info.RemoteAccessServices = []string{}
-	for s := range remoteAccessMap {
-		info.RemoteAccessServices = append(info.RemoteAccessServices, s)
-	}
-	sort.Strings(info.RemoteAccessServices)
-
-	info.OpenAdministrativePorts = []uint16{}
-	for p := range adminPortsMap {
-		info.OpenAdministrativePorts = append(info.OpenAdministrativePorts, p)
-	}
-	sort.Slice(info.OpenAdministrativePorts, func(i, j int) bool {
-		return info.OpenAdministrativePorts[i] < info.OpenAdministrativePorts[j]
-	})
-
-	return info
 }
 
 // avStatus bundles the antivirus health verdict computed by summarizeAntivirus.
@@ -229,19 +141,6 @@ func summarizeIdentityControls(id shared.IdentityAccessControlInfo) (controls st
 	return controls, recommendations
 }
 
-// summarizeNetworkExposureLevel rates public exposure and, when elevated,
-// returns the matching recommendation.
-func summarizeNetworkExposureLevel(net shared.NetworkExposureAccessInfo) (level string, recommendations []string) {
-	switch {
-	case net.PubliclyBoundPorts > 5 || len(net.OpenAdministrativePorts) > 1:
-		return "High", []string{"Close or restrict publicly bound administrative ports (e.g., SSH, RDP)."}
-	case net.PubliclyBoundPorts > 0:
-		return "Medium", []string{"Ensure listening services bound to public interfaces are protected."}
-	default:
-		return "Low", nil
-	}
-}
-
 // postureRatings bundles the per-category verdicts generatePostureSummary
 // computes before scoring, keeping computePostureScore's signature short.
 type postureRatings struct {
@@ -322,7 +221,7 @@ func computePostureScore(
 	if r.idControls == "Configured" {
 		score++
 	}
-	if r.exposure == "Low" {
+	if r.exposure != "High" {
 		score++
 	}
 	if strings.EqualFold(id.PatchComplianceStatus, "Compliant") {

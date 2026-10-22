@@ -25,6 +25,11 @@ func collectSecurity() shared.SecurityInfo {
 	usb := collectUSBMassStorage()
 
 	fwSec := collectFirewallSecurity(profiles)
+	fwCheck := constantCheck(firewallUnknown)
+	if fw, ok := collectWindowsFirewall(); ok {
+		fwCheck = fw.checker()
+		fwSec.NetworkProfiles = fw.networkProfiles()
+	}
 
 	var avProtection shared.AntivirusProtectionInfo
 	for _, av := range avProducts {
@@ -62,7 +67,7 @@ func collectSecurity() shared.SecurityInfo {
 	hwSec := collectHardwareSecurity()
 	updates := searchMissingUpdates()
 	idAccess := collectIdentityAccessControl(coreIsolation, updates)
-	netExposure := analyzeNetworkExposure(ports)
+	netExposure := analyzeNetworkExposure(ports, fwCheck)
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 

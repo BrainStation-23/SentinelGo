@@ -441,6 +441,16 @@ type FirewallSecurityInfo struct {
 	FirewallState  string            `json:"firewall_state"` // "Enabled", "Disabled", "Partially Enabled"
 	ActiveProfiles []string          `json:"active_profiles"`
 	Profiles       []FirewallProfile `json:"profiles"`
+	// NetworkProfiles is the firewall profile in force on each connected
+	// network (Windows only).
+	NetworkProfiles []NetworkFirewallProfile `json:"network_profiles,omitempty"`
+}
+
+// NetworkFirewallProfile is the Windows firewall profile a connected network
+// uses.
+type NetworkFirewallProfile struct {
+	Interface string `json:"interface"`
+	Profile   string `json:"profile"` // "Domain", "Private" or "Public"
 }
 
 // 2. Antivirus Protection
@@ -582,12 +592,34 @@ type NetworkExposureAccessInfo struct {
 	PubliclyBoundPorts      int      `json:"publicly_bound_ports"`
 	ActiveNetworkServices   []string `json:"active_network_services"`
 	RemoteAccessServices    []string `json:"remote_access_services"`
-	OpenAdministrativePorts []uint16 `json:"open_administrative_ports"`
+	OpenAdministrativePorts []uint16 `json:"open_administrative_ports"` // ports of RiskyServices, sorted
+
+	// RiskyServices are the commonly attacked services (SMB, RDP, SSH,
+	// databases, …) listening on a non-loopback address, one per socket,
+	// with whether the host firewall lets them be reached (#221).
+	RiskyServices []RiskyService `json:"risky_services"`
 
 	// Linux Specific SSH
 	SSHRootLoginStatus    string `json:"ssh_root_login_status,omitempty"`    // "Enabled", "Disabled", "Unknown"
 	SSHPasswordAuthStatus string `json:"ssh_password_auth_status,omitempty"` // "Enabled", "Disabled", "Unknown"
 	SSHKeyAuthStatus      string `json:"ssh_key_auth_status,omitempty"`      // "Enabled", "Disabled", "Unknown"
+}
+
+// RiskyService is a commonly attacked service listening on the network.
+type RiskyService struct {
+	Name        string `json:"name"` // "SMB", "RDP", "SSH", …
+	Port        uint16 `json:"port"`
+	Protocol    string `json:"protocol"` // "tcp" or "udp"
+	Address     string `json:"address"`
+	Scope       string `json:"scope"` // "all" (wildcard bind), "interface" or "unknown"
+	ProcessName string `json:"process_name"`
+	// Firewall is whether the host firewall lets inbound connections reach
+	// it: "allowed", "blocked", "disabled" (no firewall filtering) or
+	// "unknown".
+	Firewall string `json:"firewall"`
+	// ReachableProfiles are the active Windows firewall profiles that let
+	// connections in (Windows only).
+	ReachableProfiles []string `json:"reachable_profiles,omitempty"`
 }
 
 // 9. Security Posture Summary
