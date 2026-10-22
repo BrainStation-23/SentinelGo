@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
-
-	"sentinelgo/internal/binpath"
 )
 
 // executeLocalScript runs the task script on macOS. env is added to the
@@ -19,20 +16,12 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		return "", fmt.Errorf("chmod failed: %w", err)
 	}
 
-	var cmd *exec.Cmd
-
-	switch filepath.Ext(scriptPath) {
-	case ".sh":
-		// #nosec G204 - scriptPath is a controlled path from task store
-		cmd = exec.CommandContext(ctx, binpath.Resolve("bash"), scriptPath, payloadPath)
-	case ".py":
-		// #nosec G204 - scriptPath is a controlled path from task store
-		cmd = exec.CommandContext(ctx, binpath.Resolve("python3"), scriptPath, payloadPath)
-	default:
-		// #nosec G204 - scriptPath is a controlled path from task store
-		cmd = exec.CommandContext(ctx, scriptPath, payloadPath)
+	args, err := scriptArgv(scriptPath, payloadPath)
+	if err != nil {
+		return "", err
 	}
-
+	// #nosec G204 - scriptPath is a controlled path from task store
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = 30 * time.Second
 
