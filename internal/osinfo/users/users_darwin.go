@@ -42,10 +42,11 @@ func getLocalUsers() []shared.UserWithGroup {
 	return result
 }
 
-// applyDarwinAccountState adds is_enabled and password_last_set (#172).
-// last_logon is left out: macOS keeps no per-account record of it that
-// can be read reliably.
+// applyDarwinAccountState adds is_enabled and password_last_set (#172), and
+// last_logon from the login records (#223). macOS rotates those records, so
+// last_logon is left out when a user has none, rather than reported as never.
 func applyDarwinAccountState(u *shared.UserWithGroup) {
+	u.LastLogon = darwinLastLogon(u.Username)
 	if out, err := shared.RunCommand("dscl", ".", "read", usersDir+u.Username, "AuthenticationAuthority"); err == nil {
 		if enabled, ok := parseDarwinAccountEnabled(out); ok {
 			u.IsEnabled = &enabled

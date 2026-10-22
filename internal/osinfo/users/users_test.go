@@ -282,14 +282,25 @@ const winUsersSingle = `{"Name": "john", "SID": "S-1-5-21-111-1000"}`
 func TestParseWindowsUsersJSON_Array(t *testing.T) {
 	users := parseWindowsUsersJSON(winUsersArray)
 
-	if len(users) != 2 {
-		t.Fatalf("expected 2 non-system users, got %d: %+v", len(users), users)
+	// Built-in accounts are reported and flagged; defaultuser0 is left out.
+	want := []struct {
+		name, sid string
+		builtin   bool
+	}{
+		{"john", "S-1-5-21-111-1000", false},
+		{"Administrator", "S-1-5-21-111-500", true},
+		{"Guest", "S-1-5-21-111-501", true},
+		{"DefaultAccount", "S-1-5-21-111-503", true},
+		{"WDAGUtilityAccount", "S-1-5-21-111-504", true},
+		{"jane", "S-1-5-21-111-1001", false},
 	}
-	if users[0].Username != "john" || users[0].UID != "S-1-5-21-111-1000" {
-		t.Errorf("users[0] = %+v, want john/S-1-5-21-111-1000", users[0])
+	if len(users) != len(want) {
+		t.Fatalf("got %d users, want %d: %+v", len(users), len(want), users)
 	}
-	if users[1].Username != "jane" || users[1].UID != "S-1-5-21-111-1001" {
-		t.Errorf("users[1] = %+v, want jane/S-1-5-21-111-1001", users[1])
+	for i, w := range want {
+		if users[i].Username != w.name || users[i].UID != w.sid || users[i].IsBuiltin != w.builtin {
+			t.Errorf("users[%d] = %+v, want %s/%s builtin=%v", i, users[i], w.name, w.sid, w.builtin)
+		}
 	}
 }
 
@@ -304,29 +315,32 @@ func TestParseWindowsUsersJSON_Single(t *testing.T) {
 	}
 }
 
-func TestParseWindowsUsersJSON_SystemAccountsFiltered(t *testing.T) {
+func TestParseWindowsUsersJSON_SandboxAccountsFiltered(t *testing.T) {
+	for _, name := range []string{"defaultuser0", "DefaultUser1"} {
+		if got := parseWindowsUsersJSON(`[{"Name": "` + name + `", "SID": "S-1-5-21-0-1002"}]`); len(got) != 0 {
+			t.Errorf("%q should be excluded, got %+v", name, got)
+		}
+	}
+}
+
+// TestParseWindowsUsersJSON_BuiltinByRID: the built-in Administrator is
+// found by its RID, so renaming it doesn't hide it, and a user named
+// "Administrator" with another RID isn't flagged.
+func TestParseWindowsUsersJSON_BuiltinByRID(t *testing.T) {
 	cases := []struct {
-		name    string
-		exclude bool
+		name, sid string
+		builtin   bool
 	}{
-		{"Administrator", true},
-		{"administrator", true}, // case-insensitive
-		{"Guest", true},
-		{"DefaultAccount", true},
-		{"WDAGUtilityAccount", true},
-		{"defaultuser0", true},
-		{"defaultuser1", true},
-		{"john", false},
-		{"Alice", false},
+		{"LocalAdmin", "S-1-5-21-1-2-3-500", true}, // renamed Administrator
+		{"Administrator", "S-1-5-21-1-2-3-1001", false},
+		{"Guest", "S-1-5-21-1-2-3-501", true},
+		{"john", "S-1-5-21-1-2-3-1500", false}, // RID ends in 500 but isn't 500
+		{"svc", "S-1-5-80-500", false},         // not a machine account SID
 	}
 	for _, c := range cases {
-		input := `[{"Name": "` + c.name + `", "SID": "S-1-5-21-0"}]`
-		got := parseWindowsUsersJSON(input)
-		if c.exclude && len(got) != 0 {
-			t.Errorf("%q should be excluded but was returned", c.name)
-		}
-		if !c.exclude && len(got) != 1 {
-			t.Errorf("%q should be included but was filtered", c.name)
+		got := parseWindowsUsersJSON(`[{"Name": "` + c.name + `", "SID": "` + c.sid + `"}]`)
+		if len(got) != 1 || got[0].IsBuiltin != c.builtin {
+			t.Errorf("%s (%s): got %+v, want IsBuiltin=%v", c.name, c.sid, got, c.builtin)
 		}
 	}
 }

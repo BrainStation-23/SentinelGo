@@ -48,6 +48,10 @@ type AgentUpdatePayload struct {
 	// v1 §6). Always sent, even empty, so the backend can tell "none" from
 	// an agent too old to report them.
 	Capabilities []string `json:"capabilities"`
+	// local_admin_members, signed_in_users, last_signed_in_user and
+	// identity_join (#223), at the top level next to local_users. A list
+	// that couldn't be read is sent as null.
+	shared.UserIdentity
 }
 
 // AgentService handles agent-related database operations.
@@ -97,6 +101,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		SecurityInfo:     sysInfo.SecurityInfo,
 		PowerTelemetry:   sysInfo.PowerTelemetry,
 		Capabilities:     constants.Capabilities(),
+		UserIdentity:     sysInfo.UserIdentity,
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

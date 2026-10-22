@@ -71,6 +71,7 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		Disks           interface{}
 		NetworkAdapters interface{}
 		LocalUsers      interface{}
+		UserIdentity    interface{}
 		SecurityInfo    interface{}
 		GPUs            interface{}
 		Displays        interface{}
@@ -95,6 +96,7 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		Disks:           s.Disks,
 		NetworkAdapters: s.NetworkAdapters,
 		LocalUsers:      s.LocalUsers,
+		UserIdentity:    s.UserIdentity,
 		SecurityInfo:    stableSecurityInfo(s.SecurityInfo),
 		GPUs:            s.GPUs,
 		Displays:        s.Displays,
