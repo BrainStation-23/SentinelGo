@@ -6,6 +6,7 @@ package security
 
 import (
 	"encoding/xml"
+	"fmt"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -175,9 +176,9 @@ func prefixFamily(p netip.Prefix) int {
 
 // listenerFamilies returns the address families a socket accepts and, for
 // a socket bound to one address, that address. A socket on "::" accepts IPv4
-// too (Linux binds dual-stack by default); one whose address can't be parsed
-// is treated as accepting both.
-func listenerFamilies(addr string) (families []int, bound netip.Addr) {
+// too unless v6Only (Linux binds dual-stack by default); one whose address
+// can't be parsed is treated as accepting both.
+func listenerFamilies(addr string, v6Only bool) (families []int, bound netip.Addr) {
 	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(addr), "["), "]"))
 	if err != nil {
 		return []int{4, 6}, netip.Addr{}
@@ -186,6 +187,8 @@ func listenerFamilies(addr string) (families []int, bound netip.Addr) {
 	switch {
 	case a.IsUnspecified() && a.Is4():
 		return []int{4}, netip.Addr{}
+	case a.IsUnspecified() && v6Only:
+		return []int{6}, netip.Addr{}
 	case a.IsUnspecified():
 		return []int{4, 6}, netip.Addr{}
 	case a.Is4():
@@ -228,15 +231,45 @@ func parseUFWAppPorts(val string) []portSpec {
 	return specs
 }
 
+// ufwHost is what the ufw check needs to know about the host.
+type ufwHost struct {
+	// arrival lists the non-loopback interfaces that are up: the ways a
+	// connection can come in. A deny on one interface decides only when it's
+	// the only one. nil when unknown.
+	arrival []string
+	// v6Only reports whether a socket on "::" accepts IPv6 only. nil means
+	// dual-stack, Linux's default.
+	v6Only func(p shared.ListeningPort) bool
+}
+
+// newUFWHost builds the host context. A socket on "::" is IPv6-only when the
+// same port also has an IPv4 wildcard socket (Linux refuses that pair unless
+// the IPv6 one is IPV6_V6ONLY), or when net.ipv6.bindv6only makes it the
+// default.
+func newUFWHost(ports []shared.ListeningPort, arrival []string, bindV6Only bool) ufwHost {
+	v4Wildcard := map[string]bool{}
+	for _, p := range ports {
+		if a, err := netip.ParseAddr(p.Address); err == nil && a.Is4() && a.IsUnspecified() {
+			v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)] = true
+		}
+	}
+	return ufwHost{
+		arrival: arrival,
+		v6Only: func(p shared.ListeningPort) bool {
+			return bindV6Only || v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)]
+		},
+	}
+}
+
 // check evaluates the rules separately for each address family the socket
 // accepts, since ufw lists IPv4 and IPv6 rules separately; the socket is
 // reachable when either family lets connections in.
-func (st ufwStatus) check(apps map[string][]portSpec) firewallCheck {
+func (st ufwStatus) check(apps map[string][]portSpec, host ufwHost) firewallCheck {
 	return func(p shared.ListeningPort) (string, []string) {
-		families, bound := listenerFamilies(p.Address)
+		families, bound := listenerFamilies(p.Address, host.v6Only != nil && host.v6Only(p))
 		verdicts := make([]string, 0, len(families))
 		for _, f := range families {
-			verdicts = append(verdicts, st.checkFamily(apps, p, f, bound))
+			verdicts = append(verdicts, st.checkFamily(apps, p, f, bound, host.arrival))
 		}
 		switch {
 		case slices.Contains(verdicts, firewallAllowed):
@@ -251,11 +284,11 @@ func (st ufwStatus) check(apps map[string][]portSpec) firewallCheck {
 
 // checkFamily evaluates one family's rules in order, as ufw does: the first
 // rule letting matching traffic in decides. A deny decides only when it
-// covers every connection to the socket: from anywhere, on every interface,
-// to the socket's address. Narrower denies leave other traffic to later
-// rules. Rules naming an application profile that isn't installed make an
-// otherwise blocked verdict unknown.
-func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr) string {
+// covers every connection to the socket: from anywhere, on every interface
+// connections can arrive on, to the socket's address. Narrower denies leave
+// other traffic to later rules. Rules naming an application profile that
+// isn't installed make an otherwise blocked verdict unknown.
+func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr, arrival []string) string {
 	uncertain := false
 	for _, r := range st.rules {
 		matches, known := r.coversPort(apps, p)
@@ -267,7 +300,7 @@ func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPo
 		case "allow", "limit":
 			return firewallAllowed
 		case "deny", "reject":
-			if r.blocksEverything(bound) {
+			if r.blocksEverything(bound, arrival) {
 				return firewallBlocked
 			}
 		}
@@ -289,10 +322,14 @@ func (r ufwRule) reaches(family int, bound netip.Addr) bool {
 }
 
 // blocksEverything reports whether a deny covers every connection to the
-// socket: from anywhere, on every interface, and to every address it's
-// bound to (a wildcard socket also gets traffic for other addresses).
-func (r ufwRule) blocksEverything(bound netip.Addr) bool {
-	return r.anySource && r.iface == "" && (!r.dest.IsValid() || bound.IsValid())
+// socket: from anywhere, to every address it's bound to (a wildcard socket
+// also gets traffic for other addresses), and on every interface a
+// connection can arrive on. A deny on one interface covers them all only
+// when it's the host's only arrival interface: Linux accepts a packet for
+// any local address on any interface.
+func (r ufwRule) blocksEverything(bound netip.Addr, arrival []string) bool {
+	everyInterface := r.iface == "" || (len(arrival) == 1 && arrival[0] == r.iface)
+	return r.anySource && everyInterface && (!r.dest.IsValid() || bound.IsValid())
 }
 
 // coversPort reports whether the rule's ports include p's. known is false

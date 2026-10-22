@@ -43,7 +43,7 @@ func TestUFW_Check(t *testing.T) {
 	if !st.active || st.defaultIncoming != "deny" {
 		t.Fatalf("status = %+v, want active with default deny", st)
 	}
-	check := st.check(parseUFWAppProfiles([]string{ufwAppFixture}))
+	check := st.check(parseUFWAppProfiles([]string{ufwAppFixture}), ufwHost{})
 
 	tests := []struct {
 		proto string
@@ -68,14 +68,14 @@ func TestUFW_Check(t *testing.T) {
 
 func TestUFW_DefaultAllowAndAllPorts(t *testing.T) {
 	st := parseUFWStatus("Status: active\nDefault: allow (incoming), allow (outgoing)\n")
-	if got, _ := st.check(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
 		t.Errorf("default allow: %q", got)
 	}
 	st = parseUFWStatus("Status: active\nDefault: reject (incoming)\n\nTo  Action  From\n--  ------  ----\nAnywhere                   ALLOW IN    10.0.0.0/8\n")
-	if got, _ := st.check(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
 		t.Errorf("allow all ports from a subnet: %q", got)
 	}
-	if got, _ := parseUFWStatus("Status: active\nDefault: deny (incoming)\n").check(nil)(shared.ListeningPort{Protocol: "tcp", Port: 22}); got != firewallBlocked {
+	if got, _ := parseUFWStatus("Status: active\nDefault: deny (incoming)\n").check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22}); got != firewallBlocked {
 		t.Errorf("no rules, default deny: %q", got)
 	}
 	if parseUFWStatus("Status: inactive\n").active {
@@ -255,7 +255,7 @@ func TestUFW_ScopedRules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := parseUFWStatus(fmt.Sprintf(header, tt.def) + tt.rules)
-			got, _ := st.check(nil)(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: tt.addr})
+			got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: tt.addr})
 			if got != tt.want {
 				t.Errorf("verdict = %q, want %q (rules %+v)", got, tt.want, st.rules)
 			}
@@ -278,7 +278,7 @@ func TestListenerFamilies(t *testing.T) {
 		{"*", []int{4, 6}, ""},
 	}
 	for _, tt := range tests {
-		fams, bound := listenerFamilies(tt.addr)
+		fams, bound := listenerFamilies(tt.addr, false)
 		got := ""
 		if bound.IsValid() {
 			got = bound.String()

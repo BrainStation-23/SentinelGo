@@ -69,7 +69,7 @@ func collectSecurity() shared.SecurityInfo {
 	devEnc := collectDeviceEncryption()
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
-	netExposure := collectNetworkExposure(ports, idAccess, linuxFirewallCheck(profiles))
+	netExposure := collectNetworkExposure(ports, idAccess, linuxFirewallCheck(profiles, ports))
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
