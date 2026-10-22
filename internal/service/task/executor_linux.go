@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,7 +32,10 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 		return "", fmt.Errorf("chmod failed: %w", err)
 	}
 
-	cmd := linuxScriptCommand(ctx, scriptPath, payloadPath, env, needsSudo)
+	cmd, err := linuxScriptCommand(ctx, scriptPath, payloadPath, env, needsSudo)
+	if err != nil {
+		return "", err
+	}
 
 	// Give the subprocess 30 s to exit cleanly after context cancellation
 	// before escalating to SIGKILL, so processes that ignore SIGTERM don't
@@ -45,22 +47,17 @@ func (s *TaskExecutorService) executeLocalScript(ctx context.Context, scriptPath
 
 // linuxScriptCommand builds the command for a script: the interpreter its
 // extension picks, under sudo when needsSudo is set.
-func linuxScriptCommand(ctx context.Context, scriptPath, payloadPath string, env []string, needsSudo bool) *exec.Cmd {
-	var args []string
-	switch filepath.Ext(scriptPath) {
-	case ".sh":
-		args = []string{binpath.Resolve("bash"), scriptPath, payloadPath}
-	case ".py":
-		args = []string{binpath.Resolve("python3"), scriptPath, payloadPath}
-	default:
-		args = []string{scriptPath, payloadPath}
+func linuxScriptCommand(ctx context.Context, scriptPath, payloadPath string, env []string, needsSudo bool) (*exec.Cmd, error) {
+	args, err := scriptArgv(scriptPath, payloadPath)
+	if err != nil {
+		return nil, err
 	}
 
 	if !needsSudo {
 		// #nosec G204 - scriptPath is a controlled path from task store
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Env = append(os.Environ(), env...)
-		return cmd
+		return cmd, nil
 	}
 
 	// sudo resets the environment by default (env_reset), so the task's
@@ -77,7 +74,7 @@ func linuxScriptCommand(ctx context.Context, scriptPath, payloadPath string, env
 	// /dev/null, causing sudo -S to hang. If the agent lacks root, the
 	// task will fail with a clear error.
 	cmd.Env = append(os.Environ(), "SUDO_PROMPT=[sudo] password for %u: ")
-	return cmd
+	return cmd, nil
 }
 
 // containsPrivilegedCommands reports whether the script contains commands that

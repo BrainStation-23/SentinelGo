@@ -84,11 +84,17 @@ var knownPaths = func() map[string][]string {
 		// only one OS's paths will ever exist on a given host)
 		"bash":    {"/bin/bash", "/usr/bin/bash"},
 		"python3": {"/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"},
+		"zsh":     {"/bin/zsh", "/usr/bin/zsh"},
 		"ps":      {"/bin/ps", "/usr/bin/ps"},
 		"kill":    {"/bin/kill", "/usr/bin/kill"},
 		"groups":  {"/usr/bin/groups", "/bin/groups"},
 		"id":      {"/usr/bin/id", "/bin/id"},
 		"stat":    {"/usr/bin/stat", "/bin/stat"},
+		// PowerShell 7: Microsoft's packages (Linux, macOS .pkg), Homebrew, snap.
+		"pwsh": {
+			"/usr/bin/pwsh", "/usr/local/bin/pwsh", "/opt/homebrew/bin/pwsh",
+			"/opt/microsoft/powershell/7/pwsh", "/snap/bin/pwsh",
+		},
 
 		// Windows - System32 is writable only by admins/TrustedInstaller.
 		"powershell": {filepath.Join(sys32, "WindowsPowerShell", "v1.0", "powershell.exe")},

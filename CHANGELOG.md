@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- `.ps1` task scripts run on macOS and Linux under PowerShell 7, as `pwsh -NoProfile -NonInteractive -File <script> -PayloadPath <payload>`, the same arguments as on Windows. A command with a single cross-platform `.ps1` in its `all` slot now runs on every OS. The agent adds `script_pwsh_v1` to its inventory capabilities only when `pwsh` is installed, and checks again on every inventory report. Without `pwsh`, a `.ps1` task fails with "PowerShell (pwsh) is not installed on this device" instead of an exec format error (#222).
+
+### Fixed
+
+- `.bash` and `.zsh` task scripts on macOS and Linux run with `bash` and `zsh`, like `.sh`, instead of being executed directly. They no longer fail when the console's prepended lines push the shebang off line 1 (#222).
+
 ### Security
 
 - Built with Go 1.26.10, which makes `crypto/x509` distrust compromised intermediate certificates (GO-2026-6809). This affects every TLS connection the agent makes to the backend.

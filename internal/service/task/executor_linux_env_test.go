@@ -4,6 +4,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 // interpreter.
 func TestLinuxScriptCommand_SudoKeepsEnv(t *testing.T) {
 	env := []string{"SENTINEL_TASK_ID=t1", "SENTINEL_TASK_DIR=/tmp/x y"}
-	cmd := linuxScriptCommand(context.Background(), "/tmp/x/run.sh", "/tmp/x/payload.json", env, true)
+	cmd := mustLinuxScriptCommand(t, "/tmp/x/run.sh", "/tmp/x/payload.json", env, true)
 
 	args := cmd.Args[1:]
 	if args[0] != "-S" {
@@ -35,7 +36,7 @@ func TestLinuxScriptCommand_SudoKeepsEnv(t *testing.T) {
 }
 
 func TestLinuxScriptCommand_SudoNoEnv(t *testing.T) {
-	cmd := linuxScriptCommand(context.Background(), "/tmp/x/run.py", "/tmp/x/p.json", nil, true)
+	cmd := mustLinuxScriptCommand(t, "/tmp/x/run.py", "/tmp/x/p.json", nil, true)
 	args := cmd.Args[1:]
 	if args[0] != "-S" || filepath.Base(args[1]) != "python3" {
 		t.Errorf("args = %q, want -S python3 …", args)
@@ -43,7 +44,7 @@ func TestLinuxScriptCommand_SudoNoEnv(t *testing.T) {
 }
 
 func TestLinuxScriptCommand_NoSudoSetsEnv(t *testing.T) {
-	cmd := linuxScriptCommand(context.Background(), "/tmp/x/run", "/tmp/x/p.json", []string{"SENTINEL_TASK_ID=t1"}, false)
+	cmd := mustLinuxScriptCommand(t, "/tmp/x/run", "/tmp/x/p.json", []string{"SENTINEL_TASK_ID=t1"}, false)
 	if cmd.Args[0] != "/tmp/x/run" {
 		t.Errorf("args = %q, want the script run directly", cmd.Args)
 	}
@@ -65,7 +66,7 @@ func TestLinuxScriptCommand_EnvReachesScript(t *testing.T) {
 	if err := os.WriteFile(script, []byte("echo \"id=$SENTINEL_TASK_ID dir=$SENTINEL_TASK_DIR\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	sudoCmd := linuxScriptCommand(context.Background(), script, filepath.Join(dir, "p.json"),
+	sudoCmd := mustLinuxScriptCommand(t, script, filepath.Join(dir, "p.json"),
 		[]string{"SENTINEL_TASK_ID=t1", "SENTINEL_TASK_DIR=" + dir}, true)
 
 	// Replace sudo with env -i (an empty environment, like env_reset) and run
@@ -77,5 +78,36 @@ func TestLinuxScriptCommand_EnvReachesScript(t *testing.T) {
 	}
 	if want := "id=t1 dir=" + dir; !strings.Contains(string(out), want) {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// mustLinuxScriptCommand builds the command and fails the test on an error.
+func mustLinuxScriptCommand(t *testing.T, scriptPath, payloadPath string, env []string, needsSudo bool) *exec.Cmd {
+	t.Helper()
+	cmd, err := linuxScriptCommand(context.Background(), scriptPath, payloadPath, env, needsSudo)
+	if err != nil {
+		t.Fatalf("linuxScriptCommand(%q): %v", scriptPath, err)
+	}
+	return cmd
+}
+
+// TestLinuxScriptCommand_SudoPwsh: a .ps1 under sudo keeps the env(1) wrapper
+// and runs pwsh with the same arguments as Windows (#222).
+func TestLinuxScriptCommand_SudoPwsh(t *testing.T) {
+	stubInterpreters(t, "pwsh")
+	cmd := mustLinuxScriptCommand(t, "/tmp/x/run.ps1", "/tmp/x/p.json", []string{"SENTINEL_TASK_ID=t1"}, true)
+	args := cmd.Args[1:]
+	want := []string{"/stub/pwsh", "-NoProfile", "-NonInteractive", "-File", "/tmp/x/run.ps1", "-PayloadPath", "/tmp/x/p.json"}
+	if args[0] != "-S" || filepath.Base(args[1]) != "env" || args[2] != "SENTINEL_TASK_ID=t1" || !slices.Equal(args[3:], want) {
+		t.Errorf("args = %q, want -S env SENTINEL_TASK_ID=t1 %q", args, want)
+	}
+}
+
+func TestLinuxScriptCommand_PwshMissing(t *testing.T) {
+	stubInterpreters(t)
+	for _, sudo := range []bool{false, true} {
+		if _, err := linuxScriptCommand(context.Background(), "/tmp/x/run.ps1", "/tmp/x/p.json", nil, sudo); !errors.Is(err, errPwshMissing) {
+			t.Errorf("sudo=%v: err = %v, want errPwshMissing", sudo, err)
+		}
 	}
 }

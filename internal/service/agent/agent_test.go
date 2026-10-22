@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/constants"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/agent"
 )
@@ -172,7 +173,8 @@ func TestUpdateAgentInfo_CancelledContext(t *testing.T) {
 }
 
 // TestUpdateAgentInfo_SendsCapabilities is the golden check for contract v1
-// §6: the inventory payload carries exactly the capabilities this build has.
+// §6: the inventory payload carries exactly the capabilities this build has
+// on this device (script_pwsh_v1 depends on pwsh being installed).
 func TestUpdateAgentInfo_SendsCapabilities(t *testing.T) {
 	var body []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +188,8 @@ func TestUpdateAgentInfo_SendsCapabilities(t *testing.T) {
 	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, mockSysInfo()); err != nil {
 		t.Fatalf("UpdateAgentInfo: %v", err)
 	}
-	want := `"capabilities":["script_inline_body_v1","task_artifacts_v1"]`
+	caps, _ := json.Marshal(constants.Capabilities())
+	want := `"capabilities":` + string(caps)
 	if !strings.Contains(string(body), want) {
 		t.Errorf("request body lacks %s: %s", want, body)
 	}
