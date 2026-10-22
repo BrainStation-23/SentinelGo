@@ -1,6 +1,7 @@
 package security
 
 import (
+	"net/netip"
 	"slices"
 	"testing"
 
@@ -32,7 +33,9 @@ const winFwFixture = `{
   {"id": "FPS-SMB-In-TCP", "program": "System"},
   {"id": "RemoteDesktop-UserMode-In-TCP", "program": "%SystemRoot%\\system32\\svchost.exe"},
   {"id": "RPCSS-In", "program": "%systemroot%\\system32\\svchost.exe"},
-  {"id": "VNC-Range", "program": "Any"}
+  {"id": "ICMP4-In", "program": "System"},
+  {"id": "VNC-Range", "program": "Any"},
+  {"id": "Block-VNC-5901", "program": "Any"}
  ],
  "profiles": [
   {"name": "Domain", "enabled": true, "default_inbound": "Block"},
@@ -124,7 +127,7 @@ func TestWinFirewall_Check(t *testing.T) {
 			if tt.networks != nil {
 				fw.Networks = tt.networks
 			}
-			verdict, profiles := fw.checker()(tt.port)
+			verdict, profiles := fw.checker(nil)(tt.port)
 			if verdict != tt.verdict || !slices.Equal(profiles, tt.profiles) {
 				t.Errorf("check = %q, %q; want %q, %q", verdict, profiles, tt.verdict, tt.profiles)
 			}
@@ -135,7 +138,7 @@ func TestWinFirewall_Check(t *testing.T) {
 func TestWinFirewall_ProfileDisabled(t *testing.T) {
 	fw := mustWinFirewall(t)
 	fw.Profiles[2].Enabled = false // Public
-	verdict, profiles := fw.checker()(shared.ListeningPort{Protocol: "tcp", Port: 445, ProcessName: "System"})
+	verdict, profiles := fw.checker(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, ProcessName: "System"})
 	if verdict != firewallDisabled || !slices.Equal(profiles, []string{"Public"}) {
 		t.Errorf("check = %q, %q; want disabled on Public", verdict, profiles)
 	}
@@ -144,7 +147,7 @@ func TestWinFirewall_ProfileDisabled(t *testing.T) {
 func TestWinFirewall_DefaultInboundAllow(t *testing.T) {
 	fw := mustWinFirewall(t)
 	fw.Profiles[2].DefaultInbound = "Allow"
-	if verdict, _ := fw.checker()(shared.ListeningPort{Protocol: "tcp", Port: 445, ProcessName: "System"}); verdict != firewallAllowed {
+	if verdict, _ := fw.checker(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, ProcessName: "System"}); verdict != firewallAllowed {
 		t.Errorf("verdict = %q, want allowed", verdict)
 	}
 }
@@ -152,7 +155,7 @@ func TestWinFirewall_DefaultInboundAllow(t *testing.T) {
 func TestWinFirewall_MissingProfileIsUnknown(t *testing.T) {
 	fw := mustWinFirewall(t)
 	fw.Profiles = fw.Profiles[:2] // no Public state
-	if verdict, _ := fw.checker()(shared.ListeningPort{Protocol: "tcp", Port: 445}); verdict != firewallUnknown {
+	if verdict, _ := fw.checker(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); verdict != firewallUnknown {
 		t.Errorf("verdict = %q, want unknown", verdict)
 	}
 }
@@ -175,5 +178,61 @@ func TestWinFirewall_NetworkProfiles(t *testing.T) {
 	want := []shared.NetworkFirewallProfile{{Interface: "Ethernet", Profile: "Domain"}, {Interface: "Wi-Fi", Profile: "Private"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("networkProfiles = %+v, want %+v", got, want)
+	}
+}
+
+// TestWinFirewall_MissingFilterIsUnknown: a rule whose port or program
+// filter the probe didn't return must not act as "any port"/"any program".
+func TestWinFirewall_MissingFilterIsUnknown(t *testing.T) {
+	smb := shared.ListeningPort{Protocol: "tcp", Port: 445, ProcessName: "System"}
+	fw := mustWinFirewall(t)
+	fw.Ports = fw.Ports[1:] // FPS-SMB-In-TCP's port filter is missing
+	if got, _ := fw.checker(nil)(smb); got != firewallUnknown {
+		t.Errorf("missing port filter: %q, want unknown", got)
+	}
+	fw = mustWinFirewall(t)
+	fw.Apps = fw.Apps[1:]
+	if got, _ := fw.checker(nil)(smb); got != firewallUnknown {
+		t.Errorf("missing program filter: %q, want unknown", got)
+	}
+}
+
+// TestWinFirewall_InterfaceProfile: a socket bound to one interface is
+// governed by that network's profile only; a wildcard socket by every
+// connected network's.
+func TestWinFirewall_InterfaceProfile(t *testing.T) {
+	fw := mustWinFirewall(t)
+	fw.Networks = []winFwNetwork{
+		{Interface: "Wi-Fi", Index: 7, Category: "Public"},
+		{Interface: "Ethernet", Index: 3, Category: "Private"},
+	}
+	ifaceIndex := func(a netip.Addr) (int, bool) {
+		switch a.String() {
+		case "192.168.1.20":
+			return 7, true // Wi-Fi
+		case "10.0.0.20":
+			return 3, true // Ethernet
+		case "172.20.0.1":
+			return 9, true // no network profile (e.g. a virtual switch)
+		}
+		return 0, false
+	}
+	check := fw.checker(ifaceIndex)
+	tests := []struct {
+		addr     string
+		verdict  string
+		profiles []string
+	}{
+		{"192.168.1.20", firewallBlocked, nil},                 // Public blocks SMB
+		{"10.0.0.20", firewallAllowed, []string{"Private"}},    // Private allows it
+		{"0.0.0.0", firewallAllowed, []string{"Private"}},      // wildcard: every network
+		{"172.20.0.1", firewallAllowed, []string{"Private"}},   // no profile: every network
+		{"192.168.99.9", firewallAllowed, []string{"Private"}}, // interface not found
+	}
+	for _, tt := range tests {
+		verdict, profiles := check(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: tt.addr, ProcessName: "System"})
+		if verdict != tt.verdict || !slices.Equal(profiles, tt.profiles) {
+			t.Errorf("%s: %q, %q; want %q, %q", tt.addr, verdict, profiles, tt.verdict, tt.profiles)
+		}
 	}
 }

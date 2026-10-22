@@ -27,7 +27,7 @@ func linuxFirewallCheck(profiles []shared.FirewallProfile) firewallCheck {
 			}
 		case "firewalld":
 			if out, err := securityRunCommand("firewall-cmd", "--list-all-zones"); err == nil {
-				return firewalldCheck(parseFirewalldZones(out), firewalldServicePorts)
+				return firewalldCheck(parseFirewalldZones(out), firewalldServicePorts, systemInterfaceName)
 			}
 		}
 		return constantCheck(firewallUnknown)

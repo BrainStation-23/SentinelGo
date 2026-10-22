@@ -15,6 +15,9 @@ import (
 // not send such a task, but a stale inventory can still let one through.
 var errPwshMissing = errors.New("PowerShell (pwsh) is not installed on this device")
 
+// errZshMissing fails a .zsh task on a device without zsh at a known path.
+var errZshMissing = errors.New("zsh is not installed on this device")
+
 // lookupBinary resolves an interpreter strictly (no PATH fallback). A var so
 // tests can choose which interpreters exist.
 var lookupBinary = binpath.Lookup
@@ -28,7 +31,14 @@ func scriptArgv(scriptPath, payloadPath string) ([]string, error) {
 	case ".sh", ".bash":
 		return []string{binpath.Resolve("bash"), scriptPath, payloadPath}, nil
 	case ".zsh":
-		return []string{binpath.Resolve("zsh"), scriptPath, payloadPath}, nil
+		// zsh isn't installed everywhere (most Linux distributions lack it),
+		// so it's resolved strictly: a bare "zsh" would search PATH, where a
+		// writable directory could substitute it while the agent runs as root.
+		zsh, ok := lookupBinary("zsh")
+		if !ok {
+			return nil, errZshMissing
+		}
+		return []string{zsh, scriptPath, payloadPath}, nil
 	case ".py":
 		return []string{binpath.Resolve("python3"), scriptPath, payloadPath}, nil
 	case ".ps1":

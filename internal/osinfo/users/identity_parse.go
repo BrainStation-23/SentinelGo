@@ -326,7 +326,7 @@ func addConsoleOwner(users []shared.SignedInUser, owner string) []shared.SignedI
 }
 
 // lastPseudoUsers are `last` entries that aren't sign-ins.
-var lastPseudoUsers = map[string]bool{"reboot": true, "shutdown": true, "wtmp": true, "btmp": true}
+var lastPseudoUsers = map[string]bool{"reboot": true, "shutdown": true, "runlevel": true, "wtmp": true, "btmp": true}
 
 // parseLastUser returns the user of the newest sign-in in `last` output.
 func parseLastUser(out string) string {
