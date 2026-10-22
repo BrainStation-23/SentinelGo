@@ -41,7 +41,7 @@ func TestScriptArgv(t *testing.T) {
 		{script: "/tmp/x/run"},
 		{script: "/tmp/x/run.rb"},
 	}
-	stubInterpreters(t, "pwsh")
+	stubInterpreters(t, "pwsh", "zsh")
 
 	for _, tt := range tests {
 		t.Run(filepath.Base(tt.script), func(t *testing.T) {
@@ -135,5 +135,13 @@ func TestExecuteLocalScript_RealPwsh(t *testing.T) {
 	}
 	if want := "payload=" + payload + " dir=" + dir; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// TestScriptArgv_ZshMissing: zsh is resolved strictly, never through PATH.
+func TestScriptArgv_ZshMissing(t *testing.T) {
+	stubInterpreters(t)
+	if argv, err := scriptArgv("/tmp/x/run.zsh", "/tmp/x/payload.json"); !errors.Is(err, errZshMissing) {
+		t.Fatalf("argv, err = %q, %v; want errZshMissing", argv, err)
 	}
 }

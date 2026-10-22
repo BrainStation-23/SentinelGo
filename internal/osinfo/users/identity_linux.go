@@ -9,35 +9,49 @@ import (
 func getIdentity() shared.UserIdentity {
 	var id shared.UserIdentity
 
-	passwd, passwdErr := shared.ReadFileContent("/etc/passwd")
-	gids := parsePasswdGIDs(passwd)
-	localUsers := map[string]bool{}
-	for name := range gids {
-		localUsers[name] = true
-	}
-	// getent also sees groups from a directory (sssd, winbind). It exits 2
-	// when one of the groups doesn't exist, so the output counts, not the code.
-	groups, _, err := shared.RunCommandOutput("getent", append([]string{"group"}, linuxAdminGroups...)...)
-	if err != nil || groups == "" {
-		groups, err = shared.ReadFileContent("/etc/group")
-	}
-	if err == nil && passwdErr == nil {
-		id.AdminMembers = linuxAdminMembers(groups, gids, localUsers)
-	}
+	id.AdminMembers = linuxAdminRoster()
 
-	if bin, err := shared.LookupBinary("who"); err == nil {
+	if bin, err := lookupBinary("who"); err == nil {
 		// The C locale fixes who's date format.
-		if out, err := shared.RunCommand("env", "LC_ALL=C", bin); err == nil {
+		if out, err := runCommand("env", "LC_ALL=C", bin); err == nil {
 			id.SignedInUsers = parseWho(out, time.Now())
 		}
 	}
 
-	if out, err := shared.RunCommand("last", "-w", "-n", "20"); err == nil {
+	if out, err := runCommand("last", "-w", "-n", "20"); err == nil {
 		id.LastSignedInUser = parseLastUser(out)
 	}
 
-	if out, err := shared.RunCommand("realm", "list"); err == nil {
+	if out, err := runCommand("realm", "list"); err == nil {
 		id.Join = parseRealmList(out)
 	}
 	return id
+}
+
+// linuxAdminRoster lists the admin groups' members, nil when the account
+// records can't be read. getent also sees directory accounts and groups
+// (sssd, winbind), so a directory user whose primary group is sudo counts
+// too; /etc/passwd says which accounts are local.
+func linuxAdminRoster() []shared.LocalAdminMember {
+	passwd, err := readFile("/etc/passwd")
+	if err != nil {
+		return nil
+	}
+	localUsers := map[string]bool{}
+	for name := range parsePasswdGIDs(passwd) {
+		localUsers[name] = true
+	}
+	accounts := passwd
+	if out, err := runCommand("getent", "passwd"); err == nil && out != "" {
+		accounts = out
+	}
+	// getent exits 2 when one of the groups doesn't exist, so the output
+	// counts, not the exit code.
+	groups, _, err := runCommandOutput("getent", append([]string{"group"}, linuxAdminGroups...)...)
+	if err != nil || groups == "" {
+		if groups, err = readFile("/etc/group"); err != nil {
+			return nil
+		}
+	}
+	return linuxAdminMembers(groups, parsePasswdGIDs(accounts), localUsers)
 }

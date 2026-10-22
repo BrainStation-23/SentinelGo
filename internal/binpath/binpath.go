@@ -68,6 +68,12 @@ var knownPaths = func() map[string][]string {
 		"sudo":       {"/usr/bin/sudo"},
 		"env":        {"/usr/bin/env", "/bin/env"},
 
+		// Linux firewalls (osinfo/security). firewall-cmd is a Python
+		// script under bin; iptables and nft are under sbin.
+		"firewall-cmd": {"/usr/bin/firewall-cmd", "/bin/firewall-cmd"},
+		"iptables":     {"/usr/sbin/iptables", "/sbin/iptables"},
+		"nft":          {"/usr/sbin/nft", "/sbin/nft"},
+
 		// Linux compliance probes (osinfo/security, osinfo/users)
 		"auditctl":         {"/usr/sbin/auditctl", "/sbin/auditctl"},
 		"chronyc":          {"/usr/bin/chronyc", "/bin/chronyc"},

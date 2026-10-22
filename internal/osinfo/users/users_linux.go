@@ -7,14 +7,14 @@ import (
 )
 
 func getLocalUsers() []shared.UserWithGroup {
-	content, err := shared.ReadFileContent("/etc/passwd")
+	content, err := readFile("/etc/passwd")
 	if err != nil {
 		return nil
 	}
 
 	result := parsePasswdContent(content)
 	for i := range result {
-		if output, err := shared.RunCommand("groups", result[i].Username); err == nil {
+		if output, err := runCommand("groups", result[i].Username); err == nil {
 			result[i].Groups = parseLinuxGroupOutput(output, result[i].Username)
 		}
 	}
@@ -27,7 +27,7 @@ func getLocalUsers() []shared.UserWithGroup {
 // is left out when its source can't be read.
 func applyLinuxAccountState(users []shared.UserWithGroup) {
 	var shadow map[string]shadowEntry
-	if content, err := shared.ReadFileContent("/etc/shadow"); err == nil {
+	if content, err := readFile("/etc/shadow"); err == nil {
 		shadow = parseShadow(content)
 	}
 	logons := readLastlog()
@@ -48,11 +48,11 @@ func applyLinuxAccountState(users []shared.UserWithGroup) {
 // it isn't at its fixed path.
 func readLastlog() map[string]*shared.LastLogon {
 	for _, cmd := range []string{"lastlog", "lastlog2"} {
-		bin, err := shared.LookupBinary(cmd)
+		bin, err := lookupBinary(cmd)
 		if err != nil {
 			continue
 		}
-		if out, err := shared.RunCommand("env", "LC_ALL=C", bin); err == nil {
+		if out, err := runCommand("env", "LC_ALL=C", bin); err == nil {
 			return parseLastlog(out)
 		}
 	}

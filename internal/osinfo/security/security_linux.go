@@ -79,7 +79,7 @@ func collectSecurity() shared.SecurityInfo {
 		FirewallProfiles:      profiles,
 		CoreIsolation:         coreIsolation,
 		SecureBootEnabled:     secureBoot,
-		ListeningPorts:        ports,
+		ListeningPorts:        uploadedListeningPorts(ports),
 		USBMassStorageEnabled: usb,
 
 		FirewallSecurity:      fwSec,

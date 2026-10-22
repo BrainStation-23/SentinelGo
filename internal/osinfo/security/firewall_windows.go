@@ -20,7 +20,7 @@ var winFirewallScript = strings.Join([]string{
 	`$ports = @(Get-NetFirewallPortFilter -PolicyStore ActiveStore -All | Where-Object { $ids.ContainsKey($_.InstanceID) } | ForEach-Object { @{ id = $_.InstanceID; protocol = [string]$_.Protocol; local_port = (@($_.LocalPort) -join ',') } })`,
 	`$apps = @(Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -All | Where-Object { $ids.ContainsKey($_.InstanceID) } | ForEach-Object { @{ id = $_.InstanceID; program = [string]$_.Program } })`,
 	`$profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object { @{ name = [string]$_.Name; enabled = ([string]$_.Enabled -ne 'False'); default_inbound = [string]$_.DefaultInboundAction } })`,
-	`$networks = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { @{ interface = [string]$_.InterfaceAlias; category = [string]$_.NetworkCategory } })`,
+	`$networks = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { @{ interface = [string]$_.InterfaceAlias; index = [int]$_.InterfaceIndex; category = [string]$_.NetworkCategory } })`,
 	`@{ rules = $rules; ports = $ports; apps = $apps; profiles = $profiles; networks = $networks } | ConvertTo-Json -Compress -Depth 4`,
 }, "; ")
 

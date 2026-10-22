@@ -7,7 +7,7 @@ import (
 )
 
 func getLocalUsers() []shared.UserWithGroup {
-	output, err := shared.RunPowerShell(
+	output, err := runPowerShell(
 		`Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" | Select-Object Name,SID | ConvertTo-Json`)
 	if err != nil {
 		return nil
@@ -33,7 +33,7 @@ const userExtrasScript = `$ts = { param($d) if ($d) { ([DateTimeOffset]$d).ToUni
 // from Get-LocalUser, matched by SID. If the query fails the keys are left
 // out.
 func applyWindowsUserExtras(users []shared.UserWithGroup) {
-	out, err := shared.RunPowerShell(userExtrasScript)
+	out, err := runPowerShell(userExtrasScript)
 	if err != nil {
 		return
 	}
@@ -54,7 +54,7 @@ func getUserGroups(username string) []string {
 	cmd := fmt.Sprintf(
 		`$u=%s; Get-LocalGroup | Where-Object { (Get-LocalGroupMember $_ -ErrorAction SilentlyContinue).Name -like ('*\'+$u) } | Select-Object -ExpandProperty Name`,
 		shared.PSQuote(username))
-	if output, err := shared.RunPowerShell(cmd); err == nil {
+	if output, err := runPowerShell(cmd); err == nil {
 		return parseWindowsGroupLines(output)
 	}
 	return nil

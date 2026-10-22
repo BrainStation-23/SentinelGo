@@ -5,6 +5,7 @@ package security
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -46,6 +47,7 @@ type winFwProfile struct {
 
 type winFwNetwork struct {
 	Interface string `json:"interface"`
+	Index     int    `json:"index"`    // InterfaceIndex, as net.Interface.Index
 	Category  string `json:"category"` // "Public", "Private" or "DomainAuthenticated"
 }
 
@@ -108,55 +110,121 @@ func (fw winFirewall) activeProfiles() []string {
 	return out
 }
 
-// checker returns the firewallCheck for this state.
-func (fw winFirewall) checker() firewallCheck {
-	ports := make(map[string]winFwPortFilter, len(fw.Ports))
-	for _, f := range fw.Ports {
-		ports[f.ID] = f
-	}
-	apps := make(map[string]string, len(fw.Apps))
-	for _, f := range fw.Apps {
-		apps[f.ID] = f.Program
-	}
-	profiles := make(map[string]winFwProfile, len(fw.Profiles))
-	for _, p := range fw.Profiles {
-		profiles[p.Name] = p
-	}
-	active := fw.activeProfiles()
+// interfaceIndexFunc returns the index of the network interface that holds
+// addr; ok is false when no interface does.
+type interfaceIndexFunc func(addr netip.Addr) (index int, ok bool)
 
-	return func(p shared.ListeningPort) (string, []string) {
-		var reachable []string
-		disabled := false
-		for _, name := range active {
-			prof, known := profiles[name]
-			if !known {
-				return firewallUnknown, nil
-			}
-			if !prof.Enabled {
-				disabled = true
-				reachable = append(reachable, name)
-				continue
-			}
-			if fw.allows(name, p, ports, apps, strings.EqualFold(prof.DefaultInbound, "Allow")) {
-				reachable = append(reachable, name)
-			}
-		}
-		switch {
-		case disabled:
-			return firewallDisabled, reachable
-		case len(reachable) > 0:
-			return firewallAllowed, reachable
-		default:
-			return firewallBlocked, nil
+// winFwIndex is a winFirewall indexed for checking sockets.
+type winFwIndex struct {
+	rules      []winFwRule
+	ports      map[string]winFwPortFilter
+	apps       map[string]string
+	profiles   map[string]winFwProfile
+	active     []string       // profiles of the connected networks
+	byIndex    map[int]string // interface index → its network's profile
+	ifaceIndex interfaceIndexFunc
+}
+
+// checker returns the firewallCheck for this state. A socket bound to one
+// interface's address is checked against that network's profile only; a
+// wildcard socket, or one whose interface has no network profile, against
+// every active profile. ifaceIndex may be nil.
+//
+// Every rule has a port and a program filter. If the probe returned a rule
+// without either, the policy is incomplete and every verdict is unknown: a
+// missing filter must not be read as "any port" or "any program".
+func (fw winFirewall) checker(ifaceIndex interfaceIndexFunc) firewallCheck {
+	ix, complete := fw.index(ifaceIndex)
+	if !complete {
+		return constantCheck(firewallUnknown)
+	}
+	return ix.check
+}
+
+func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
+	ix := winFwIndex{
+		rules:      fw.Rules,
+		ports:      make(map[string]winFwPortFilter, len(fw.Ports)),
+		apps:       make(map[string]string, len(fw.Apps)),
+		profiles:   make(map[string]winFwProfile, len(fw.Profiles)),
+		active:     fw.activeProfiles(),
+		byIndex:    map[int]string{},
+		ifaceIndex: ifaceIndex,
+	}
+	for _, f := range fw.Ports {
+		ix.ports[f.ID] = f
+	}
+	for _, f := range fw.Apps {
+		ix.apps[f.ID] = f.Program
+	}
+	for _, p := range fw.Profiles {
+		ix.profiles[p.Name] = p
+	}
+	for _, n := range fw.Networks {
+		if p := winProfileName(n.Category); p != "" && n.Index > 0 {
+			ix.byIndex[n.Index] = p
 		}
 	}
+	for _, r := range fw.Rules {
+		_, hasPort := ix.ports[r.ID]
+		_, hasApp := ix.apps[r.ID]
+		if !hasPort || !hasApp {
+			return winFwIndex{}, false
+		}
+	}
+	return ix, true
+}
+
+// check rates one socket: disabled when a governing profile has the
+// firewall off, allowed when one lets connections in, blocked otherwise.
+func (ix winFwIndex) check(p shared.ListeningPort) (string, []string) {
+	var reachable []string
+	disabled := false
+	for _, name := range ix.socketProfiles(p.Address) {
+		prof, known := ix.profiles[name]
+		switch {
+		case !known:
+			return firewallUnknown, nil
+		case !prof.Enabled:
+			disabled = true
+			reachable = append(reachable, name)
+		case ix.allows(name, p, strings.EqualFold(prof.DefaultInbound, "Allow")):
+			reachable = append(reachable, name)
+		}
+	}
+	switch {
+	case disabled:
+		return firewallDisabled, reachable
+	case len(reachable) > 0:
+		return firewallAllowed, reachable
+	default:
+		return firewallBlocked, nil
+	}
+}
+
+// socketProfiles returns the firewall profiles that govern connections to a
+// socket bound to addr.
+func (ix winFwIndex) socketProfiles(addr string) []string {
+	if ix.ifaceIndex == nil || bindScope(addr) != scopeInterface {
+		return ix.active
+	}
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]"))
+	if err != nil {
+		return ix.active
+	}
+	if idx, ok := ix.ifaceIndex(a.Unmap().WithZone("")); ok {
+		if p, known := ix.byIndex[idx]; known {
+			return []string{p}
+		}
+	}
+	return ix.active
 }
 
 // allows reports whether inbound connections to p get through on profile.
 // A matching block rule wins over any allow rule, as in Windows Firewall
 // (allow rules that override block rules are rare and not modelled); with no
 // matching rule the profile's default inbound action decides.
-func (fw winFirewall) allows(profile string, p shared.ListeningPort, ports map[string]winFwPortFilter, apps map[string]string, defaultAllow bool) bool {
+func (ix winFwIndex) allows(profile string, p shared.ListeningPort, defaultAllow bool) bool {
 	bit := 0
 	for _, wp := range winProfiles {
 		if wp.name == profile {
@@ -164,11 +232,11 @@ func (fw winFirewall) allows(profile string, p shared.ListeningPort, ports map[s
 		}
 	}
 	allowed := defaultAllow
-	for _, r := range fw.Rules {
+	for _, r := range ix.rules {
 		if mask := r.Profile & 7; mask != 0 && mask&bit == 0 {
 			continue
 		}
-		if !winRuleMatchesPort(ports[r.ID], p) || !winRuleMatchesProgram(apps[r.ID], p.ProcessName) {
+		if !winRuleMatchesPort(ix.ports[r.ID], p) || !winRuleMatchesProgram(ix.apps[r.ID], p.ProcessName) {
 			continue
 		}
 		switch {

@@ -232,3 +232,24 @@ func TestComputePostureScore_ExposureMediumKeepsPoint(t *testing.T) {
 		}
 	}
 }
+
+// TestRiskyServicePastUploadCap: the exposure analysis sees every listener,
+// even when the uploaded listening_ports list is capped before the risky one.
+func TestRiskyServicePastUploadCap(t *testing.T) {
+	var ports []shared.ListeningPort
+	for i := 0; i < maxListeningPorts; i++ {
+		ports = append(ports, shared.ListeningPort{Protocol: "udp", Port: 5353, Address: "0.0.0.0", ProcessName: "msedge.exe"})
+	}
+	ports = append(ports, shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0", ProcessName: "System"})
+
+	if got := uploadedListeningPorts(ports); len(got) != maxListeningPorts {
+		t.Errorf("uploaded %d listeners, want %d", len(got), maxListeningPorts)
+	}
+	if got := uploadedListeningPorts(ports[:3]); len(got) != 3 {
+		t.Errorf("short list changed: %d", len(got))
+	}
+	info := analyzeNetworkExposure(ports, nil)
+	if len(info.RiskyServices) != 1 || info.RiskyServices[0].Port != 445 {
+		t.Errorf("RiskyServices = %+v, want SMB past the upload cap", info.RiskyServices)
+	}
+}

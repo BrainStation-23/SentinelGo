@@ -29,7 +29,7 @@ var identityScript = strings.Join([]string{
 func getIdentity() shared.UserIdentity {
 	var id shared.UserIdentity
 	probe, probeOK := windowsIdentityProbe{}, false
-	if out, err := shared.RunPowerShell(identityScript); err == nil {
+	if out, err := runPowerShell(identityScript); err == nil {
 		probe, probeOK = parseWindowsIdentityProbe(out)
 	}
 	if probeOK {
@@ -44,7 +44,7 @@ func getIdentity() shared.UserIdentity {
 
 	id.LastSignedInUser = windowsLastSignedInUser()
 
-	if out, err := shared.RunCommand("dsregcmd", "/status"); err == nil {
+	if out, err := runCommand("dsregcmd", "/status"); err == nil {
 		if j, ok := parseDsregcmd(out); ok {
 			id.Join = j
 		}

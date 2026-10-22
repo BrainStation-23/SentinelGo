@@ -27,7 +27,7 @@ func collectSecurity() shared.SecurityInfo {
 	fwSec := collectFirewallSecurity(profiles)
 	fwCheck := constantCheck(firewallUnknown)
 	if fw, ok := collectWindowsFirewall(); ok {
-		fwCheck = fw.checker()
+		fwCheck = fw.checker(systemInterfaceIndex)
 		fwSec.NetworkProfiles = fw.networkProfiles()
 	}
 
@@ -77,7 +77,7 @@ func collectSecurity() shared.SecurityInfo {
 		FirewallProfiles:      profiles,
 		CoreIsolation:         coreIsolation,
 		SecureBootEnabled:     secureBoot,
-		ListeningPorts:        ports,
+		ListeningPorts:        uploadedListeningPorts(ports),
 		USBMassStorageEnabled: usb,
 
 		FirewallSecurity:      fwSec,

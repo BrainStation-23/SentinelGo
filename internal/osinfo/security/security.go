@@ -330,8 +330,11 @@ func classifyListeningPort(conn gnet.ConnectionStat) (lp shared.ListeningPort, o
 	return lp, true
 }
 
-// collectListeningPorts enumerates listening TCP ports and bound UDP ports
-// using gopsutil, which works cross-platform without exec calls.
+// collectListeningPorts enumerates every listening TCP port and bound UDP
+// port using gopsutil, which works cross-platform without exec calls. The
+// whole list feeds the exposure analysis, so a risky service can't be missed
+// on a busy host; only the copy uploaded as listening_ports is capped
+// (uploadedListeningPorts).
 func collectListeningPorts() []shared.ListeningPort {
 	conns, err := gnet.Connections("all")
 	if err != nil {
@@ -341,16 +344,19 @@ func collectListeningPorts() []shared.ListeningPort {
 
 	var ports []shared.ListeningPort
 	for _, conn := range conns {
-		lp, ok := classifyListeningPort(conn)
-		if !ok {
-			continue
-		}
-
-		ports = append(ports, lp)
-		if len(ports) >= maxListeningPorts {
-			log.Printf("security: listening ports truncated at %d", maxListeningPorts)
-			break
+		if lp, ok := classifyListeningPort(conn); ok {
+			ports = append(ports, lp)
 		}
 	}
 	return ports
+}
+
+// uploadedListeningPorts caps the listening_ports payload at
+// maxListeningPorts entries.
+func uploadedListeningPorts(ports []shared.ListeningPort) []shared.ListeningPort {
+	if len(ports) <= maxListeningPorts {
+		return ports
+	}
+	log.Printf("security: listening ports truncated at %d of %d", maxListeningPorts, len(ports))
+	return ports[:maxListeningPorts]
 }
