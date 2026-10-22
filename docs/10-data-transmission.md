@@ -76,8 +76,8 @@ this payload. Rough composition:
 | Security & compliance (`security_info`: AV, firewall, encryption, EDR/XDR, listening ports) | ~2.0 KB | ~11.5 KB |
 | Hardware & network inventory (adapters, disks, GPUs, displays, peripherals, printers, audio) | ~1.2 KB | ~5.75 KB |
 | System identity & OS info (hostname, CPU, RAM, `os_information`) | ~1.4 KB | ~1.75 KB |
-| Users & accounts (`local_users`) | ~0.2 KB | ~1.5 KB |
-| **Total** | **~4.8 KB** | **~20.5 KB** |
+| Users & accounts (`local_users`, `local_admin_members`, `signed_in_users`, `last_signed_in_user`, `identity_join`) | ~0.4 KB | ~2.5 KB |
+| **Total** | **~5.0 KB** | **~21.5 KB** |
 
 `security_info` is the single biggest lever on size: a host with several
 antivirus/EDR products installed and many listening ports can push this

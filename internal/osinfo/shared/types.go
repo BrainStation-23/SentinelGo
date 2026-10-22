@@ -16,6 +16,7 @@ type SystemInfo struct {
 	OSQueryVersion   string             `json:"osquery_version"`
 	BatteryCondition string             `json:"battery_condition"`
 	LocalUsers       []UserWithGroup    `json:"local_users"`
+	UserIdentity                        // local_admin_members, signed_in_users, … (#223)
 	LastRestart      string             `json:"last_restart"`
 	AgentVersion     string             `json:"agent_version"`
 	FQDN             string             `json:"fqdn"`
@@ -299,6 +300,53 @@ type UserWithGroup struct {
 	IsEnabled       *bool      `json:"is_enabled,omitempty"`
 	LastLogon       *LastLogon `json:"last_logon,omitempty"`
 	PasswordLastSet string     `json:"password_last_set,omitempty"`
+
+	// IsBuiltin marks an account the OS creates (#223): on Windows the
+	// built-in Administrator, Guest, DefaultAccount and WDAGUtilityAccount
+	// (RIDs 500, 501, 503, 504), found by RID so a renamed one still counts.
+	IsBuiltin bool `json:"is_builtin,omitempty"`
+}
+
+// UserIdentity is who administers and uses the device, beyond its local
+// accounts (#223). A nil slice means it couldn't be read (sent as null); an
+// empty one means there are none.
+type UserIdentity struct {
+	AdminMembers     []LocalAdminMember `json:"local_admin_members"`
+	SignedInUsers    []SignedInUser     `json:"signed_in_users"`
+	LastSignedInUser string             `json:"last_signed_in_user,omitempty"` // last interactive sign-in
+	Join             *IdentityJoin      `json:"identity_join,omitempty"`
+}
+
+// LocalAdminMember is a member of the local administrators group: on
+// Windows the Administrators group (S-1-5-32-544), on macOS admin, on Linux
+// sudo, wheel and admin.
+type LocalAdminMember struct {
+	Name string `json:"name"` // "PC\alice", "CONTOSO\Domain Admins", "AzureAD\bob", "alice"
+	SID  string `json:"sid,omitempty"`
+	// Source is where the principal lives: "local", "domain" (Active
+	// Directory or another directory service) or "entra" (Entra ID).
+	Source string `json:"source"`
+	// PrincipalClass is "user" or "group".
+	PrincipalClass string `json:"principal_class"`
+}
+
+// SignedInUser is an interactive session.
+type SignedInUser struct {
+	Username string `json:"username"`
+	Domain   string `json:"domain,omitempty"` // Windows: account domain, e.g. "AzureAD" or the computer name
+	// Session is "console", "rdp" or "ssh"; "terminal" for a local terminal
+	// on macOS/Linux.
+	Session string `json:"session"`
+	State   string `json:"state,omitempty"` // Windows: "active" or "disconnected"
+	Since   string `json:"since,omitempty"` // sign-in time, ISO 8601 UTC
+}
+
+// IdentityJoin is the device's directory membership.
+type IdentityJoin struct {
+	Type       string `json:"type"` // "workgroup", "domain", "entra" or "hybrid"
+	Domain     string `json:"domain,omitempty"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	TenantName string `json:"tenant_name,omitempty"`
 }
 
 // SecurityInfo aggregates all collected security telemetry.

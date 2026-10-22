@@ -52,6 +52,7 @@ var knownPaths = func() map[string][]string {
 		"systemsetup":     {"/usr/sbin/systemsetup"},
 		"tmutil":          {"/usr/bin/tmutil"},
 		"mdls":            {"/usr/bin/mdls"},
+		"dsconfigad":      {"/usr/sbin/dsconfigad"},
 		// Homebrew's own prefixes: Apple Silicon, then Intel. Neither is a
 		// system directory, but each is fixed, unlike a PATH search.
 		"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
@@ -79,6 +80,8 @@ var knownPaths = func() map[string][]string {
 		"ntpq":             {"/usr/bin/ntpq", "/usr/sbin/ntpq"},
 		"runuser":          {"/usr/sbin/runuser", "/sbin/runuser", "/usr/bin/runuser"},
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
+		"getent":           {"/usr/bin/getent", "/bin/getent"},
+		"realm":            {"/usr/sbin/realm", "/sbin/realm"},
 
 		// Linux + macOS (candidates cover both; order doesn't matter since
 		// only one OS's paths will ever exist on a given host)
@@ -90,6 +93,8 @@ var knownPaths = func() map[string][]string {
 		"groups":  {"/usr/bin/groups", "/bin/groups"},
 		"id":      {"/usr/bin/id", "/bin/id"},
 		"stat":    {"/usr/bin/stat", "/bin/stat"},
+		"who":     {"/usr/bin/who", "/bin/who"},
+		"last":    {"/usr/bin/last", "/bin/last"},
 		// PowerShell 7: Microsoft's packages (Linux, macOS .pkg), Homebrew, snap.
 		"pwsh": {
 			"/usr/bin/pwsh", "/usr/local/bin/pwsh", "/opt/homebrew/bin/pwsh",
@@ -106,6 +111,7 @@ var knownPaths = func() map[string][]string {
 		"reg":        {filepath.Join(sys32, "reg.exe")},
 		"sc.exe":     {filepath.Join(sys32, "sc.exe")},
 		"secedit":    {filepath.Join(sys32, "secedit.exe")},
+		"dsregcmd":   {filepath.Join(sys32, "dsregcmd.exe")},
 
 		// shutdown exists on all three OSes, at different paths.
 		"shutdown": {"/sbin/shutdown", "/usr/sbin/shutdown", filepath.Join(sys32, "shutdown.exe")},

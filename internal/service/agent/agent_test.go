@@ -239,3 +239,43 @@ func TestUpdateAgentInfo_PowerTelemetry(t *testing.T) {
 		t.Errorf("request body lacks %s: %s", want, body)
 	}
 }
+
+// TestUpdateAgentInfo_SendsUserIdentity: the #223 keys sit at the top level
+// of the payload, next to local_users.
+func TestUpdateAgentInfo_SendsUserIdentity(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	info := mockSysInfo()
+	info.UserIdentity = shared.UserIdentity{
+		AdminMembers:     []shared.LocalAdminMember{{Name: `CONTOSO\Domain Admins`, Source: "domain", PrincipalClass: "group"}},
+		SignedInUsers:    []shared.SignedInUser{{Username: "alice", Session: "console"}},
+		LastSignedInUser: "alice",
+		Join:             &shared.IdentityJoin{Type: "domain", Domain: "CONTOSO"},
+	}
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, info); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	var req struct {
+		Payload map[string]json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"local_admin_members": `[{"name":"CONTOSO\\Domain Admins","source":"domain","principal_class":"group"}]`,
+		"signed_in_users":     `[{"username":"alice","session":"console"}]`,
+		"last_signed_in_user": `"alice"`,
+		"identity_join":       `{"type":"domain","domain":"CONTOSO"}`,
+	} {
+		if got := string(req.Payload[key]); got != want {
+			t.Errorf("payload[%s] = %s, want %s", key, got, want)
+		}
+	}
+}

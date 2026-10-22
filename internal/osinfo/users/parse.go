@@ -215,19 +215,12 @@ func parseDarwinIDGroups(output string) []string {
 
 // ── Windows ───────────────────────────────────────────────────────────────────
 
-// windowsSystemAccounts are local accounts built into Windows that should be
-// excluded from the user inventory.
-var windowsSystemAccounts = map[string]bool{
-	"administrator":      true,
-	"guest":              true,
-	"defaultaccount":     true,
-	"wdagutilityaccount": true,
-}
-
 // parseWindowsUsersJSON parses the JSON output of a Win32_UserAccount query.
 // PowerShell returns a bare object (not an array) when there is exactly one
-// account, so both forms are handled. Built-in system accounts and sandbox
-// accounts (defaultuser0, defaultuser1 …) are excluded.
+// account, so both forms are handled. Built-in accounts (Administrator,
+// Guest, …) are reported with IsBuiltin, since an enabled one is what
+// compliance checks look for (#223); setup's sandbox accounts (defaultuser0,
+// defaultuser1 …) are left out.
 func parseWindowsUsersJSON(output string) []shared.UserWithGroup {
 	var rows []map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &rows); err != nil {
@@ -244,8 +237,7 @@ func parseWindowsUsersJSON(output string) []shared.UserWithGroup {
 		if name == "" {
 			continue
 		}
-		nameLower := strings.ToLower(name)
-		if windowsSystemAccounts[nameLower] || strings.HasPrefix(nameLower, "defaultuser") {
+		if strings.HasPrefix(strings.ToLower(name), "defaultuser") {
 			continue
 		}
 		sid := ""
@@ -253,8 +245,9 @@ func parseWindowsUsersJSON(output string) []shared.UserWithGroup {
 			sid = fmt.Sprintf("%v", v)
 		}
 		result = append(result, shared.UserWithGroup{
-			Username: name,
-			UID:      sid,
+			Username:  name,
+			UID:       sid,
+			IsBuiltin: isWindowsBuiltinSID(sid),
 		})
 	}
 	return result

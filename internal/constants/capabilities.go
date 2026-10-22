@@ -18,6 +18,7 @@ import (
 var AgentCapabilities = []string{
 	"script_inline_body_v1", // inline scripts[<os>].body (#135)
 	"task_artifacts_v1",     // verified task artifacts (#136, #137)
+	"users_inventory_v2",    // built-in accounts, local_admin_members, signed_in_users, … (#223)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on
