@@ -243,10 +243,11 @@ type ufwHost struct {
 }
 
 // newUFWHost builds the host context. A socket on "::" is IPv6-only when the
-// same port also has an IPv4 wildcard socket (Linux refuses that pair unless
-// the IPv6 one is IPV6_V6ONLY), or when net.ipv6.bindv6only makes it the
-// default.
-func newUFWHost(ports []shared.ListeningPort, arrival []string, bindV6Only bool) ufwHost {
+// same port also has an IPv4 wildcard socket: Linux refuses that pair unless
+// the IPv6 one is IPV6_V6ONLY. net.ipv6.bindv6only isn't used: it's only the
+// default, a socket can still clear IPV6_V6ONLY, and /proc/net doesn't show
+// which it did. Assuming dual-stack can overstate exposure but never hide it.
+func newUFWHost(ports []shared.ListeningPort, arrival []string) ufwHost {
 	v4Wildcard := map[string]bool{}
 	for _, p := range ports {
 		if a, err := netip.ParseAddr(p.Address); err == nil && a.Is4() && a.IsUnspecified() {
@@ -256,7 +257,7 @@ func newUFWHost(ports []shared.ListeningPort, arrival []string, bindV6Only bool)
 	return ufwHost{
 		arrival: arrival,
 		v6Only: func(p shared.ListeningPort) bool {
-			return bindV6Only || v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)]
+			return v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)]
 		},
 	}
 }

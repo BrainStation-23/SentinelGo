@@ -23,7 +23,7 @@ func linuxFirewallCheck(profiles []shared.FirewallProfile, ports []shared.Listen
 		case "ufw":
 			if out, err := securityRunCommand("ufw", "status", "verbose"); err == nil {
 				if st := parseUFWStatus(out); st.active {
-					return st.check(parseUFWAppProfiles(readUFWAppProfiles()), newUFWHost(ports, arrivalInterfaces(), bindV6Only()))
+					return st.check(parseUFWAppProfiles(readUFWAppProfiles()), newUFWHost(ports, arrivalInterfaces()))
 				}
 			}
 		case "firewalld":
@@ -80,13 +80,6 @@ func firewalldServicePorts(name string) ([]portSpec, bool) {
 		}
 	}
 	return nil, false
-}
-
-// bindV6Only reports whether net.ipv6.bindv6only makes sockets on "::"
-// IPv6-only by default.
-func bindV6Only() bool {
-	data, err := os.ReadFile(filepath.Join(securityHostRoot, "/proc/sys/net/ipv6/bindv6only"))
-	return err == nil && strings.TrimSpace(string(data)) == "1"
 }
 
 // arrivalInterfaces lists the interfaces that are up, loopback excluded:

@@ -263,6 +263,54 @@ func TestUFW_ScopedRules(t *testing.T) {
 	}
 }
 
+func TestUFW_ArrivalInterfaces(t *testing.T) {
+	st := parseUFWStatus("Status: active\nDefault: allow (incoming)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp on eth0             DENY IN     Anywhere\n")
+	tests := []struct {
+		name    string
+		arrival []string
+		want    string
+	}{
+		{"only interface", []string{"eth0"}, firewallBlocked},
+		{"another interface up", []string{"eth0", "wlan0"}, firewallAllowed},
+		{"only interface is another", []string{"wlan0"}, firewallAllowed},
+		{"none up", []string{}, firewallAllowed},
+		{"unknown", nil, firewallAllowed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := st.check(nil, newUFWHost(nil, tt.arrival))(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"})
+			if got != tt.want {
+				t.Errorf("verdict = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUFW_V6OnlyFromIPv4Pair(t *testing.T) {
+	// IPv4 allowed, IPv6 denied: a "::" socket is reachable only if it
+	// also accepts IPv4.
+	st := parseUFWStatus("Status: active\nDefault: deny (incoming)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp (v6)                DENY IN     Anywhere (v6)\n22/tcp                     ALLOW IN    Anywhere\n")
+	v6 := shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "::"}
+	tests := []struct {
+		name  string
+		ports []shared.ListeningPort
+		want  string
+	}{
+		{"alone is dual-stack", []shared.ListeningPort{v6}, firewallAllowed},
+		{"paired with 0.0.0.0 is IPv6-only", []shared.ListeningPort{v6, {Protocol: "tcp", Port: 22, Address: "0.0.0.0"}}, firewallBlocked},
+		{"pair on another port", []shared.ListeningPort{v6, {Protocol: "tcp", Port: 23, Address: "0.0.0.0"}}, firewallAllowed},
+		{"pair on another protocol", []shared.ListeningPort{v6, {Protocol: "udp", Port: 22, Address: "0.0.0.0"}}, firewallAllowed},
+		{"pair bound to one address", []shared.ListeningPort{v6, {Protocol: "tcp", Port: 22, Address: "10.0.0.5"}}, firewallAllowed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, _ := st.check(nil, newUFWHost(tt.ports, nil))(v6); got != tt.want {
+				t.Errorf("verdict = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestListenerFamilies(t *testing.T) {
 	tests := []struct {
 		addr     string
