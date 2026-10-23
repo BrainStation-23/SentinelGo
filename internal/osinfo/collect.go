@@ -108,6 +108,7 @@ func Collect() *shared.SystemInfo {
 		OSQueryVersion:   systempkg.GetOSQueryVersion(),
 		BatteryCondition: systempkg.GetBatteryCondition(),
 		LocalUsers:       userspkg.Get(),
+		UserIdentity:     userspkg.Identity(),
 		AgentVersion:     cfg.CurrentVersion,
 		FQDN:             systempkg.GetFQDN(),
 		ChassisType:      systempkg.GetChassisType(),

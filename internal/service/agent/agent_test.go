@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/constants"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/agent"
 )
@@ -172,7 +173,8 @@ func TestUpdateAgentInfo_CancelledContext(t *testing.T) {
 }
 
 // TestUpdateAgentInfo_SendsCapabilities is the golden check for contract v1
-// §6: the inventory payload carries exactly the capabilities this build has.
+// §6: the inventory payload carries exactly the capabilities this build has
+// on this device (script_pwsh_v1 depends on pwsh being installed).
 func TestUpdateAgentInfo_SendsCapabilities(t *testing.T) {
 	var body []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +188,8 @@ func TestUpdateAgentInfo_SendsCapabilities(t *testing.T) {
 	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, mockSysInfo()); err != nil {
 		t.Fatalf("UpdateAgentInfo: %v", err)
 	}
-	want := `"capabilities":["script_inline_body_v1","task_artifacts_v1"]`
+	caps, _ := json.Marshal(constants.Capabilities())
+	want := `"capabilities":` + string(caps)
 	if !strings.Contains(string(body), want) {
 		t.Errorf("request body lacks %s: %s", want, body)
 	}
@@ -234,5 +237,46 @@ func TestUpdateAgentInfo_PowerTelemetry(t *testing.T) {
 	want := `"power_telemetry":{"window_start":"2026-10-15T09:00:00Z","window_end":"2026-10-15T10:00:00Z","samples":12,"sample_interval_seconds":300,"cpu_usage_avg_percent":7.4}`
 	if !strings.Contains(string(body), want) {
 		t.Errorf("request body lacks %s: %s", want, body)
+	}
+}
+
+// TestUpdateAgentInfo_SendsUserIdentity: the #223 keys sit at the top level
+// of the payload, next to local_users.
+func TestUpdateAgentInfo_SendsUserIdentity(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	info := mockSysInfo()
+	info.UserIdentity = shared.UserIdentity{
+		AdminMembers:     []shared.LocalAdminMember{{Name: `CONTOSO\Domain Admins`, Source: "domain", PrincipalClass: "group"}},
+		SignedInUsers:    []shared.SignedInUser{{Username: "alice", Session: "console"}},
+		LastSignedInUser: "alice",
+		Join:             &shared.IdentityJoin{Type: "domain", Domain: "CONTOSO"},
+	}
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, info); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	var req struct {
+		Payload map[string]json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"local_admin_members": `[{"name":"CONTOSO\\Domain Admins","source":"domain","principal_class":"group"}]`,
+		"signed_in_users":     `[{"username":"alice","session":"console"}]`,
+		"last_signed_in_user": `"alice"`,
+		"identity_join":       `{"type":"domain","domain":"CONTOSO"}`,
+		"hardware_model":      `"TestModel"`,
+	} {
+		if got := string(req.Payload[key]); got != want {
+			t.Errorf("payload[%s] = %s, want %s", key, got, want)
+		}
 	}
 }

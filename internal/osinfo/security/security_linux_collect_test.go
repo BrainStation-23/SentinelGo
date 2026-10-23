@@ -511,7 +511,7 @@ func TestCollectIdentityAccessControl_Defaults(t *testing.T) {
 		id.PendingSecurityPatches != 0 || id.PatchComplianceStatus != "Compliant" {
 		t.Errorf("id = %+v", id)
 	}
-	net := collectNetworkExposure(nil, id)
+	net := collectNetworkExposure(nil, id, nil)
 	if net.SSHKeyAuthStatus != "Unknown" {
 		t.Errorf("SSHKeyAuthStatus = %q", net.SSHKeyAuthStatus)
 	}

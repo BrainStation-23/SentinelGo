@@ -69,7 +69,7 @@ func collectSecurity() shared.SecurityInfo {
 	devEnc := collectDeviceEncryption()
 	hwSec := collectHardwareSecurity()
 	idAccess := collectIdentityAccessControl()
-	netExposure := collectNetworkExposure(ports, idAccess)
+	netExposure := collectNetworkExposure(ports, idAccess, linuxFirewallCheck(profiles, ports))
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
@@ -79,7 +79,7 @@ func collectSecurity() shared.SecurityInfo {
 		FirewallProfiles:      profiles,
 		CoreIsolation:         coreIsolation,
 		SecureBootEnabled:     secureBoot,
-		ListeningPorts:        ports,
+		ListeningPorts:        uploadedListeningPorts(ports),
 		USBMassStorageEnabled: usb,
 
 		FirewallSecurity:      fwSec,
@@ -557,8 +557,8 @@ func pendingPatchesFromYum() int {
 	return countYumSecurityUpdates(out)
 }
 
-func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAccessControlInfo) shared.NetworkExposureAccessInfo {
-	info := analyzeNetworkExposure(ports)
+func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAccessControlInfo, check firewallCheck) shared.NetworkExposureAccessInfo {
+	info := analyzeNetworkExposure(ports, check)
 
 	info.SSHRootLoginStatus = id.SSHRootLogin
 	info.SSHPasswordAuthStatus = id.SSHPasswordAuth

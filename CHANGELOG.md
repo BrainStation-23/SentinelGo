@@ -13,6 +13,39 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- `.ps1` task scripts run on macOS and Linux under PowerShell 7, as `pwsh -NoProfile -NonInteractive -File <script> -PayloadPath <payload>`, the same arguments as on Windows. A command with a single cross-platform `.ps1` in its `all` slot now runs on every OS. The agent adds `script_pwsh_v1` to its inventory capabilities only when `pwsh` is installed, and checks again on every inventory report. Without `pwsh`, a `.ps1` task fails with "PowerShell (pwsh) is not installed on this device" instead of an exec format error (#222).
+- `network_exposure_access.risky_services` in the inventory payload: each commonly attacked service listening on a non-loopback address, with `name`, `port`, `protocol`, `address`, `scope` (`all` for a wildcard bind, `interface`, or `unknown`), `process_name` and `firewall`. The catalogue is SMB (139, 445), NetBIOS (137–138/udp), RDP, WinRM, SSH, Telnet, FTP, VNC (5900–5906), MSSQL, MySQL, PostgreSQL, Redis, MongoDB, Elasticsearch, the Docker API, Kubelet and SNMP. `firewall` says whether the host firewall lets inbound connections reach the service: `allowed`, `blocked`, `disabled` or `unknown`. Windows evaluates the inbound rules in force (local and Group Policy) against the profile of each connected network, and lists the profiles that let the service in as `reachable_profiles`. A service bound to one interface's address is checked against that network's profile only, and an incomplete rule set gives `unknown`. Linux evaluates ufw rules (IPv4 and IPv6 separately, with interface- and destination-scoped rules applied only where they reach) or firewalld zones (a service bound to one interface gets its zone and the source zones). macOS reports `disabled` when the Application Firewall is off and `blocked` when it blocks all incoming connections. `firewall_security.network_profiles` lists the firewall profile (Domain, Private or Public) of each connected network on Windows (#221).
+- Who administers and uses the device, in the inventory payload (#223):
+  - `local_admin_members`: every member of the local administrators group, with `name`, `sid` (Windows), `source` (`local`, `domain` or `entra`) and `principal_class` (`user` or `group`). On Windows this is the Administrators group, found by its SID, so domain users and groups and Entra ID principals are included. When `Get-LocalGroupMember` fails on an unresolvable Entra SID, the agent reads the group through ADSI. On macOS it is the `admin` group; on Linux, the `sudo`, `wheel` and `admin` groups, including directory users and groups seen through `getent`, and accounts (directory ones too) whose primary group is one of them.
+  - `signed_in_users`: the interactive sessions, with `username`, `session` (`console`, `rdp`, `ssh` or `terminal`) and `since`. Windows reads them from the Remote Desktop Services API and also reports `domain` and `state` (`active` or `disconnected`). macOS and Linux read `who`.
+  - `last_signed_in_user`: from LogonUI on Windows, the login window on macOS and `last` on Linux.
+  - `identity_join`: `type` (`workgroup`, `domain`, `entra` or `hybrid`) with `domain`, `tenant_id` and `tenant_name` where they apply, from `dsregcmd /status` on Windows, `dsconfigad` on macOS and `realm list` on Linux.
+  
+  A list the agent couldn't read is sent as `null`, and an empty one as `[]`. The agent advertises the new `users_inventory_v2` capability.
+- macOS reports `last_logon` for local accounts, from the login records (`last`). It is left out for an account with no record, since the records are rotated (#223).
+
+### Fixed
+
+- Linux UFW firewall evaluation accounts for multiple active network interfaces. A deny rule on one interface (e.g. `eth0`) only blocks all traffic when it's the only active interface. When multiple interfaces are up (ethernet + WiFi, VPN, etc.), a deny on one doesn't decide the verdict for traffic arriving on another. The exposure verdict now reflects which connections can actually reach the socket (#221).
+- Linux UFW firewall evaluation detects IPv6-only sockets. A socket on `::` is treated as IPv6-only when the same port also has an IPv4 wildcard socket (Linux refuses that pair unless the IPv6 one is `IPV6_V6ONLY`). Otherwise it's still assumed dual-stack, since `net.ipv6.bindv6only` is only a default that a socket can override, so exposure is never understated (#221).
+- Linux firewalld evaluation applies the default zone to a service listening on every address whenever a network interface isn't bound to a zone, since firewalld sends that interface's traffic to the default zone. A service the default zone opens was reported `blocked` when another zone was active (#221).
+- Windows firewall evaluation honours "block all incoming connections" (`AllowInboundRules` off): allow rules no longer make a service `allowed` on that profile (#221).
+- Windows firewall evaluation reads each rule's local and remote addresses. An allow rule for one local address no longer counts for a service bound to another. A block rule decides only when it covers every connection to the service: from any remote address, to the service's address, and for its program. A block from one subnet, or a block for one program when the listening process is unknown, no longer reports a reachable service as `blocked` (#221).
+- macOS reports the Application Firewall as enabled when it blocks all incoming connections (state 2). The firewall was reported off, and every risky service `disabled`, instead of `blocked` (#221).
+- Windows reports its built-in Administrator, Guest, DefaultAccount and WDAGUtilityAccount in `local_users`, with `is_builtin: true`, instead of leaving them out. An enabled built-in Administrator is what compliance checks look for. They are found by RID (500, 501, 503, 504), so a renamed Administrator is still flagged. Setup's `defaultuser*` sandbox accounts are still left out (#223).
+- Network exposure is rated by the risky services a device exposes, not by how many sockets are bound outside loopback. A stock Windows 11 device used to be rated High for its mDNS, WS-Discovery and RPC listeners. `network_exposure_level` is now High when a risky service can be reached (or the agent can't tell), Medium when every risky service is blocked by the host firewall, and Low when there are none. Medium no longer costs the posture-score point. The recommendation names the services, e.g. "Close or firewall SMB (445/tcp), RDP (3389/tcp)" (#221).
+- Listeners on loopback are never counted as exposed. `127.0.0.0/8` (e.g. systemd-resolved on `127.0.0.53`), `::1` and IPv4-mapped loopback addresses used to count toward `publicly_bound_ports`. SSH or WinRM bound to loopback was also reported in `open_administrative_ports` and `remote_access_services`. `open_administrative_ports` now lists the ports of `risky_services` (#221).
+- The exposure analysis covers every listening socket. Only the `listening_ports` list sent in the payload is capped at 200, so a risky service listed after the cap is no longer missed on a busy host (#221).
+- `.bash` and `.zsh` task scripts on macOS and Linux run with `bash` and `zsh`, like `.sh`, instead of being executed directly. They no longer fail when the console's prepended lines push the shebang off line 1. `zsh` must be at a fixed system path; without it a `.zsh` task fails with "zsh is not installed on this device" (#222).
+
+### Security
+
+- The Linux firewall probes run `firewall-cmd`, `iptables` and `nft` from fixed system paths instead of searching `PATH`, where a writable directory could substitute them while the agent runs as root.
+
+- Built with Go 1.26.10, which makes `crypto/x509` distrust compromised intermediate certificates (GO-2026-6809). This affects every TLS connection the agent makes to the backend.
+
 ## [v3.7.0] - 2026-10-20
 
 ### Added

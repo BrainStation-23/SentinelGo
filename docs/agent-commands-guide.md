@@ -218,6 +218,22 @@ There is no enforced convention. Common choices:
 
 Pick one and document it on the admin side so script authors know what to expect.
 
+### How SentinelGo runs each script type
+
+SentinelGo picks the interpreter from the script's file extension and passes the payload file path as the last argument (`-PayloadPath <path>` for PowerShell). Scripts that have an interpreter run through it, not through their shebang, so lines the console prepends above `#!` don't matter.
+
+| Extension | Windows | macOS | Linux |
+|---|---|---|---|
+| `.ps1` | `powershell -NoProfile -ExecutionPolicy Bypass -File <script> -PayloadPath <payload>` (Windows PowerShell 5.1) | `pwsh -NoProfile -NonInteractive -File <script> -PayloadPath <payload>` | same as macOS |
+| `.sh`, `.bash` | `cmd /C <script> <payload>` | `bash <script> <payload>` | `bash <script> <payload>` |
+| `.zsh` | `cmd /C <script> <payload>` | `zsh <script> <payload>` | `zsh <script> <payload>` |
+| `.py` | `cmd /C <script> <payload>` | `python3 <script> <payload>` | `python3 <script> <payload>` |
+| anything else | `cmd /C <script> <payload>` | `<script> <payload>` (needs a shebang on line 1) | same as macOS |
+
+On Linux the command runs under `sudo -S env <task vars> …` when the script contains privileged commands and the agent isn't root.
+
+`.ps1` on macOS and Linux needs PowerShell 7 (`pwsh`). The agent reports the `script_pwsh_v1` capability in its inventory only when `pwsh` is installed, and checks again on every inventory report. Without `pwsh`, a `.ps1` task fails with `PowerShell (pwsh) is not installed on this device`. So a command that has only an `all` slot holding a `.ps1` should go to macOS/Linux devices only when they report `script_pwsh_v1`.
+
 ---
 
 ## 3. `agent_update_task` — report progress / completion
