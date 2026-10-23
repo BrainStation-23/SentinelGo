@@ -1,6 +1,7 @@
 package security
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // otherwise firewalld when running. Rules loaded straight into iptables or
 // nftables aren't evaluated, so they give "unknown"; with no firewall at all
 // every risky service is "disabled".
-func linuxFirewallCheck(profiles []shared.FirewallProfile) firewallCheck {
+func linuxFirewallCheck(profiles []shared.FirewallProfile, ports []shared.ListeningPort) firewallCheck {
 	for _, p := range profiles {
 		if !p.Enabled {
 			continue
@@ -22,7 +23,7 @@ func linuxFirewallCheck(profiles []shared.FirewallProfile) firewallCheck {
 		case "ufw":
 			if out, err := securityRunCommand("ufw", "status", "verbose"); err == nil {
 				if st := parseUFWStatus(out); st.active {
-					return st.check(parseUFWAppProfiles(readUFWAppProfiles()))
+					return st.check(parseUFWAppProfiles(readUFWAppProfiles()), newUFWHost(ports, arrivalInterfaces()))
 				}
 			}
 		case "firewalld":
@@ -79,4 +80,21 @@ func firewalldServicePorts(name string) ([]portSpec, bool) {
 		}
 	}
 	return nil, false
+}
+
+// arrivalInterfaces lists the interfaces that are up, loopback excluded:
+// the ways a connection from the network can come in. nil when they can't
+// be listed.
+func arrivalInterfaces() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	names := []string{}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
+			names = append(names, iface.Name)
+		}
+	}
+	return names
 }

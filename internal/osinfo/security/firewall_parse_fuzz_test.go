@@ -45,7 +45,7 @@ func FuzzFirewallParsers(f *testing.F) {
 		resolve := func(name string) ([]portSpec, bool) { return parseFirewalldService([]byte(s)) }
 
 		checks := []firewallCheck{
-			parseUFWStatus(s).check(parseUFWAppProfiles([]string{s})),
+			parseUFWStatus(s).check(parseUFWAppProfiles([]string{s}), newUFWHost(ports, []string{s})),
 			firewalldCheck(parseFirewalldZones(s), resolve, anyName),
 		}
 		if fw, ok := parseWinFirewall(s); ok {
@@ -57,7 +57,7 @@ func FuzzFirewallParsers(f *testing.F) {
 			_, _ = summarizeNetworkExposureLevel(info)
 		}
 		_ = alfBlocksAll(s, s)
-		_, _ = listenerFamilies(s)
+		_, _ = listenerFamilies(s, len(s)%2 == 0)
 		_ = bindScope(s)
 		_, _ = parsePortList(s, ":")
 		_, _ = parsePortList(s, "-")
