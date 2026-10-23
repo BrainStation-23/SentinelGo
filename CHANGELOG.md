@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.7.1] - 2026-10-23
+
 ### Added
 
 - `.ps1` task scripts run on macOS and Linux under PowerShell 7, as `pwsh -NoProfile -NonInteractive -File <script> -PayloadPath <payload>`, the same arguments as on Windows. A command with a single cross-platform `.ps1` in its `all` slot now runs on every OS. The agent adds `script_pwsh_v1` to its inventory capabilities only when `pwsh` is installed, and checks again on every inventory report. Without `pwsh`, a `.ps1` task fails with "PowerShell (pwsh) is not installed on this device" instead of an exec format error (#222).
@@ -393,7 +395,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...HEAD
+[v3.7.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...v3.7.1
 [v3.7.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...v3.7.0
 [v3.6.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...v3.6.1
 [v3.6.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.5.1...v3.6.0
