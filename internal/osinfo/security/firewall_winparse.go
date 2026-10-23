@@ -5,6 +5,7 @@ package security
 
 import (
 	"encoding/json"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ type winFirewall struct {
 	Rules    []winFwRule       `json:"rules"` // enabled inbound rules
 	Ports    []winFwPortFilter `json:"ports"`
 	Apps     []winFwAppFilter  `json:"apps"`
+	Addrs    []winFwAddrFilter `json:"addrs"`
 	Profiles []winFwProfile    `json:"profiles"`
 	Networks []winFwNetwork    `json:"networks"`
 }
@@ -39,10 +41,23 @@ type winFwAppFilter struct {
 	Program string `json:"program"` // "Any", "System" or a path
 }
 
+// winFwAddrFilter holds comma-separated address lists: "Any", addresses,
+// subnets ("10.0.0.0/24", "10.0.0.0/255.255.255.0"), ranges
+// ("10.0.0.1-10.0.0.9") or keywords ("LocalSubnet", "Internet", …).
+type winFwAddrFilter struct {
+	ID            string `json:"id"`
+	LocalAddress  string `json:"local_address"`
+	RemoteAddress string `json:"remote_address"`
+}
+
 type winFwProfile struct {
 	Name           string `json:"name"` // "Domain", "Private" or "Public"
 	Enabled        bool   `json:"enabled"`
 	DefaultInbound string `json:"default_inbound"` // "Block", "Allow" or "NotConfigured" (= Block)
+	// BlockAllInbound is "block all incoming connections, including those
+	// in the list of allowed apps" (AllowInboundRules False): allow rules
+	// are ignored.
+	BlockAllInbound bool `json:"block_all_inbound"`
 }
 
 type winFwNetwork struct {
@@ -119,6 +134,7 @@ type winFwIndex struct {
 	rules      []winFwRule
 	ports      map[string]winFwPortFilter
 	apps       map[string]string
+	addrs      map[string]winFwAddrFilter
 	profiles   map[string]winFwProfile
 	active     []string       // profiles of the connected networks
 	byIndex    map[int]string // interface index → its network's profile
@@ -130,9 +146,9 @@ type winFwIndex struct {
 // wildcard socket, or one whose interface has no network profile, against
 // every active profile. ifaceIndex may be nil.
 //
-// Every rule has a port and a program filter. If the probe returned a rule
-// without either, the policy is incomplete and every verdict is unknown: a
-// missing filter must not be read as "any port" or "any program".
+// Every rule has a port, a program and an address filter. If the probe
+// returned a rule without one, the policy is incomplete and every verdict is
+// unknown: a missing filter must not be read as "any".
 func (fw winFirewall) checker(ifaceIndex interfaceIndexFunc) firewallCheck {
 	ix, complete := fw.index(ifaceIndex)
 	if !complete {
@@ -146,6 +162,7 @@ func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
 		rules:      fw.Rules,
 		ports:      make(map[string]winFwPortFilter, len(fw.Ports)),
 		apps:       make(map[string]string, len(fw.Apps)),
+		addrs:      make(map[string]winFwAddrFilter, len(fw.Addrs)),
 		profiles:   make(map[string]winFwProfile, len(fw.Profiles)),
 		active:     fw.activeProfiles(),
 		byIndex:    map[int]string{},
@@ -156,6 +173,9 @@ func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
 	}
 	for _, f := range fw.Apps {
 		ix.apps[f.ID] = f.Program
+	}
+	for _, f := range fw.Addrs {
+		ix.addrs[f.ID] = f
 	}
 	for _, p := range fw.Profiles {
 		ix.profiles[p.Name] = p
@@ -168,7 +188,8 @@ func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
 	for _, r := range fw.Rules {
 		_, hasPort := ix.ports[r.ID]
 		_, hasApp := ix.apps[r.ID]
-		if !hasPort || !hasApp {
+		_, hasAddr := ix.addrs[r.ID]
+		if !hasPort || !hasApp || !hasAddr {
 			return winFwIndex{}, false
 		}
 	}
@@ -188,7 +209,7 @@ func (ix winFwIndex) check(p shared.ListeningPort) (string, []string) {
 		case !prof.Enabled:
 			disabled = true
 			reachable = append(reachable, name)
-		case ix.allows(name, p, strings.EqualFold(prof.DefaultInbound, "Allow")):
+		case ix.allows(prof, p):
 			reachable = append(reachable, name)
 		}
 	}
@@ -208,11 +229,11 @@ func (ix winFwIndex) socketProfiles(addr string) []string {
 	if ix.ifaceIndex == nil || bindScope(addr) != scopeInterface {
 		return ix.active
 	}
-	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]"))
-	if err != nil {
+	a := winBoundAddr(addr)
+	if !a.IsValid() {
 		return ix.active
 	}
-	if idx, ok := ix.ifaceIndex(a.Unmap().WithZone("")); ok {
+	if idx, ok := ix.ifaceIndex(a); ok {
 		if p, known := ix.byIndex[idx]; known {
 			return []string{p}
 		}
@@ -220,33 +241,153 @@ func (ix winFwIndex) socketProfiles(addr string) []string {
 	return ix.active
 }
 
-// allows reports whether inbound connections to p get through on profile.
-// A matching block rule wins over any allow rule, as in Windows Firewall
-// (allow rules that override block rules are rare and not modelled); with no
-// matching rule the profile's default inbound action decides.
-func (ix winFwIndex) allows(profile string, p shared.ListeningPort, defaultAllow bool) bool {
+// allows reports whether inbound connections to p get through on a profile.
+// A block rule wins over any allow rule, as in Windows Firewall (allow rules
+// that override block rules are rare and not modelled), but only when it
+// covers every connection to the socket: from any remote address, to the
+// socket's address, for its program. A narrower block leaves the other
+// connections to the allow rules. With no matching rule the profile's
+// default inbound action decides; allow rules don't count when the profile
+// blocks all incoming connections.
+func (ix winFwIndex) allows(prof winFwProfile, p shared.ListeningPort) bool {
 	bit := 0
 	for _, wp := range winProfiles {
-		if wp.name == profile {
+		if wp.name == prof.Name {
 			bit = wp.bit
 		}
 	}
-	allowed := defaultAllow
+	bound := winBoundAddr(p.Address)
+	allowed := strings.EqualFold(prof.DefaultInbound, "Allow")
 	for _, r := range ix.rules {
 		if mask := r.Profile & 7; mask != 0 && mask&bit == 0 {
 			continue
 		}
-		if !winRuleMatchesPort(ix.ports[r.ID], p) || !winRuleMatchesProgram(ix.apps[r.ID], p.ProcessName) {
+		if !winRuleMatchesPort(ix.ports[r.ID], p) {
 			continue
 		}
+		addr := ix.addrs[r.ID]
 		switch {
 		case strings.EqualFold(r.Action, "Block"):
-			return false
-		case strings.EqualFold(r.Action, "Allow"):
-			allowed = true
+			if winAddrIsAny(addr.RemoteAddress) && winLocalCoversAll(addr.LocalAddress, bound) && winProgramCoversAll(ix.apps[r.ID], p.ProcessName) {
+				return false
+			}
+		case strings.EqualFold(r.Action, "Allow") && !prof.BlockAllInbound:
+			if winRuleMatchesProgram(ix.apps[r.ID], p.ProcessName) && winLocalReaches(addr.LocalAddress, bound) {
+				allowed = true
+			}
 		}
 	}
 	return allowed
+}
+
+// winBoundAddr returns the address a socket is bound to, or the zero Addr
+// for a wildcard socket or one whose address can't be parsed.
+func winBoundAddr(addr string) netip.Addr {
+	if bindScope(addr) != scopeInterface {
+		return netip.Addr{}
+	}
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]"))
+	if err != nil {
+		return netip.Addr{}
+	}
+	return a.Unmap().WithZone("")
+}
+
+// winAddrIsAny reports whether an address filter is "Any".
+func winAddrIsAny(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	return spec == "" || strings.EqualFold(spec, "Any")
+}
+
+// winLocalReaches reports whether an allow rule's local addresses can let
+// connections reach the socket: a wildcard socket takes connections to any
+// of the host's addresses, and a filter that can't be evaluated is assumed
+// to reach it.
+func winLocalReaches(spec string, bound netip.Addr) bool {
+	if winAddrIsAny(spec) || !bound.IsValid() {
+		return true
+	}
+	match, known := winAddrMatches(spec, bound)
+	return match || !known
+}
+
+// winLocalCoversAll reports whether a block rule's local addresses cover
+// every connection to the socket. A wildcard socket also takes connections
+// to addresses the rule doesn't name.
+func winLocalCoversAll(spec string, bound netip.Addr) bool {
+	if winAddrIsAny(spec) {
+		return true
+	}
+	if !bound.IsValid() {
+		return false
+	}
+	match, _ := winAddrMatches(spec, bound)
+	return match
+}
+
+// winProgramCoversAll reports whether a block rule's program filter covers
+// the listening process for certain: "Any", or the process itself. A rule
+// for one program doesn't decide when the process is unknown.
+func winProgramCoversAll(program, process string) bool {
+	program = strings.TrimSpace(program)
+	if program == "" || strings.EqualFold(program, "Any") {
+		return true
+	}
+	return process != "" && winRuleMatchesProgram(program, process)
+}
+
+// winAddrMatches reports whether a comma-separated address filter includes
+// a. known is false when it doesn't and an item (a keyword such as
+// "LocalSubnet") couldn't be evaluated.
+func winAddrMatches(spec string, a netip.Addr) (match, known bool) {
+	known = true
+	for _, item := range strings.Split(spec, ",") {
+		m, ok := winAddrItemMatches(strings.TrimSpace(item), a)
+		switch {
+		case !ok:
+			known = false
+		case m:
+			return true, true
+		}
+	}
+	return false, known
+}
+
+// winAddrItemMatches matches one item of an address filter: "Any", an
+// address, a subnet in CIDR or mask form, or a range. ok is false for
+// anything else.
+func winAddrItemMatches(item string, a netip.Addr) (match, ok bool) {
+	if strings.EqualFold(item, "Any") {
+		return true, true
+	}
+	if x, err := netip.ParseAddr(item); err == nil {
+		return x.Unmap() == a, true
+	}
+	if lo, hi, isRange := strings.Cut(item, "-"); isRange {
+		l, err1 := netip.ParseAddr(strings.TrimSpace(lo))
+		h, err2 := netip.ParseAddr(strings.TrimSpace(hi))
+		if err1 != nil || err2 != nil {
+			return false, false
+		}
+		l, h = l.Unmap(), h.Unmap()
+		return l.BitLen() == a.BitLen() && l.Compare(a) <= 0 && a.Compare(h) <= 0, true
+	}
+	if p, err := netip.ParsePrefix(item); err == nil {
+		return p.Masked().Contains(a), true
+	}
+	if ip, mask, isMask := strings.Cut(item, "/"); isMask {
+		x, err1 := netip.ParseAddr(ip)
+		m, err2 := netip.ParseAddr(mask)
+		if err1 != nil || err2 != nil || !x.Is4() || !m.Is4() {
+			return false, false
+		}
+		ones, bits := net.IPMask(m.AsSlice()).Size()
+		if bits == 0 {
+			return false, false
+		}
+		return netip.PrefixFrom(x, ones).Masked().Contains(a), true
+	}
+	return false, false
 }
 
 // winRuleMatchesPort reports whether a rule's protocol and local port cover

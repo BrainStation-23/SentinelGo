@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
 	"testing"
@@ -36,6 +37,14 @@ const winFwFixture = `{
   {"id": "ICMP4-In", "program": "System"},
   {"id": "VNC-Range", "program": "Any"},
   {"id": "Block-VNC-5901", "program": "Any"}
+ ],
+ "addrs": [
+  {"id": "FPS-SMB-In-TCP", "local_address": "Any", "remote_address": "LocalSubnet"},
+  {"id": "RemoteDesktop-UserMode-In-TCP", "local_address": "Any", "remote_address": "Any"},
+  {"id": "RPCSS-In", "local_address": "Any", "remote_address": "Any"},
+  {"id": "ICMP4-In", "local_address": "Any", "remote_address": "Any"},
+  {"id": "VNC-Range", "local_address": "Any", "remote_address": "Any"},
+  {"id": "Block-VNC-5901", "local_address": "Any", "remote_address": "Any"}
  ],
  "profiles": [
   {"name": "Domain", "enabled": true, "default_inbound": "Block"},
@@ -195,6 +204,11 @@ func TestWinFirewall_MissingFilterIsUnknown(t *testing.T) {
 	if got, _ := fw.checker(nil)(smb); got != firewallUnknown {
 		t.Errorf("missing program filter: %q, want unknown", got)
 	}
+	fw = mustWinFirewall(t)
+	fw.Addrs = fw.Addrs[1:]
+	if got, _ := fw.checker(nil)(smb); got != firewallUnknown {
+		t.Errorf("missing address filter: %q, want unknown", got)
+	}
 }
 
 // TestWinFirewall_InterfaceProfile: a socket bound to one interface is
@@ -234,5 +248,63 @@ func TestWinFirewall_InterfaceProfile(t *testing.T) {
 		if verdict != tt.verdict || !slices.Equal(profiles, tt.profiles) {
 			t.Errorf("%s: %q, %q; want %q, %q", tt.addr, verdict, profiles, tt.verdict, tt.profiles)
 		}
+	}
+}
+
+// TestWinFirewall_BlockAllInbound: "block all incoming connections" makes
+// the profile ignore its allow rules (Devin's example: an SSH allow rule on
+// Public).
+func TestWinFirewall_BlockAllInbound(t *testing.T) {
+	rdp := shared.ListeningPort{Protocol: "tcp", Port: 3389, ProcessName: "svchost.exe"}
+	fw := mustWinFirewall(t)
+	fw.Profiles[2].BlockAllInbound = true // Public
+	if got, _ := fw.checker(nil)(rdp); got != firewallBlocked {
+		t.Errorf("block all: %q, want blocked", got)
+	}
+	fw.Profiles[2].DefaultInbound = "Allow"
+	if got, _ := fw.checker(nil)(rdp); got != firewallAllowed {
+		t.Errorf("block all, default allow: %q, want allowed", got)
+	}
+}
+
+// TestWinFirewall_AddressScopes: an allow rule for one local address doesn't
+// reach a socket bound to another, and a block rule decides only when it
+// covers every connection: any remote address, the socket's address, and
+// the listener's program.
+func TestWinFirewall_AddressScopes(t *testing.T) {
+	const smbRules = `{"rules":[{"id":"allow","action":"Allow","profile":0},{"id":"block","action":"Block","profile":0}],` +
+		`"ports":[{"id":"allow","protocol":"TCP","local_port":"445"},{"id":"block","protocol":"TCP","local_port":"445"}],` +
+		`"apps":[{"id":"allow","program":"Any"},{"id":"block","program":"%s"}],` +
+		`"addrs":[{"id":"allow","local_address":"%s","remote_address":"Any"},{"id":"block","local_address":"%s","remote_address":"%s"}],` +
+		`"profiles":[{"name":"Public","enabled":true,"default_inbound":"Block"}],"networks":[{"interface":"Ethernet","category":"Public"}]}`
+	tests := []struct {
+		name                                 string
+		blockProgram, allowLocal, blockLocal string
+		blockRemote, addr, process           string
+		want                                 string
+	}{
+		{"allow for another local address", "Any", "10.0.0.5", "127.0.0.1", "Any", "192.168.1.20", "System", firewallBlocked},
+		{"allow for the socket's address", "Any", "10.0.0.5", "127.0.0.1", "Any", "10.0.0.5", "System", firewallAllowed},
+		{"allow for a subnet in mask form", "Any", "10.0.0.0/255.255.255.0", "127.0.0.1", "Any", "10.0.0.5", "System", firewallAllowed},
+		{"allow for a range", "Any", "10.0.0.1-10.0.0.9", "127.0.0.1", "Any", "10.0.0.5", "System", firewallAllowed},
+		{"allow keyword can't be evaluated", "Any", "LocalSubnet", "127.0.0.1", "Any", "192.168.1.20", "System", firewallAllowed},
+		{"allow for one address, wildcard socket", "Any", "10.0.0.5", "127.0.0.1", "Any", "0.0.0.0", "System", firewallAllowed},
+		{"block from everywhere wins", "Any", "Any", "Any", "Any", "0.0.0.0", "System", firewallBlocked},
+		{"block from one subnet doesn't decide", "Any", "Any", "Any", "10.0.0.0/8", "0.0.0.0", "System", firewallAllowed},
+		{"block on the socket's address", "Any", "Any", "10.0.0.5", "Any", "10.0.0.5", "System", firewallBlocked},
+		{"block on one address, wildcard socket", "Any", "Any", "10.0.0.5", "Any", "0.0.0.0", "System", firewallAllowed},
+		{"program block, matching process", "System", "Any", "Any", "Any", "0.0.0.0", "System", firewallBlocked},
+		{"program block, unknown process", "System", "Any", "Any", "Any", "0.0.0.0", "", firewallAllowed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fw, ok := parseWinFirewall(fmt.Sprintf(smbRules, tt.blockProgram, tt.allowLocal, tt.blockLocal, tt.blockRemote))
+			if !ok {
+				t.Fatal("parseWinFirewall failed")
+			}
+			if got, _ := fw.checker(nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: tt.addr, ProcessName: tt.process}); got != tt.want {
+				t.Errorf("verdict = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

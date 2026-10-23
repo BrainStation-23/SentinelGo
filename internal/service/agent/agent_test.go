@@ -273,6 +273,7 @@ func TestUpdateAgentInfo_SendsUserIdentity(t *testing.T) {
 		"signed_in_users":     `[{"username":"alice","session":"console"}]`,
 		"last_signed_in_user": `"alice"`,
 		"identity_join":       `{"type":"domain","domain":"CONTOSO"}`,
+		"hardware_model":      `"TestModel"`,
 	} {
 		if got := string(req.Payload[key]); got != want {
 			t.Errorf("payload[%s] = %s, want %s", key, got, want)

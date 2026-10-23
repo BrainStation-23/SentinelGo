@@ -27,7 +27,7 @@ func FuzzFirewallParsers(f *testing.F) {
 		"[x]\nports=1:99999/tcp|a,b/udp|/", "public (active)\n\trule port port=\"1-0\" protocol=\"tcp\" accept",
 		"z\n  interfaces: \n  sources: \n  rich rules: \n\trule family=\"ipv4\" accept",
 		`<service><port protocol="tcp" port="99999"/><port protocol="udp" port="-"/></service>`,
-		`{"rules":[{"id":"a","action":"Allow","profile":-1}],"ports":[{"id":"a","protocol":"6","local_port":"1-,-2,x"}],"apps":[{"id":"a","program":"\\"}],"profiles":[{"name":"Public","enabled":true}],"networks":[{"index":-1,"category":"Public"}]}`,
+		`{"rules":[{"id":"a","action":"Allow","profile":-1}],"ports":[{"id":"a","protocol":"6","local_port":"1-,-2,x"}],"apps":[{"id":"a","program":"\\"}],"addrs":[{"id":"a","local_address":"10.0.0.0/255.0.0.0,1.2.3.4-1.2.3.9,LocalSubnet","remote_address":"x-y"}],"profiles":[{"name":"Public","enabled":true,"block_all_inbound":true}],"networks":[{"index":-1,"category":"Public"}]}`,
 		"Block all ENABLED!", "(State = 2)", "0.0.0.0", "::", "[::1]", "fe80::1%", "*", "localhost",
 		strings.Repeat("22/tcp  ALLOW IN  Anywhere\n", 200),
 	} {
@@ -46,7 +46,7 @@ func FuzzFirewallParsers(f *testing.F) {
 
 		checks := []firewallCheck{
 			parseUFWStatus(s).check(parseUFWAppProfiles([]string{s}), newUFWHost(ports, []string{s})),
-			firewalldCheck(parseFirewalldZones(s), resolve, anyName),
+			firewalldCheck(parseFirewalldZones(s), resolve, anyName, []string{s}),
 		}
 		if fw, ok := parseWinFirewall(s); ok {
 			_ = fw.networkProfiles()

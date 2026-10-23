@@ -68,7 +68,6 @@ func NewAgentService() *AgentService {
 
 // UpdateAgentInfo updates agent information via the agent_enqueue_inventory RPC.
 func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *shared.SystemInfo) error {
-	hardwareModel := getHardwareModel()
 	firmware := map[string]interface{}{
 		"type":    sysInfo.FirmwareType,
 		"vendor":  sysInfo.FirmwareVendor,
@@ -80,7 +79,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		ComputerName:     sysInfo.Hostname,
 		CPUInfo:          sysInfo.CPUInfoDetailed,
 		SerialNumber:     sysInfo.SerialNumber,
-		HardwareModel:    hardwareModel,
+		HardwareModel:    sysInfo.HardwareModel,
 		BatteryCondition: sysInfo.BatteryCondition,
 		RAMS:             sysInfo.RAMs,
 		LocalUsers:       sysInfo.LocalUsers,
