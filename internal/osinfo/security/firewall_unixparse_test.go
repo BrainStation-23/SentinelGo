@@ -140,7 +140,7 @@ func TestFirewalld_Check(t *testing.T) {
 	if len(zones) != 4 {
 		t.Fatalf("zones = %+v", zones)
 	}
-	check := firewalldCheck(zones, firewalldServices, nil)
+	check := firewalldCheck(zones, firewalldServices, nil, nil)
 	tests := []struct {
 		proto string
 		port  uint16
@@ -166,7 +166,7 @@ func TestFirewalld_Check(t *testing.T) {
 		return specs, ok || name == "custom-db"
 	}
 	for _, port := range []uint16{3389, 139} {
-		if got, _ := firewalldCheck(zones, known, nil)(shared.ListeningPort{Protocol: "tcp", Port: port}); got != firewallBlocked {
+		if got, _ := firewalldCheck(zones, known, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: port}); got != firewallBlocked {
 			t.Errorf("tcp/%d = %q, want blocked", port, got)
 		}
 	}
@@ -174,7 +174,7 @@ func TestFirewalld_Check(t *testing.T) {
 
 func TestFirewalld_DefaultZoneWhenNoneActive(t *testing.T) {
 	zones := parseFirewalldZones("public (default)\n  target: default\n  services: ssh\ntrusted\n  target: ACCEPT\n")
-	check := firewalldCheck(zones, firewalldServices, nil)
+	check := firewalldCheck(zones, firewalldServices, nil, nil)
 	if got, _ := check(shared.ListeningPort{Protocol: "tcp", Port: 22}); got != firewallAllowed {
 		t.Errorf("ssh = %q", got)
 	}
@@ -182,7 +182,7 @@ func TestFirewalld_DefaultZoneWhenNoneActive(t *testing.T) {
 		t.Errorf("smb = %q", got)
 	}
 	zones = parseFirewalldZones("trusted (active)\n  target: ACCEPT\n")
-	if got, _ := firewalldCheck(zones, firewalldServices, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := firewalldCheck(zones, firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
 		t.Errorf("trusted zone = %q", got)
 	}
 }
@@ -374,7 +374,7 @@ lab (active)
 		}
 		return "", false
 	}
-	check := firewalldCheck(zones, services, ifaces)
+	check := firewalldCheck(zones, services, ifaces, nil)
 	tests := []struct {
 		addr string
 		port uint16
@@ -393,8 +393,32 @@ lab (active)
 			t.Errorf("%s:%d = %q, want %q", tt.addr, tt.port, got, tt.want)
 		}
 	}
-	if got, _ := firewalldCheck(zones, services, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "192.168.1.20"}); got != firewallUnknown {
+	if got, _ := firewalldCheck(zones, services, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "192.168.1.20"}); got != firewallUnknown {
 		t.Errorf("no interface lookup: %q, want unknown", got)
+	}
+}
+
+// TestFirewalld_DefaultZoneForUnboundInterfaces: Devin's example. The
+// default zone opens SSH and isn't bound to any interface, a restrictive
+// zone is bound to tun0. A wildcard socket also gets traffic on eth0, which
+// no zone claims, so the default zone governs it too.
+func TestFirewalld_DefaultZoneForUnboundInterfaces(t *testing.T) {
+	zones := parseFirewalldZones("public (default)\n  target: default\n  services: ssh\nvpn (active)\n  target: default\n  interfaces: tun0\n")
+	tests := []struct {
+		name    string
+		arrival []string
+		want    string
+	}{
+		{"another interface has no zone", []string{"eth0", "tun0"}, firewallAllowed},
+		{"interfaces unknown", nil, firewallAllowed},
+		{"every interface has a zone", []string{"tun0"}, firewallBlocked},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, _ := firewalldCheck(zones, firewalldServices, nil, tt.arrival)(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"}); got != tt.want {
+				t.Errorf("ssh = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -406,7 +430,7 @@ func TestFirewalld_ServiceNamesValidatedAndCached(t *testing.T) {
 	check := firewalldCheck(zones, func(name string) ([]portSpec, bool) {
 		looked = append(looked, name)
 		return []portSpec{{protocol: "tcp", from: 22, to: 22}}, true
-	}, nil)
+	}, nil, nil)
 	for _, port := range []uint16{445, 3389, 22} {
 		check(shared.ListeningPort{Protocol: "tcp", Port: port})
 	}

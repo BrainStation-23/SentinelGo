@@ -479,15 +479,16 @@ type interfaceNameFunc func(addr netip.Addr) (name string, ok bool)
 // the zone of its incoming interface, else the default zone. So a socket
 // bound to one interface's address is governed by the source zones and that
 // interface's zone (or the default zone when the interface has none); a
-// wildcard socket by every active zone. When the socket's interface can't
-// be found, the verdict is unknown.
+// wildcard socket by every active zone, plus the default zone when an
+// arrival interface (see newFirewalldZoneSet) has no zone. When the socket's
+// interface can't be found, the verdict is unknown.
 //
 // A zone lets a port in when its target is ACCEPT, or it opens the port
 // through a service, a port or a rich rule. serviceSpecs resolves a service
 // name; ok is false when its definition can't be read, which makes an
 // otherwise blocked verdict unknown. Lookups are cached per check.
-func firewalldCheck(zones []firewalldZone, serviceSpecs func(name string) ([]portSpec, bool), ifaceName interfaceNameFunc) firewallCheck {
-	set := newFirewalldZoneSet(zones)
+func firewalldCheck(zones []firewalldZone, serviceSpecs func(name string) ([]portSpec, bool), ifaceName interfaceNameFunc, arrival []string) firewallCheck {
+	set := newFirewalldZoneSet(zones, arrival)
 	services := map[string]firewalldService{}
 	lookup := func(name string) ([]portSpec, bool) {
 		if s, ok := services[name]; ok {
@@ -534,7 +535,11 @@ type firewalldZoneSet struct {
 	defaultZone *firewalldZone
 }
 
-func newFirewalldZoneSet(zones []firewalldZone) firewalldZoneSet {
+// newFirewalldZoneSet sorts zones. arrival lists the interfaces connections
+// can come in on (nil when unknown): traffic on one no zone claims goes to
+// the default zone, so a wildcard socket is governed by the default zone too
+// unless every arrival interface is bound to a zone.
+func newFirewalldZoneSet(zones []firewalldZone, arrival []string) firewalldZoneSet {
 	set := firewalldZoneSet{byInterface: map[string]firewalldZone{}}
 	for i, z := range zones {
 		if z.isDefault {
@@ -551,10 +556,24 @@ func newFirewalldZoneSet(zones []firewalldZone) firewalldZoneSet {
 			set.byInterface[iface] = z
 		}
 	}
-	if len(set.active) == 0 && set.defaultZone != nil {
-		set.active = []firewalldZone{*set.defaultZone}
+	if set.defaultZone != nil && !set.defaultZone.active && (len(set.active) == 0 || set.unboundArrival(arrival)) {
+		set.active = append(set.active, *set.defaultZone)
 	}
 	return set
+}
+
+// unboundArrival reports whether a connection can arrive on an interface no
+// zone is bound to, assuming so when the interfaces are unknown.
+func (s firewalldZoneSet) unboundArrival(arrival []string) bool {
+	if arrival == nil {
+		return true
+	}
+	for _, iface := range arrival {
+		if _, ok := s.byInterface[iface]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // forSocket returns the zones governing a socket bound to addr. ok is false

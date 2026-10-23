@@ -494,14 +494,16 @@ func collectAV() []shared.AntivirusProduct {
 	return products
 }
 
-// collectFirewallProfiles queries the macOS Application Firewall state.
+// collectFirewallProfiles queries the macOS Application Firewall state. It's
+// on in state 1 ("Firewall is enabled.") and state 2 ("Firewall is blocking
+// all non-essential incoming connections."), which doesn't say "enabled".
 func collectFirewallProfiles() []shared.FirewallProfile {
 	output, err := darwinRunCommand("/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err != nil {
 		return nil
 	}
 	lower := strings.ToLower(strings.TrimSpace(output))
-	enabled := strings.Contains(lower, "enabled")
+	enabled := strings.Contains(lower, "enabled") || strings.Contains(lower, "state = 1") || strings.Contains(lower, "state = 2")
 	return []shared.FirewallProfile{{Name: "Application Firewall", Enabled: enabled}}
 }
 

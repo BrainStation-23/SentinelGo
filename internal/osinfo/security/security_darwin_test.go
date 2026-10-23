@@ -216,6 +216,8 @@ func TestCollectFirewallProfiles(t *testing.T) {
 	}{
 		{"enabled", strRef("Firewall is enabled. (State = 1)\n"),
 			[]shared.FirewallProfile{{Name: "Application Firewall", Enabled: true}}},
+		{"block all", strRef("Firewall is blocking all non-essential incoming connections. (State = 2)\n"),
+			[]shared.FirewallProfile{{Name: "Application Firewall", Enabled: true}}},
 		{"disabled", strRef("Firewall is disabled. (State = 0)\n"),
 			[]shared.FirewallProfile{{Name: "Application Firewall", Enabled: false}}},
 		{"command fails", nil, nil},

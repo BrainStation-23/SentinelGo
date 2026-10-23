@@ -19,6 +19,7 @@ func TestDarwinFirewallCheck(t *testing.T) {
 		{"state unknown", nil, nil, firewallUnknown},
 		{"firewall off", []shared.FirewallProfile{{Name: "Application Firewall"}}, nil, firewallDisabled},
 		{"block all", on, map[string]string{socketfilterfw + " --getblockall": "Firewall has block all state set to enabled."}, firewallBlocked},
+		{"block all via global state", on, map[string]string{socketfilterfw + " --getglobalstate": "Firewall is blocking all non-essential incoming connections. (State = 2)"}, firewallBlocked},
 		{"per-app rules", on, map[string]string{
 			socketfilterfw + " --getblockall":    "Firewall has block all state set to disabled.",
 			socketfilterfw + " --getglobalstate": "Firewall is enabled. (State = 1)",
