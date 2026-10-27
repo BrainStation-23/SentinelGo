@@ -3,10 +3,12 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -338,7 +340,6 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 		err    error
 	}, 1)
 
-	scriptStarted = true
 	go func() {
 		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, env)
 		resultChan <- struct {
@@ -354,11 +355,21 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 			timeout.Round(time.Second), task.ID, task.Slug,
 		)
 		log.Printf("Executor: %s", timeoutNote)
-		return timeoutNote, nil, scriptStarted, fmt.Errorf("task execution timeout")
+		// Counted as started: the script may have run for most of the timeout.
+		return timeoutNote, nil, true, fmt.Errorf("task execution timeout")
 	case res := <-resultChan:
 		note, taskResult := readTaskResult(resultPath, res.output, res.err)
-		return note, taskResult, scriptStarted, res.err
+		return note, taskResult, scriptLaunched(res.err), res.err
 	}
+}
+
+// scriptLaunched reports whether executeLocalScript's error still means the
+// script process ran: no error, a non-zero exit or kill (*exec.ExitError), or
+// output pipes held open past WaitDelay. Anything else (chmod, a missing
+// interpreter, exec failing to start) means no process was created.
+func scriptLaunched(err error) bool {
+	var exitErr *exec.ExitError
+	return err == nil || errors.As(err, &exitErr) || errors.Is(err, exec.ErrWaitDelay)
 }
 
 // fetchArtifacts downloads and verifies the task's artifacts into dir. A task

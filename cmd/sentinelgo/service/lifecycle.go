@@ -99,14 +99,15 @@ func HandleUninstall(svc AgentService) {
 }
 
 // RunForeground runs the agent in console/foreground mode, guarded by a process
-// lock, until an interrupt signal is received.
-func RunForeground(cfg *config.Config) {
+// lock, until an interrupt signal is received. When the lock can't be taken it
+// returns the error without starting; StartExitCode maps it to an exit code.
+func RunForeground(cfg *config.Config) error {
 	version := config.Version
 	lf, err := acquireProcessLock()
 	if err != nil {
 		log.Printf("Not starting: %v", err)
 		fmt.Printf("Error: %v\n", err)
-		return
+		return err
 	}
 	defer func() {
 		if err := lf.Release(); err != nil {
@@ -138,6 +139,7 @@ func RunForeground(cfg *config.Config) {
 		log.Printf("Warning: Failed to stop main integration: %v", err)
 	}
 	fmt.Println("SentinelGo stopped")
+	return nil
 }
 
 // RunAsService hands control to the platform service manager.
