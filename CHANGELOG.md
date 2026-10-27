@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v3.7.2] - 2026-10-27
+
 ### Added
 
 - The agent sends inventory right after a system command's script has run (USB storage, autorun, BitLocker, hostname, package install, OS update and the other console toggles and policies), instead of waiting for the next scheduled inventory report. Several system commands in one batch share one sync, which runs after every task's status is reported. It needs the backend to send `command_kind` with each task (sentinel-ops#403); until then nothing changes. A `native` command this agent version doesn't implement now fails with "not supported by this agent version" instead of "no script found for platform" (#231).
@@ -404,7 +406,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.2...HEAD
+[v3.7.2]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...v3.7.2
 [v3.7.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...v3.7.1
 [v3.7.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...v3.7.0
 [v3.6.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.0...v3.6.1
