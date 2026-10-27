@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- The agent sends inventory right after a system command's script has run (USB storage, autorun, BitLocker, hostname, package install, OS update and the other console toggles and policies), instead of waiting for the next scheduled inventory report. Several system commands in one batch share one sync, which runs after every task's status is reported. It needs the backend to send `command_kind` with each task (sentinel-ops#403); until then nothing changes. A `native` command this agent version doesn't implement now fails with "not supported by this agent version" instead of "no script found for platform" (#231).
+
 ### Fixed
 
 - The agent's single-instance lock is now held by the operating system (a share-deny handle on Windows, `flock` on Linux and macOS) instead of trusting the PID written in the lock file. The OS releases it however the agent exits (self-update, `-stop`, kill, crash, power loss), so a leftover lock file can no longer stop the service from starting. On Windows the service could stay down for good with "Error 1: Incorrect function" once another process reused the PID in a stale lock file. The lock now lives at `C:\SentinelGo\.sentinelgo\sentinelgo.lock` on Windows (it was under the account's profile, e.g. `systemprofile`), and the service and `-run` use the same lock, so they can't run at the same time. A failed Windows service start is written to the Event Log and reported as a service-specific exit code in `sc query`: 2 already running, 3 lock file error, 4 invalid config, 5 other startup failure (#242).

@@ -61,6 +61,9 @@ var tasksMigrations = []Migration{
 	// Structured task result (#140), kept so a report retried after a
 	// network failure still carries it.
 	{Version: 5, SQL: "ALTER TABLE tasks ADD COLUMN result TEXT"},
+	// The command's kind (#231), so a task stored before a restart still
+	// triggers the inventory sync after a system script. NULL means unknown.
+	{Version: 6, SQL: "ALTER TABLE tasks ADD COLUMN command_kind TEXT"},
 }
 
 // TaskStore is a SQLite-backed queue for agent tasks.
@@ -102,8 +105,8 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 	stmt, err := tx.Prepare(`
 		INSERT OR IGNORE INTO tasks
 		(id, command_id, slug, name, description, category, tags, payload, scripts,
-		 status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, command_kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -133,6 +136,7 @@ func (s *TaskStore) StoreTasks(tasks []taskstore.Task) error {
 			string(tagsJSON), string(payloadJSON), string(scriptsJSON),
 			t.Status, t.Note, formatTime(t.AssignedAt), formatTime(t.CompletedAt),
 			formatTime(t.CreatedAt), formatTime(t.UpdatedAt), t.CreatedBy, artifactsJSON,
+			t.CommandKind,
 		)
 		if err != nil {
 			return err
@@ -248,7 +252,7 @@ func (s *TaskStore) GetAssignedTasks() ([]taskstore.Task, error) {
 
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result, command_kind
 		FROM tasks
 		WHERE status = 'assigned'
 		ORDER BY assigned_at ASC
@@ -348,7 +352,7 @@ func (s *TaskStore) ClearCompletedTasks(olderThan time.Time) error {
 func (s *TaskStore) GetUnsyncedTasks() ([]taskstore.Task, error) {
 	rows, err := s.db.Query(`
 		SELECT id, command_id, slug, name, description, category, tags, payload, scripts,
-		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result
+		       status, note, assigned_at, completed_at, created_at, updated_at, created_by, artifacts, result, command_kind
 		FROM tasks
 		WHERE is_synced = 0 AND status IN ('success', 'failed', 'retrying')
 	`)
@@ -426,12 +430,13 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 		var t taskstore.Task
 		var tagsJSON, payloadJSON, scriptsJSON, artifactsJSON, resultJSON []byte
 		var assignedAt, completedAt, createdAt, updatedAt []byte
+		var commandKind sql.NullString
 
 		err := rows.Scan(
 			&t.ID, &t.CommandID, &t.Slug, &t.Name, &t.Description, &t.Category,
 			&tagsJSON, &payloadJSON, &scriptsJSON,
 			&t.Status, &t.Note, &assignedAt, &completedAt, &createdAt, &updatedAt, &t.CreatedBy,
-			&artifactsJSON, &resultJSON,
+			&artifactsJSON, &resultJSON, &commandKind,
 		)
 		if err != nil {
 			return nil, err
@@ -459,6 +464,7 @@ func (s *TaskStore) scanTasks(rows *sql.Rows) ([]taskstore.Task, error) {
 				log.Printf("TaskStore: unmarshal result for %s: %v", t.ID, err)
 			}
 		}
+		t.CommandKind = commandKind.String
 		t.AssignedAt = parseTime(assignedAt)
 		t.CompletedAt = parseTime(completedAt)
 		t.CreatedAt = parseTime(createdAt)

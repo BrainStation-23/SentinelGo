@@ -44,7 +44,12 @@ func (s *TaskExecutorService) runWithPostHooks(ctx context.Context, h native.Han
 			log.Printf("post-run: no handler registered for slug %q (requested by %q)", postSlug, slug)
 			continue
 		}
-		postNote, postErr := ph.Run(ctx, s.cfg, task)
+		var postNote string
+		postErr := s.authRetry(ctx, func() error {
+			var err error
+			postNote, err = ph.Run(ctx, s.cfg, task)
+			return err
+		})
 		if postErr != nil {
 			log.Printf("post-run %q (after %q) failed: %v", postSlug, slug, postErr)
 		} else if postNote != "" {

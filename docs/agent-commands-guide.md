@@ -120,6 +120,7 @@ curl --location 'https://<your-project>.supabase.co/rest/v1/rpc/agent_get_tasks'
       "description": "Generates a new password and updates the local admin account.",
       "category": "security",
       "tags": ["password", "hardening"],
+      "command_kind": "system",
       "payload":  { "rotation_days": 30, "length": 24 },
       "scripts":  {
         "all":     null,
@@ -141,10 +142,18 @@ curl --location 'https://<your-project>.supabase.co/rest/v1/rpc/agent_get_tasks'
 | `task_id` | The ID you MUST send to `agent_update_task`. Treat as opaque. |
 | `command_id` | The source command. Useful for logs/telemetry, not required to report. |
 | `slug`, `name`, `description`, `category`, `tags` | Joined from `commands` at fetch time. May be `null` if the command was deleted (the snapshot still works). |
+| `command_kind` | `native`, `system` or `normal` (sentinel-ops#403), or `null` if the command was deleted. Older backends leave it out. See **After system commands** below. |
 | `payload` | The frozen `payload_snapshot`. Always a JSON object — pass straight to the script (e.g. via env vars, stdin, or a temp file). |
 | `scripts` | The frozen `script_snapshot`. Pick the entry matching the agent's OS, falling back to `all`. See **§3**. |
 | `assigned_at` | Server timestamp when this poll claimed the row. |
 | `created_at` | When the admin queued it. `assigned_at - created_at` = queue latency. |
+
+### After system commands
+
+SentinelGo uses `command_kind` in two ways (#231):
+
+- **Inventory sync.** When a batch of tasks has started at least one `system` script, the agent runs `sync-inventory` once after the whole batch, so a change such as disabling USB storage shows up within about two minutes instead of on the next scheduled inventory report. The script counts once its process starts, even if it then exits non-zero or times out. A failure before the start (no script for this OS, invalid artifacts, download error) doesn't count. Every task's status is reported before the sync, and a failed sync never changes a task's status. `normal` tasks, tasks with no kind, and native tasks don't trigger it. It's skipped if a native `sync-inventory` task already ran later in the same batch.
+- **Native cross-check.** A `native` task whose slug this agent version has no handler for fails with `native command "<slug>" is not supported by this agent version (<version>)` instead of looking for a script. If the backend marks a slug `system` or `normal` but the agent has a native handler for it, the handler runs and the agent logs a warning once.
 
 ### Polling guidance
 

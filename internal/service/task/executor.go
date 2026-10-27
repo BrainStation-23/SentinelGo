@@ -17,6 +17,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
 )
@@ -44,6 +45,8 @@ type TaskExecutorService struct {
 
 	activeMu      sync.Mutex
 	activeRunning map[string]activeTask // task ID → {cancel, deadline}
+
+	kindWarned sync.Map // slug → struct{}: kind mismatch already logged
 }
 
 // NewTaskExecutorService creates a new task execution service.
@@ -130,14 +133,72 @@ func (s *TaskExecutorService) ExecutePendingTasks(ctx context.Context) {
 		return
 	}
 
+	// A system script usually changes the machine, so once the batch has run
+	// one, inventory is sent right away instead of on the next agent-info
+	// tick (#231). Several system scripts share one sync, and a native
+	// sync-inventory task later in the batch makes it unnecessary.
+	pendingInventorySync := false
 	for _, task := range tasks {
-		s.executeTask(ctx, task)
+		out := s.executeTask(ctx, task)
+		switch {
+		case out.scriptStarted && task.CommandKind == taskstore.CommandKindSystem:
+			pendingInventorySync = true
+		case out.succeeded && task.Slug == syncInventorySlug && s.isNative(task.Slug):
+			pendingInventorySync = false
+		}
 	}
+	if pendingInventorySync && ctx.Err() == nil {
+		s.syncInventoryAfterSystemScripts(ctx)
+	}
+}
+
+// syncInventorySlug is the native task that collects and uploads inventory.
+const syncInventorySlug = "sync-inventory"
+
+// postScriptInventorySyncFn runs the native sync-inventory handler; replaced
+// in tests.
+var postScriptInventorySyncFn = func(ctx context.Context, cfg *config.Config) (string, error) {
+	h := native.Find(syncInventorySlug)
+	if h == nil {
+		return "", fmt.Errorf("no handler registered for slug %q", syncInventorySlug)
+	}
+	return h.Run(ctx, cfg, taskstore.Task{Slug: syncInventorySlug})
+}
+
+// syncInventoryAfterSystemScripts uploads inventory after a batch that ran a
+// system script. Every task's status has already been reported, so a failure
+// is only logged; the scheduled agent-info update sends it later anyway.
+func (s *TaskExecutorService) syncInventoryAfterSystemScripts(ctx context.Context) {
+	log.Printf("Executor: system script ran, syncing inventory")
+	var note string
+	err := s.authRetry(ctx, func() error {
+		var err error
+		note, err = postScriptInventorySyncFn(ctx, s.cfg)
+		return err
+	})
+	if err != nil {
+		log.Printf("Executor: inventory sync after system script failed: %v", err)
+		return
+	}
+	log.Printf("Executor: inventory sync after system script: %s", note)
+}
+
+func (s *TaskExecutorService) isNative(slug string) bool {
+	_, ok := s.nativeHandlers[slug]
+	return ok
+}
+
+// taskOutcome is what ExecutePendingTasks needs to know about a task it ran.
+type taskOutcome struct {
+	// scriptStarted is true once the script process was launched, whatever
+	// its exit; the machine may have changed.
+	scriptStarted bool
+	succeeded     bool
 }
 
 // executeTask marks a single task as executing, runs it, and reports the result.
 // Extracted from ExecutePendingTasks to keep complexity within the linter limit.
-func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Task) {
+func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Task) taskOutcome {
 	// Mark 'executing' in SQLite BEFORE running the script. If the agent is
 	// killed mid-execution (e.g. by a reboot script), the task stays
 	// 'executing' on disk. GetAssignedTasks only returns 'assigned' rows, so
@@ -147,11 +208,11 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	// can't write the marker, executing would leave us in the unsafe state.
 	if err := s.pollingSvc.MarkTaskExecuting(task.ID); err != nil {
 		log.Printf("Executor: could not mark task %s as 'executing' — skipping to avoid unsafe re-execution: %v", task.ID, err)
-		return
+		return taskOutcome{}
 	}
 
 	log.Printf("Executor: Starting task %s (%s)", task.ID, task.Slug)
-	note, result, err := s.runTaskResult(ctx, task)
+	note, result, scriptStarted, err := s.runTaskResult(ctx, task)
 	if err != nil {
 		log.Printf("Executor: Task %s failed: %v", task.ID, sanitize.ForLog(err.Error()))
 		statusNote := err.Error()
@@ -161,7 +222,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 		if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "failed", capNote(statusNote), result); err != nil {
 			log.Printf("Executor: Failed to report task status: %v", err)
 		}
-		return
+		return taskOutcome{scriptStarted: scriptStarted}
 	}
 
 	log.Printf("Executor: Task %s completed successfully", task.ID)
@@ -172,6 +233,7 @@ func (s *TaskExecutorService) executeTask(ctx context.Context, task taskstore.Ta
 	if err := s.pollingSvc.ReportTaskResult(ctx, task.ID, "success", capNote(statusNote), result); err != nil {
 		log.Printf("Executor: Failed to report task status: %v", err)
 	}
+	return taskOutcome{scriptStarted: scriptStarted, succeeded: true}
 }
 
 // resolveTaskTimeout returns the timeout for a task. If the task payload
@@ -191,13 +253,14 @@ func resolveTaskTimeout(task taskstore.Task) time.Duration {
 }
 
 func (s *TaskExecutorService) runTask(ctx context.Context, task taskstore.Task) (string, error) {
-	note, _, err := s.runTaskResult(ctx, task)
+	note, _, _, err := s.runTaskResult(ctx, task)
 	return note, err
 }
 
 // runTaskResult runs a task and returns its note, its structured result
-// (nil unless a script ran to exit, #140) and its error.
-func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.Task) (string, map[string]interface{}, error) {
+// (nil unless a script ran to exit, #140), whether a script process was
+// started (#231) and its error.
+func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.Task) (note string, result map[string]interface{}, scriptStarted bool, err error) {
 	timeout := resolveTaskTimeout(task)
 	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -209,26 +272,32 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 	defer s.deregisterRunning(task.ID)
 
 	if handler, ok := s.nativeHandlers[task.Slug]; ok {
+		s.warnKindMismatch(task)
 		if len(task.Artifacts) > 0 {
-			return "", nil, fmt.Errorf("artifacts are only supported for script tasks")
+			return "", nil, false, fmt.Errorf("artifacts are only supported for script tasks")
 		}
 		note, err := handler(taskCtx, task)
-		return note, nil, err
+		return note, nil, false, err
+	}
+	if task.CommandKind == taskstore.CommandKindNative {
+		// Without this the task fell through to the script path and failed
+		// with a misleading "no script found for platform".
+		return "", nil, false, fmt.Errorf("native command %q is not supported by this agent version (%s)", task.Slug, config.Version)
 	}
 
 	// Reject bad artifact specs before anything is created or downloaded.
 	if err := artifact.Validate(task.Artifacts); err != nil {
-		return "", nil, fmt.Errorf("invalid task artifacts: %w", err)
+		return "", nil, false, fmt.Errorf("invalid task artifacts: %w", err)
 	}
 
 	script, err := s.resolveScript(task)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
 
 	tempDir, err := os.MkdirTemp("", "sentinel-task-"+task.ID)
 	if err != nil {
-		return "", nil, fmt.Errorf("create temp dir: %w", err)
+		return "", nil, false, fmt.Errorf("create temp dir: %w", err)
 	}
 	// Removes the script, payload.json and every artifact, whatever the
 	// outcome (contract §3.7).
@@ -241,10 +310,10 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 	localScriptPath := filepath.Join(tempDir, script.Filename)
 	if script.Body != nil {
 		if err := writeInlineScript(localScriptPath, *script.Body); err != nil {
-			return "", nil, fmt.Errorf("write inline script: %w", err)
+			return "", nil, false, fmt.Errorf("write inline script: %w", err)
 		}
 	} else if err := s.downloadScript(taskCtx, script.RemotePath, localScriptPath); err != nil {
-		return "", nil, fmt.Errorf("download script: %w", err)
+		return "", nil, false, fmt.Errorf("download script: %w", err)
 	}
 
 	// Downloads run under taskCtx, so they count against the task timeout;
@@ -253,12 +322,12 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 	artifactsDir := filepath.Join(tempDir, "artifacts")
 	artifactPaths, err := s.fetchArtifacts(taskCtx, artifactsDir, task.Artifacts)
 	if err != nil {
-		return "", nil, fmt.Errorf("fetch artifacts: %w", err)
+		return "", nil, false, fmt.Errorf("fetch artifacts: %w", err)
 	}
 
 	payloadPath := filepath.Join(tempDir, "payload.json")
 	if err := writePayload(payloadPath, task, artifactPaths); err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
 	resultPath := filepath.Join(tempDir, "result.json")
 	env := append(scriptEnv(task, tempDir, artifactsDir, artifactPaths), "SENTINEL_RESULT_FILE="+resultPath)
@@ -269,6 +338,7 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 		err    error
 	}, 1)
 
+	scriptStarted = true
 	go func() {
 		output, err := s.executeLocalScript(taskCtx, localScriptPath, payloadPath, env)
 		resultChan <- struct {
@@ -284,10 +354,10 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 			timeout.Round(time.Second), task.ID, task.Slug,
 		)
 		log.Printf("Executor: %s", timeoutNote)
-		return timeoutNote, nil, fmt.Errorf("task execution timeout")
-	case result := <-resultChan:
-		note, taskResult := readTaskResult(resultPath, result.output, result.err)
-		return note, taskResult, result.err
+		return timeoutNote, nil, scriptStarted, fmt.Errorf("task execution timeout")
+	case res := <-resultChan:
+		note, taskResult := readTaskResult(resultPath, res.output, res.err)
+		return note, taskResult, scriptStarted, res.err
 	}
 }
 
@@ -298,17 +368,30 @@ func (s *TaskExecutorService) fetchArtifacts(ctx context.Context, dir string, sp
 		return nil, nil
 	}
 	c := supabase.FromConfig(s.cfg, supabase.WithHTTPClient(artifact.HTTPClient()))
-	return artifact.Fetch(ctx, c, s.artifactAuthRetry, dir, specs)
+	return artifact.Fetch(ctx, c, s.authRetry, dir, specs)
 }
 
-// artifactAuthRetry recovers the session once on a 401, through the same
-// path task status updates use.
-func (s *TaskExecutorService) artifactAuthRetry(ctx context.Context, fn func() error) error {
+// authRetry recovers the session once on a 401, through the same path task
+// status updates use.
+func (s *TaskExecutorService) authRetry(ctx context.Context, fn func() error) error {
 	err := fn()
 	if err == nil || s.pollingSvc == nil || !s.pollingSvc.recoverAfter401(ctx, err) {
 		return err
 	}
 	return fn()
+}
+
+// warnKindMismatch logs, once per slug, when the backend calls a command the
+// agent runs natively "system" or "normal". The native handler still runs.
+func (s *TaskExecutorService) warnKindMismatch(task taskstore.Task) {
+	if task.CommandKind != taskstore.CommandKindSystem && task.CommandKind != taskstore.CommandKindNormal {
+		return
+	}
+	if _, warned := s.kindWarned.LoadOrStore(task.Slug, struct{}{}); warned {
+		return
+	}
+	log.Printf("Executor: backend marks %q as a %s command, but this agent runs it natively",
+		sanitize.ForLog(task.Slug), sanitize.ForLog(task.CommandKind))
 }
 
 // artifactInfo is one entry of payload.json's reserved "artifacts" key.
