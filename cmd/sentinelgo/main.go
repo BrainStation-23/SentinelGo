@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"sentinelgo/cmd/sentinelgo/cli"
 	svcsub "sentinelgo/cmd/sentinelgo/service"
@@ -119,7 +120,9 @@ func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 	case *f.uninstall:
 		svcsub.HandleUninstall(svc)
 	case *f.run:
-		svcsub.RunForeground(cfg)
+		if err := svcsub.RunForeground(cfg); err != nil {
+			os.Exit(int(svcsub.StartExitCode(err)))
+		}
 	default:
 		svcsub.RunAsService(svc)
 	}

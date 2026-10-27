@@ -297,13 +297,16 @@ the error goes to the service log (journald / launchd).
 | 4 | Config failed to load or validate | `config.json`: `supabase_url`, `supabase_key`, `device_id` |
 | 5 | Any other startup failure | The Event Log / service log entry (scheduler, audit-log service, ...) |
 
-`StartExitCode` maps a `Program.Start` error to these codes.
+`StartExitCode` maps a `Program.Start` error to these codes. `sentinelgo -run`
+exits with the same codes (2 or 3) when it can't take the process lock.
 
 ### Inventory sync after system commands
 
 `TaskExecutorService.ExecutePendingTasks` (`internal/service/task/executor.go`)
 runs the native `sync-inventory` handler once after a batch that started a
-script for a `command_kind: "system"` task (#231). The sync runs after every
+script for a `command_kind: "system"` task (#231). A script counts as started
+when its process ran, whatever its exit code or a timeout; a missing
+interpreter (`pwsh`, `zsh`) or a failed exec does not count. The sync runs after every
 task's status is reported, goes through `authRetry` (one session recovery on a
 401), and its result is only logged. A `native` task with no registered handler
 fails with a "not supported by this agent version" note. A `system` or `normal`

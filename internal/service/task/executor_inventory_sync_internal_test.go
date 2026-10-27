@@ -7,9 +7,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -342,5 +345,28 @@ func TestRunTask_KindMismatchRunsNativeAndWarnsOnce(t *testing.T) {
 	}
 	if n := strings.Count(buf.String(), "runs it natively"); n != 1 {
 		t.Errorf("mismatch warning logged %d times, want 1", n)
+	}
+}
+
+func TestScriptLaunched(t *testing.T) {
+	exitErr := &exec.ExitError{ProcessState: &os.ProcessState{}}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"clean exit", nil, true},
+		{"non-zero exit", exitErr, true},
+		{"wrapped exit", fmt.Errorf("script: %w", exitErr), true},
+		{"wait delay", exec.ErrWaitDelay, true},
+		{"missing interpreter", errors.New("PowerShell (pwsh) is not installed on this device"), false},
+		{"start failed", &os.PathError{Op: "fork/exec", Path: "/nope", Err: os.ErrNotExist}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scriptLaunched(tt.err); got != tt.want {
+				t.Errorf("scriptLaunched(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
