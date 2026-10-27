@@ -143,8 +143,14 @@ func (h *windowsHandler) Execute(_ []string, r <-chan svc.ChangeRequest, changes
 	changes <- svc.Status{State: svc.StartPending}
 
 	if err := h.ws.prg.Start(h.ws); err != nil {
-		log.Printf("Failed to start program: %v", err)
-		return false, 1
+		// Under the SCM the standard log goes nowhere, so the Event Log is the
+		// only place this is visible. A service-specific code makes `sc query`
+		// show SERVICE_EXIT_CODE instead of "Error 1: Incorrect function".
+		code := StartExitCode(err)
+		if lerr := logger.Errorf("Failed to start SentinelGo service (exit code %d): %v", code, err); lerr != nil {
+			log.Printf("Failed to start program (exit code %d): %v", code, err)
+		}
+		return true, code
 	}
 
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}

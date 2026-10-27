@@ -2,49 +2,48 @@
 
 package lockfile
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 
-// stillActive is the value GetExitCodeProcess reports for a process that has
-// not yet terminated (STILL_ACTIVE / STATUS_PENDING).
-const stillActive = 259
+	"sentinelgo/internal/config"
 
-// waitTimeout is the value WaitForSingleObject returns when the wait expired
-// before the object was signaled (WAIT_TIMEOUT, 0x102) — i.e. the process is
-// still running.
-const waitTimeout = uint32(0x102)
+	"golang.org/x/sys/windows"
+)
 
-// IsProcessRunning reports whether a process with the given PID is currently
-// running, WITHOUT affecting it. It opens a query-only handle and inspects the
-// process state; it never terminates the target.
-func IsProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
+// lockDir is C:\SentinelGo\.sentinelgo, next to config.json. It used to be
+// %USERPROFILE%\.sentinelgo, which is a different directory for LocalSystem
+// (the service) and for an admin running -run, so the two never saw each
+// other's lock, and the MSI never cleaned the service's copy up.
+func lockDir() string {
+	return filepath.Dir(config.WindowsConfigPath)
+}
 
-	// SYNCHRONIZE is required by the WaitForSingleObject check below.
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
+// openLocked opens (creating if needed) the lock file with read/write access
+// while sharing read access only. Any other attempt to open it for writing,
+// from this process or another, fails with ERROR_SHARING_VIOLATION until the
+// handle is closed, which Windows does on any process exit. Read-only openers
+// (diagnostics reading the PID) are still allowed. The handle isn't
+// inheritable, so child processes can't keep the lock alive.
+func openLocked(path string) (*os.File, error) {
+	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		// Process does not exist, or we lack rights to query it. Treat the
-		// common case (no such process) as "not running".
-		return false
+		return nil, fmt.Errorf("failed to open lock file %s: %w", path, err)
 	}
-	defer func() { _ = windows.CloseHandle(h) }()
-
-	var code uint32
-	if err := windows.GetExitCodeProcess(h, &code); err != nil {
-		return false
-	}
-	if code != stillActive {
-		return false
-	}
-
-	// Disambiguate the rare case where a terminated process exited with code
-	// 259: a still-running process leaves WaitForSingleObject in WAIT_TIMEOUT,
-	// whereas a terminated one is already signaled.
-	event, err := windows.WaitForSingleObject(h, 0)
+	h, err := windows.CreateFile(p,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ,
+		nil,
+		windows.OPEN_ALWAYS,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0)
 	if err != nil {
-		// Fall back to the exit-code result if the wait could not be performed.
-		return true
+		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return nil, ErrAlreadyRunning
+		}
+		return nil, fmt.Errorf("failed to open lock file %s: %w", path, err)
 	}
-	return event == waitTimeout
+	return os.NewFile(uintptr(h), path), nil
 }

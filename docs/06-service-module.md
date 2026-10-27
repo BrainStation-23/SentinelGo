@@ -279,6 +279,40 @@ if err != nil {
 
 ## Error Handling
 
+### Startup failures and exit codes
+
+`Program.Start` (`cmd/sentinelgo/service/program.go`) takes the process lock
+(see [`docs/04-lockfile-module.md`](04-lockfile-module.md)) and then starts the
+main integration. When it fails, the Windows service handler writes the error
+to the Event Log (source `SentinelGo`) and stops with a service-specific exit
+code, which `sc query SentinelGo` shows as `SERVICE_EXIT_CODE`
+(`WIN32_EXIT_CODE` is 1066, `ERROR_SERVICE_SPECIFIC_ERROR`). Lock failures are
+also written to the emergency log next to `config.json`. On Linux and macOS
+the error goes to the service log (journald / launchd).
+
+| Code | Meaning | What to check |
+| ---- | ------- | ------------- |
+| 2 | Another agent holds the process lock | A `sentinelgo -run` or a second service is running; stop it with `sentinelgo -stop` |
+| 3 | The lock file couldn't be opened or locked | Permissions on `C:\SentinelGo\.sentinelgo` (or `/opt/sentinelgo/.sentinelgo`); run elevated |
+| 4 | Config failed to load or validate | `config.json`: `supabase_url`, `supabase_key`, `device_id` |
+| 5 | Any other startup failure | The Event Log / service log entry (scheduler, audit-log service, ...) |
+
+`StartExitCode` maps a `Program.Start` error to these codes. `sentinelgo -run`
+exits with the same codes (2 or 3) when it can't take the process lock.
+
+### Inventory sync after system commands
+
+`TaskExecutorService.ExecutePendingTasks` (`internal/service/task/executor.go`)
+runs the native `sync-inventory` handler once after a batch that started a
+script for a `command_kind: "system"` task (#231). A script counts as started
+when its process ran, whatever its exit code or a timeout; a missing
+interpreter (`pwsh`, `zsh`) or a failed exec does not count. The sync runs after every
+task's status is reported, goes through `authRetry` (one session recovery on a
+401), and its result is only logged. A `native` task with no registered handler
+fails with a "not supported by this agent version" note. A `system` or `normal`
+task whose slug has a native handler runs natively, with a one-time warning.
+See [`docs/agent-commands-guide.md`](agent-commands-guide.md#after-system-commands).
+
 ### Authentication Errors
 - **Missing Credentials**: Agent UUID/secret not configured
 - **Invalid Credentials**: Authentication failed
