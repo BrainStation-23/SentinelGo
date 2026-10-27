@@ -299,6 +299,17 @@ the error goes to the service log (journald / launchd).
 
 `StartExitCode` maps a `Program.Start` error to these codes.
 
+### Inventory sync after system commands
+
+`TaskExecutorService.ExecutePendingTasks` (`internal/service/task/executor.go`)
+runs the native `sync-inventory` handler once after a batch that started a
+script for a `command_kind: "system"` task (#231). The sync runs after every
+task's status is reported, goes through `authRetry` (one session recovery on a
+401), and its result is only logged. A `native` task with no registered handler
+fails with a "not supported by this agent version" note. A `system` or `normal`
+task whose slug has a native handler runs natively, with a one-time warning.
+See [`docs/agent-commands-guide.md`](agent-commands-guide.md#after-system-commands).
+
 ### Authentication Errors
 - **Missing Credentials**: Agent UUID/secret not configured
 - **Invalid Credentials**: Authentication failed

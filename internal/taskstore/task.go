@@ -6,6 +6,17 @@ import (
 	"sentinelgo/internal/artifact"
 )
 
+// Command kinds sent as Task.CommandKind.
+const (
+	// CommandKindNative is run by a Go handler in the agent, matched by slug.
+	CommandKindNative = "native"
+	// CommandKindSystem is a seeded script sent by console buttons, toggles
+	// and policies. It usually changes the machine.
+	CommandKindSystem = "system"
+	// CommandKindNormal is a user-authored script.
+	CommandKindNormal = "normal"
+)
+
 // Task represents a task from agent_get_tasks RPC response
 type Task struct {
 	ID          string                 `json:"task_id"`
@@ -17,6 +28,11 @@ type Task struct {
 	Tags        []string               `json:"tags"`
 	Payload     map[string]interface{} `json:"payload"`
 	Scripts     map[string]interface{} `json:"scripts"`
+	// CommandKind is the backend command's kind: CommandKindNative,
+	// CommandKindSystem or CommandKindNormal (sentinel-ops#403). "" means
+	// unknown: an older backend that doesn't send it, or a JSON null for a
+	// command that was deleted.
+	CommandKind string `json:"command_kind"`
 	// Artifacts are files the agent downloads and verifies before running
 	// the script (contract v1 §1, #134). Empty for most tasks.
 	Artifacts   []artifact.Spec `json:"artifacts"`
