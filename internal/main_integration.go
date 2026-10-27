@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -79,6 +80,10 @@ func NewMainIntegrationWith(cfg *config.Config, sched *scheduler.Scheduler) *Mai
 	}
 }
 
+// ErrConfigInvalid wraps the error Start returns when the configuration fails
+// validation, so the service layer can report it with its own exit code.
+var ErrConfigInvalid = errors.New("configuration validation failed")
+
 // Start initializes and starts all services according to the execution flow.
 // It orchestrates a fixed sequence of init steps; each step is a focused method
 // so the ordering is explicit and individually testable.
@@ -95,7 +100,7 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// 1. Validate configuration before doing anything that depends on it.
 	if err := mi.cfg.ValidateConfiguration(); err != nil {
 		emergencylog.Record("startup", "config validation failed: %v", err)
-		return fmt.Errorf("configuration validation failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrConfigInvalid, err)
 	}
 
 	// 2. Kick off a startup update check (async, best-effort).

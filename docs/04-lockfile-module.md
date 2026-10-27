@@ -1,96 +1,83 @@
 # SentinelGo — Lockfile Module (`internal/lockfile`)
 
-PID-file based single-instance guard. Prevents two copies of the
-agent from running on the same host at the same time. Also auto-cleans
-stale lockfiles left behind by crashed predecessors.
+Single-instance guard. Prevents two copies of the agent (service or `-run`,
+any version) from running on the same host at the same time.
 
-> **See also:** the call site inside the kardianos `Service` impl in
-> [`cmd/sentinelgo/service.go`](../cmd/sentinelgo/service.go), and the
-> startup step that runs the acquire in
-> [`docs/08-project-overview.md`](08-project-overview.md#4-runtime-execution-flow).
+The lock is held by the operating system for as long as the lock file is
+open, and the kernel releases it when the process exits for any reason:
+service stop, self-update, `-stop`, kill, crash or power loss. A lock can
+never be stale, so PID reuse can't keep the agent from starting (#242).
+
+> **See also:** the call sites in
+> [`cmd/sentinelgo/service/program.go`](../cmd/sentinelgo/service/program.go)
+> (`Program.Start`) and
+> [`cmd/sentinelgo/service/lifecycle.go`](../cmd/sentinelgo/service/lifecycle.go)
+> (`RunForeground`).
 
 ## Public surface
 
-| Symbol                              | Purpose                                                                 |
-| ----------------------------------- | ----------------------------------------------------------------------- |
-| `NewLockFile(name string)`          | Returns a `*LockFile` for `<default-dir>/<name>.lock`.                  |
-| `NewLockFileWithPath(path string)`  | Returns a `*LockFile` at an exact path (used by tests).                 |
-| `(*LockFile).TryAcquire() error`    | One-shot acquire. Returns `"lock already held by another process"` on conflict. |
-| `(*LockFile).AcquireWithTimeout(d)` | Polls `TryAcquire` every 100 ms for up to `d`.                         |
-| `(*LockFile).Release() error`       | Removes the lockfile and closes the underlying FD.                      |
-| `(*LockFile).GetLockedPID() (int, error)` | Reads the PID from the lockfile.                                  |
-| `(*LockFile).CheckExistingLock() (bool, error)` | Reports whether a live holder exists and cleans up stale ones. |
-| `IsProcessRunning(pid int) bool`    | Platform-aware liveness check (see below).                             |
+| Symbol                             | Purpose                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `ErrAlreadyRunning`                | Returned (match with `errors.Is`) when another process holds the lock.  |
+| `NewLockFile(name string)`         | Returns a `*LockFile` for `<lock dir>/<name>.lock`.                     |
+| `NewLockFileWithPath(path string)` | Returns a `*LockFile` at an exact path (used by tests).                 |
+| `(*LockFile).TryAcquire() error`   | Takes the lock without waiting. A no-op if this `LockFile` holds it.    |
+| `(*LockFile).Release() error`      | Closes the file, which drops the lock. Leaves the file on disk.         |
+| `(*LockFile).Path() string`        | The lock file's path, for messages.                                     |
 
-## Default lock directory
+The agent always uses the name `sentinelgo`, for the service and for `-run`.
 
-`NewLockFile(name)` picks the parent directory by `runtime.GOOS`:
+## Lock directory
 
-| OS            | Directory                              |
-| ------------- | -------------------------------------- |
-| Windows       | `%USERPROFILE%\.sentinelgo\`           |
-| Linux         | `/opt/sentinelgo/.sentinelgo/`         |
-| macOS         | `/opt/sentinelgo/.sentinelgo/`         |
-| (fallback)    | `$HOME/.sentinelgo/` or `/tmp`          |
+One fixed directory per OS, the same for every account:
 
-The directory is created with mode `0750`. The `<name>.lock` file
-itself is `0644` (so other processes can `read` the PID inside).
+| OS            | Lock file                                   |
+| ------------- | ------------------------------------------- |
+| Windows       | `C:\SentinelGo\.sentinelgo\sentinelgo.lock` |
+| Linux / macOS | `/opt/sentinelgo/.sentinelgo/sentinelgo.lock` |
+
+It is the directory that holds `config.json`. On Windows it used to be
+`%USERPROFILE%\.sentinelgo`, which is
+`C:\Windows\System32\config\systemprofile\.sentinelgo` for the service and the
+admin's own profile for `-run`, so the two never saw each other's lock. A file
+left at the old path is ignored and can be deleted.
+
+The directory is restricted to SYSTEM and Administrators (root on Linux and
+macOS), so a non-elevated `-run` can't take the lock. It can't read
+`config.json` there either.
+
+## How the lock is held
+
+- **Windows:** `CreateFile` with `GENERIC_READ|GENERIC_WRITE`, share mode
+  `FILE_SHARE_READ` and `OPEN_ALWAYS`. Any other attempt to open the file for
+  writing gets `ERROR_SHARING_VIOLATION` (→ `ErrAlreadyRunning`) until the
+  handle closes. Read-only openers can still read the PID. The handle isn't
+  inheritable, so child processes (task scripts, the update `.bat`) can't keep
+  the lock alive.
+- **Linux / macOS:** `open(O_CREATE|O_RDWR, 0644)` and
+  `flock(LOCK_EX|LOCK_NB)`. `EWOULDBLOCK` → `ErrAlreadyRunning`. Go opens files
+  with `O_CLOEXEC`, so exec'd children don't inherit the descriptor.
+
+Both use `golang.org/x/sys`; no cgo.
 
 ## Lockfile contents
 
-Just the PID of the holder, followed by a newline:
+After acquiring, the holder truncates the file and writes its PID followed by
+a newline. The PID is for people and diagnostics only. Nothing reads it back to
+decide whether an agent is running, and failing to write it doesn't fail the
+acquire. Whatever an existing file contains (an old PID, garbage, nothing) is
+overwritten.
 
-```
-12345
-```
+## Why `Release` doesn't delete the file
 
-Written via `os.OpenFile(... O_CREATE|O_EXCL|O_RDWR, 0644)`. The
-`O_EXCL` makes the create atomic on every supported OS — only the
-process that wins the create gets the file. The PID is `fsync`'d
-(`file.Sync()`) before `TryAcquire` returns, so a crash that kills
-the agent right after the create cannot leave a PID-less lockfile
-behind.
-
-## Stale-lock detection
-
-When `TryAcquire` sees an existing lockfile, it reads the PID and
-asks `IsProcessRunning`:
-
-- **Linux / macOS:** `process.Signal(syscall.Signal(0))` — a non-lethal
-  probe that returns nil iff the PID is alive.
-- **Windows:** `process.Signal(os.Kill)` — Windows has no real
-  signal-zero equivalent; a successful `Kill` (which is a no-op the
-  process can't actually catch from a Go process of our own) is
-  taken to mean "alive", and the handle is `Release`d in a `defer`.
-
-If the holder is dead, the stale lockfile is removed and the new
-acquire proceeds.
-
-## Stale-lock cleanup helper
-
-`CheckExistingLock` is a read-only variant used by `-status` and the
-installer: it reports whether a live lock exists, and (as a side
-effect) deletes the lockfile if the recorded PID is dead. The
-`cmd/sentinelgo` CLI uses this to decide whether `-install` should
-bail out.
-
-## Call site in this repo
-
-The kardianos `Service` implementation in
-[`cmd/sentinelgo/service.go`](../cmd/sentinelgo/service.go) embeds
-`*lockfile.LockFile` as a field and calls `TryAcquire` inside its
-`Start()`. That `Start()` is the third step of
-`MainIntegration.Start()` — see
-[`docs/08`](08-project-overview.md#4-runtime-execution-flow).
+On Unix, deleting the file would open a race: A unlinks it while B has the old
+inode open and is waiting to lock it, then C creates a new file and locks it,
+and B and C both believe they hold the lock. A leftover file is harmless
+because its contents are never trusted.
 
 ## What this module is not
 
 - Not a distributed lock. It guards a single host only.
-- Not a `flock(2)` / `LockFileEx` advisory lock. It's a pure
-  PID-file. The acquire is best-effort: if the process crashes between
-  the create and the `fsync`, the next start will see a 0-byte
-  lockfile, treat the PID as `0`, the liveness probe will return
-  false, and the stale file will be removed. There is no race in
-  which two real agents can both hold the lock.
-- Not a startup dependency. `cmd/sentinelgo` does not block forever
-  on the lock — `TryAcquire` is the only call used in production.
+- Not a startup dependency. `TryAcquire` never waits; a held lock makes
+  `Program.Start` fail with service exit code 2 (see
+  [`docs/06-service-module.md`](06-service-module.md#startup-failures-and-exit-codes)).

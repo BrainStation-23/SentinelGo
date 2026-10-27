@@ -13,8 +13,6 @@ import (
 	"sentinelgo/internal"
 	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
-	"sentinelgo/internal/lockfile"
-	"sentinelgo/internal/sanitize"
 )
 
 // HandleInstall installs SentinelGo as a system service (launchd on macOS,
@@ -104,22 +102,10 @@ func HandleUninstall(svc AgentService) {
 // lock, until an interrupt signal is received.
 func RunForeground(cfg *config.Config) {
 	version := config.Version
-	lf := lockfile.NewLockFile(fmt.Sprintf("sentinelgo-%s", version))
-
-	locked, err := lf.CheckExistingLock()
+	lf, err := acquireProcessLock()
 	if err != nil {
-		log.Printf("Warning: Failed to check existing lock: %v", err)
-	} else if locked {
-		sanitizedVersion := sanitize.ForLog(version)
-		log.Printf("Another instance of SentinelGo v%s is already running", sanitizedVersion)
-		fmt.Printf("Error: Another instance of SentinelGo v%s is already running\n", sanitizedVersion)
-		fmt.Println("Use './sentinelgo -stop' to stop the running instance first")
-		return
-	}
-
-	if err := lf.TryAcquire(); err != nil {
-		log.Printf("Failed to acquire process lock: %v", err)
-		fmt.Printf("Error: Failed to acquire process lock: %v\n", err)
+		log.Printf("Not starting: %v", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 	defer func() {

@@ -3,22 +3,34 @@
 package lockfile
 
 import (
+	"errors"
+	"fmt"
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-// IsProcessRunning reports whether a process with the given PID is currently
-// running. On Unix it uses signal 0, which performs the kernel's permission and
-// existence checks without delivering an actual signal — it is non-destructive.
-func IsProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
+// lockDir is the lock directory on Linux and macOS, next to config.json.
+func lockDir() string {
+	return "/opt/sentinelgo/.sentinelgo"
+}
 
-	process, err := os.FindProcess(pid)
+// openLocked opens (creating if needed) the lock file and takes an exclusive,
+// non-blocking flock on it. Go opens files with O_CLOEXEC, so exec'd children
+// don't inherit the descriptor and can't keep the lock alive.
+func openLocked(path string) (*os.File, error) {
+	// #nosec G302 G304 - fixed lock path; world-readable so diagnostics can read the PID
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("failed to open lock file %s: %w", path, err)
 	}
-
-	return process.Signal(syscall.Signal(0)) == nil
+	// #nosec G115 - a file descriptor always fits in an int
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, ErrAlreadyRunning
+		}
+		return nil, fmt.Errorf("failed to lock %s: %w", path, err)
+	}
+	return f, nil
 }
