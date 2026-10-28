@@ -3,6 +3,7 @@
 package software
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -138,5 +139,57 @@ func TestMacPublisher(t *testing.T) {
 		if got := macPublisher(c.from, c.signedBy); got != c.want {
 			t.Errorf("macPublisher(%q, %v) = %q, want %q", c.from, c.signedBy, got, c.want)
 		}
+	}
+}
+
+func TestFillBundleIDsFromInfoPlist(t *testing.T) {
+	// Two apps in one mdls batch: Spotlight off (null bundle ID) for Slack,
+	// indexed for Safari. A third app's batch failed, so it has no metadata.
+	paths := []string{"/Applications/Slack.app", "/Applications/Safari.app"}
+	meta := map[string]bundleMeta{}
+	out := "(null)\x00(null)\x00(null)\x00(null)\x00" +
+		"(null)\x00(null)\x0012345\x00com.apple.Safari"
+	if !parseMdlsRaw([]byte(out), paths, meta) {
+		t.Fatal("parseMdlsRaw failed")
+	}
+	apps := []SoftwareInfo{
+		{Name: "Slack", FilePath: "/Applications/Slack.app"},
+		{Name: "Safari", FilePath: "/Applications/Safari.app"},
+		{Name: "Xcode", FilePath: "/Applications/Xcode.app"},
+		{Name: "Broken", FilePath: "/Applications/Broken.app"},
+		{Name: "No path"},
+	}
+	applyBundleMeta(apps, meta)
+
+	var calls []string
+	run := func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		switch args[len(args)-1] {
+		case "/Applications/Slack.app/Contents/Info.plist":
+			return []byte("com.tinyspeck.slackmacgap\n"), nil
+		case "/Applications/Xcode.app/Contents/Info.plist":
+			return []byte("com.apple.dt.Xcode\n"), nil
+		}
+		return nil, errors.New("exit status 1")
+	}
+	fillBundleIDsFromInfoPlist(apps, run)
+
+	want := map[string]string{
+		"Slack":   "com.tinyspeck.slackmacgap",
+		"Safari":  "com.apple.Safari",
+		"Xcode":   "com.apple.dt.Xcode",
+		"Broken":  "",
+		"No path": "",
+	}
+	for _, a := range apps {
+		if a.BundleID != want[a.Name] {
+			t.Errorf("%s: BundleID = %q, want %q", a.Name, a.BundleID, want[a.Name])
+		}
+	}
+	if len(calls) != 3 {
+		t.Fatalf("plutil calls = %d, want 3 (Safari already has an ID, No path has none): %v", len(calls), calls)
+	}
+	if calls[0] != "plutil -extract CFBundleIdentifier raw -o - /Applications/Slack.app/Contents/Info.plist" {
+		t.Errorf("first call = %q", calls[0])
 	}
 }
