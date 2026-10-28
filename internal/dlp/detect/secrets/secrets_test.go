@@ -73,16 +73,16 @@ func TestFind_OffsetsAcrossLines(t *testing.T) {
 func TestSecretSpan(t *testing.T) {
 	// whole match 0-10, group 1 empty (-1), group 2 at 3-7
 	loc := []int{0, 10, -1, -1, 3, 7}
-	if s, e := secretSpan(loc, 0); s != 3 || e != 7 {
+	if s, e := secretSpan(loc, 0, nil); s != 3 || e != 7 {
 		t.Errorf("first non-empty group = %d,%d, want 3,7", s, e)
 	}
-	if s, e := secretSpan(loc, 2); s != 3 || e != 7 {
+	if s, e := secretSpan(loc, 2, nil); s != 3 || e != 7 {
 		t.Errorf("group 2 = %d,%d", s, e)
 	}
-	if s, _ := secretSpan(loc, 5); s != -1 {
+	if s, _ := secretSpan(loc, 5, nil); s != -1 {
 		t.Error("out-of-range group not rejected")
 	}
-	if s, e := secretSpan([]int{2, 9}, 0); s != 2 || e != 9 {
+	if s, e := secretSpan([]int{2, 9}, 0, nil); s != 2 || e != 9 {
 		t.Errorf("no groups = %d,%d, want the whole match", s, e)
 	}
 }
@@ -129,5 +129,26 @@ func TestFind_HexDenyListApplies(t *testing.T) {
 	other := "AI" + "za" + "Sy" + "Qx7Kp2Lm9Vb4Nc8Rt1Wz6Yd3Fg5Hj0Sk2"
 	if got := rs.Find("key: "+other+"\n", gcp); len(got) != 1 {
 		t.Errorf("unlisted key not reported: %+v", got)
+	}
+}
+
+// Named groups label alternatives, not the secret.
+func TestSecretSpan_SkipsNamedGroups(t *testing.T) {
+	loc := []int{0, 40, 4, 10} // whole match, then a named claim group
+	if s, e := secretSpan(loc, 0, []string{"", "alg"}); s != 0 || e != 40 {
+		t.Errorf("span = %d,%d, want the whole match", s, e)
+	}
+}
+
+// Many placeholders before a real secret on one line must not hide it.
+func TestFind_FilteredMatchesDontUseTheCap(t *testing.T) {
+	rs, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.Repeat("gh"+"p_"+strings.Repeat("a", 36)+" ", 150) + "gh" + "p_" + "Zq3XbN7vLk2RtY8wPm4HsJd6FcGa1Ue9Wo5T" + "\n"
+	got := rs.Find(line, func(id string) bool { return id == "github-pat" })
+	if len(got) != 1 {
+		t.Errorf("findings = %d, want the one real token after 150 placeholders", len(got))
 	}
 }

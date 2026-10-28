@@ -175,8 +175,8 @@ func TestNew_BadRulesReportedOthersActive(t *testing.T) {
 func TestEvaluate(t *testing.T) {
 	findings := Result{Findings: []Finding{
 		{DetectorID: "pii.credit_card", Count: 2},
-		{DetectorID: "secrets.github-pat", Count: 1},
-		{DetectorID: "secrets.aws-access-token", Count: 1},
+		{DetectorID: "secrets.github-pat", Count: 1, Offsets: [][2]int{{0, 40}}},
+		{DetectorID: "secrets.aws-access-token", Count: 1, Offsets: [][2]int{{50, 70}}},
 		{DetectorID: "custom.regex", RuleID: "r-falcon", Count: 1},
 	}}
 	e := &Engine{inactive: map[string]bool{}}
@@ -206,6 +206,21 @@ func TestEvaluate(t *testing.T) {
 				t.Errorf("Evaluate = %v with %d findings, want %v with %d", ok, len(used), tt.want, tt.wantCount)
 			}
 		})
+	}
+}
+
+// One token matched by two secret rules counts once toward secrets.all.
+func TestEvaluate_SecretsAllCountsDistinctTokens(t *testing.T) {
+	e := &Engine{inactive: map[string]bool{}}
+	res := Result{Findings: []Finding{
+		{DetectorID: "secrets.gitlab-pat", Count: 1, Offsets: [][2]int{{10, 36}}},
+		{DetectorID: "secrets.gitlab-pat-routable", Count: 1, Offsets: [][2]int{{10, 60}}},
+	}}
+	if ok, _ := e.Evaluate(MatchAny, []Rule{{DetectorID: SecretsAll, MinCount: 2}}, res); ok {
+		t.Error("one token met min_count 2")
+	}
+	if ok, _ := e.Evaluate(MatchAny, []Rule{{DetectorID: SecretsAll, MinCount: 1}}, res); !ok {
+		t.Error("one token didn't meet min_count 1")
 	}
 }
 

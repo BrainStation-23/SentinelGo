@@ -106,13 +106,16 @@ func TestManager_LocalDisabledStartsNothing(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	m.Apply(bundle(true, true, "v2"))
+	if got := m.State(); got != StateDisabledLocal {
+		t.Errorf("State = %s, want %s", got, StateDisabledLocal)
+	}
 	m.Stop()
 
 	if applied, stops := sup.counts(); applied != 0 || stops != 0 {
 		t.Errorf("supervisor applied=%d stops=%d, want 0/0", applied, stops)
 	}
-	if got := m.State(); got != StateDisabledLocal {
-		t.Errorf("State = %s, want %s", got, StateDisabledLocal)
+	if got := m.State(); got != StateStopped {
+		t.Errorf("State after Stop = %s, want %s", got, StateStopped)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 1 || !strings.Contains(lines[0], "dlp_enabled=false") {
@@ -255,4 +258,20 @@ func TestManager_StopThenApplyDoesNotRestartHelpers(t *testing.T) {
 		t.Errorf("State = %s, want %s", got, StateStopped)
 	}
 	m.Stop() // idempotent
+}
+
+// A changed bundle is recompiled even if the server reused its version.
+func TestManager_RecompilesChangedBundleWithSameVersion(t *testing.T) {
+	sup := &fakeSupervisor{}
+	m := NewManager(true, nil, sup)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a, b := bundle(true, true, "v1"), bundle(true, true, "v1")
+	b.EvidenceMode = policy.EvidenceFull
+	m.Apply(a)
+	m.Apply(b)
+	if len(sup.applied) != 2 || sup.applied[1].EvidenceMode != policy.EvidenceFull {
+		t.Errorf("helpers got the stale compile: %+v", sup.applied)
+	}
 }
