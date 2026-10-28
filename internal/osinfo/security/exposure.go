@@ -156,7 +156,9 @@ func isAllAddresses(addr string) bool {
 }
 
 // ifaceSet is the interfaces connections are let in on: every interface, or
-// only the named ones.
+// only the named ones. Only the Windows check names any: Windows accepts a
+// packet only on the interface that holds its destination address, while
+// Linux and macOS accept it on any interface.
 type ifaceSet struct {
 	every bool
 	names []string
@@ -182,7 +184,7 @@ type firewallResult struct {
 	verdict  string
 	profiles []string    // Windows: the active profiles that let connections in
 	scope    remoteScope // whom the allow rules let in, when allowed
-	via      ifaceSet    // the interfaces they let them in on, when allowed
+	via      ifaceSet    // Windows: the networks' interfaces they let them in on
 }
 
 // firewallCheck returns whether the host firewall lets inbound connections

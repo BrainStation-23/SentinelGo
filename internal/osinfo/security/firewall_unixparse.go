@@ -254,31 +254,25 @@ func newUFWHost(ports []shared.ListeningPort, arrival []string) ufwHost {
 // check evaluates the rules separately for each address family the socket
 // accepts, since ufw lists IPv4 and IPv6 rules separately; the socket is
 // reachable when either family lets connections in. When one family allows
-// and another is unknown, whom the unknown one lets in is unknown too.
+// and another is unknown, the unknown one's unresolved allow rules may let
+// their sources in too.
+//
+// The result names no interfaces: Linux accepts a packet for any local
+// address on any interface, so an allow limited to one interface still lets
+// in traffic for the host's public addresses.
 func (st ufwStatus) check(apps map[string][]portSpec, host ufwHost) firewallCheck {
 	return func(p shared.ListeningPort) firewallResult {
 		families, bound := listenerFamilies(p.Address, host.v6Only != nil && host.v6Only(p))
 		verdicts := make([]string, 0, len(families))
 		var scope remoteScope
-		var via ifaceSet
 		for _, f := range families {
-			verdict, s, v := st.checkFamily(apps, p, f, bound, host.arrival)
+			verdict, s := st.checkFamily(apps, p, f, bound, host.arrival)
 			verdicts = append(verdicts, verdict)
 			scope.merge(s)
-			for _, name := range v.names {
-				via.add(name)
-			}
-			if v.every {
-				via.add("")
-			}
 		}
 		switch {
 		case slices.Contains(verdicts, firewallAllowed):
-			if slices.Contains(verdicts, firewallUnknown) {
-				scope.widen(remoteUnknown)
-				via.add("")
-			}
-			return firewallResult{verdict: firewallAllowed, scope: scope, via: via}
+			return firewallResult{verdict: firewallAllowed, scope: scope}
 		case slices.Contains(verdicts, firewallUnknown):
 			return firewallResult{verdict: firewallUnknown}
 		default:
@@ -293,25 +287,16 @@ func (st ufwStatus) check(apps map[string][]portSpec, host ufwHost) firewallChec
 // connections can arrive on, to the socket's address. Narrower denies leave
 // other traffic to later rules. Every allow rule before that point lets its
 // sources in, so their scopes are collected: "Anywhere" is any, an address
-// or prefix is specific; and the interfaces they're limited to. Rules naming
-// an application profile that isn't installed make an otherwise blocked
-// verdict unknown. When the port is allowed anyway, such an allow rule may
-// let its sources in too: from Anywhere makes the scope unknown.
-func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr, arrival []string) (string, remoteScope, ifaceSet) {
+// or prefix is specific. Rules naming an application profile that isn't
+// installed make an otherwise blocked verdict unknown. Such an allow rule
+// may let its sources in, so its scope is added (unknown when from
+// Anywhere): to the allowed scope, or as the unknown verdict's scope.
+func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr, arrival []string) (string, remoteScope) {
 	uncertain, allowed := false, false
 	var scope, maybe remoteScope
-	var via, maybeVia ifaceSet
-	allowedResult := func() (string, remoteScope, ifaceSet) {
-		if maybe.kind != "" {
-			scope.merge(maybe)
-			for _, name := range maybeVia.names {
-				via.add(name)
-			}
-			if maybeVia.every {
-				via.add("")
-			}
-		}
-		return firewallAllowed, scope, via
+	allowedResult := func() (string, remoteScope) {
+		scope.merge(maybe)
+		return firewallAllowed, scope
 	}
 	for _, r := range st.rules {
 		matches, known := r.coversPort(apps, p)
@@ -323,7 +308,6 @@ func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPo
 				} else {
 					maybe.widen(remoteSpecific, r.source)
 				}
-				maybeVia.add(r.iface)
 			}
 		}
 		if !matches || !r.reaches(family, bound) {
@@ -332,7 +316,6 @@ func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPo
 		switch r.action {
 		case "allow", "limit":
 			allowed = true
-			via.add(r.iface)
 			if r.anySource {
 				scope.widen(remoteAny)
 			} else {
@@ -343,22 +326,24 @@ func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPo
 				if allowed {
 					return allowedResult()
 				}
-				return firewallBlocked, remoteScope{}, ifaceSet{}
+				if uncertain {
+					return firewallUnknown, maybe
+				}
+				return firewallBlocked, remoteScope{}
 			}
 		}
 	}
 	if st.defaultIncoming == "allow" {
 		scope.widen(remoteAny)
-		via.add("")
 		return allowedResult()
 	}
 	switch {
 	case allowed:
 		return allowedResult()
 	case uncertain:
-		return firewallUnknown, remoteScope{}, ifaceSet{}
+		return firewallUnknown, maybe
 	}
-	return firewallBlocked, remoteScope{}, ifaceSet{}
+	return firewallBlocked, remoteScope{}
 }
 
 // reaches reports whether the rule can apply to traffic for a socket of this
@@ -572,28 +557,21 @@ func firewalldCheck(zones []firewalldZone, serviceSpecs func(name string) ([]por
 		}
 		uncertain, allowed := false, false
 		var scope remoteScope
-		var via ifaceSet
 		for _, z := range zones {
 			verdict, s := z.lets(p, lookup)
 			switch verdict {
 			case firewallAllowed:
 				allowed = true
-				scope.merge(s)
-				for _, name := range set.arrivalsOf(z, arrival) {
-					via.add(name)
-				}
 			case firewallUnknown:
 				uncertain = true
 			}
+			// An unknown zone's scope is whom its unresolved services may
+			// let in; it counts when another zone allows the port.
+			scope.merge(s)
 		}
 		switch {
-		case allowed && uncertain:
-			// Another zone's unresolved service may let anyone in.
-			scope.widen(remoteUnknown)
-			via.add("")
-			return firewallResult{verdict: firewallAllowed, scope: scope, via: via}
 		case allowed:
-			return firewallResult{verdict: firewallAllowed, scope: scope, via: via}
+			return firewallResult{verdict: firewallAllowed, scope: scope}
 		case uncertain:
 			return firewallResult{verdict: firewallUnknown}
 		}
@@ -655,29 +633,6 @@ func (s firewalldZoneSet) unboundArrival(arrival []string) bool {
 	return false
 }
 
-// arrivalsOf returns the interfaces connections come into zone z on, or
-// [""] for every interface: a zone bound to sources takes their traffic on
-// any interface, the default zone takes traffic on every interface no other
-// zone claims (every one when the interfaces are unknown), and any other
-// zone the traffic on its own interfaces.
-func (s firewalldZoneSet) arrivalsOf(z firewalldZone, arrival []string) []string {
-	if len(z.sources) > 0 || (len(z.interfaces) == 0 && !z.isDefault) {
-		return []string{""}
-	}
-	names := slices.Clone(z.interfaces)
-	if z.isDefault {
-		if arrival == nil {
-			return []string{""}
-		}
-		for _, iface := range arrival {
-			if _, bound := s.byInterface[iface]; !bound {
-				names = append(names, iface)
-			}
-		}
-	}
-	return names
-}
-
 // forSocket returns the zones governing a socket bound to addr. ok is false
 // when the socket is bound to an interface that can't be identified.
 func (s firewalldZoneSet) forSocket(addr string, ifaceName interfaceNameFunc) ([]firewalldZone, bool) {
@@ -707,9 +662,9 @@ func (s firewalldZoneSet) forSocket(addr string, ifaceName interfaceNameFunc) ([
 // zone bound only to source addresses takes traffic only from them, and a
 // rich rule with a source admits only that source; anything else admits any
 // address. A zone bound to interfaces too takes all their traffic, whatever
-// its source. When the zone allows p but one of its services can't be
-// resolved, that service may let its sources in too: any source makes the
-// scope unknown.
+// its source. A service that can't be resolved may let its sources in too
+// (any source makes the scope unknown): added to an allowed scope, or the
+// unknown verdict's scope.
 func (z firewalldZone) lets(p shared.ListeningPort, lookup func(string) ([]portSpec, bool)) (string, remoteScope) {
 	var scope remoteScope
 	sourceOnly := len(z.sources) > 0 && len(z.interfaces) == 0
@@ -764,7 +719,7 @@ func (z firewalldZone) lets(p shared.ListeningPort, lookup func(string) ([]portS
 		scope.merge(maybe)
 		return firewallAllowed, scope
 	case unresolved:
-		return firewallUnknown, remoteScope{}
+		return firewallUnknown, maybe
 	}
 	return firewallBlocked, remoteScope{}
 }
