@@ -9,11 +9,16 @@
 package ipc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 
 	"sentinelgo/internal/dlp/events"
 )
@@ -25,8 +30,8 @@ const Proto = 1
 // Frame limits. Helpers send small messages; the service sends whole policy
 // bundles.
 const (
-	MaxHelperFrame  = 256 << 10        // helper → service
-	MaxServiceFrame = (8 << 20) + 4096 // service → helper (bundle + envelope)
+	MaxHelperFrame  = 256 << 10     // helper → service
+	MaxServiceFrame = 2 * (8 << 20) // service → helper: a bundle (8 MB cap) plus room for re-encoding
 )
 
 // Message types.
@@ -69,14 +74,22 @@ type Status struct {
 // Write sends m as one frame.
 func Write(w io.Writer, m Message) error {
 	m.Proto = Proto
-	data, err := json.Marshal(m)
-	if err != nil {
+	// No HTML escaping: it would grow a bundle full of "<" six-fold and push
+	// a valid policy over the reader's frame limit.
+	var enc bytes.Buffer
+	e := json.NewEncoder(&enc)
+	e.SetEscapeHTML(false)
+	if err := e.Encode(m); err != nil {
 		return fmt.Errorf("ipc: encode %s: %w", m.Type, err)
+	}
+	data := bytes.TrimSuffix(enc.Bytes(), []byte("\n"))
+	if len(data) > MaxServiceFrame {
+		return fmt.Errorf("%w: %s is %d bytes", ErrFrameTooLarge, m.Type, len(data))
 	}
 	buf := make([]byte, 4+len(data))
 	binary.BigEndian.PutUint32(buf, uint32(len(data))) // #nosec G115 -- a message is far below 4 GiB
 	copy(buf[4:], data)
-	_, err = w.Write(buf)
+	_, err := w.Write(buf)
 	return err
 }
 
@@ -115,6 +128,33 @@ type Identity struct {
 	UID       string // SID on Windows, numeric uid on Unix
 	PID       int
 	SessionID string // Windows session id; the uid on Unix
+	Exe       string // the peer's executable; "" if it couldn't be read
+}
+
+// SameExecutable reports whether id runs this process's own executable. The
+// service only takes events from its own binary's `dlp-session`, not from any
+// local program that connects.
+func SameExecutable(id Identity) bool {
+	self, err := os.Executable()
+	if err != nil || id.Exe == "" {
+		return false
+	}
+	return samePath(resolve(self), resolve(id.Exe))
+}
+
+func resolve(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// samePath compares paths, case-insensitively on Windows.
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // Conn is one end of a service↔helper connection.

@@ -5,6 +5,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -282,3 +284,71 @@ func TestHubDoesNotBlockOnStuckHelper(t *testing.T) {
 		t.Fatal("Apply/Stop blocked on a helper that doesn't read")
 	}
 }
+
+// Only the agent's own binary may connect, a user gets a few connections at
+// most, and nothing registers once the hub is stopping.
+func TestHubAdmit(t *testing.T) {
+	hub := NewHub("unused", &recordingSink{})
+	hub.running = true
+	self := ipc.Identity{UID: "u1", Exe: mustExe(t)}
+	if err := hub.admit(&nopConn{}, ipc.Identity{UID: "u1", Exe: "/usr/bin/evil"}); err == nil {
+		t.Error("a foreign executable was admitted")
+	}
+	for i := range maxConnsPerUser {
+		if err := hub.admit(&nopConn{}, self); err != nil {
+			t.Fatalf("connection %d rejected: %v", i, err)
+		}
+	}
+	if err := hub.admit(&nopConn{}, self); err == nil {
+		t.Error("connection over the per-user cap admitted")
+	}
+	if err := hub.admit(&nopConn{}, ipc.Identity{UID: "u2", Exe: self.Exe}); err != nil {
+		t.Errorf("another user rejected: %v", err)
+	}
+	hub.running = false
+	if err := hub.admit(&nopConn{}, ipc.Identity{UID: "u3", Exe: self.Exe}); err == nil {
+		t.Error("admitted while stopping")
+	}
+}
+
+// Stop doesn't wait on a connection that never says hello.
+func TestHubStopWithSilentConnection(t *testing.T) {
+	addr := testAddress(t)
+	prev := stopGrace
+	stopGrace = 100 * time.Millisecond
+	t.Cleanup(func() { stopGrace = prev })
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), compiled(t, "v1", true))
+	var c ipc.Conn
+	eventually(t, "the endpoint", func() bool {
+		var err error
+		c, err = ipc.Dial(context.Background(), addr)
+		return err == nil
+	})
+	defer func() { _ = c.Close() }()
+	eventually(t, "the connection to be tracked", func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		return len(hub.conns) == 1
+	})
+	start := time.Now()
+	hub.Stop()
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("Stop took %v with a silent connection open", d)
+	}
+}
+
+func mustExe(t *testing.T) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+type nopConn struct{ _ byte } // non-zero size: distinct pointers
+
+func (*nopConn) Read([]byte) (int, error)    { return 0, io.EOF }
+func (*nopConn) Write(p []byte) (int, error) { return len(p), nil }
+func (*nopConn) Close() error                { return nil }

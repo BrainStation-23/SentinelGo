@@ -12,6 +12,7 @@ import (
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/sanitize"
 )
 
 // helloTimeout bounds how long a new connection may take to say hello.
@@ -30,7 +31,12 @@ type Hub struct {
 	l       ipc.Listener
 	policy  json.RawMessage // current bundle; nil before the first Apply
 	helpers map[*helper]struct{}
-	wg      sync.WaitGroup
+	conns   map[ipc.Conn]string // every accepted connection -> peer uid ("" before identified)
+
+	// requireSameExe: only peers running this binary may connect (a test
+	// process talks to itself, so the check holds in tests too).
+	requireSameExe bool
+	wg             sync.WaitGroup
 }
 
 // listenRetry is the wait between attempts to create the endpoint. Creating
@@ -55,9 +61,16 @@ const helperOutbox = 4
 // stopGrace is how long Stop waits for helpers to read the stop message.
 var stopGrace = 2 * time.Second
 
+// Connection limits: a local user can't tie up the service by opening
+// connections.
+const (
+	maxConns        = 64
+	maxConnsPerUser = 4
+)
+
 // NewHub returns a hub listening on addr once started.
 func NewHub(addr string, sink channel.EventSink) *Hub {
-	return &Hub{addr: addr, sink: sink, helpers: map[*helper]struct{}{}}
+	return &Hub{addr: addr, sink: sink, helpers: map[*helper]struct{}{}, conns: map[ipc.Conn]string{}, requireSameExe: true}
 }
 
 // Apply starts the hub if needed and pushes p to every connected helper (and
@@ -105,10 +118,17 @@ func (h *Hub) Stop() {
 	for _, hp := range helpers {
 		h.send(hp, ipc.Message{Type: ipc.TypeStop}) // the writer closes the conn after it
 	}
-	// Helpers that don't take the stop in time are cut off.
+	// Connections that haven't said hello yet, and helpers that don't take
+	// the stop in time, are cut off.
+	h.mu.Lock()
+	conns := make([]ipc.Conn, 0, len(h.conns))
+	for c := range h.conns {
+		conns = append(conns, c)
+	}
+	h.mu.Unlock()
 	t := time.AfterFunc(stopGrace, func() {
-		for _, hp := range helpers {
-			_ = hp.conn.Close()
+		for _, c := range conns {
+			_ = c.Close()
 		}
 	})
 	h.wg.Wait()
@@ -175,34 +195,81 @@ func (h *Hub) acceptLoop(l ipc.Listener) {
 			}
 			return
 		}
+		h.mu.Lock()
+		if !h.running || len(h.conns) >= maxConns {
+			h.mu.Unlock()
+			_ = c.Close()
+			continue
+		}
+		h.conns[c] = ""
+		h.mu.Unlock()
 		h.wg.Add(1)
 		go h.serve(c)
 	}
+}
+
+// admit records the peer's uid for c and reports whether it may stay: a
+// running hub, this binary (when required), and few enough connections from
+// the same user.
+func (h *Hub) admit(c ipc.Conn, id ipc.Identity) error {
+	if h.requireSameExe && !ipc.SameExecutable(id) {
+		return errors.New("not the agent's own executable")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.running {
+		return errors.New("shutting down")
+	}
+	n := 0
+	for _, uid := range h.conns {
+		if uid == id.UID {
+			n++
+		}
+	}
+	if n >= maxConnsPerUser {
+		return errors.New("too many connections from this user")
+	}
+	h.conns[c] = id.UID
+	return nil
 }
 
 // serve runs one helper connection: identify the peer, read its hello, send
 // the policy, then read events and status until it disconnects.
 func (h *Hub) serve(c ipc.Conn) {
 	defer h.wg.Done()
-	defer func() { _ = c.Close() }()
+	defer func() {
+		_ = c.Close()
+		h.mu.Lock()
+		delete(h.conns, c)
+		h.mu.Unlock()
+	}()
 
 	id, err := ipc.PeerIdentity(c)
 	if err != nil {
 		log.Printf("DLP: rejecting helper connection: %v", err)
 		return
 	}
+	if err := h.admit(c, id); err != nil {
+		log.Printf("DLP: rejecting helper connection from %s (pid %d, %s): %v",
+			sanitize.ForLog(id.User), id.PID, sanitize.ForLog(id.Exe), err)
+		return
+	}
 	hello, err := readHello(c)
 	if err != nil {
-		log.Printf("DLP: helper for %s (pid %d) did not say hello: %v", id.User, id.PID, err)
+		log.Printf("DLP: helper for %s (pid %d) did not say hello: %v", sanitize.ForLog(id.User), id.PID, err)
 		return
 	}
 	hp := &helper{conn: c, id: id, state: "running", out: make(chan ipc.Message, helperOutbox), done: make(chan struct{})}
-	h.wg.Add(1)
-	go h.writeLoop(hp)
 	h.mu.Lock()
+	if !h.running { // Stop ran while this helper was saying hello
+		h.mu.Unlock()
+		return
+	}
 	h.helpers[hp] = struct{}{}
 	raw := h.policy
 	h.mu.Unlock()
+	h.wg.Add(1)
+	go h.writeLoop(hp)
 	defer func() {
 		h.mu.Lock()
 		delete(h.helpers, hp)
@@ -210,7 +277,7 @@ func (h *Hub) serve(c ipc.Conn) {
 		close(hp.done)
 	}()
 	log.Printf("DLP: session helper connected for %s (session %s, pid %d, clipboard %s)",
-		id.User, id.SessionID, id.PID, hello.Capabilities["clipboard"])
+		sanitize.ForLog(id.User), id.SessionID, id.PID, sanitize.ForLog(hello.Capabilities["clipboard"]))
 
 	if raw != nil {
 		h.send(hp, ipc.Message{Type: ipc.TypePolicy, Policy: raw})
@@ -277,7 +344,7 @@ func (h *Hub) send(hp *helper, m ipc.Message) {
 	case hp.out <- m:
 	case <-hp.done:
 	default:
-		log.Printf("DLP: helper for %s isn't reading; disconnecting it", hp.id.User)
+		log.Printf("DLP: helper for %s isn't reading; disconnecting it", sanitize.ForLog(hp.id.User))
 		_ = hp.conn.Close()
 	}
 }

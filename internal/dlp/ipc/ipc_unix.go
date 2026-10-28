@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // DefaultAddress is the service's socket. Its directory is root-owned 0755;
@@ -25,8 +26,8 @@ type unixListener struct{ l *net.UnixListener }
 
 // Listen creates the socket, replacing a stale one.
 func Listen(addr string) (Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(addr), 0o755); err != nil { // #nosec G301 -- helpers of every user must reach the socket
-		return nil, fmt.Errorf("ipc: socket dir: %w", err)
+	if err := secureSocketDir(filepath.Dir(addr)); err != nil {
+		return nil, err
 	}
 	if err := os.Remove(addr); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("ipc: remove stale socket: %w", err)
@@ -40,6 +41,31 @@ func Listen(addr string) (Listener, error) {
 		return nil, fmt.Errorf("ipc: socket mode: %w", err)
 	}
 	return unixListener{l: l}, nil
+}
+
+// secureSocketDir creates dir 0755 if needed and refuses one another user
+// owns or others can write to: its owner could replace the socket and pose
+// as the service to helpers.
+func secureSocketDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- helpers of every user must reach the socket
+		return fmt.Errorf("ipc: socket dir: %w", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("ipc: socket dir: %w", err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.IsDir():
+		return fmt.Errorf("ipc: socket dir %s is not a directory", dir)
+	case !ok || int(st.Uid) != os.Geteuid():
+		return fmt.Errorf("ipc: socket dir %s is not owned by this account; refusing it", dir)
+	case fi.Mode().Perm()&0o022 != 0:
+		if err := os.Chmod(dir, 0o755); err != nil { // #nosec G302 -- readable by all helpers, writable by the service only
+			return fmt.Errorf("ipc: socket dir %s is writable by others: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 func (u unixListener) Accept() (Conn, error) {
@@ -81,7 +107,7 @@ func PeerIdentity(c Conn) (Identity, error) {
 	if credErr != nil {
 		return Identity{}, fmt.Errorf("ipc: peer credentials: %w", credErr)
 	}
-	id := Identity{UID: strconv.Itoa(uid), PID: pid, SessionID: strconv.Itoa(uid)}
+	id := Identity{UID: strconv.Itoa(uid), PID: pid, SessionID: strconv.Itoa(uid), Exe: processExe(pid)}
 	id.User = id.UID
 	if u, err := user.LookupId(id.UID); err == nil {
 		id.User = u.Username

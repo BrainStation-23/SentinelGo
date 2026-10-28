@@ -32,10 +32,10 @@ type pipeListener struct {
 	sa      *windows.SecurityAttributes
 	closeEv windows.Handle
 
-	mu      sync.Mutex
-	next    windows.Handle // the instance the next Accept waits on
-	closed  bool
-	stopped chan struct{}
+	mu        sync.Mutex
+	next      windows.Handle // the instance the next Accept waits on
+	closed    bool
+	accepting sync.WaitGroup // Accepts that may still wait on closeEv
 }
 
 // Listen creates the pipe. The first instance uses FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -53,7 +53,6 @@ func Listen(addr string) (Listener, error) {
 		addr:    addr,
 		sa:      &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd},
 		closeEv: ev,
-		stopped: make(chan struct{}),
 	}
 	h, err := l.newInstance(true)
 	if err != nil {
@@ -91,7 +90,9 @@ func (l *pipeListener) Accept() (Conn, error) {
 	}
 	h := l.next
 	l.next = windows.InvalidHandle
+	l.accepting.Add(1)
 	l.mu.Unlock()
+	defer l.accepting.Done()
 
 	if h == windows.InvalidHandle {
 		var err error
@@ -138,11 +139,12 @@ func (l *pipeListener) connect(h windows.Handle) error {
 	return nil
 }
 
-// Close stops Accept. Connections already accepted stay open.
+// Close stops Accept, waits for it to return and releases the listener's
+// handles. Connections already accepted stay open.
 func (l *pipeListener) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil
 	}
 	l.closed = true
@@ -151,7 +153,9 @@ func (l *pipeListener) Close() error {
 		_ = windows.CloseHandle(l.next)
 		l.next = windows.InvalidHandle
 	}
-	return nil
+	l.mu.Unlock()
+	l.accepting.Wait()
+	return windows.CloseHandle(l.closeEv)
 }
 
 // pipeConn is a connected pipe instance doing its own overlapped I/O, so a
@@ -336,6 +340,11 @@ func processIdentity(pid uint32) (Identity, error) {
 		return id, fmt.Errorf("ipc: open pid %d: %w", pid, err)
 	}
 	defer func() { _ = windows.CloseHandle(p) }()
+	var buf [windows.MAX_LONG_PATH]uint16
+	n := uint32(windows.MAX_LONG_PATH)
+	if windows.QueryFullProcessImageName(p, 0, &buf[0], &n) == nil {
+		id.Exe = windows.UTF16ToString(buf[:n])
+	}
 	var tok windows.Token
 	if err := windows.OpenProcessToken(p, windows.TOKEN_QUERY, &tok); err != nil {
 		return id, fmt.Errorf("ipc: token of pid %d: %w", pid, err)
