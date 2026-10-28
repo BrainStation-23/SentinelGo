@@ -170,8 +170,29 @@ func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 	if len(paths) > 0 {
 		applyBundleMeta(applications, batchMdlsMetadata(paths))
 	}
+	fillBundleIDsFromInfoPlist(applications, runCollectCmd)
 
 	return applications, true
+}
+
+// fillBundleIDsFromInfoPlist reads CFBundleIdentifier from Contents/Info.plist
+// for every app that Spotlight gave no bundle ID: indexing is off for its
+// volume (mdls prints "(null)"), or its mdls batch failed. run is
+// runCollectCmd outside tests. An app whose plist can't be read keeps an
+// empty BundleID; the scan doesn't fail.
+func fillBundleIDsFromInfoPlist(applications []SoftwareInfo, run func(name string, args ...string) ([]byte, error)) {
+	for i := range applications {
+		app := &applications[i]
+		if app.FilePath == "" || app.BundleID != "" {
+			continue
+		}
+		plist := app.FilePath + "/Contents/Info.plist"
+		out, err := run("plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", plist)
+		if err != nil {
+			continue
+		}
+		app.BundleID = strings.TrimSpace(string(out))
+	}
 }
 
 // applyBundleMeta copies Spotlight metadata onto the applications it belongs to.
