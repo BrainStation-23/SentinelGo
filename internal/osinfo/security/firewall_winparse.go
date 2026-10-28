@@ -282,10 +282,12 @@ type winArrival struct {
 
 // check rates one socket: disabled when a governing profile has the
 // firewall off, allowed when one lets connections in, blocked otherwise.
-// The scope is whom the allow rules (or a default inbound Allow) let in.
+// The scope is whom the allow rules (or a default inbound Allow) let in, and
+// via the networks they let them in on.
 func (ix winFwIndex) check(p shared.ListeningPort) firewallResult {
 	var reachable []string
 	var scope remoteScope
+	var via ifaceSet
 	disabled := false
 	for _, a := range ix.socketArrivals(p.Address) {
 		prof, known := ix.profiles[a.profile]
@@ -295,21 +297,31 @@ func (ix winFwIndex) check(p shared.ListeningPort) firewallResult {
 		case !prof.Enabled:
 			disabled = true
 			reachable = appendUnique(reachable, a.profile)
+			via.add(a.iface())
 		default:
 			if ok, s := ix.allows(prof, a.network, p); ok {
 				reachable = appendUnique(reachable, a.profile)
 				scope.merge(s)
+				via.add(a.iface())
 			}
 		}
 	}
 	switch {
 	case disabled:
-		return firewallResult{verdict: firewallDisabled, profiles: reachable}
+		return firewallResult{verdict: firewallDisabled, profiles: reachable, via: via}
 	case len(reachable) > 0:
-		return firewallResult{verdict: firewallAllowed, profiles: reachable, scope: scope}
+		return firewallResult{verdict: firewallAllowed, profiles: reachable, scope: scope, via: via}
 	default:
 		return firewallResult{verdict: firewallBlocked}
 	}
+}
+
+// iface returns the arrival's interface, or "" (every one) when unknown.
+func (a winArrival) iface() string {
+	if a.network == nil {
+		return ""
+	}
+	return a.network.Interface
 }
 
 // socketArrivals returns how connections reach a socket bound to addr. A
@@ -448,9 +460,9 @@ func (ix winFwIndex) ruleForService(service string, p shared.ListeningPort) (mat
 }
 
 // winRemoteScope maps an allow rule's remote address filter to whom it lets
-// in, the widest of its items: "Any", "Internet" and "DefaultGateway" let in
-// any address, "LocalSubnet" the local subnets, and everything else
-// (addresses, ranges, "Intranet", "DNS", "DHCP", "WINS", …) only those.
+// in, the widest of its items: "Any" and "Internet" let in any address,
+// "LocalSubnet" the local subnets, and everything else (addresses, ranges,
+// "Intranet", "DefaultGateway", "DNS", "DHCP", "WINS", …) only those.
 func winRemoteScope(spec string) remoteScope {
 	var s remoteScope
 	if winAddrIsAny(spec) {
@@ -460,7 +472,7 @@ func winRemoteScope(spec string) remoteScope {
 	for _, item := range strings.Split(spec, ",") {
 		item = strings.TrimSpace(item)
 		switch strings.ToLower(item) {
-		case "", "any", "internet", "defaultgateway":
+		case "", "any", "internet":
 			s.widen(remoteAny)
 		case "localsubnet", "localsubnet4", "localsubnet6":
 			s.widen(remoteLocalSubnet)

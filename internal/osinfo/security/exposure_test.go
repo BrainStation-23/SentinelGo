@@ -1,7 +1,9 @@
 package security
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -12,18 +14,23 @@ import (
 
 // The exposure analysis reads the host's addresses to tell whether a
 // wildcard socket is on a public address; tests start from a host with none.
-func init() { hostAddrs = func() []netip.Addr { return nil } }
+func init() { hostAddrs = func() []hostAddr { return nil } }
 
-// stubHostAddrs makes the host's interface addresses addrs for one test.
+// stubHostAddrs makes the host's interface addresses addrs for one test:
+// "eth1 8.8.8.8", or a bare address on eth0.
 func stubHostAddrs(t *testing.T, addrs ...string) {
 	t.Helper()
 	orig := hostAddrs
 	t.Cleanup(func() { hostAddrs = orig })
-	var parsed []netip.Addr
+	var parsed []hostAddr
 	for _, a := range addrs {
-		parsed = append(parsed, netip.MustParseAddr(a))
+		iface, addr, ok := strings.Cut(a, " ")
+		if !ok {
+			iface, addr = "eth0", a
+		}
+		parsed = append(parsed, hostAddr{iface: iface, addr: netip.MustParseAddr(addr)})
 	}
-	hostAddrs = func() []netip.Addr { return parsed }
+	hostAddrs = func() []hostAddr { return parsed }
 }
 
 // vp returns a firewall result's verdict and profiles, for tests written
@@ -276,31 +283,139 @@ func TestRiskyServicePastUploadCap(t *testing.T) {
 }
 
 func TestOnPublicAddress(t *testing.T) {
+	eth1 := ifaceSet{names: []string{"eth1"}}
 	tests := []struct {
-		addr string
-		host []string
-		want bool
+		addr   string
+		host   []string
+		via    ifaceSet
+		v6Only bool
+		want   bool
 	}{
-		{"203.0.113.10", nil, true},   // public IPv4 (bound)
-		{"10.103.2.126", nil, false},  // RFC 1918
-		{"192.168.1.5", nil, false},   // RFC 1918
-		{"100.72.1.9", nil, false},    // CGNAT
-		{"2001:db8::5", nil, true},    // global unicast IPv6
-		{"fd12:3456::1", nil, false},  // ULA
-		{"fe80::1%eth0", nil, false},  // link-local
-		{"127.0.0.1", nil, false},     // loopback
-		{"::ffff:8.8.8.8", nil, true}, // v4-mapped public
-		{"0.0.0.0", []string{"10.0.0.5", "203.0.113.7"}, true},
-		{"0.0.0.0", []string{"10.0.0.5", "2001:db8::7"}, false}, // only v6 is public
-		{"::", []string{"10.0.0.5", "2001:db8::7"}, true},
-		{"*", []string{"10.0.0.5", "fd00::7"}, false},
+		{"8.8.8.8", nil, ifaceSet{}, false, true},         // public IPv4 (bound)
+		{"10.103.2.126", nil, ifaceSet{}, false, false},   // RFC 1918
+		{"192.168.1.5", nil, ifaceSet{}, false, false},    // RFC 1918
+		{"100.72.1.9", nil, ifaceSet{}, false, false},     // CGNAT
+		{"198.18.0.1", nil, ifaceSet{}, false, false},     // benchmarking
+		{"203.0.113.10", nil, ifaceSet{}, false, false},   // documentation
+		{"240.0.0.1", nil, ifaceSet{}, false, false},      // reserved
+		{"2606:4700::1111", nil, ifaceSet{}, false, true}, // global unicast IPv6
+		{"2001:db8::5", nil, ifaceSet{}, false, false},    // documentation
+		{"fd12:3456::1", nil, ifaceSet{}, false, false},   // ULA
+		{"fe80::1%eth0", nil, ifaceSet{}, false, false},   // link-local
+		{"127.0.0.1", nil, ifaceSet{}, false, false},      // loopback
+		{"::ffff:8.8.8.8", nil, ifaceSet{}, false, true},  // v4-mapped public
+		{"0.0.0.0", []string{"10.0.0.5", "8.8.4.4"}, ifaceSet{}, false, true},
+		{"0.0.0.0", []string{"10.0.0.5", "2606:4700::7"}, ifaceSet{}, false, false}, // only v6 is public
+		{"::", []string{"10.0.0.5", "2606:4700::7"}, ifaceSet{}, false, true},
+		{"::", []string{"8.8.4.4", "fd00::7"}, ifaceSet{}, false, true}, // dual-stack
+		{"::", []string{"8.8.4.4", "fd00::7"}, ifaceSet{}, true, false}, // IPv6-only
+		{"*", []string{"10.0.0.5", "fd00::7"}, ifaceSet{}, false, false},
+		// The firewall lets connections in only on eth1.
+		{"0.0.0.0", []string{"eth0 8.8.4.4", "eth1 10.0.0.5"}, eth1, false, false},
+		{"0.0.0.0", []string{"eth0 10.0.0.5", "eth1 8.8.4.4"}, eth1, false, true},
+		{"0.0.0.0", []string{"eth0 8.8.4.4"}, ifaceSet{every: true, names: []string{"eth1"}}, false, true},
+		{"8.8.4.4", []string{"eth0 8.8.4.4"}, eth1, false, false},
+		{"8.8.4.4", []string{"eth1 8.8.4.4"}, eth1, false, true},
 	}
 	for _, tt := range tests {
 		stubHostAddrs(t, tt.host...)
-		if got := onPublicAddress(tt.addr); got != tt.want {
-			t.Errorf("onPublicAddress(%q) with host %v = %v, want %v", tt.addr, tt.host, got, tt.want)
+		if got := onPublicAddress(tt.addr, tt.via, tt.v6Only); got != tt.want {
+			t.Errorf("onPublicAddress(%q, %+v, v6Only %v) with host %v = %v, want %v", tt.addr, tt.via, tt.v6Only, tt.host, got, tt.want)
 		}
 	}
+}
+
+// A service let in only on the private network isn't rated Critical though
+// the host has a public address on another network.
+func TestFindRiskyServices_PublicOnlyThroughAllowingInterface(t *testing.T) {
+	stubHostAddrs(t, "wifi 8.8.4.4", "lan 192.168.1.5")
+	ports := []shared.ListeningPort{{Protocol: "tcp", Port: 445, Address: "0.0.0.0"}}
+	check := func(via ...string) firewallCheck {
+		return func(shared.ListeningPort) firewallResult {
+			r := firewallResult{verdict: firewallAllowed, scope: remoteScope{kind: remoteAny}}
+			for _, v := range via {
+				r.via.add(v)
+			}
+			return r
+		}
+	}
+	if got := findRiskyServices(ports, check("lan")); got[0].OnPublicAddress {
+		t.Error("allowed on lan only: OnPublicAddress = true")
+	}
+	if got := findRiskyServices(ports, check("wifi")); !got[0].OnPublicAddress {
+		t.Error("allowed on wifi: OnPublicAddress = false")
+	}
+	if got := findRiskyServices(ports, check()); !got[0].OnPublicAddress {
+		t.Error("allowed on unknown interfaces: OnPublicAddress = false")
+	}
+}
+
+// A "::" socket beside a 0.0.0.0 one on the same port accepts IPv6 only, so
+// a public IPv4 address doesn't make it public.
+func TestFindRiskyServices_IPv6OnlyWildcard(t *testing.T) {
+	stubHostAddrs(t, "8.8.4.4", "fd00::7")
+	ports := []shared.ListeningPort{
+		{Protocol: "tcp", Port: 445, Address: "::"},
+		{Protocol: "tcp", Port: 445, Address: "0.0.0.0"},
+		{Protocol: "tcp", Port: 3389, Address: "::"},
+	}
+	public := map[string]bool{}
+	for _, s := range findRiskyServices(ports, nil) {
+		public[fmt.Sprintf("%d %s", s.Port, s.Address)] = s.OnPublicAddress
+	}
+	want := map[string]bool{"445 ::": false, "445 0.0.0.0": true, "3389 ::": true}
+	for k, v := range want {
+		if public[k] != v {
+			t.Errorf("%s: OnPublicAddress = %v, want %v", k, public[k], v)
+		}
+	}
+}
+
+func TestSystemInterfaceAddrs(t *testing.T) {
+	orig := listInterfaces
+	t.Cleanup(func() { listInterfaces = orig })
+	ipnet := func(s string) net.Addr {
+		_, n, _ := net.ParseCIDR(s)
+		n.IP = net.ParseIP(strings.Split(s, "/")[0])
+		return n
+	}
+	listInterfaces = func() ([]netInterface, error) {
+		return []netInterface{
+			{name: "eth0", up: true, addrs: []net.Addr{ipnet("8.8.4.4/24"), ipnet("::ffff:10.0.0.5/120"), &net.IPAddr{IP: net.ParseIP("1.1.1.1")}}},
+			{name: "eth1", up: false, addrs: []net.Addr{ipnet("9.9.9.9/24")}},
+		}, nil
+	}
+	got := systemInterfaceAddrs()
+	want := []hostAddr{{"eth0", netip.MustParseAddr("8.8.4.4")}, {"eth0", netip.MustParseAddr("10.0.0.5")}}
+	if !slices.Equal(got, want) {
+		t.Errorf("systemInterfaceAddrs() = %v, want %v (down interfaces skipped, v4-mapped unmapped)", got, want)
+	}
+	listInterfaces = func() ([]netInterface, error) { return nil, errors.New("no interfaces") }
+	if got := systemInterfaceAddrs(); got != nil {
+		t.Errorf("on error = %v, want nil", got)
+	}
+}
+
+func TestIfaceSet(t *testing.T) {
+	var s ifaceSet
+	if !s.includes("eth0") {
+		t.Error("empty set should include every interface")
+	}
+	s.add("eth1")
+	if s.includes("eth0") || !s.includes("eth1") {
+		t.Errorf("{eth1}: %+v", s)
+	}
+	s.add("")
+	if !s.includes("eth0") {
+		t.Errorf("after every: %+v", s)
+	}
+}
+
+// specific returns the scope of allow rules from these addresses.
+func specific(addrs ...string) remoteScope {
+	var s remoteScope
+	s.widen(remoteSpecific, addrs...)
+	return s
 }
 
 func TestReportedScope(t *testing.T) {
@@ -320,6 +435,9 @@ func TestReportedScope(t *testing.T) {
 		{"allowed without a scope", firewallResult{verdict: firewallAllowed}, remoteUnknown, 0},
 		{"local subnet", firewallResult{verdict: firewallAllowed, scope: remoteScope{kind: remoteLocalSubnet}}, remoteLocalSubnet, 0},
 		{"specific capped at 10", firewallResult{verdict: firewallAllowed, scope: many}, remoteSpecific, maxRemoteAddresses},
+		{"0.0.0.0/0 is any", firewallResult{verdict: firewallAllowed, scope: specific("10.0.0.0/8", "0.0.0.0/0")}, remoteAny, 0},
+		{"::/0 is any", firewallResult{verdict: firewallAllowed, scope: specific("::/0")}, remoteAny, 0},
+		{"0.0.0.0 alone is one address", firewallResult{verdict: firewallAllowed, scope: specific("0.0.0.0")}, remoteSpecific, 1},
 	}
 	for _, tt := range tests {
 		scope, addrs := reportedScope(tt.res)
@@ -356,9 +474,9 @@ func TestSummarizeNetworkExposureLevel_Tiers(t *testing.T) {
 		{"any on a public address", smb(firewallAllowed, remoteAny, true, "Public"), "Critical", "SMB (445/tcp) on the Public network: allowed in from any address, on a public IP address"},
 		{"firewall off on a public address", smb(firewallDisabled, remoteAny, true), "Critical", "public IP"},
 		{"any on a private address", smb(firewallAllowed, remoteAny, false), "High", "allowed in from any address."},
-		{"unknown scope on a public address", smb(firewallAllowed, remoteUnknown, true), "High", "any address"},
-		{"old agent payload (no scope)", smb(firewallAllowed, "", false), "High", "any address"},
-		{"unknown verdict", smb(firewallUnknown, "", true), "High", "any address"},
+		{"unknown scope on a public address", smb(firewallAllowed, remoteUnknown, true), "High", "couldn't verify"},
+		{"old agent payload (no scope)", smb(firewallAllowed, "", false), "High", "couldn't verify"},
+		{"unknown verdict", smb(firewallUnknown, "", true), "High", "couldn't verify"},
 		{"local subnet only, even on a public address", smb(firewallAllowed, remoteLocalSubnet, true), "Medium", "only from the local subnet"},
 		{"specific addresses", smb(firewallAllowed, remoteSpecific, false), "Medium", "listed addresses"},
 		{"blocked", smb(firewallBlocked, "", true), "Medium", "host firewall blocks"},
@@ -378,6 +496,16 @@ func TestSummarizeNetworkExposureLevel_Tiers(t *testing.T) {
 	}})
 	if level != "High" || len(recs) != 2 || !strings.Contains(recs[0], "SMB") || !strings.Contains(recs[1], "RDP") || strings.Contains(recs[1], "SMB") {
 		t.Errorf("mixed: level = %q, recs = %q", level, recs)
+	}
+
+	// Two sockets of one service, let in on networks of different profiles,
+	// are one entry naming both profiles.
+	_, recs = summarizeNetworkExposureLevel(shared.NetworkExposureAccessInfo{RiskyServices: []shared.RiskyService{
+		smb(firewallAllowed, remoteAny, false, "Private"), smb(firewallAllowed, remoteAny, false, "Public"),
+		smb(firewallAllowed, remoteSpecific, false, "Domain"),
+	}})
+	if len(recs) != 1 || strings.Count(recs[0], "SMB") != 1 || !strings.Contains(recs[0], "on the Private/Public network") {
+		t.Errorf("one service on two networks: recs = %q", recs)
 	}
 }
 

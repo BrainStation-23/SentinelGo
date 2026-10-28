@@ -38,7 +38,8 @@ type bundleMeta struct {
 // The tool must be at one of its known paths (binpath.Lookup): PATH is never
 // searched, so a brew installed outside Homebrew's standard prefixes is skipped
 // rather than letting a substituted binary run with the agent's privileges.
-func runCollectCmd(name string, args ...string) ([]byte, error) {
+// A variable so tests can stub the commands.
+var runCollectCmd = func(name string, args ...string) ([]byte, error) {
 	path, ok := binpath.Lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("%s not found at a known path", name)

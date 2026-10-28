@@ -130,8 +130,12 @@ type remoteScope struct {
 	addrs []string // remote addresses or ranges of the rules that aren't "any"
 }
 
-// widen adds an allow rule's remote scope.
+// widen adds an allow rule's remote scope. A specific range that covers
+// every address (0.0.0.0/0, ::/0) is any.
 func (s *remoteScope) widen(kind string, addrs ...string) {
+	if kind == remoteSpecific && slices.ContainsFunc(addrs, isAllAddresses) {
+		kind = remoteAny
+	}
 	if remoteScopeRank(kind) > remoteScopeRank(s.kind) {
 		s.kind = kind
 	}
@@ -145,11 +149,42 @@ func (s *remoteScope) widen(kind string, addrs ...string) {
 // merge adds another scope.
 func (s *remoteScope) merge(o remoteScope) { s.widen(o.kind, o.addrs...) }
 
+// isAllAddresses reports whether a remote range is a /0 prefix.
+func isAllAddresses(addr string) bool {
+	p, err := netip.ParsePrefix(strings.TrimSpace(addr))
+	return err == nil && p.Bits() == 0
+}
+
+// ifaceSet is the interfaces connections are let in on: every interface, or
+// only the named ones. Only the Windows check names any: Windows accepts a
+// packet only on the interface that holds its destination address, while
+// Linux and macOS accept it on any interface.
+type ifaceSet struct {
+	every bool
+	names []string
+}
+
+// add records an interface connections are let in on; "" for every one.
+func (s *ifaceSet) add(name string) {
+	if name == "" {
+		s.every = true
+		return
+	}
+	s.names = appendUnique(s.names, name)
+}
+
+// includes reports whether connections arriving on iface are let in. A set
+// with no interfaces (the check didn't tell) includes every one.
+func (s ifaceSet) includes(iface string) bool {
+	return s.every || len(s.names) == 0 || slices.Contains(s.names, iface)
+}
+
 // firewallResult is a firewall check's finding on one socket.
 type firewallResult struct {
 	verdict  string
 	profiles []string    // Windows: the active profiles that let connections in
 	scope    remoteScope // whom the allow rules let in, when allowed
+	via      ifaceSet    // Windows: the networks' interfaces they let them in on
 }
 
 // firewallCheck returns whether the host firewall lets inbound connections
@@ -186,37 +221,94 @@ func reportedScope(r firewallResult) (string, []string) {
 	return r.scope.kind, nil
 }
 
-// cgnatPrefix is carrier-grade NAT space (RFC 6598): not private, not public.
-var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+// nonPublicPrefixes are global-unicast ranges that aren't reachable from the
+// internet: carrier-grade NAT, special-use, benchmarking, documentation and
+// reserved space (RFC 6598, 6890, 2544, 5737, 3849, 1112).
+var nonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),   // NOSONAR CGNAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // NOSONAR IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // NOSONAR TEST-NET-1
+	netip.MustParsePrefix("198.18.0.0/15"),   // NOSONAR benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // NOSONAR TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // NOSONAR TEST-NET-3
+	netip.MustParsePrefix("240.0.0.0/4"),     // NOSONAR reserved
+	netip.MustParsePrefix("2001:db8::/32"),   // NOSONAR documentation
+}
 
 // isPublicAddr reports whether a is a public unicast address: not loopback,
-// link-local, private (RFC 1918, IPv6 ULA) or CGNAT.
+// link-local, private (RFC 1918, IPv6 ULA), CGNAT or other special-use space.
 func isPublicAddr(a netip.Addr) bool {
 	a = a.Unmap()
-	return a.IsGlobalUnicast() && !a.IsPrivate() && !cgnatPrefix.Contains(a)
+	if !a.IsGlobalUnicast() || a.IsPrivate() {
+		return false
+	}
+	for _, p := range nonPublicPrefixes {
+		if p.Contains(a) {
+			return false
+		}
+	}
+	return true
+}
+
+// hostAddr is one address of one of the host's interfaces.
+type hostAddr struct {
+	iface string
+	addr  netip.Addr
 }
 
 // hostAddrs lists the host's interface addresses; swapped in tests.
 var hostAddrs = systemInterfaceAddrs
 
 // onPublicAddress reports whether a socket bound to addr can be reached on a
-// public address: it's bound to one, or it's a wildcard socket and the host
-// has one (of IPv4 for 0.0.0.0, of either family otherwise).
-func onPublicAddress(addr string) bool {
+// public address through the interfaces via lets connections in on: it's
+// bound to a public address, or it's a wildcard socket and one of those
+// interfaces has one of a family it accepts (IPv4 for 0.0.0.0, IPv6 for a
+// "::" socket that is v6Only, either otherwise).
+func onPublicAddress(addr string, via ifaceSet, v6Only bool) bool {
+	families, bound := listenerFamilies(addr, v6Only)
 	switch bindScope(addr) {
 	case scopeLoopback:
 		return false
 	case scopeInterface:
-		a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(addr), "["), "]"))
-		return err == nil && isPublicAddr(a)
+		if !bound.IsValid() || !isPublicAddr(bound) {
+			return false
+		}
+		for _, h := range hostAddrs() {
+			if h.addr.Unmap().WithZone("") == bound {
+				return via.includes(h.iface)
+			}
+		}
+		return true
 	}
-	v4Only := strings.TrimSpace(addr) == "0.0.0.0"
-	for _, a := range hostAddrs() {
-		if (!v4Only || a.Unmap().Is4()) && isPublicAddr(a) {
+	for _, h := range hostAddrs() {
+		a := h.addr.Unmap()
+		family := 6
+		if a.Is4() {
+			family = 4
+		}
+		if slices.Contains(families, family) && isPublicAddr(a) && via.includes(h.iface) {
 			return true
 		}
 	}
 	return false
+}
+
+// v4WildcardPorts returns whether a socket's port and protocol also have an
+// IPv4 wildcard socket. A socket on "::" is then IPv6-only: Linux refuses
+// that pair unless the IPv6 one is IPV6_V6ONLY, and on Windows and macOS the
+// two are separate sockets. net.ipv6.bindv6only isn't used: it's only the
+// default, a socket can still clear IPV6_V6ONLY, and /proc/net doesn't show
+// which it did. Assuming dual-stack can overstate exposure but never hide it.
+func v4WildcardPorts(ports []shared.ListeningPort) func(p shared.ListeningPort) bool {
+	v4Wildcard := map[string]bool{}
+	for _, p := range ports {
+		if a, err := netip.ParseAddr(p.Address); err == nil && a.Is4() && a.IsUnspecified() {
+			v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)] = true
+		}
+	}
+	return func(p shared.ListeningPort) bool {
+		return v4Wildcard[fmt.Sprintf("%s/%d", strings.ToLower(p.Protocol), p.Port)]
+	}
 }
 
 // remoteAccessProcessKeywords are process-name substrings that indicate a
@@ -283,6 +375,7 @@ func findRiskyServices(ports []shared.ListeningPort, check firewallCheck) []shar
 	if check == nil {
 		check = constantCheck(firewallUnknown)
 	}
+	v6Only := v4WildcardPorts(ports)
 	risky := []shared.RiskyService{}
 	seen := make(map[string]bool)
 	for _, p := range ports {
@@ -306,7 +399,7 @@ func findRiskyServices(ports []shared.ListeningPort, check firewallCheck) []shar
 			ReachableProfiles: res.profiles,
 			RemoteScope:       remote,
 			RemoteAddresses:   addrs,
-			OnPublicAddress:   onPublicAddress(p.Address),
+			OnPublicAddress:   onPublicAddress(p.Address, res.via, v6Only(p)),
 		})
 	}
 	slices.SortFunc(risky, func(a, b shared.RiskyService) int {
@@ -327,14 +420,15 @@ func sortedKeys(m map[string]bool) []string {
 // Exposure tiers of a risky service, from the most severe.
 const (
 	tierPublic  = iota // let in from any address, on a public address
-	tierAny            // let in from any address (or from where is unknown)
+	tierAny            // let in from any address
+	tierUnknown        // maybe let in from any address: the check couldn't tell
 	tierLimited        // let in only from the local subnet or listed addresses
 	tierBlocked        // the host firewall blocks it
 	tierCount
 )
 
 // exposureTier rates one risky service. The firewall being off counts as
-// letting everyone in; an unknown verdict as possibly doing so.
+// letting everyone in; an unknown verdict or scope as possibly doing so.
 func exposureTier(s shared.RiskyService) int {
 	if s.Firewall == firewallBlocked {
 		return tierBlocked
@@ -351,43 +445,61 @@ func exposureTier(s shared.RiskyService) int {
 		return tierLimited
 	case scope == remoteAny && s.OnPublicAddress:
 		return tierPublic
-	default:
+	case scope == remoteAny:
 		return tierAny
+	default:
+		return tierUnknown
 	}
 }
 
-// exposureLabel names a risky service in a recommendation, with the
-// Windows profiles that let it in.
-func exposureLabel(s shared.RiskyService) string {
-	label := fmt.Sprintf("%s (%d/%s)", s.Name, s.Port, s.Protocol)
-	if len(s.ReachableProfiles) > 0 {
-		label += " on the " + strings.Join(s.ReachableProfiles, "/") + " network"
+// exposureEntry is one risky service in a recommendation: its most severe
+// tier, and the Windows profiles its sockets in that tier are let in on.
+type exposureEntry struct {
+	label    string
+	tier     int
+	profiles []string
+}
+
+// String names the service, with the Windows profiles that let it in.
+func (e exposureEntry) String() string {
+	if len(e.profiles) == 0 {
+		return e.label
 	}
-	return label
+	return e.label + " on the " + strings.Join(e.profiles, "/") + " network"
 }
 
 // summarizeNetworkExposureLevel rates exposure by the risky services on the
 // network and whom the host firewall lets in, not by how many sockets are
 // bound: Critical when one is let in from any address on a public address,
-// High when one is let in from any address (or the firewall verdict is
-// unknown), Medium when they are let in only from the local subnet or listed
+// High when one is let in from any address or the agent couldn't tell from
+// where, Medium when they are let in only from the local subnet or listed
 // addresses, or all blocked, Low when there are none. A service is listed
 // once, under its most severe tier; blocked services only when nothing is
 // let in.
 func summarizeNetworkExposureLevel(net shared.NetworkExposureAccessInfo) (level string, recommendations []string) {
-	tiers := map[string]int{}
+	var entries []*exposureEntry
+	byLabel := map[string]*exposureEntry{}
 	for _, s := range net.RiskyServices {
-		key := fmt.Sprintf("%s (%d/%s)", s.Name, s.Port, s.Protocol)
-		if prev, seen := tiers[key]; !seen || exposureTier(s) < prev {
-			tiers[key] = exposureTier(s)
+		label := fmt.Sprintf("%s (%d/%s)", s.Name, s.Port, s.Protocol)
+		tier := exposureTier(s)
+		e, seen := byLabel[label]
+		switch {
+		case !seen:
+			e = &exposureEntry{label: label, tier: tier}
+			byLabel[label] = e
+			entries = append(entries, e)
+		case tier < e.tier:
+			e.tier, e.profiles = tier, nil
+		case tier > e.tier:
+			continue
+		}
+		for _, p := range s.ReachableProfiles {
+			e.profiles = appendUnique(e.profiles, p)
 		}
 	}
 	var lists [tierCount][]string
-	for _, s := range net.RiskyServices {
-		key := fmt.Sprintf("%s (%d/%s)", s.Name, s.Port, s.Protocol)
-		if exposureTier(s) == tiers[key] {
-			lists[tiers[key]] = appendUnique(lists[tiers[key]], exposureLabel(s))
-		}
+	for _, e := range entries {
+		lists[e.tier] = append(lists[e.tier], e.String())
 	}
 
 	if l := lists[tierPublic]; len(l) > 0 {
@@ -395,6 +507,9 @@ func summarizeNetworkExposureLevel(net shared.NetworkExposureAccessInfo) (level 
 	}
 	if l := lists[tierAny]; len(l) > 0 {
 		recommendations = append(recommendations, "Close or firewall "+strings.Join(l, ", ")+": allowed in from any address.")
+	}
+	if l := lists[tierUnknown]; len(l) > 0 {
+		recommendations = append(recommendations, "Close or firewall "+strings.Join(l, ", ")+": listening on the network, and the agent couldn't verify whom the host firewall lets in.")
 	}
 	if l := lists[tierLimited]; len(l) > 0 {
 		recommendations = append(recommendations, "Check that "+strings.Join(l, ", ")+" should be reachable: allowed in only from the local subnet or listed addresses.")
@@ -405,7 +520,7 @@ func summarizeNetworkExposureLevel(net shared.NetworkExposureAccessInfo) (level 
 	switch {
 	case len(lists[tierPublic]) > 0:
 		return "Critical", recommendations
-	case len(lists[tierAny]) > 0:
+	case len(lists[tierAny])+len(lists[tierUnknown]) > 0:
 		return "High", recommendations
 	case len(lists[tierLimited])+len(lists[tierBlocked]) > 0:
 		return "Medium", recommendations
