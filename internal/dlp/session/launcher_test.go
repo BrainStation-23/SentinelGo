@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
@@ -161,4 +162,34 @@ func waitExited(t *testing.T, s *launchSupervisor, id string) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// Apply starts the reconcile loop once; Sessions lists restarting helpers.
+func TestLauncher_ApplyRunsLoop(t *testing.T) {
+	l := &fakeLauncher{started: map[string][]*fakeProc{}}
+	l.set("7")
+	s := newTestSupervisor(l)
+	s.poll = 10 * time.Millisecond
+	s.Hub = NewHub(testAddress(t), &recordingSink{})
+	p := compiled(t, "v1", true)
+	s.Apply(context.Background(), p)
+	s.Apply(context.Background(), p) // second Apply: no second loop
+	deadline := time.Now().Add(5 * time.Second)
+	for len(l.procs("7")) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("helper not started by the loop")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.Stop()
+	if got := len(l.procs("7")); got != 1 {
+		t.Errorf("launches = %d, want 1", got)
+	}
+}
+
+func TestManualSupervisor(t *testing.T) {
+	m := &manualSupervisor{Hub: NewHub(testAddress(t), &recordingSink{})}
+	m.Apply(context.Background(), compiled(t, "v1", true))
+	m.Apply(context.Background(), compiled(t, "v2", true))
+	m.Stop()
 }
