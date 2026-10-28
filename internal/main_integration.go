@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
-	"sentinelgo/internal/dlp/channel/clipboard"
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
@@ -494,8 +494,15 @@ func dlpEventSyncHandler(es *dlp.EventSync) scheduler.TaskHandler {
 }
 
 // dlpCapabilities reports what each DLP channel can do on this platform.
+//
+// The service has no user session or display, so this is only the fallback
+// for when no helper is connected; helpers report the real capability.
 func dlpCapabilities() map[string]string {
-	return map[string]string{policy.ChannelClipboard: clipboard.New().Supported().String()}
+	reason := "unsupported:no_user_session"
+	if runtime.GOOS == "linux" {
+		reason = "unsupported:no_graphical_session"
+	}
+	return map[string]string{policy.ChannelClipboard: reason}
 }
 
 // dlpPolicySyncHandler polls for the DLP policy when a poll is due, wrapped in

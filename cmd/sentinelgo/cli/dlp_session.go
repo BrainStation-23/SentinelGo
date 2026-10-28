@@ -34,9 +34,22 @@ func RunDLPSession() int {
 	}
 	log.Printf("DLP helper %s starting (pid %d)", config.Version, os.Getpid())
 
+	// One helper per user session: a systemd unit and an XDG autostart entry
+	// (or a manual run) may both start one.
+	release, ok, err := session.AcquireHelperLock()
+	switch {
+	case err != nil:
+		log.Printf("DLP helper: single-instance lock unavailable, continuing: %v", err)
+	case !ok:
+		log.Printf("DLP helper: another helper runs in this session; exiting")
+		return 0
+	default:
+		defer release()
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err := session.RunHelper(ctx, session.HelperOptions{
+	err = session.RunHelper(ctx, session.HelperOptions{
 		Addr:     ipc.DefaultAddress,
 		Version:  config.Version,
 		Channels: []channel.Channel{clipboard.New()},

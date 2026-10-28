@@ -31,4 +31,7 @@ type Info struct {
 	User      string `json:"user"`
 	State     string `json:"state"`                // e.g. "running", "starting", "restarting"
 	SessionID string `json:"session_id,omitempty"` // OS session (Windows) or uid (Unix)
+	// Capabilities the helper reported per channel ("supported" or
+	// "unsupported:<reason>"); empty for a helper that isn't connected.
+	Capabilities map[string]string `json:"capabilities,omitempty"`
 }

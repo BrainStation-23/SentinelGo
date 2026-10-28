@@ -179,6 +179,7 @@ func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 	if s.capabilities != nil {
 		st.Capabilities = s.capabilities()
 	}
+	mergeHelperCapabilities(st.Capabilities, snap.Sessions)
 	s.mu.Lock()
 	errs := append(append([]detect.CompileError{}, s.syncErrors...), snap.CompileErrors...)
 	s.mu.Unlock()
@@ -217,6 +218,23 @@ func (s *Syncer) setSyncError(err error) {
 	s.syncErrors = nil
 	if err != nil {
 		s.syncErrors = []detect.CompileError{{Error: err.Error()}}
+	}
+}
+
+// mergeHelperCapabilities overrides the service's own guess with what the
+// session helpers report: a channel is supported if any helper supports it,
+// otherwise the first helper's reason stands.
+func mergeHelperCapabilities(caps map[string]string, sessions []session.Info) {
+	reported := map[string]string{}
+	for _, s := range sessions {
+		for ch, c := range s.Capabilities {
+			if prev, ok := reported[ch]; !ok || (prev != "supported" && c == "supported") {
+				reported[ch] = c
+			}
+		}
+	}
+	for ch, c := range reported {
+		caps[ch] = c
 	}
 }
 
