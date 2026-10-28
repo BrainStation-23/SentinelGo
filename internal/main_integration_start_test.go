@@ -677,7 +677,7 @@ func TestStartDLP_NoPolicyStaysOffAndPolls(t *testing.T) {
 func TestDLPPolicySyncHandler_PollsWhenDue(t *testing.T) {
 	fb := &countingFetcher{}
 	cfg := miTestConfig(t)
-	m := dlp.NewManager(true, nil, session.New())
+	m := dlp.NewManager(true, nil, session.New(discardEvents{}))
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,9 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/channel/clipboard"
+	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
@@ -399,19 +401,27 @@ const dlpPolicySyncTick = time.Minute
 // starts nothing and doesn't poll. Errors are logged, never fatal: DLP must
 // not keep the rest of the agent from running.
 func (mi *MainIntegration) startDLP(ctx context.Context) {
-	cache := policy.NewCache(filepath.Join(filepath.Dir(mi.cfg.Path), policy.CacheFileName))
-	m := dlp.NewManager(mi.cfg.DLPEnabled, cache, session.New())
+	cfg := mi.cfg
+	cache := policy.NewCache(filepath.Join(filepath.Dir(cfg.Path), policy.CacheFileName))
+	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
+
+	// Helper events go to the evidence queue (when it opens).
+	var sink channel.EventSink = discardEvents{}
+	if cfg.DLPEnabled {
+		if q := mi.startDLPEventSync(fetcher); q != nil {
+			sink = dlp.NewQueueSink(q)
+		}
+	}
+	m := dlp.NewManager(cfg.DLPEnabled, cache, session.New(sink))
 	if err := m.Start(ctx); err != nil {
 		log.Printf("Warning: DLP failed to start: %v", err)
 		return
 	}
 	mi.dlpManager = m
-	if !mi.cfg.DLPEnabled {
+	if !cfg.DLPEnabled {
 		return
 	}
 
-	cfg := mi.cfg
-	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
 	mi.dlpSyncer = dlp.NewSyncer(fetcher, cache, m, config.Version, dlpCapabilities)
 	err := mi.scheduler.AddTask(&scheduler.Task{
 		Name:     "dlp-policy-sync",
@@ -422,19 +432,23 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	if err != nil {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
-	mi.startDLPEventSync(fetcher)
 }
+
+// discardEvents is the event sink when the evidence queue is unavailable.
+type discardEvents struct{}
+
+func (discardEvents) Emit(events.Event) {}
 
 // dlpEventSyncInterval is how often queued DLP evidence is uploaded.
 const dlpEventSyncInterval = time.Minute
 
 // startDLPEventSync opens the evidence queue and registers dlp-event-sync.
-// Without a queue DLP still enforces; evidence is just not kept.
-func (mi *MainIntegration) startDLPEventSync(sender dlp.EventSender) {
+// Without a queue (nil) DLP still enforces; evidence is just not kept.
+func (mi *MainIntegration) startDLPEventSync(sender dlp.EventSender) *store.DLPEventStore {
 	q, err := store.NewDLPEventStore(filepath.Join(filepath.Dir(mi.cfg.Path), store.DLPEventsDBName))
 	if err != nil {
 		log.Printf("Warning: DLP evidence queue unavailable, events will not be kept: %v", err)
-		return
+		return nil
 	}
 	mi.dlpEvents = q
 	es := dlp.NewEventSync(q, sender)
@@ -447,6 +461,7 @@ func (mi *MainIntegration) startDLPEventSync(sender dlp.EventSender) {
 	if err != nil {
 		log.Printf("Warning: DLP event sync not scheduled: %v", err)
 	}
+	return q
 }
 
 // dlpEventSyncHandler uploads queued DLP evidence, wrapped in DoWithAuthRetry.
