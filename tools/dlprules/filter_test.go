@@ -141,7 +141,7 @@ confidence = "high"
 	if rs.Source.SHA256 == "" || rs.Source.Tag != "v0" {
 		t.Errorf("source = %+v", rs.Source)
 	}
-	if len(rs.GlobalFilter.DenyRegex) != 1 || len(rs.GlobalFilter.DenyContains) != 1 {
+	if len(rs.GlobalFilter.DenyRegex) != 1 || len(rs.GlobalFilter.DenyContainsHex) != 1 {
 		t.Errorf("global filter = %+v", rs.GlobalFilter)
 	}
 
@@ -178,5 +178,23 @@ func TestGenerate_GlobalFilterMustTranslate(t *testing.T) {
 	toml := []byte("filter = '''let a = 1'''\n[[rules]]\nid = \"a\"\nregex = 'a'\nconfidence = \"high\"\n")
 	if _, _, err := generate(toml, Source{}); !errors.Is(err, errUnknownShape) {
 		t.Errorf("generate = %v, want errUnknownShape", err)
+	}
+}
+
+// Literal deny-list entries (upstream lists real, publicly known keys) are
+// written hex-encoded so no key-shaped string lands in the repository.
+func TestEncodeLiterals(t *testing.T) {
+	f := Filter{
+		DenyRegex:    []string{"AIzaSyKnownPublicKey", ".+EXAMPLE$", "(?i)caseless", "a|b"},
+		DenyContains: []string{"abc"},
+	}
+	f.encodeLiterals()
+	if !reflect.DeepEqual(f.DenyRegex, []string{".+EXAMPLE$", "(?i)caseless", "a|b"}) {
+		t.Errorf("DenyRegex = %v", f.DenyRegex)
+	}
+	// "abc" first (already a literal), then the converted regex literal.
+	want := []string{"616263", "41497a6153794b6e6f776e5075626c69634b6579"}
+	if !reflect.DeepEqual(f.DenyContainsHex, want) || f.DenyContains != nil {
+		t.Errorf("DenyContainsHex = %v, DenyContains = %v", f.DenyContainsHex, f.DenyContains)
 	}
 }

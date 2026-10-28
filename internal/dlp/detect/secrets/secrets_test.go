@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"encoding/hex"
 	"math"
 	"strings"
 	"testing"
@@ -103,5 +104,30 @@ func TestAsciiLowerKeepsOffsets(t *testing.T) {
 	}
 	if !strings.Contains(out, "stanbul key") {
 		t.Errorf("asciiLower = %q", out)
+	}
+}
+
+// Upstream deny-lists publicly known keys (shipped hex-encoded); scanning one
+// must not report it.
+func TestFind_HexDenyListApplies(t *testing.T) {
+	rs, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rs.rules[rs.byID["gcp-api-key"]]
+	if r.spec.Filter == nil || len(r.spec.Filter.DenyContains) == 0 {
+		t.Fatal("gcp-api-key has no hex deny-list")
+	}
+	known, err := hex.DecodeString(r.spec.Filter.DenyContains[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcp := func(id string) bool { return id == "gcp-api-key" }
+	if got := rs.Find("key: "+string(known)+"\n", gcp); len(got) != 0 {
+		t.Errorf("deny-listed key reported: %+v", got)
+	}
+	other := "AI" + "za" + "Sy" + "Qx7Kp2Lm9Vb4Nc8Rt1Wz6Yd3Fg5Hj0Sk2"
+	if got := rs.Find("key: "+other+"\n", gcp); len(got) != 1 {
+		t.Errorf("unlisted key not reported: %+v", got)
 	}
 }
