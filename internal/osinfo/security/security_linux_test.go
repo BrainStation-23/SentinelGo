@@ -181,6 +181,23 @@ func TestUsbStorageStateFromConfFile(t *testing.T) {
 	})
 }
 
+func TestParseSSHEffectiveConfig(t *testing.T) {
+	// Excerpt of `sshd -T` on Ubuntu 24.04 with cloud-init's 50-cloud-init.conf.
+	const out = "port 22\naddressfamily any\nlistenaddress [::]:22\nlistenaddress 0.0.0.0:22\n" +
+		"usepam yes\nlogingracetime 120\nx11displayoffset 10\nmaxauthtries 6\n" +
+		"permitrootlogin without-password\npubkeyauthentication yes\n" +
+		"kbdinteractiveauthentication no\npasswordauthentication no\n" +
+		"authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n"
+	got, ok := parseSSHEffectiveConfig(out)
+	want := sshSettings{"Disabled", "Disabled", "Enabled"}
+	if !ok || got != want {
+		t.Errorf("got %+v ok=%v, want %+v", got, ok, want)
+	}
+	if _, ok := parseSSHEffectiveConfig("port 22\npermitrootlogin yes\n"); ok {
+		t.Error("partial output: ok = true, want false")
+	}
+}
+
 func TestParseSSHConfigData(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -207,22 +224,36 @@ func TestParseSSHConfigData(t *testing.T) {
 			name:         "prohibit-password is Disabled root login",
 			input:        "PermitRootLogin prohibit-password\n",
 			wantRoot:     "Disabled",
-			wantPassword: "Unknown",
-			wantPubkey:   "Unknown",
+			wantPassword: "Enabled",
+			wantPubkey:   "Enabled",
 		},
 		{
 			name:         "commented lines ignored",
 			input:        "# PermitRootLogin yes\nPermitRootLogin no\n",
 			wantRoot:     "Disabled",
-			wantPassword: "Unknown",
-			wantPubkey:   "Unknown",
+			wantPassword: "Enabled",
+			wantPubkey:   "Enabled",
 		},
 		{
-			name:         "empty config yields Unknown",
+			name:         "empty config takes OpenSSH defaults",
 			input:        "",
-			wantRoot:     "Unknown",
-			wantPassword: "Unknown",
-			wantPubkey:   "Unknown",
+			wantRoot:     "Disabled",
+			wantPassword: "Enabled",
+			wantPubkey:   "Enabled",
+		},
+		{
+			name:         "first value wins",
+			input:        "PasswordAuthentication no\nPasswordAuthentication yes\nPermitRootLogin yes\nPermitRootLogin no\n",
+			wantRoot:     "Enabled",
+			wantPassword: "Disabled",
+			wantPubkey:   "Enabled",
+		},
+		{
+			name:         "settings inside a Match block ignored",
+			input:        "PubkeyAuthentication yes\nMatch User alice\n  PasswordAuthentication no\n  PermitRootLogin yes\n",
+			wantRoot:     "Disabled",
+			wantPassword: "Enabled",
+			wantPubkey:   "Enabled",
 		},
 		{
 			name:         "case-insensitive keys",

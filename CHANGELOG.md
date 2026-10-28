@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux: SSH root login, password authentication and key authentication no longer show as Unknown on stock Ubuntu and Debian hosts. The agent reads the settings sshd actually uses (`sshd -T`), and when that fails it parses `sshd_config` the way sshd does: it follows `Include` files such as `sshd_config.d/50-cloud-init.conf`, keeps the first value of a setting, ignores `Match` blocks and uses OpenSSH's defaults for settings that aren't set. `PermitRootLogin forced-commands-only` and `without-password` now count as Disabled. A device without an SSH server reports "Not installed". Hosts that never set `PasswordAuthentication` now show it as Enabled, which is OpenSSH's default, so the console starts recommending to disable it (#250).
+
 ## [v3.7.2] - 2026-10-27
 
 ### Added
