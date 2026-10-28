@@ -1,6 +1,7 @@
 package security
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -398,23 +399,35 @@ var sshdBinaryPaths = []string{"/usr/sbin/sshd", "/sbin/sshd"}
 // loop can't recurse forever.
 const maxSSHIncludeDepth = 16
 
-// collectSSHConfig works out the settings sshd actually uses. It prefers
+// runSSHDTest runs `sshd -T`; swapped in tests. It never runs in host-root
+// mode, where sshd would read the real host's config, not the fixture tree.
+var runSSHDTest = func() (string, error) {
+	if securityHostRoot != "" {
+		return "", errors.New("sshd -T is not run against a host root")
+	}
+	return securityRunCommand("sshd", "-T")
+}
+
+// collectSSHConfig works out sshd's global settings from the default config,
+// /etc/ssh/sshd_config: what applies to a connection no Match block matches
+// (an sshd started with -f on another file isn't covered). It prefers
 // `sshd -T`, which prints the effective config (defaults, Include files and
 // all), and falls back to parsing the config files when that fails (missing
-// host keys, an invalid config). In host-root mode (tests) it never runs
-// sshd. When neither the sshd binary nor sshd_config exists, all three
-// settings are "Not installed".
+// host keys, an invalid config). When neither the sshd binary nor
+// sshd_config exists, all three settings are "Not installed", unless a
+// standard sshd unit is running, which makes them "Unknown".
 func collectSSHConfig() sshSettings {
 	configPath := securityHostRoot + sshdConfigDir + "/sshd_config"
 	_, cfgErr := os.Stat(configPath)
 	if !sshdInstalled() && cfgErr != nil {
+		if sshdServiceActive() {
+			return sshSettings{sshUnknown, sshUnknown, sshUnknown}
+		}
 		return sshSettings{sshNotInstalled, sshNotInstalled, sshNotInstalled}
 	}
-	if securityHostRoot == "" {
-		if out, err := securityRunCommand("sshd", "-T"); err == nil {
-			if s, ok := parseSSHEffectiveConfig(out); ok {
-				return s
-			}
+	if out, err := runSSHDTest(); err == nil {
+		if s, ok := parseSSHEffectiveConfig(out); ok {
+			return s
 		}
 	}
 	var lines []string
@@ -429,6 +442,17 @@ func collectSSHConfig() sshSettings {
 func sshdInstalled() bool {
 	for _, p := range sshdBinaryPaths {
 		if info, err := os.Stat(securityHostRoot + p); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// sshdServiceActive reports whether the ssh or sshd systemd unit is active.
+// A daemon running under another unit name isn't detected.
+func sshdServiceActive() bool {
+	for _, unit := range []string{"ssh", "sshd"} {
+		if out, err := securityRunCommand("systemctl", "is-active", unit); err == nil && strings.TrimSpace(out) == "active" {
 			return true
 		}
 	}
@@ -461,10 +485,11 @@ func parseSSHEffectiveConfig(out string) (s sshSettings, ok bool) {
 
 // readSSHGlobalConfig appends the global lines of the sshd_config at path to
 // lines, in the order sshd reads them: Include directives are replaced by the
-// files they match (sorted, relative paths resolved against /etc/ssh), and a
-// Match block ends the global section of the file it's in. Only an unreadable
-// top-level file is an error; an Include that matches nothing is skipped, as
-// sshd does.
+// files they match (sorted, relative paths resolved against /etc/ssh, quotes
+// removed), and a Match block ends the global section of the file it's in.
+// Only an unreadable top-level file is an error; an Include that matches
+// nothing is skipped, as sshd does. So is one outside /etc/ssh: the agent
+// reads only sshd's own config directory.
 func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
 	if depth > maxSSHIncludeDepth {
 		return nil
@@ -484,8 +509,13 @@ func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
 			return nil
 		case "include":
 			for _, pattern := range strings.Fields(strings.TrimSpace(line))[1:] {
+				pattern = strings.Trim(pattern, `"`)
 				if !strings.HasPrefix(pattern, "/") {
 					pattern = sshdConfigDir + "/" + pattern
+				}
+				pattern = filepath.Clean(pattern)
+				if !strings.HasPrefix(pattern, sshdConfigDir+"/") {
+					continue
 				}
 				matches, _ := filepath.Glob(securityHostRoot + pattern)
 				for _, m := range matches {

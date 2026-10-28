@@ -676,8 +676,10 @@ type RiskyService struct {
 	// RemoteAddresses lists the allowed remote ranges when RemoteScope is
 	// "specific" (at most 10), e.g. ["10.10.0.0/16", "Intranet"].
 	RemoteAddresses []string `json:"remote_addresses,omitempty"`
-	// OnPublicAddress: the socket is bound to, or (wildcard) the host has, a
-	// public unicast address (not private, ULA, CGNAT or link-local).
+	// OnPublicAddress: the socket is bound to a public unicast address (not
+	// private, ULA, CGNAT, link-local or special-use), or it's a wildcard
+	// socket and the host has one of a family it accepts; when the firewall
+	// lets connections in only on some interfaces, on one of those.
 	OnPublicAddress bool `json:"on_public_address,omitempty"`
 }
 

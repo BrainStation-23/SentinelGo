@@ -395,6 +395,10 @@ func TestWinFirewall_RemoteScope(t *testing.T) {
 	if _, scope, _ := winScope(fw, smb); scope != remoteAny {
 		t.Errorf("Internet keyword: %q, want any", scope)
 	}
+	fw.Addrs[0].RemoteAddress = "DefaultGateway"
+	if _, scope, addrs := winScope(fw, smb); scope != remoteSpecific || !slices.Equal(addrs, []string{"DefaultGateway"}) {
+		t.Errorf("DefaultGateway keyword: %q, %q; want specific, [DefaultGateway]", scope, addrs)
+	}
 
 	fw = mustWinFirewall(t)
 	fw.Profiles[2].Enabled = false
@@ -439,8 +443,22 @@ func TestWinFirewall_InterfaceFilters(t *testing.T) {
 		})
 	}
 
-	// A block limited to Wi-Fi doesn't block a socket reached on Ethernet.
+	// A wildcard socket let in only on Wi-Fi isn't on a public address
+	// because Ethernet has one.
 	fw := mustWinFirewall(t)
+	fw.Networks = append([]winFwNetwork{{Interface: "Wi-Fi", Category: "Public", Media: "Native 802.11"}}, ethernet...)
+	fw.Ifaces[4].Interface = "Wi-Fi"
+	r := fw.checker(nil)(vnc)
+	if r.verdict != firewallAllowed || r.via.includes("Ethernet") || !r.via.includes("Wi-Fi") {
+		t.Fatalf("Wi-Fi rule: %q, via %+v; want allowed on Wi-Fi only", r.verdict, r.via)
+	}
+	stubHostAddrs(t, "Ethernet 8.8.4.4", "Wi-Fi 192.168.1.5")
+	if got := findRiskyServices([]shared.ListeningPort{vnc}, fw.checker(nil)); got[0].OnPublicAddress {
+		t.Error("allowed on the private Wi-Fi only: OnPublicAddress = true")
+	}
+
+	// A block limited to Wi-Fi doesn't block a socket reached on Ethernet.
+	fw = mustWinFirewall(t)
 	fw.Networks = ethernet
 	fw.Ifaces[5].Interface = "Wi-Fi"
 	if got, _ := vp(fw.checker(nil)(shared.ListeningPort{Protocol: "tcp", Port: 5901, ProcessName: "vncserver"})); got != firewallAllowed {

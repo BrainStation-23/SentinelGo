@@ -193,3 +193,27 @@ func TestFillBundleIDsFromInfoPlist(t *testing.T) {
 		t.Errorf("first call = %q", calls[0])
 	}
 }
+
+// getMacApplications falls back to Info.plist for an app Spotlight gives no
+// bundle ID.
+func TestGetMacApplications_InfoPlistFallback(t *testing.T) {
+	orig := runCollectCmd
+	t.Cleanup(func() { runCollectCmd = orig })
+	runCollectCmd = func(name string, args ...string) ([]byte, error) {
+		switch name {
+		case "system_profiler":
+			return []byte(`{"SPApplicationsDataType":[{"_name":"Tool","version":"1.0","path":"/Volumes/Data/Tool.app"}]}`), nil
+		case "mdls":
+			return []byte("(null)\x00(null)\x00(null)\x00(null)\x00"), nil
+		case "plutil":
+			if args[len(args)-1] == "/Volumes/Data/Tool.app/Contents/Info.plist" {
+				return []byte("com.example.tool\n"), nil
+			}
+		}
+		return nil, errors.New("unexpected command " + name)
+	}
+	apps, ok := (&SoftwareService{}).getMacApplications()
+	if !ok || len(apps) != 1 || apps[0].BundleID != "com.example.tool" {
+		t.Fatalf("apps = %+v, ok = %v; want Tool with bundle ID com.example.tool", apps, ok)
+	}
+}
