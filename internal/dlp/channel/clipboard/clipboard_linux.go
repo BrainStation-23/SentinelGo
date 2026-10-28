@@ -192,6 +192,7 @@ func (w *poller) check(ctx context.Context) {
 			log.Printf("DLP helper: clipboard not replaced (%v); recording as monitored", err)
 			markMonitored(d.Events)
 		}
+		notifyBlocked(d)
 	}
 	for _, ev := range d.Events {
 		w.sink.Emit(ev)

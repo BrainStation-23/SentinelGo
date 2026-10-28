@@ -289,6 +289,7 @@ func (w *watcher) onUpdate(hwnd uintptr) {
 		} else {
 			w.ownSeq, _, _ = procGetClipboardSequenceNumber.Call()
 		}
+		notifyBlocked(d)
 	}
 	for _, ev := range d.Events {
 		w.sink.Emit(ev)

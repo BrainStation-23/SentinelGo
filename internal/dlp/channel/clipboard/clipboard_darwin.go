@@ -176,6 +176,7 @@ func (w *pbWatcher) check() {
 		// may still be pasteable, so don't claim it was blocked.
 		markMonitored(d.Events)
 	}
+	notifyBlocked(d)
 	for _, ev := range d.Events {
 		w.sink.Emit(ev)
 	}
