@@ -17,6 +17,7 @@ package secrets
 
 import (
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -53,7 +54,7 @@ type filterSpec struct {
 	EntropyBelow   float64    `json:"entropy_below"`
 	EntropyAtMost  float64    `json:"entropy_at_most"`
 	DenyRegex      []string   `json:"deny_regex"`
-	DenyContains   []string   `json:"deny_contains"`
+	DenyContains   []string   `json:"deny_contains_hex"` // hex-encoded; see tools/dlprules
 	DenyMatchRegex []string   `json:"deny_match_regex"`
 	RequireRegex   [][]string `json:"require_regex"`
 }
@@ -386,7 +387,14 @@ func canMatchNewline(re *syntax.Regexp) bool {
 }
 
 func compileFilter(s filterSpec) (*filter, error) {
-	f := &filter{entropyBelow: s.EntropyBelow, entropyAtMost: s.EntropyAtMost, denyContains: s.DenyContains}
+	f := &filter{entropyBelow: s.EntropyBelow, entropyAtMost: s.EntropyAtMost}
+	for _, h := range s.DenyContains {
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			return nil, fmt.Errorf("deny_contains_hex %q: %w", h, err)
+		}
+		f.denyContains = append(f.denyContains, string(b))
+	}
 	var err error
 	if f.deny, err = compileAll(s.DenyRegex); err != nil {
 		return nil, err
