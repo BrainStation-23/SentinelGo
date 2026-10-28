@@ -17,24 +17,6 @@ import (
 	"sentinelgo/internal/dlp/policy"
 )
 
-// recordingSink collects events the hub passes on.
-type recordingSink struct {
-	mu  sync.Mutex
-	evs []events.Event
-}
-
-func (s *recordingSink) Emit(ev events.Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evs = append(s.evs, ev)
-}
-
-func (s *recordingSink) events() []events.Event {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]events.Event(nil), s.evs...)
-}
-
 // fakeChannel records each Run's policy version and emits one event per run,
 // claiming to be someone else.
 type fakeChannel struct {
