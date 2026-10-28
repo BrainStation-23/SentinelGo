@@ -141,7 +141,7 @@ func (h *Hub) Sessions() []Info {
 	defer h.mu.Unlock()
 	out := make([]Info, 0, len(h.helpers))
 	for hp := range h.helpers {
-		out = append(out, Info{User: hp.id.User, State: hp.state})
+		out = append(out, Info{User: hp.id.User, State: hp.state, SessionID: hp.id.SessionID})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
 	return out
