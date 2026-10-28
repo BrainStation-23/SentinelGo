@@ -42,6 +42,7 @@ type debugDump struct {
 	Software    []swsvc.SoftwareInfo `json:"software"`
 	Services    []models.ServiceInfo `json:"services"`
 	AuditLogs   []models.AuditLog    `json:"auditlogs"`
+	DLP         *DLPStatus           `json:"dlp,omitempty"` // state only, never content
 }
 
 // loadConfigBestEffort loads the config but never fails: a debug dump must work
@@ -135,6 +136,10 @@ func HandleDebugDump() {
 		Software:    collectSoftware(),
 		Services:    collectServices(),
 		AuditLogs:   collectAuditLogsLive(ctx, cfg),
+	}
+	if cfg != nil {
+		st := dlpStatus(cfg)
+		dump.DLP = &st
 	}
 	printJSON(dump)
 }

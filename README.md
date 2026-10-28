@@ -175,6 +175,9 @@ sentinelgo -collect-logs        # collect audit logs now
 sentinelgo -upload-logs         # flush pending audit logs
 sentinelgo -software-list       # show installed software inventory
 sentinelgo -agent-info-update   # refresh hardware/system inventory
+
+sentinelgo dlp status [-json]   # DLP state from the cached policy (admin/root)
+sentinelgo dlp test [-file F]   # run the cached DLP policy on a file or stdin; prints masked findings only
 ```
 
 Full reference: [`docs/agent-commands-guide.md`](docs/agent-commands-guide.md)
