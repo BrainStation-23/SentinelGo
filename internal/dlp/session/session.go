@@ -28,6 +28,7 @@ type Supervisor interface {
 
 // Info is one session helper's state, as reported to the backend.
 type Info struct {
-	User  string `json:"user"`
-	State string `json:"state"` // e.g. "running", "restarting"
+	User      string `json:"user"`
+	State     string `json:"state"`                // e.g. "running", "starting", "restarting"
+	SessionID string `json:"session_id,omitempty"` // OS session (Windows) or uid (Unix)
 }

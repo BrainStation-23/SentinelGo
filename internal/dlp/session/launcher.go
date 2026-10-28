@@ -198,10 +198,16 @@ func (s *launchSupervisor) Stop() {
 // starting or restarting.
 func (s *launchSupervisor) Sessions() []Info {
 	out := s.Hub.Sessions()
+	connected := map[string]bool{}
+	for _, in := range out {
+		connected[in.SessionID] = true
+	}
 	s.mu.Lock()
 	for id, h := range s.helpers {
-		if h.state == stateRestarting || h.state == stateFailed {
-			out = append(out, Info{User: "session " + id, State: h.state})
+		// A started helper shows as "starting" until it connects; then the
+		// hub lists it.
+		if !connected[id] {
+			out = append(out, Info{User: "session " + id, State: h.state, SessionID: id})
 		}
 	}
 	s.mu.Unlock()

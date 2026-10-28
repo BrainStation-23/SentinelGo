@@ -193,3 +193,15 @@ func TestManualSupervisor(t *testing.T) {
 	m.Apply(context.Background(), compiled(t, "v2", true))
 	m.Stop()
 }
+
+// A started helper that hasn't connected yet is reported as starting.
+func TestLauncher_StartingHelperVisible(t *testing.T) {
+	l := &fakeLauncher{started: map[string][]*fakeProc{}}
+	s := newTestSupervisor(l)
+	l.set("4")
+	s.reconcile(time.Now())
+	got := s.Sessions()
+	if len(got) != 1 || got[0].State != stateStarting || got[0].SessionID != "4" {
+		t.Errorf("Sessions() = %+v, want session 4 starting", got)
+	}
+}
