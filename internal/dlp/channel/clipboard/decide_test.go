@@ -100,3 +100,34 @@ func TestDetectorName(t *testing.T) {
 		}
 	}
 }
+
+func TestDecide_ExceptionPathEitherSeparator(t *testing.T) {
+	p := compile(t, strings.Replace(blockCards, `["KeePassXC"]`, `["C:/Program Files/KeePassXC/KeePassXC.exe"]`, 1))
+	src := events.SourceApp{Path: `C:\Program Files\KeePassXC\keepassxc.exe`}
+	if d := Decide(p, "4111111111111111", src, now); d.Block {
+		t.Error("forward-slash exemption didn't match a backslash path")
+	}
+}
+
+// The same text from another app is a new copy (an exempt app's copy must
+// not let a protected app's copy through).
+func TestDedupeKey_IncludesSource(t *testing.T) {
+	a := dedupeKey("secret", events.SourceApp{Name: "keepassxc.exe"})
+	b := dedupeKey("secret", events.SourceApp{Name: "slack.exe"})
+	if a == b {
+		t.Error("same key for different source apps")
+	}
+	if a != dedupeKey("secret", events.SourceApp{Name: "keepassxc.exe"}) {
+		t.Error("key not stable")
+	}
+}
+
+func TestMarkMonitored(t *testing.T) {
+	evs := []events.Event{{Action: events.ActionBlocked}, {Action: events.ActionBlocked}}
+	markMonitored(evs)
+	for _, ev := range evs {
+		if ev.Action != events.ActionMonitored {
+			t.Errorf("action = %s", ev.Action)
+		}
+	}
+}

@@ -4,10 +4,10 @@ package clipboard
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"time"
@@ -225,7 +225,7 @@ type watcher struct {
 	sink channel.EventSink
 
 	ownSeq    uintptr  // sequence number after our own write
-	lastHash  [32]byte // last content scanned...
+	lastKey   [32]byte // last content + source app scanned...
 	lastBlock bool     // ...and whether it was blocked
 }
 
@@ -272,16 +272,21 @@ func (w *watcher) onUpdate(hwnd uintptr) {
 	if !ok || text == "" {
 		return
 	}
-	// Re-copying the same text: a monitor event was already recorded, but a
-	// blocked secret copied again must be blocked again.
-	hash := sha256.Sum256([]byte(text))
-	if hash == w.lastHash && !w.lastBlock {
+	// Re-copying the same text from the same app: a monitor event was
+	// already recorded. A blocked secret copied again is blocked again, and
+	// the same text from another app (one a policy doesn't exempt) is new.
+	key := dedupeKey(text, src)
+	if key == w.lastKey && !w.lastBlock {
 		return
 	}
 	d := Decide(w.p, text, src, time.Now())
-	w.lastHash, w.lastBlock = hash, d.Block
+	w.lastKey, w.lastBlock = key, d.Block
 	if d.Block {
-		if err := w.replace(hwnd, d.Message); err == nil {
+		if err := w.replace(hwnd, d.Message, seq); err != nil {
+			// The content is still there: don't claim it was blocked.
+			log.Printf("DLP helper: clipboard not replaced (%v); recording as monitored", err)
+			markMonitored(d.Events)
+		} else {
 			w.ownSeq, _, _ = procGetClipboardSequenceNumber.Call()
 		}
 	}
@@ -314,7 +319,9 @@ func (w *watcher) read(hwnd uintptr) (text string, src events.SourceApp, ok bool
 }
 
 // concealed reports whether the copy came from a password manager or other
-// app that asked monitors to ignore it.
+// app that asked monitors to ignore it. Any app can set these markers: with
+// ignore_concealed the admin chooses to trust them, which fits the threat
+// model (accidental leaks, not a user deliberately evading DLP).
 func concealed() bool {
 	for _, f := range []uintptr{fmtExcludeMonitor(), fmtViewerIgnore()} {
 		if r, _, _ := procIsClipboardFormatAvailable.Call(f); f != 0 && r != 0 {
@@ -336,11 +343,20 @@ func concealed() bool {
 
 // replace puts msg on the clipboard in place of the content, marked so
 // monitors, Win+V history and cloud clipboard skip it.
-func (w *watcher) replace(hwnd uintptr, msg string) error {
+// errNewerCopy: another copy replaced the scanned one before we could act;
+// that copy gets its own update.
+var errNewerCopy = errors.New("a newer copy replaced the scanned content")
+
+// replace swaps the content scanned at sequence number seq for msg, unless
+// a newer copy has arrived meanwhile (that one is judged on its own).
+func (w *watcher) replace(hwnd uintptr, msg string, seq uintptr) error {
 	if !openClipboard(hwnd) {
 		return errors.New("clipboard busy")
 	}
 	defer func() { _, _, _ = procCloseClipboard.Call() }()
+	if now, _, _ := procGetClipboardSequenceNumber.Call(); now != seq {
+		return errNewerCopy
+	}
 	if r, _, err := procEmptyClipboard.Call(); r == 0 {
 		return err
 	}
@@ -415,10 +431,13 @@ func globalText(h uintptr) string {
 func globalDWORD(h uintptr) (uint32, bool) {
 	size, _, _ := procGlobalSize.Call(h)
 	p := globalLock(h)
-	if p == nil || size < 4 {
+	if p == nil {
 		return 0, false
 	}
 	defer func() { _, _, _ = procGlobalUnlock.Call(h) }()
+	if size < 4 {
+		return 0, false
+	}
 	return *(*uint32)(p), true
 }
 

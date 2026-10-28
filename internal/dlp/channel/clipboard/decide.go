@@ -1,6 +1,7 @@
 package clipboard
 
 import (
+	"crypto/sha256"
 	"strings"
 	"time"
 
@@ -92,6 +93,20 @@ func DetectorName(id string) string {
 	return name
 }
 
+// dedupeKey identifies a copy for "same as last time": the text and the app
+// it came from (the same text from another app may be judged differently).
+func dedupeKey(text string, src events.SourceApp) [32]byte {
+	return sha256.Sum256([]byte(src.Path + "\x00" + src.Name + "\x00" + src.BundleID + "\x00" + text))
+}
+
+// markMonitored records events of a copy that couldn't be replaced as
+// monitored: the content is still on the clipboard.
+func markMonitored(evs []events.Event) {
+	for i := range evs {
+		evs[i].Action = events.ActionMonitored
+	}
+}
+
 // excepted reports whether src matches one of the policy's exempted apps, by
 // executable name (with or without .exe), full path or bundle id,
 // case-insensitively.
@@ -99,7 +114,10 @@ func excepted(apps []string, src events.SourceApp) bool {
 	if len(apps) == 0 {
 		return false
 	}
-	norm := func(s string) string { return strings.TrimSuffix(strings.ToLower(s), ".exe") }
+	// Case-insensitive, either path separator, with or without ".exe".
+	norm := func(s string) string {
+		return strings.TrimSuffix(strings.ReplaceAll(strings.ToLower(s), `\`, "/"), ".exe")
+	}
 	candidates := []string{norm(src.Name), norm(src.Path), norm(src.BundleID)}
 	if i := strings.LastIndexAny(src.Path, `/\`); i >= 0 {
 		candidates = append(candidates, norm(src.Path[i+1:])) // either separator, whatever the OS
