@@ -113,6 +113,9 @@ type Config struct {
 	EdgeFunctionURL        string   `json:"edge_function_url"`        // Edge Function URL for software data
 	ServicesSyncEnabled    bool     `json:"services_sync_enabled"`    // Enable OS services collection
 	ServicesUpdateInterval Duration `json:"services_update_interval"` // How often to collect OS services (default 5m)
+	// DLPEnabled is the device-local DLP kill switch. false turns DLP off on this
+	// device whatever the server-side policy says (for troubleshooting).
+	DLPEnabled bool `json:"dlp_enabled"`
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
@@ -223,6 +226,7 @@ func Load(path string) (*Config, error) {
 		AuditLogsEnabled:       true,                      // Enable audit logs by default
 		ServicesSyncEnabled:    true,                      // Enable services collection by default
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
+		DLPEnabled:             true,                      // DLP stays off until the server sends an enabled policy
 	}
 
 	if path == "" {

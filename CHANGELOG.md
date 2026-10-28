@@ -15,6 +15,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ### Added
 
+- Groundwork for clipboard Data Loss Prevention (DLP): a new `internal/dlp` subsystem the service starts at boot, and a `dlp_enabled` setting in `config.json` (default `true`). DLP stays off until the server sends a policy that enables it; `dlp_enabled: false` turns it off on that device whatever the server says. Nothing is enforced yet: watching the clipboard comes in later releases (#258).
 - macOS: the software inventory includes each app's bundle ID (such as `com.tinyspeck.slackmacgap`) even when Spotlight indexing is off, or Spotlight couldn't be queried. The agent then reads it from the app's `Info.plist`. The server needs the bundle ID to tell Mac App Store apps apart and to link them to App Catalog apps (#249).
 - Network exposure: each risky service the host firewall lets in now says whom it lets in: `remote_scope` is `any`, `local_subnet`, `specific` (with the addresses in `remote_addresses`, up to 10) or `unknown`. `on_public_address` marks a service on a public IP address. On Windows this comes from the allow rules' remote addresses (Windows' File and Printer Sharing rules usually allow only the local subnet), on Linux from the ufw rule's source or the firewalld zone's or rich rule's source, and a firewall that's off counts as `any`. The agent reports the `exposure_scope_v1` capability (#251).
 

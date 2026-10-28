@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
@@ -627,6 +628,36 @@ func TestStartLoggingService_StartsWithoutAuth(t *testing.T) {
 	}
 	if err := mi.loggingService.Stop(); err != nil {
 		t.Errorf("logging Stop() error: %v", err)
+	}
+}
+
+// ── startDLP ────────────────────────────────────────────────────────────────
+
+func TestStartDLP_LocallyDisabled(t *testing.T) {
+	mi := NewMainIntegrationWith(&config.Config{DLPEnabled: false}, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	if mi.dlpManager == nil {
+		t.Fatal("dlpManager should be set so its state is reported")
+	}
+	if got := mi.dlpManager.State(); got != dlp.StateDisabledLocal {
+		t.Errorf("DLP state = %s, want %s", got, dlp.StateDisabledLocal)
+	}
+	if got := mi.GetStatus()["dlp"]; got != string(dlp.StateDisabledLocal) {
+		t.Errorf("GetStatus()[dlp] = %v, want %s", got, dlp.StateDisabledLocal)
+	}
+}
+
+func TestStartDLP_NoPolicyStaysOff(t *testing.T) {
+	mi := NewMainIntegrationWith(&config.Config{DLPEnabled: true}, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	if got := mi.dlpManager.State(); got != dlp.StateNoPolicy {
+		t.Errorf("DLP state = %s, want %s", got, dlp.StateNoPolicy)
+	}
+	if err := mi.Stop(); err != nil {
+		t.Errorf("Stop() error: %v", err)
+	}
+	if got := mi.dlpManager.State(); got != dlp.StateStopped {
+		t.Errorf("DLP state after Stop = %s, want %s", got, dlp.StateStopped)
 	}
 }
 
