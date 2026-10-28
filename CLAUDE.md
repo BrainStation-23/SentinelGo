@@ -40,6 +40,7 @@ internal/
   constants/           shared constants
 
 scripts/               Release, diagnostics, and pre-release checks
+tools/dlprules/        DLP secrets ruleset generator (own go.mod; run via scripts/update-dlp-rules.sh)
 release/               Compiled binaries (never edit directly)
 ```
 

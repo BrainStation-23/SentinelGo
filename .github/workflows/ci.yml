@@ -231,6 +231,13 @@ jobs:
         shell: bash
         run: go test -timeout=5m -coverprofile=coverage.out -coverpkg=./... -short ./...
 
+      # tools/dlprules (the DLP rules generator) is its own module, so ./...
+      # above doesn't reach it. Linux only: it has no platform-specific code.
+      - name: Run DLP rules generator tests
+        if: runner.os == 'Linux'
+        working-directory: tools/dlprules
+        run: go test -short ./...
+
       # The race detector needs cgo, so only this step builds with
       # CGO_ENABLED=1; the tests above still run the way releases are built.
       # It shares this runner instead of starting its own.
