@@ -13,6 +13,22 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- macOS: the software inventory includes each app's bundle ID (such as `com.tinyspeck.slackmacgap`) even when Spotlight indexing is off, or Spotlight couldn't be queried. The agent then reads it from the app's `Info.plist`. The server needs the bundle ID to tell Mac App Store apps apart and to link them to App Catalog apps (#249).
+- Network exposure: each risky service the host firewall lets in now says whom it lets in: `remote_scope` is `any`, `local_subnet`, `specific` (with the addresses in `remote_addresses`, up to 10) or `unknown`. `on_public_address` marks a service on a public IP address. On Windows this comes from the allow rules' remote addresses (Windows' File and Printer Sharing rules usually allow only the local subnet), on Linux from the ufw rule's source or the firewalld zone's or rich rule's source, and a firewall that's off counts as `any`. The agent reports the `exposure_scope_v1` capability (#251).
+
+### Changed
+
+- Network exposure has a new **Critical** level, for a risky service let in from any address on a public IP address. A service let in only from the local subnet or listed addresses is now Medium instead of High, and the recommendation says whom it's let in from (#251).
+- Windows: firewall allow rules limited to an interface (such as Wi-Fi only), an interface type or a Windows service now count only for connections on that interface, or for the process hosting that service. Before, they counted everywhere, so some services were reported as reachable when they weren't (#251).
+
+### Fixed
+
+- Network exposure (follow-up to #251, from the review of #255): a service is rated Critical only when the firewall lets it in on a network that has a public address. On Windows, a rule for the private network only no longer makes it Critical because another network has a public address (Linux accepts traffic for any of its addresses on any interface, so a ufw or firewalld rule limited to one interface still counts), and an IPv6-only socket no longer counts the host's public IPv4 address. Special-use ranges (benchmarking `198.18.0.0/15`, documentation, reserved) don't count as public. A source of `0.0.0.0/0` or `::/0` is `any`, not `specific`. Windows' `DefaultGateway` keyword is `specific`, not `any`. A firewalld zone bound to an interface as well as sources lets in any address. An allow whose ufw profile or firewalld service can't be read now adds whom it may let in to the scope (`unknown` when that's anyone) instead of being ignored. A service whose firewall state couldn't be verified is no longer described as "allowed in from any address", and a service on two networks is listed once with both profiles.
+- Linux SSH (follow-up to #250): a quoted `Include` in `sshd_config` is followed, and an `Include` outside `/etc/ssh` is skipped. When there's no sshd binary or config at the standard paths but the `ssh` or `sshd` unit is running, the settings are `Unknown` instead of `Not installed`. The settings are sshd's global ones; a `Match` block's overrides aren't reported.
+- Linux: SSH root login, password authentication and key authentication no longer show as Unknown on stock Ubuntu and Debian hosts. The agent reads the settings sshd actually uses (`sshd -T`), and when that fails it parses `sshd_config` the way sshd does: it follows `Include` files such as `sshd_config.d/50-cloud-init.conf`, keeps the first value of a setting, ignores `Match` blocks and uses OpenSSH's defaults for settings that aren't set. `PermitRootLogin forced-commands-only` and `without-password` now count as Disabled. A device without an SSH server reports "Not installed". Hosts that never set `PasswordAuthentication` now show it as Enabled, which is OpenSSH's default, so the console starts recommending to disable it (#250).
+
 ## [v3.7.2] - 2026-10-27
 
 ### Added

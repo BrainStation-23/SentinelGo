@@ -506,14 +506,16 @@ func TestCollectSecureBoot(t *testing.T) {
 func TestCollectIdentityAccessControl_Defaults(t *testing.T) {
 	stubLinuxSecurityRoot(t)
 	stubLinuxSecurityCommands(t, nil)
-	id := collectIdentityAccessControl()
-	if id.SSHRootLogin != "Unknown" || id.SSHPasswordAuth != "Unknown" || id.SudoPrivilege != "Unknown" ||
+	ssh := collectSSHConfig()
+	id := collectIdentityAccessControl(ssh)
+	if id.SSHRootLogin != "Not installed" || id.SSHPasswordAuth != "Not installed" || id.SudoPrivilege != "Unknown" ||
 		id.PendingSecurityPatches != 0 || id.PatchComplianceStatus != "Compliant" {
 		t.Errorf("id = %+v", id)
 	}
-	net := collectNetworkExposure(nil, id, nil)
-	if net.SSHKeyAuthStatus != "Unknown" {
-		t.Errorf("SSHKeyAuthStatus = %q", net.SSHKeyAuthStatus)
+	net := collectNetworkExposure(nil, ssh, nil)
+	if net.SSHRootLoginStatus != "Not installed" || net.SSHPasswordAuthStatus != "Not installed" ||
+		net.SSHKeyAuthStatus != "Not installed" {
+		t.Errorf("net = %+v", net)
 	}
 }
 
@@ -663,9 +665,120 @@ func TestCollectKernelLockdown(t *testing.T) {
 	}
 }
 
-func TestSSHYesNoState_UnrecognisedValue(t *testing.T) {
-	root, _, _ := parseSSHConfigData("PermitRootLogin forced-commands-only\n")
-	if root != "Unknown" {
-		t.Errorf("forced-commands-only: got %q, want Unknown", root)
+func TestSSHRootLoginState_KeyOnlyValues(t *testing.T) {
+	for _, v := range []string{"forced-commands-only", "without-password", "prohibit-password", "no"} {
+		root, _, _ := parseSSHConfigData("PermitRootLogin " + v + "\n")
+		if root != "Disabled" {
+			t.Errorf("%s: got %q, want Disabled", v, root)
+		}
+	}
+	if root, _, _ := parseSSHConfigData("PermitRootLogin maybe\n"); root != "Unknown" {
+		t.Errorf("unrecognised value: got %q, want Unknown", root)
+	}
+}
+
+func TestCollectSSHConfig(t *testing.T) {
+	const ubuntuDefault = "Include /etc/ssh/sshd_config.d/*.conf\n" +
+		"#PermitRootLogin prohibit-password\n#PubkeyAuthentication yes\n" +
+		"KbdInteractiveAuthentication no\nUsePAM yes\n"
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  sshSettings
+		cmds  map[string]linuxCmdResult
+	}{
+		{"no sshd binary or config", nil, sshSettings{"Not installed", "Not installed", "Not installed"}, nil},
+		{
+			"no sshd at the standard paths, but the unit is active",
+			nil,
+			sshSettings{"Unknown", "Unknown", "Unknown"},
+			map[string]linuxCmdResult{"systemctl is-active sshd": {out: "active\n"}},
+		},
+		{
+			"quoted Include",
+			map[string]string{
+				"/etc/ssh/sshd_config":                 "Include \"/etc/ssh/sshd_config.d/*.conf\"\n",
+				"/etc/ssh/sshd_config.d/50-local.conf": "PasswordAuthentication no\n",
+			},
+			sshSettings{"Disabled", "Disabled", "Enabled"},
+			nil,
+		},
+		{
+			"Include outside /etc/ssh is skipped",
+			map[string]string{
+				"/etc/ssh/sshd_config": "Include /tmp/evil.conf ../../tmp/evil.conf\n",
+				"/tmp/evil.conf":       "PasswordAuthentication no\nPermitRootLogin yes\n",
+			},
+			sshSettings{"Disabled", "Enabled", "Enabled"},
+			nil,
+		},
+		{"binary but unreadable config", map[string]string{"/usr/sbin/sshd": ""}, sshSettings{"Unknown", "Unknown", "Unknown"}, nil},
+		{
+			"Ubuntu default, commented-only",
+			map[string]string{"/etc/ssh/sshd_config": ubuntuDefault},
+			sshSettings{"Disabled", "Enabled", "Enabled"},
+			nil,
+		},
+		{
+			"cloud-init drop-in disables passwords",
+			map[string]string{
+				"/etc/ssh/sshd_config":                       ubuntuDefault,
+				"/etc/ssh/sshd_config.d/50-cloud-init.conf":  "PasswordAuthentication no\n",
+				"/etc/ssh/sshd_config.d/60-other.conf":       "PasswordAuthentication yes\nPermitRootLogin yes\n",
+				"/etc/ssh/sshd_config.d/ignored.conf.backup": "PubkeyAuthentication no\n",
+			},
+			sshSettings{"Enabled", "Disabled", "Enabled"},
+			nil,
+		},
+		{
+			"relative Include and Match in included file",
+			map[string]string{
+				"/etc/ssh/sshd_config":   "Include extra.conf\nPubkeyAuthentication no\n",
+				"/etc/ssh/extra.conf":    "Match User bob\nPasswordAuthentication no\n",
+				"/usr/sbin/sshd":         "",
+				"/etc/ssh/unrelated.txt": "PermitRootLogin yes\n",
+			},
+			sshSettings{"Disabled", "Enabled", "Disabled"},
+			nil,
+		},
+		{
+			"Include loop terminates",
+			map[string]string{"/etc/ssh/sshd_config": "Include sshd_config\nPasswordAuthentication no\n"},
+			sshSettings{"Disabled", "Disabled", "Enabled"},
+			nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := stubLinuxSecurityRoot(t)
+			stubLinuxSecurityCommands(t, c.cmds)
+			for p, content := range c.files {
+				writeRootFile(t, root, p, content)
+			}
+			if got := collectSSHConfig(); got != c.want {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestCollectSSHConfig_SSHDTestWins: when `sshd -T` succeeds its effective
+// config is reported, not the config file's.
+func TestCollectSSHConfig_SSHDTestWins(t *testing.T) {
+	root := stubLinuxSecurityRoot(t)
+	stubLinuxSecurityCommands(t, nil)
+	writeRootFile(t, root, "/usr/sbin/sshd", "")
+	writeRootFile(t, root, "/etc/ssh/sshd_config", "PermitRootLogin no\nPasswordAuthentication no\n")
+	orig := runSSHDTest
+	t.Cleanup(func() { runSSHDTest = orig })
+	runSSHDTest = func() (string, error) {
+		return "port 22\npermitrootlogin yes\npubkeyauthentication no\npasswordauthentication yes\n", nil
+	}
+	if got, want := collectSSHConfig(), (sshSettings{"Enabled", "Enabled", "Disabled"}); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	runSSHDTest = func() (string, error) { return "port 22\n", nil } // incomplete: fall back to the file
+	if got, want := collectSSHConfig(), (sshSettings{"Disabled", "Disabled", "Enabled"}); got != want {
+		t.Errorf("incomplete sshd -T: got %+v, want %+v", got, want)
 	}
 }

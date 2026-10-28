@@ -1,6 +1,7 @@
 package security
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,8 +69,9 @@ func collectSecurity() shared.SecurityInfo {
 	}
 	devEnc := collectDeviceEncryption()
 	hwSec := collectHardwareSecurity()
-	idAccess := collectIdentityAccessControl()
-	netExposure := collectNetworkExposure(ports, idAccess, linuxFirewallCheck(profiles, ports))
+	ssh := collectSSHConfig()
+	idAccess := collectIdentityAccessControl(ssh)
+	netExposure := collectNetworkExposure(ports, ssh, linuxFirewallCheck(profiles, ports))
 
 	posture := generatePostureSummary(fwSec, avProtection, edrXdr, devEnc, hwSec, idAccess, netExposure)
 
@@ -371,34 +373,200 @@ func collectHardwareSecurity() shared.HardwareSecurityInfo {
 	return hw
 }
 
-// parseSSHConfigData parses the contents of an sshd_config file and returns the
-// PermitRootLogin, PasswordAuthentication, and PubkeyAuthentication settings.
-// Commented-out lines are ignored; unknown values leave the field as "Unknown".
+// sshSettings is the sshd configuration reported in the posture: the
+// PermitRootLogin, PasswordAuthentication and PubkeyAuthentication states
+// ("Enabled", "Disabled", "Unknown" or "Not installed").
+type sshSettings struct {
+	rootLogin    string
+	passwordAuth string
+	pubkeyAuth   string
+}
+
+// sshNotInstalled and sshUnknown are the states reported for all three
+// settings when sshd isn't on the host, or its config can't be read.
+const (
+	sshNotInstalled = "Not installed"
+	sshUnknown      = "Unknown"
+)
+
+// sshdConfigDir is where sshd resolves relative Include paths.
+const sshdConfigDir = "/etc/ssh"
+
+// sshdBinaryPaths are sshd's install locations (the same as binpath's).
+var sshdBinaryPaths = []string{"/usr/sbin/sshd", "/sbin/sshd"}
+
+// maxSSHIncludeDepth bounds Include nesting, as sshd does, so an Include
+// loop can't recurse forever.
+const maxSSHIncludeDepth = 16
+
+// runSSHDTest runs `sshd -T`; swapped in tests. It never runs in host-root
+// mode, where sshd would read the real host's config, not the fixture tree.
+var runSSHDTest = func() (string, error) {
+	if securityHostRoot != "" {
+		return "", errors.New("sshd -T is not run against a host root")
+	}
+	return securityRunCommand("sshd", "-T")
+}
+
+// collectSSHConfig works out sshd's global settings from the default config,
+// /etc/ssh/sshd_config: what applies to a connection no Match block matches
+// (an sshd started with -f on another file isn't covered). It prefers
+// `sshd -T`, which prints the effective config (defaults, Include files and
+// all), and falls back to parsing the config files when that fails (missing
+// host keys, an invalid config). When neither the sshd binary nor
+// sshd_config exists, all three settings are "Not installed", unless a
+// standard sshd unit is running, which makes them "Unknown".
+func collectSSHConfig() sshSettings {
+	configPath := securityHostRoot + sshdConfigDir + "/sshd_config"
+	_, cfgErr := os.Stat(configPath)
+	if !sshdInstalled() && cfgErr != nil {
+		if sshdServiceActive() {
+			return sshSettings{sshUnknown, sshUnknown, sshUnknown}
+		}
+		return sshSettings{sshNotInstalled, sshNotInstalled, sshNotInstalled}
+	}
+	if out, err := runSSHDTest(); err == nil {
+		if s, ok := parseSSHEffectiveConfig(out); ok {
+			return s
+		}
+	}
+	var lines []string
+	if err := readSSHGlobalConfig(configPath, 0, &lines); err != nil {
+		return sshSettings{sshUnknown, sshUnknown, sshUnknown}
+	}
+	root, pw, pk := parseSSHConfigData(strings.Join(lines, "\n"))
+	return sshSettings{root, pw, pk}
+}
+
+// sshdInstalled reports whether the sshd binary is at one of its install paths.
+func sshdInstalled() bool {
+	for _, p := range sshdBinaryPaths {
+		if info, err := os.Stat(securityHostRoot + p); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// sshdServiceActive reports whether the ssh or sshd systemd unit is active.
+// A daemon running under another unit name isn't detected.
+func sshdServiceActive() bool {
+	for _, unit := range []string{"ssh", "sshd"} {
+		if out, err := securityRunCommand("systemctl", "is-active", unit); err == nil && strings.TrimSpace(out) == "active" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseSSHEffectiveConfig parses `sshd -T` output: one lowercase "key value"
+// line per setting. ok is false unless all three settings are present.
+func parseSSHEffectiveConfig(out string) (s sshSettings, ok bool) {
+	var seen int
+	for _, line := range strings.Split(out, "\n") {
+		key, val, found := parseSSHConfigLine(line)
+		if !found {
+			continue
+		}
+		switch key {
+		case "permitrootlogin":
+			s.rootLogin = sshRootLoginState(val)
+			seen |= 1
+		case "passwordauthentication":
+			s.passwordAuth = sshYesNoState(val)
+			seen |= 2
+		case "pubkeyauthentication":
+			s.pubkeyAuth = sshYesNoState(val)
+			seen |= 4
+		}
+	}
+	return s, seen == 7
+}
+
+// readSSHGlobalConfig appends the global lines of the sshd_config at path to
+// lines, in the order sshd reads them: Include directives are replaced by the
+// files they match (sorted, relative paths resolved against /etc/ssh, quotes
+// removed), and a Match block ends the global section of the file it's in.
+// Only an unreadable top-level file is an error; an Include that matches
+// nothing is skipped, as sshd does. So is one outside /etc/ssh: the agent
+// reads only sshd's own config directory.
+func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
+	if depth > maxSSHIncludeDepth {
+		return nil
+	}
+	// #nosec G304 G703 - sshd_config and the files it Includes, under the fixed /etc/ssh tree
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, _, ok := parseSSHConfigLine(line)
+		if !ok {
+			continue
+		}
+		switch key {
+		case "match":
+			return nil
+		case "include":
+			for _, pattern := range strings.Fields(strings.TrimSpace(line))[1:] {
+				pattern = strings.Trim(pattern, `"`)
+				if !strings.HasPrefix(pattern, "/") {
+					pattern = sshdConfigDir + "/" + pattern
+				}
+				pattern = filepath.Clean(pattern)
+				if !strings.HasPrefix(pattern, sshdConfigDir+"/") {
+					continue
+				}
+				matches, _ := filepath.Glob(securityHostRoot + pattern)
+				for _, m := range matches {
+					_ = readSSHGlobalConfig(m, depth+1, lines)
+				}
+			}
+		default:
+			*lines = append(*lines, line)
+		}
+	}
+	return nil
+}
+
+// parseSSHConfigData parses sshd_config text and returns the PermitRootLogin,
+// PasswordAuthentication and PubkeyAuthentication states. As in sshd, the
+// first value for a keyword wins, parsing stops at the first Match block, and
+// a keyword that is never set takes the OpenSSH default (PermitRootLogin
+// prohibit-password, PasswordAuthentication yes, PubkeyAuthentication yes).
+// A value sshd wouldn't accept reads as "Unknown".
 func parseSSHConfigData(data string) (rootLogin, passwordAuth, pubkeyAuth string) {
-	rootLogin = "Unknown"
-	passwordAuth = "Unknown"
-	pubkeyAuth = "Unknown"
 	for _, line := range strings.Split(data, "\n") {
 		key, val, ok := parseSSHConfigLine(line)
 		if !ok {
 			continue
 		}
 		switch key {
+		case "match":
+			return sshDefault(rootLogin, "Disabled"), sshDefault(passwordAuth, "Enabled"), sshDefault(pubkeyAuth, "Enabled")
 		case "permitrootlogin":
-			if s := sshYesNoState(val, "prohibit-password"); s != "" {
-				rootLogin = s
+			if rootLogin == "" {
+				rootLogin = sshRootLoginState(val)
 			}
 		case "passwordauthentication":
-			if s := sshYesNoState(val); s != "" {
-				passwordAuth = s
+			if passwordAuth == "" {
+				passwordAuth = sshYesNoState(val)
 			}
 		case "pubkeyauthentication":
-			if s := sshYesNoState(val); s != "" {
-				pubkeyAuth = s
+			if pubkeyAuth == "" {
+				pubkeyAuth = sshYesNoState(val)
 			}
 		}
 	}
-	return
+	return sshDefault(rootLogin, "Disabled"), sshDefault(passwordAuth, "Enabled"), sshDefault(pubkeyAuth, "Enabled")
+}
+
+// sshDefault returns state, or def when the keyword was never set.
+func sshDefault(state, def string) string {
+	if state == "" {
+		return def
+	}
+	return state
 }
 
 // parseSSHConfigLine extracts a lower-cased key/value pair from a single
@@ -415,23 +583,27 @@ func parseSSHConfigLine(line string) (key, val string, ok bool) {
 	return strings.ToLower(fields[0]), strings.ToLower(fields[1]), true
 }
 
-// sshYesNoState maps a "yes"/"no" sshd_config value to "Enabled"/"Disabled".
-// extraDisabled lists additional values (e.g. "prohibit-password") that also
-// count as Disabled. Returns "" when val matches none of these, so the caller
-// can leave the field at its existing default.
-func sshYesNoState(val string, extraDisabled ...string) string {
-	if val == "yes" {
+// sshYesNoState maps a "yes"/"no" sshd_config value to "Enabled"/"Disabled",
+// and anything else to "Unknown".
+func sshYesNoState(val string) string {
+	switch val {
+	case "yes":
 		return "Enabled"
-	}
-	if val == "no" {
+	case "no":
 		return "Disabled"
 	}
-	for _, v := range extraDisabled {
-		if val == v {
-			return "Disabled"
-		}
+	return sshUnknown
+}
+
+// sshRootLoginState maps a PermitRootLogin value. Only "yes" allows root to
+// log in with a password; prohibit-password (and its legacy alias
+// without-password) and forced-commands-only allow keys only.
+func sshRootLoginState(val string) string {
+	switch val {
+	case "prohibit-password", "without-password", "forced-commands-only":
+		return "Disabled"
 	}
-	return ""
+	return sshYesNoState(val)
 }
 
 // countAptSecurityUpdates counts pending security updates from apt-get -s upgrade output.
@@ -462,14 +634,10 @@ func countYumSecurityUpdates(output string) int {
 	return count
 }
 
-func collectIdentityAccessControl() shared.IdentityAccessControlInfo {
+func collectIdentityAccessControl(ssh sshSettings) shared.IdentityAccessControlInfo {
 	var id shared.IdentityAccessControlInfo
-	id.SSHRootLogin = "Unknown"
-	id.SSHPasswordAuth = "Unknown"
-
-	if data, err := os.ReadFile(securityHostRoot + "/etc/ssh/sshd_config"); err == nil {
-		id.SSHRootLogin, id.SSHPasswordAuth, _ = parseSSHConfigData(string(data))
-	}
+	id.SSHRootLogin = ssh.rootLogin
+	id.SSHPasswordAuth = ssh.passwordAuth
 
 	id.SudoPrivilege = detectSudoPrivilegeState()
 
@@ -557,16 +725,11 @@ func pendingPatchesFromYum() int {
 	return countYumSecurityUpdates(out)
 }
 
-func collectNetworkExposure(ports []shared.ListeningPort, id shared.IdentityAccessControlInfo, check firewallCheck) shared.NetworkExposureAccessInfo {
+func collectNetworkExposure(ports []shared.ListeningPort, ssh sshSettings, check firewallCheck) shared.NetworkExposureAccessInfo {
 	info := analyzeNetworkExposure(ports, check)
-
-	info.SSHRootLoginStatus = id.SSHRootLogin
-	info.SSHPasswordAuthStatus = id.SSHPasswordAuth
-
-	info.SSHKeyAuthStatus = "Unknown"
-	if data, err := os.ReadFile(securityHostRoot + "/etc/ssh/sshd_config"); err == nil {
-		_, _, info.SSHKeyAuthStatus = parseSSHConfigData(string(data))
-	}
+	info.SSHRootLoginStatus = ssh.rootLogin
+	info.SSHPasswordAuthStatus = ssh.passwordAuth
+	info.SSHKeyAuthStatus = ssh.pubkeyAuth
 	return info
 }
 

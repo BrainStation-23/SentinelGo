@@ -623,8 +623,8 @@ type IdentityAccessControlInfo struct {
 	TouchIDStatus        string `json:"touch_id_status,omitempty"`        // "Enabled", "Disabled", "Unknown"
 
 	// Linux
-	SSHRootLogin    string `json:"ssh_root_login,omitempty"`    // "Enabled", "Disabled", "Unknown"
-	SSHPasswordAuth string `json:"ssh_password_auth,omitempty"` // "Enabled", "Disabled", "Unknown"
+	SSHRootLogin    string `json:"ssh_root_login,omitempty"`    // "Enabled", "Disabled", "Unknown", "Not installed"
+	SSHPasswordAuth string `json:"ssh_password_auth,omitempty"` // "Enabled", "Disabled", "Unknown", "Not installed"
 	SudoPrivilege   string `json:"sudo_privilege,omitempty"`    // "Configured", "Misconfigured", "Disabled", "Unknown"
 
 	// Patch & Update Compliance (New)
@@ -648,9 +648,9 @@ type NetworkExposureAccessInfo struct {
 	RiskyServices []RiskyService `json:"risky_services"`
 
 	// Linux Specific SSH
-	SSHRootLoginStatus    string `json:"ssh_root_login_status,omitempty"`    // "Enabled", "Disabled", "Unknown"
-	SSHPasswordAuthStatus string `json:"ssh_password_auth_status,omitempty"` // "Enabled", "Disabled", "Unknown"
-	SSHKeyAuthStatus      string `json:"ssh_key_auth_status,omitempty"`      // "Enabled", "Disabled", "Unknown"
+	SSHRootLoginStatus    string `json:"ssh_root_login_status,omitempty"`    // "Enabled", "Disabled", "Unknown", "Not installed"
+	SSHPasswordAuthStatus string `json:"ssh_password_auth_status,omitempty"` // "Enabled", "Disabled", "Unknown", "Not installed"
+	SSHKeyAuthStatus      string `json:"ssh_key_auth_status,omitempty"`      // "Enabled", "Disabled", "Unknown", "Not installed"
 }
 
 // RiskyService is a commonly attacked service listening on the network.
@@ -668,6 +668,19 @@ type RiskyService struct {
 	// ReachableProfiles are the active Windows firewall profiles that let
 	// connections in (Windows only).
 	ReachableProfiles []string `json:"reachable_profiles,omitempty"`
+	// RemoteScope is the widest set of remote addresses an allow rule lets
+	// in: "any", "local_subnet", "specific" or "unknown". "any" when the
+	// firewall is "disabled"; empty unless Firewall is "allowed" or
+	// "disabled" (#251).
+	RemoteScope string `json:"remote_scope,omitempty"`
+	// RemoteAddresses lists the allowed remote ranges when RemoteScope is
+	// "specific" (at most 10), e.g. ["10.10.0.0/16", "Intranet"].
+	RemoteAddresses []string `json:"remote_addresses,omitempty"`
+	// OnPublicAddress: the socket is bound to a public unicast address (not
+	// private, ULA, CGNAT, link-local or special-use), or it's a wildcard
+	// socket and the host has one of a family it accepts; when the firewall
+	// lets connections in only on some networks (Windows), on one of those.
+	OnPublicAddress bool `json:"on_public_address,omitempty"`
 }
 
 // 9. Security Posture Summary
@@ -680,7 +693,7 @@ type SecurityPostureSummary struct {
 	EncryptionStatus         string   `json:"encryption_status"`          // "Encrypted", "Unencrypted", "Partially Encrypted"
 	HardwareSecurityControls string   `json:"hardware_security_controls"` // "Strong", "Weak", "Unsupported"
 	IdentitySecurityControls string   `json:"identity_security_controls"` // "Configured", "At Risk"
-	NetworkExposureLevel     string   `json:"network_exposure_level"`     // "Low", "Medium", "High"
+	NetworkExposureLevel     string   `json:"network_exposure_level"`     // "Low", "Medium", "High", "Critical"
 	Recommendations          []string `json:"recommendations"`
 }
 

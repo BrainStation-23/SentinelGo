@@ -3,6 +3,7 @@ package security
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"sentinelgo/internal/osinfo/shared"
@@ -60,7 +61,7 @@ func TestUFW_Check(t *testing.T) {
 		{"tcp", 445, firewallUnknown},   // "Samba Custom" isn't an installed profile; OUT rule skipped
 	}
 	for _, tt := range tests {
-		if got, _ := check(shared.ListeningPort{Protocol: tt.proto, Port: tt.port}); got != tt.want {
+		if got, _ := vp(check(shared.ListeningPort{Protocol: tt.proto, Port: tt.port})); got != tt.want {
 			t.Errorf("%s/%d = %q, want %q", tt.proto, tt.port, got, tt.want)
 		}
 	}
@@ -68,14 +69,14 @@ func TestUFW_Check(t *testing.T) {
 
 func TestUFW_DefaultAllowAndAllPorts(t *testing.T) {
 	st := parseUFWStatus("Status: active\nDefault: allow (incoming), allow (outgoing)\n")
-	if got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := vp(st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != firewallAllowed {
 		t.Errorf("default allow: %q", got)
 	}
 	st = parseUFWStatus("Status: active\nDefault: reject (incoming)\n\nTo  Action  From\n--  ------  ----\nAnywhere                   ALLOW IN    10.0.0.0/8\n")
-	if got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := vp(st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != firewallAllowed {
 		t.Errorf("allow all ports from a subnet: %q", got)
 	}
-	if got, _ := parseUFWStatus("Status: active\nDefault: deny (incoming)\n").check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22}); got != firewallBlocked {
+	if got, _ := vp(parseUFWStatus("Status: active\nDefault: deny (incoming)\n").check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22})); got != firewallBlocked {
 		t.Errorf("no rules, default deny: %q", got)
 	}
 	if parseUFWStatus("Status: inactive\n").active {
@@ -154,7 +155,7 @@ func TestFirewalld_Check(t *testing.T) {
 		{"tcp", 3389, firewallUnknown}, // custom-db can't be resolved
 	}
 	for _, tt := range tests {
-		if got, _ := check(shared.ListeningPort{Protocol: tt.proto, Port: tt.port}); got != tt.want {
+		if got, _ := vp(check(shared.ListeningPort{Protocol: tt.proto, Port: tt.port})); got != tt.want {
 			t.Errorf("%s/%d = %q, want %q", tt.proto, tt.port, got, tt.want)
 		}
 	}
@@ -166,7 +167,7 @@ func TestFirewalld_Check(t *testing.T) {
 		return specs, ok || name == "custom-db"
 	}
 	for _, port := range []uint16{3389, 139} {
-		if got, _ := firewalldCheck(zones, known, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: port}); got != firewallBlocked {
+		if got, _ := vp(firewalldCheck(zones, known, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: port})); got != firewallBlocked {
 			t.Errorf("tcp/%d = %q, want blocked", port, got)
 		}
 	}
@@ -175,14 +176,14 @@ func TestFirewalld_Check(t *testing.T) {
 func TestFirewalld_DefaultZoneWhenNoneActive(t *testing.T) {
 	zones := parseFirewalldZones("public (default)\n  target: default\n  services: ssh\ntrusted\n  target: ACCEPT\n")
 	check := firewalldCheck(zones, firewalldServices, nil, nil)
-	if got, _ := check(shared.ListeningPort{Protocol: "tcp", Port: 22}); got != firewallAllowed {
+	if got, _ := vp(check(shared.ListeningPort{Protocol: "tcp", Port: 22})); got != firewallAllowed {
 		t.Errorf("ssh = %q", got)
 	}
-	if got, _ := check(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallBlocked {
+	if got, _ := vp(check(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != firewallBlocked {
 		t.Errorf("smb = %q", got)
 	}
 	zones = parseFirewalldZones("trusted (active)\n  target: ACCEPT\n")
-	if got, _ := firewalldCheck(zones, firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallAllowed {
+	if got, _ := vp(firewalldCheck(zones, firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != firewallAllowed {
 		t.Errorf("trusted zone = %q", got)
 	}
 }
@@ -255,7 +256,7 @@ func TestUFW_ScopedRules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := parseUFWStatus(fmt.Sprintf(header, tt.def) + tt.rules)
-			got, _ := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: tt.addr})
+			got, _ := vp(st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: tt.addr}))
 			if got != tt.want {
 				t.Errorf("verdict = %q, want %q (rules %+v)", got, tt.want, st.rules)
 			}
@@ -278,7 +279,7 @@ func TestUFW_ArrivalInterfaces(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := st.check(nil, newUFWHost(nil, tt.arrival))(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"})
+			got, _ := vp(st.check(nil, newUFWHost(nil, tt.arrival))(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"}))
 			if got != tt.want {
 				t.Errorf("verdict = %q, want %q", got, tt.want)
 			}
@@ -304,7 +305,7 @@ func TestUFW_V6OnlyFromIPv4Pair(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got, _ := st.check(nil, newUFWHost(tt.ports, nil))(v6); got != tt.want {
+			if got, _ := vp(st.check(nil, newUFWHost(tt.ports, nil))(v6)); got != tt.want {
 				t.Errorf("verdict = %q, want %q", got, tt.want)
 			}
 		})
@@ -389,11 +390,11 @@ lab (active)
 		{"192.168.77.7", 445, firewallUnknown}, // interface not found
 	}
 	for _, tt := range tests {
-		if got, _ := check(shared.ListeningPort{Protocol: "tcp", Port: tt.port, Address: tt.addr}); got != tt.want {
+		if got, _ := vp(check(shared.ListeningPort{Protocol: "tcp", Port: tt.port, Address: tt.addr})); got != tt.want {
 			t.Errorf("%s:%d = %q, want %q", tt.addr, tt.port, got, tt.want)
 		}
 	}
-	if got, _ := firewalldCheck(zones, services, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "192.168.1.20"}); got != firewallUnknown {
+	if got, _ := vp(firewalldCheck(zones, services, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "192.168.1.20"})); got != firewallUnknown {
 		t.Errorf("no interface lookup: %q, want unknown", got)
 	}
 }
@@ -415,7 +416,7 @@ func TestFirewalld_DefaultZoneForUnboundInterfaces(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got, _ := firewalldCheck(zones, firewalldServices, nil, tt.arrival)(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"}); got != tt.want {
+			if got, _ := vp(firewalldCheck(zones, firewalldServices, nil, tt.arrival)(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"})); got != tt.want {
 				t.Errorf("ssh = %q, want %q", got, tt.want)
 			}
 		})
@@ -437,7 +438,183 @@ func TestFirewalld_ServiceNamesValidatedAndCached(t *testing.T) {
 	if fmt.Sprint(looked) != "[ssh]" {
 		t.Errorf("looked up %q, want only ssh, once", looked)
 	}
-	if got, _ := check(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != firewallUnknown {
+	if got, _ := vp(check(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != firewallUnknown {
 		t.Errorf("unresolvable name: %q, want unknown", got)
+	}
+}
+
+// TestUFW_RemoteScope: an allow from Anywhere admits any address, one from
+// an address or prefix only that source (#251).
+func TestUFW_RemoteScope(t *testing.T) {
+	// "Samba Custom" resolves here; TestUFW_UnresolvedAllowScope covers it not.
+	apps := parseUFWAppProfiles([]string{ufwAppFixture, "[Samba Custom]\nports=139,445/tcp\n"})
+	check := parseUFWStatus(ufwVerboseFixture).check(apps, ufwHost{})
+	tests := []struct {
+		port         uint16
+		verdict      string
+		scope        string
+		wantAddrList []string
+	}{
+		{22, firewallAllowed, remoteAny, nil},                               // OpenSSH from Anywhere
+		{5432, firewallAllowed, remoteSpecific, []string{"192.168.1.0/24"}}, // narrow deny, then allow from a subnet
+		{3306, firewallBlocked, "", nil},                                    // deny from Anywhere first
+		{5901, firewallAllowed, remoteAny, nil},                             // LIMIT from Anywhere
+	}
+	for _, tt := range tests {
+		r := check(shared.ListeningPort{Protocol: "tcp", Port: tt.port, Address: "0.0.0.0"})
+		scope, addrs := reportedScope(r)
+		if r.verdict != tt.verdict || scope != tt.scope || !slices.Equal(addrs, tt.wantAddrList) {
+			t.Errorf("tcp/%d: %q, %q, %q; want %q, %q, %q", tt.port, r.verdict, scope, addrs, tt.verdict, tt.scope, tt.wantAddrList)
+		}
+	}
+
+	// An allow from a subnet, then one from anywhere: the widest wins. A
+	// deny from anywhere before it stops the scan.
+	st := parseUFWStatus("Status: active\nDefault: deny (incoming)\n\nTo  Action  From\n--  ------  ----\n" +
+		"445/tcp  ALLOW IN  10.0.0.0/8\n445/tcp  ALLOW IN  Anywhere\n" +
+		"139/tcp  ALLOW IN  10.0.0.0/8\n139/tcp  DENY IN  Anywhere\n139/tcp  ALLOW IN  Anywhere\n")
+	if scope, _ := reportedScope(st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0"})); scope != remoteAny {
+		t.Errorf("subnet + anywhere: %q, want any", scope)
+	}
+	r := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 139, Address: "0.0.0.0"})
+	if scope, addrs := reportedScope(r); r.verdict != firewallAllowed || scope != remoteSpecific || !slices.Equal(addrs, []string{"10.0.0.0/8"}) {
+		t.Errorf("subnet, deny all, anywhere: %q, %q, %q; want allowed, specific, [10.0.0.0/8]", r.verdict, scope, addrs)
+	}
+
+	st = parseUFWStatus("Status: active\nDefault: allow (incoming)\n")
+	if scope, _ := reportedScope(st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0"})); scope != remoteAny {
+		t.Errorf("default allow: %q, want any", scope)
+	}
+}
+
+// TestUFW_UnresolvedAllowScope: an allow naming a profile that isn't
+// installed may let its sources in, so it widens an allowed port's scope.
+func TestUFW_UnresolvedAllowScope(t *testing.T) {
+	const head = "Status: active\nDefault: deny (incoming)\n\nTo  Action  From\n--  ------  ----\n5432/tcp  ALLOW IN  192.168.1.0/24\n"
+	tests := []struct {
+		name  string
+		rule  string
+		scope string
+		addrs []string
+	}{
+		{"from anywhere", "Missing  ALLOW IN  Anywhere\n", remoteUnknown, nil},
+		{"from a subnet", "Missing  ALLOW IN  10.0.0.0/8\n", remoteSpecific, []string{"192.168.1.0/24", "10.0.0.0/8"}},
+		{"a deny", "Missing  DENY IN  Anywhere\n", remoteSpecific, []string{"192.168.1.0/24"}},
+	}
+	for _, tt := range tests {
+		r := parseUFWStatus(head+tt.rule).check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 5432, Address: "0.0.0.0"})
+		if scope, addrs := reportedScope(r); r.verdict != firewallAllowed || scope != tt.scope || !slices.Equal(addrs, tt.addrs) {
+			t.Errorf("%s: %q, %q, %q; want allowed, %q, %q", tt.name, r.verdict, scope, addrs, tt.scope, tt.addrs)
+		}
+	}
+
+	// IPv4 allows from a subnet; IPv6 has only an unresolved rule. The
+	// dual-stack socket's scope is unknown.
+	st := parseUFWStatus("Status: active\nDefault: deny (incoming)\n\nTo  Action  From\n--  ------  ----\n" +
+		"22/tcp  ALLOW IN  10.0.0.0/8\nMissing (v6)  ALLOW IN  Anywhere (v6)\n")
+	r := st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "::"})
+	if scope, _ := reportedScope(r); r.verdict != firewallAllowed || scope != remoteUnknown {
+		t.Errorf("dual-stack, one family unknown: %q, %q; want allowed, unknown", r.verdict, scope)
+	}
+
+	// The unknown family's unresolved allow is from a subnet: still specific.
+	st = parseUFWStatus("Status: active\nDefault: deny (incoming)\n\nTo  Action  From\n--  ------  ----\n" +
+		"22/tcp  ALLOW IN  10.0.0.0/8\nMissing (v6)  ALLOW IN  fd00::/8 (v6)\n")
+	r = st.check(nil, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "::"})
+	if scope, addrs := reportedScope(r); r.verdict != firewallAllowed || scope != remoteSpecific || !slices.Equal(addrs, []string{"10.0.0.0/8", "fd00::/8"}) {
+		t.Errorf("dual-stack, unknown family from a subnet: %q, %q, %q; want allowed, specific, [10.0.0.0/8 fd00::/8]", r.verdict, scope, addrs)
+	}
+}
+
+// TestFirewalld_RemoteScope: a rich rule with a source, or a zone bound to
+// sources, admits only them; anything else admits any address (#251).
+func TestFirewalld_RemoteScope(t *testing.T) {
+	// custom-db resolves here; TestFirewalld_UnresolvedServiceScope covers it not.
+	services := func(name string) ([]portSpec, bool) {
+		if name == "custom-db" {
+			return []portSpec{{protocol: "tcp", from: 1521, to: 1521}}, true
+		}
+		return firewalldServices(name)
+	}
+	check := firewalldCheck(parseFirewalldZones(firewalldFixture), services, nil, nil)
+	tests := []struct {
+		port         uint16
+		scope        string
+		wantAddrList []string
+	}{
+		{22, remoteAny, nil},                            // ssh service in the public zone
+		{445, remoteSpecific, []string{"10.0.0.0/8"}},   // rich rule with a source
+		{6379, remoteSpecific, []string{"10.1.0.0/16"}}, // rich service rule with a source
+		{5903, remoteAny, nil},                          // port range
+	}
+	for _, tt := range tests {
+		r := check(shared.ListeningPort{Protocol: "tcp", Port: tt.port, Address: "0.0.0.0"})
+		scope, addrs := reportedScope(r)
+		if r.verdict != firewallAllowed || scope != tt.scope || !slices.Equal(addrs, tt.wantAddrList) {
+			t.Errorf("tcp/%d: %q, %q, %q; want allowed, %q, %q", tt.port, r.verdict, scope, addrs, tt.scope, tt.wantAddrList)
+		}
+	}
+
+	zones := parseFirewalldZones("public (default, active)\n  target: default\n  interfaces: eth0\n  services:\n" +
+		"internal (active)\n  target: default\n  sources: 10.20.0.0/16 192.168.7.0/24\n  services: ssh\n" +
+		"  rich rules:\n\trule family=\"ipv4\" source NOT address=\"10.20.9.9\" port port=\"445\" protocol=\"tcp\" accept\n")
+	r := firewalldCheck(zones, firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 22, Address: "0.0.0.0"})
+	if scope, addrs := reportedScope(r); r.verdict != firewallAllowed || scope != remoteSpecific || !slices.Equal(addrs, []string{"10.20.0.0/16", "192.168.7.0/24"}) {
+		t.Errorf("source-bound zone: %q, %q, %q", r.verdict, scope, addrs)
+	}
+	r = firewalldCheck(zones, firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0"})
+	if scope, addrs := reportedScope(r); scope != remoteSpecific || !slices.Equal(addrs, []string{"10.20.0.0/16", "192.168.7.0/24"}) {
+		t.Errorf("NOT-source rich rule in a source-bound zone: %q, %q; want the zone's sources", scope, addrs)
+	}
+}
+
+// TestFirewalld_UnresolvedServiceScope: a service that can't be resolved may
+// let its zone's traffic in, so it widens an allowed port's scope; another
+// zone's unresolved service does too.
+func TestFirewalld_UnresolvedServiceScope(t *testing.T) {
+	tests := []struct {
+		name  string
+		zones string
+		scope string
+	}{
+		{"same zone, any source", "public (default, active)\n  interfaces: eth0\n  services: missing\n  rich rules:\n\trule family=\"ipv4\" source address=\"10.0.0.0/8\" port port=\"445\" protocol=\"tcp\" accept\n", remoteUnknown},
+		{"source-only zone", "internal (active)\n  sources: 10.0.0.0/8\n  services: missing\n  rich rules:\n\trule family=\"ipv4\" source address=\"10.0.0.0/8\" port port=\"445\" protocol=\"tcp\" accept\n", remoteSpecific},
+		{"another zone", "public (default, active)\n  interfaces: eth0\n  services: missing\n" +
+			"internal (active)\n  sources: 10.0.0.0/8\n  ports: 445/tcp\n", remoteUnknown},
+		{"another source-only zone", "internal (active)\n  sources: 10.0.0.0/8\n  ports: 445/tcp\n" +
+			"lab (active)\n  sources: 172.16.0.0/12\n  services: missing\n", remoteSpecific},
+	}
+	for _, tt := range tests {
+		r := firewalldCheck(parseFirewalldZones(tt.zones), firewalldServices, nil, nil)(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0"})
+		if scope, _ := reportedScope(r); r.verdict != firewallAllowed || scope != tt.scope {
+			t.Errorf("%s: %q, %q; want allowed, %q", tt.name, r.verdict, scope, tt.scope)
+		}
+	}
+}
+
+// TestFirewalld_InterfaceAndSourceZone: a zone bound to an interface as well
+// as sources takes all of that interface's traffic, so it lets any address in.
+func TestFirewalld_InterfaceAndSourceZone(t *testing.T) {
+	zones := parseFirewalldZones("internal (active)\n  interfaces: eth1\n  sources: 10.0.0.0/8\n  ports: 445/tcp\n" +
+		"public (default, active)\n  interfaces: eth0\n")
+	r := firewalldCheck(zones, firewalldServices, nil, []string{"eth0", "eth1"})(shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0"})
+	if scope, _ := reportedScope(r); r.verdict != firewallAllowed || scope != remoteAny {
+		t.Errorf("interface + sources: %q, %q; want allowed, any", r.verdict, scope)
+	}
+}
+
+// TestLinuxChecks_EveryInterface: Linux accepts a packet for any local
+// address on any interface, so an allow limited to one interface names no
+// interface: a public address elsewhere still counts.
+func TestLinuxChecks_EveryInterface(t *testing.T) {
+	apps := parseUFWAppProfiles([]string{ufwAppFixture, "[Samba Custom]\nports=139,445/tcp\n"})
+	r := parseUFWStatus(ufwVerboseFixture).check(apps, ufwHost{})(shared.ListeningPort{Protocol: "tcp", Port: 27017, Address: "0.0.0.0"})
+	if r.verdict != firewallAllowed || !r.via.includes("eth0") {
+		t.Errorf("ufw 27017 on eth1: %q, via %+v; want allowed, every interface", r.verdict, r.via)
+	}
+	zones := parseFirewalldZones("public (default, active)\n  interfaces: eth0\nwork (active)\n  interfaces: eth2\n  ports: 3389/tcp\n")
+	r = firewalldCheck(zones, firewalldServices, nil, []string{"eth0", "eth2"})(shared.ListeningPort{Protocol: "tcp", Port: 3389, Address: "0.0.0.0"})
+	if r.verdict != firewallAllowed || !r.via.includes("eth0") {
+		t.Errorf("firewalld zone on eth2: %q, via %+v; want allowed, every interface", r.verdict, r.via)
 	}
 }

@@ -38,7 +38,8 @@ type bundleMeta struct {
 // The tool must be at one of its known paths (binpath.Lookup): PATH is never
 // searched, so a brew installed outside Homebrew's standard prefixes is skipped
 // rather than letting a substituted binary run with the agent's privileges.
-func runCollectCmd(name string, args ...string) ([]byte, error) {
+// A variable so tests can stub the commands.
+var runCollectCmd = func(name string, args ...string) ([]byte, error) {
 	path, ok := binpath.Lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("%s not found at a known path", name)
@@ -170,8 +171,29 @@ func (s *SoftwareService) getMacApplications() ([]SoftwareInfo, bool) {
 	if len(paths) > 0 {
 		applyBundleMeta(applications, batchMdlsMetadata(paths))
 	}
+	fillBundleIDsFromInfoPlist(applications, runCollectCmd)
 
 	return applications, true
+}
+
+// fillBundleIDsFromInfoPlist reads CFBundleIdentifier from Contents/Info.plist
+// for every app that Spotlight gave no bundle ID: indexing is off for its
+// volume (mdls prints "(null)"), or its mdls batch failed. run is
+// runCollectCmd outside tests. An app whose plist can't be read keeps an
+// empty BundleID; the scan doesn't fail.
+func fillBundleIDsFromInfoPlist(applications []SoftwareInfo, run func(name string, args ...string) ([]byte, error)) {
+	for i := range applications {
+		app := &applications[i]
+		if app.FilePath == "" || app.BundleID != "" {
+			continue
+		}
+		plist := app.FilePath + "/Contents/Info.plist"
+		out, err := run("plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", plist)
+		if err != nil {
+			continue
+		}
+		app.BundleID = strings.TrimSpace(string(out))
+	}
 }
 
 // applyBundleMeta copies Spotlight metadata onto the applications it belongs to.

@@ -28,7 +28,7 @@ func TestDarwinFirewallCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stubDarwinSecurityCommands(t, tt.responses)
-			if got, _ := darwinFirewallCheck(tt.profiles)(shared.ListeningPort{Protocol: "tcp", Port: 445}); got != tt.want {
+			if got, _ := vp(darwinFirewallCheck(tt.profiles)(shared.ListeningPort{Protocol: "tcp", Port: 445})); got != tt.want {
 				t.Errorf("verdict = %q, want %q", got, tt.want)
 			}
 		})

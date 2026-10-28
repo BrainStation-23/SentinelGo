@@ -88,6 +88,7 @@ var knownPaths = func() map[string][]string {
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
 		"getent":           {"/usr/bin/getent", "/bin/getent"},
 		"realm":            {"/usr/sbin/realm", "/sbin/realm"},
+		"sshd":             {"/usr/sbin/sshd", "/sbin/sshd"},
 
 		// Linux + macOS (candidates cover both; order doesn't matter since
 		// only one OS's paths will ever exist on a given host)
