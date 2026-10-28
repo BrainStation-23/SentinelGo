@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -86,9 +87,10 @@ func excerpt(content string, span [2]int) string {
 	return content[start:end]
 }
 
-// DedupeKey groups repeats of the same copy under the same policy.
+// DedupeKey groups repeats of the same copy by the same user and session
+// under the same policy and action; anything else is a separate event.
 func (e Event) DedupeKey() string {
-	return e.ContentSHA256 + "\x00" + e.PolicyID
+	return strings.Join([]string{e.ContentSHA256, e.PolicyID, e.Action, e.User, e.SessionID}, "\x00")
 }
 
 // NewID returns a random (version 4) UUID.

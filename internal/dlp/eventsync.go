@@ -21,6 +21,7 @@ type EventQueue interface {
 	Add(ev events.Event) (merged bool, err error)
 	Pending(limit int) ([]store.DLPEventRow, error)
 	Delete(ids []int64) error
+	DeleteSent(rows []store.DLPEventRow) error
 }
 
 // EventSender uploads one batch (agent_enqueue_dlp_events).
@@ -81,10 +82,14 @@ func (e *EventSync) send(ctx context.Context, batch []store.DLPEventRow) error {
 	switch {
 	case errors.Is(err, ErrEventsRejected):
 		log.Printf("DLP: server rejected %d evidence events; dropping them: %v", len(batch), err)
+		err = e.queue.Delete(ids)
 	case err != nil:
 		return fmt.Errorf("upload DLP events: %w", err)
+	default:
+		// Rows that took more repeats during the upload stay and are resent.
+		err = e.queue.DeleteSent(batch)
 	}
-	if err := e.queue.Delete(ids); err != nil {
+	if err != nil {
 		return fmt.Errorf("delete uploaded DLP events: %w", err)
 	}
 	return nil
@@ -123,6 +128,7 @@ func NewQueueSink(q EventQueue) channel.EventSink { return queueSink{q: q} }
 
 func (s queueSink) Emit(ev events.Event) {
 	if _, err := s.q.Add(ev); err != nil {
-		log.Printf("DLP: could not queue event %s (policy %s): %v", ev.EventID, ev.PolicyID, err)
+		// No ids: they come from the session helper and aren't trusted for logs.
+		log.Printf("DLP: could not queue an evidence event: %v", err)
 	}
 }

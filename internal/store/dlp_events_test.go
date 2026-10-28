@@ -123,3 +123,67 @@ func TestDLPEventStore_SurvivesReopen(t *testing.T) {
 		t.Errorf("rows after reopen = %d, want 1", len(rows))
 	}
 }
+
+// A corrupt row is dropped without deadlocking the single-connection pool.
+func TestDLPEventStore_CorruptRowDoesNotHang(t *testing.T) {
+	s, _ := newDLPStore(t)
+	if _, err := s.Add(dlpEvent("good", "p")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO dlp_event_queue (event_id, dedupe_key, event_json, bytes, stored_at) VALUES ('x', 'k', '{broken', 7, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var rows []DLPEventRow
+	go func() { rows, _ = s.Pending(10); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Pending deadlocked on a corrupt row")
+	}
+	if len(rows) != 1 {
+		t.Errorf("rows = %d, want the good one", len(rows))
+	}
+	if n, _, _, _ := s.Stats(); n != 1 {
+		t.Errorf("queue = %d rows, want the corrupt one deleted", n)
+	}
+}
+
+// A repeat merged while a batch was uploading isn't lost.
+func TestDLPEventStore_DeleteSentKeepsNewRepeats(t *testing.T) {
+	s, now := newDLPStore(t)
+	if _, err := s.Add(dlpEvent("c", "p")); err != nil {
+		t.Fatal(err)
+	}
+	sent, _ := s.Pending(10) // repeat_count 1 goes out
+	*now = now.Add(time.Second)
+	if merged, _ := s.Add(dlpEvent("c", "p")); !merged { // a repeat during the upload
+		t.Fatal("not merged")
+	}
+	if err := s.DeleteSent(sent); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.Pending(10)
+	if len(rows) != 1 || rows[0].Event.RepeatCount != 2 {
+		t.Errorf("rows = %+v, want the row kept with repeat_count 2 for a resend", rows)
+	}
+	if err := s.DeleteSent(rows); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, _, _ := s.Stats(); n != 0 {
+		t.Errorf("unchanged row not deleted (%d left)", n)
+	}
+}
+
+// Different users copying the same content are separate events.
+func TestDLPEventStore_DedupePerUser(t *testing.T) {
+	s, _ := newDLPStore(t)
+	a, b := dlpEvent("same", "p"), dlpEvent("same", "p")
+	a.User, b.User = `CORP\alice`, `CORP\bob`
+	if _, err := s.Add(a); err != nil {
+		t.Fatal(err)
+	}
+	if merged, _ := s.Add(b); merged {
+		t.Error("another user's copy merged into the first user's event")
+	}
+}

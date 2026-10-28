@@ -169,6 +169,7 @@ func (s *DLPEventStore) Pending(limit int) ([]DLPEventRow, error) {
 	defer func() { _ = rows.Close() }()
 
 	var out []DLPEventRow
+	var bad []int64
 	for rows.Next() {
 		var row DLPEventRow
 		var data string
@@ -179,13 +180,40 @@ func (s *DLPEventStore) Pending(limit int) ([]DLPEventRow, error) {
 		if err := json.Unmarshal([]byte(data), &row.Event); err != nil {
 			// Can't happen for rows we wrote; skip rather than block the queue.
 			log.Printf("DLP: dropping unreadable queued event %d: %v", row.ID, err)
-			_ = s.Delete([]int64{row.ID})
+			bad = append(bad, row.ID)
 			continue
 		}
 		row.Event.RepeatCount = repeats
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Delete only once the result set is closed: the pool has one connection.
+	_ = rows.Close()
+	if len(bad) > 0 {
+		if err := s.Delete(bad); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// DeleteSent removes uploaded rows whose repeat_count hasn't changed since
+// they were read. A row that took more repeats during the upload stays and
+// is sent again: the server keeps the larger repeat_count for an event_id.
+func (s *DLPEventStore) DeleteSent(sent []DLPEventRow) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, r := range sent {
+		if _, err := tx.Exec(`DELETE FROM dlp_event_queue WHERE id = ? AND repeat_count = ?`, r.ID, r.Event.RepeatCount); err != nil {
+			return fmt.Errorf("delete uploaded DLP event: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Delete removes rows the server has accepted (or rejected for good).
