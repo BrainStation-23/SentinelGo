@@ -150,6 +150,7 @@ func generate(data []byte, src Source) (*Ruleset, []CatalogEntry, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("global filter: %w", err)
 	}
+	global.encodeLiterals()
 	rs := &Ruleset{Source: src, GlobalFilter: global, Rules: []Rule{}, Dropped: []Dropped{}}
 	var cat []CatalogEntry
 	for _, ur := range up.Rules {
@@ -201,6 +202,7 @@ func translateRule(ur upstreamRule) (Rule, string) {
 	if err != nil {
 		return Rule{}, err.Error()
 	}
+	f.encodeLiterals()
 	if !f.empty() {
 		r.Filter = &f
 	}
@@ -209,7 +211,7 @@ func translateRule(ur upstreamRule) (Rule, string) {
 
 func (f Filter) empty() bool {
 	return f.EntropyBelow == 0 && f.EntropyAtMost == 0 && len(f.DenyRegex) == 0 &&
-		len(f.DenyContains) == 0 && len(f.DenyMatchRegex) == 0 && len(f.RequireRegex) == 0
+		len(f.DenyContainsHex) == 0 && len(f.DenyMatchRegex) == 0 && len(f.RequireRegex) == 0
 }
 
 // writeJSON writes v as indented JSON without HTML escaping, so regexes stay

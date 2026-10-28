@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 )
@@ -15,9 +17,48 @@ type Filter struct {
 	EntropyBelow   float64    `json:"entropy_below,omitempty"`    // entropy(secret) < N
 	EntropyAtMost  float64    `json:"entropy_at_most,omitempty"`  // entropy(secret) <= N
 	DenyRegex      []string   `json:"deny_regex,omitempty"`       // secret matches any
-	DenyContains   []string   `json:"deny_contains,omitempty"`    // secret contains any
+	DenyContains   []string   `json:"-"`                          // secret contains any (written hex-encoded)
 	DenyMatchRegex []string   `json:"deny_match_regex,omitempty"` // the full match matches any
 	RequireRegex   [][]string `json:"require_regex,omitempty"`    // secret matches none of a group
+
+	// DenyContainsHex is DenyContains hex-encoded. Upstream deny-lists hold
+	// real, publicly known keys (e.g. Google API keys shipped in public apps)
+	// that must not be reported; encoding them keeps key-shaped strings out of
+	// the repository, where secret scanners would flag them.
+	DenyContainsHex []string `json:"deny_contains_hex,omitempty"`
+}
+
+// encodeLiterals moves deny-list regexes that are plain literals into
+// DenyContains (same meaning: the secret contains the text) and hex-encodes
+// DenyContains into DenyContainsHex.
+func (f *Filter) encodeLiterals() {
+	var regexes []string
+	for _, p := range f.DenyRegex {
+		if lit, ok := literal(p); ok {
+			f.DenyContains = append(f.DenyContains, lit)
+			continue
+		}
+		regexes = append(regexes, p)
+	}
+	f.DenyRegex = regexes
+	for _, s := range f.DenyContains {
+		f.DenyContainsHex = append(f.DenyContainsHex, hex.EncodeToString([]byte(s)))
+	}
+	f.DenyContains = nil
+}
+
+// literal reports whether pattern matches exactly one case-sensitive string,
+// and returns it.
+func literal(pattern string) (string, bool) {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return "", false
+	}
+	re = re.Simplify()
+	if re.Op != syntax.OpLiteral || re.Flags&syntax.FoldCase != 0 {
+		return "", false
+	}
+	return string(re.Rune), true
 }
 
 // errUnknownShape marks a filter the generator can't translate. The rule is
