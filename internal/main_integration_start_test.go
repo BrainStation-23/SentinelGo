@@ -26,6 +26,8 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
@@ -634,7 +636,9 @@ func TestStartLoggingService_StartsWithoutAuth(t *testing.T) {
 // ── startDLP ────────────────────────────────────────────────────────────────
 
 func TestStartDLP_LocallyDisabled(t *testing.T) {
-	mi := NewMainIntegrationWith(&config.Config{DLPEnabled: false}, scheduler.NewScheduler())
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = false
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
 	if mi.dlpManager == nil {
 		t.Fatal("dlpManager should be set so its state is reported")
@@ -645,13 +649,21 @@ func TestStartDLP_LocallyDisabled(t *testing.T) {
 	if got := mi.GetStatus()["dlp"]; got != string(dlp.StateDisabledLocal) {
 		t.Errorf("GetStatus()[dlp] = %v, want %s", got, dlp.StateDisabledLocal)
 	}
+	if _, polls := mi.scheduler.GetTaskStatus()["dlp-policy-sync"]; polls {
+		t.Error("dlp-policy-sync scheduled although dlp_enabled is false")
+	}
 }
 
-func TestStartDLP_NoPolicyStaysOff(t *testing.T) {
-	mi := NewMainIntegrationWith(&config.Config{DLPEnabled: true}, scheduler.NewScheduler())
+func TestStartDLP_NoPolicyStaysOffAndPolls(t *testing.T) {
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = true
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
 	if got := mi.dlpManager.State(); got != dlp.StateNoPolicy {
 		t.Errorf("DLP state = %s, want %s", got, dlp.StateNoPolicy)
+	}
+	if _, polls := mi.scheduler.GetTaskStatus()["dlp-policy-sync"]; !polls {
+		t.Error("dlp-policy-sync not scheduled")
 	}
 	if err := mi.Stop(); err != nil {
 		t.Errorf("Stop() error: %v", err)
@@ -659,6 +671,33 @@ func TestStartDLP_NoPolicyStaysOff(t *testing.T) {
 	if got := mi.dlpManager.State(); got != dlp.StateStopped {
 		t.Errorf("DLP state after Stop = %s, want %s", got, dlp.StateStopped)
 	}
+}
+
+// The handler polls only when the syncer says a poll is due.
+func TestDLPPolicySyncHandler_PollsWhenDue(t *testing.T) {
+	fb := &countingFetcher{}
+	cfg := miTestConfig(t)
+	m := dlp.NewManager(true, nil, session.New())
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := dlpPolicySyncHandler(dlp.NewSyncer(fb, policy.NewCache(filepath.Join(t.TempDir(), "p.json")), m, "test", nil))
+
+	for range 3 {
+		if err := h(context.Background(), cfg, nil); err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+	}
+	if fb.calls != 1 {
+		t.Errorf("polls = %d, want 1 (the next is a poll interval away)", fb.calls)
+	}
+}
+
+type countingFetcher struct{ calls int }
+
+func (f *countingFetcher) FetchPolicy(context.Context, string, *dlp.Status) (dlp.FetchResult, error) {
+	f.calls++
+	return dlp.FetchResult{Unchanged: true}, nil
 }
 
 // ── startTaskManager ────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ import (
 	"log"
 	"sync"
 
+	"sentinelgo/internal/dlp/detect"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 )
@@ -49,7 +50,7 @@ func Decide(localEnabled bool, b *policy.Bundle) State {
 		return StateNoPolicy
 	case !b.Enabled:
 		return StateDisabledServer
-	case !policy.Compile(b).AnyChannelEnabled():
+	case !b.AnyChannelEnabled():
 		return StateIdle
 	default:
 		return StateEnforcing
@@ -69,11 +70,12 @@ type Manager struct {
 	source       BundleSource
 	sup          session.Supervisor
 
-	mu      sync.Mutex
-	ctx     context.Context
-	started bool
-	state   State
-	bundle  *policy.Bundle
+	mu       sync.Mutex
+	ctx      context.Context
+	started  bool
+	state    State
+	bundle   *policy.Bundle
+	compiled *policy.Compiled // of bundle, while enforcing
 }
 
 // NewManager returns a Manager. localEnabled is the config's dlp_enabled.
@@ -135,9 +137,16 @@ func (m *Manager) applyLocked() {
 	m.state = next
 
 	if next == StateEnforcing {
-		m.sup.Apply(m.ctx, policy.Compile(m.bundle))
+		if m.compiled == nil || m.compiled.Version != m.bundle.Version {
+			m.compiled = policy.Compile(m.bundle)
+			for _, ce := range m.compiled.CompileErrors {
+				log.Printf("DLP: rule %s skipped: %s", ce.RuleID, ce.Error)
+			}
+		}
+		m.sup.Apply(m.ctx, m.compiled)
 		return
 	}
+	m.compiled = nil
 	m.sup.Stop()
 }
 
@@ -150,7 +159,41 @@ func (m *Manager) Stop() {
 	}
 	m.started = false
 	m.state = StateStopped
+	m.compiled = nil
 	m.sup.Stop()
+}
+
+// Snapshot is what the Manager has applied, for status reports.
+type Snapshot struct {
+	State         State
+	Version       string // of the last-known bundle; "" when none
+	CompileErrors []detect.CompileError
+	Sessions      []session.Info
+}
+
+// Snapshot returns the current state. Safe for concurrent use.
+func (m *Manager) Snapshot() Snapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := Snapshot{State: m.state}
+	if m.bundle != nil {
+		s.Version = m.bundle.Version
+	}
+	if m.compiled != nil {
+		s.CompileErrors = m.compiled.CompileErrors
+	}
+	if m.started {
+		s.Sessions = m.sup.Sessions()
+	}
+	return s
+}
+
+// currentBundle returns the last-known bundle (nil when none). A bundle is
+// never mutated after Apply, so sharing the pointer is safe.
+func (m *Manager) currentBundle() *policy.Bundle {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bundle
 }
 
 // State returns the current decision.

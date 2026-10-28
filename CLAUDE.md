@@ -50,7 +50,7 @@ release/               Compiled binaries (never edit directly)
 2. Authenticate via the agent-login edge function -> store JWT; refresh before expiry
 3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
 4. Periodic Supabase release check -> download/verify -> replace binary -> service restart
-5. DLP (if `dlp_enabled`): the service-side `dlp.Manager` loads the cached policy bundle, applies the kill switches and has `dlp/session` run one `sentinelgo dlp-session` helper per interactive user session. The helper watches the clipboard, matches in-process and sends only masked evidence back over IPC. The service holds the credentials; helpers never do
+5. DLP (if `dlp_enabled`): the service-side `dlp.Manager` loads the cached policy bundle, applies the kill switches and has `dlp/session` run one `sentinelgo dlp-session` helper per interactive user session. The helper watches the clipboard, matches in-process and sends only masked evidence back over IPC. The service holds the credentials; helpers never do. `dlp.Syncer` (scheduler task `dlp-policy-sync`) polls `agent_get_dlp_policy`, caches the bundle in `dlp_policy.json` and reports status on the same call
 
 ## Key Conventions
 
