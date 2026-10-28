@@ -221,7 +221,7 @@ func computePostureScore(
 	if r.idControls == "Configured" {
 		score++
 	}
-	if r.exposure != "High" {
+	if r.exposure != "High" && r.exposure != "Critical" {
 		score++
 	}
 	if strings.EqualFold(id.PatchComplianceStatus, "Compliant") {

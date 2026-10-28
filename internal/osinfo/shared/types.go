@@ -668,6 +668,17 @@ type RiskyService struct {
 	// ReachableProfiles are the active Windows firewall profiles that let
 	// connections in (Windows only).
 	ReachableProfiles []string `json:"reachable_profiles,omitempty"`
+	// RemoteScope is the widest set of remote addresses an allow rule lets
+	// in: "any", "local_subnet", "specific" or "unknown". "any" when the
+	// firewall is "disabled"; empty unless Firewall is "allowed" or
+	// "disabled" (#251).
+	RemoteScope string `json:"remote_scope,omitempty"`
+	// RemoteAddresses lists the allowed remote ranges when RemoteScope is
+	// "specific" (at most 10), e.g. ["10.10.0.0/16", "Intranet"].
+	RemoteAddresses []string `json:"remote_addresses,omitempty"`
+	// OnPublicAddress: the socket is bound to, or (wildcard) the host has, a
+	// public unicast address (not private, ULA, CGNAT or link-local).
+	OnPublicAddress bool `json:"on_public_address,omitempty"`
 }
 
 // 9. Security Posture Summary
@@ -680,7 +691,7 @@ type SecurityPostureSummary struct {
 	EncryptionStatus         string   `json:"encryption_status"`          // "Encrypted", "Unencrypted", "Partially Encrypted"
 	HardwareSecurityControls string   `json:"hardware_security_controls"` // "Strong", "Weak", "Unsupported"
 	IdentitySecurityControls string   `json:"identity_security_controls"` // "Configured", "At Risk"
-	NetworkExposureLevel     string   `json:"network_exposure_level"`     // "Low", "Medium", "High"
+	NetworkExposureLevel     string   `json:"network_exposure_level"`     // "Low", "Medium", "High", "Critical"
 	Recommendations          []string `json:"recommendations"`
 }
 

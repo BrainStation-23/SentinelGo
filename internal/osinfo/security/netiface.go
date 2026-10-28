@@ -42,3 +42,30 @@ func systemInterfaceName(addr netip.Addr) (string, bool) {
 	iface, ok := interfaceOfAddr(addr)
 	return iface.Name, ok
 }
+
+// systemInterfaceAddrs lists the addresses of the host's interfaces that are
+// up; nil when they can't be listed.
+func systemInterfaceAddrs() []netip.Addr {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				if ip, ok := netip.AddrFromSlice(ipnet.IP); ok {
+					out = append(out, ip.Unmap())
+				}
+			}
+		}
+	}
+	return out
+}

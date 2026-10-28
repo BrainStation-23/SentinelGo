@@ -2,12 +2,33 @@ package security
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
 
 	"sentinelgo/internal/osinfo/shared"
 )
+
+// The exposure analysis reads the host's addresses to tell whether a
+// wildcard socket is on a public address; tests start from a host with none.
+func init() { hostAddrs = func() []netip.Addr { return nil } }
+
+// stubHostAddrs makes the host's interface addresses addrs for one test.
+func stubHostAddrs(t *testing.T, addrs ...string) {
+	t.Helper()
+	orig := hostAddrs
+	t.Cleanup(func() { hostAddrs = orig })
+	var parsed []netip.Addr
+	for _, a := range addrs {
+		parsed = append(parsed, netip.MustParseAddr(a))
+	}
+	hostAddrs = func() []netip.Addr { return parsed }
+}
+
+// vp returns a firewall result's verdict and profiles, for tests written
+// against the (verdict, profiles) pair.
+func vp(r firewallResult) (string, []string) { return r.verdict, r.profiles }
 
 func TestBindScope(t *testing.T) {
 	tests := []struct {
@@ -119,19 +140,19 @@ func TestNetworkExposure_StockWindowsIsLow(t *testing.T) {
 func TestNetworkExposure_SMBOnAllInterfaces(t *testing.T) {
 	ports := append(stockWindowsPorts(), shared.ListeningPort{Protocol: "tcp", Port: 445, Address: "0.0.0.0", ProcessName: "System"})
 	for _, tt := range []struct {
-		verdict, level string
+		verdict, level, remote string
 	}{
-		{firewallAllowed, "High"},
-		{firewallDisabled, "High"},
-		{firewallUnknown, "High"},
-		{firewallBlocked, "Medium"},
+		{firewallAllowed, "High", remoteUnknown}, // a check that can't tell from where
+		{firewallDisabled, "High", remoteAny},
+		{firewallUnknown, "High", ""},
+		{firewallBlocked, "Medium", ""},
 	} {
-		check := func(shared.ListeningPort) (string, []string) { return tt.verdict, nil }
+		check := constantCheck(tt.verdict)
 		info := analyzeNetworkExposure(ports, check)
 		if !slices.Equal(info.OpenAdministrativePorts, []uint16{445}) {
 			t.Errorf("%s: OpenAdministrativePorts = %v, want [445]", tt.verdict, info.OpenAdministrativePorts)
 		}
-		want := shared.RiskyService{Name: "SMB", Port: 445, Protocol: "tcp", Address: "0.0.0.0", Scope: scopeAll, ProcessName: "System", Firewall: tt.verdict}
+		want := shared.RiskyService{Name: "SMB", Port: 445, Protocol: "tcp", Address: "0.0.0.0", Scope: scopeAll, ProcessName: "System", Firewall: tt.verdict, RemoteScope: tt.remote}
 		if len(info.RiskyServices) != 1 || fmt.Sprint(info.RiskyServices[0]) != fmt.Sprint(want) {
 			t.Errorf("%s: RiskyServices = %+v, want [%+v]", tt.verdict, info.RiskyServices, want)
 		}
@@ -183,11 +204,11 @@ func TestNetworkExposure_RiskyServicesSortedAndDeduped(t *testing.T) {
 		{Protocol: "tcp", Port: 445, Address: "0.0.0.0", ProcessName: "System"},
 		{Protocol: "tcp", Port: 22, Address: "0.0.0.0", ProcessName: "sshd"}, // duplicate socket
 	}
-	info := analyzeNetworkExposure(ports, func(p shared.ListeningPort) (string, []string) {
+	info := analyzeNetworkExposure(ports, func(p shared.ListeningPort) firewallResult {
 		if p.Port == 22 {
-			return firewallAllowed, []string{"Public"}
+			return firewallResult{verdict: firewallAllowed, profiles: []string{"Public"}, scope: remoteScope{kind: remoteAny}}
 		}
-		return firewallBlocked, nil
+		return firewallResult{verdict: firewallBlocked}
 	})
 	var got []string
 	for _, s := range info.RiskyServices {
@@ -251,5 +272,120 @@ func TestRiskyServicePastUploadCap(t *testing.T) {
 	info := analyzeNetworkExposure(ports, nil)
 	if len(info.RiskyServices) != 1 || info.RiskyServices[0].Port != 445 {
 		t.Errorf("RiskyServices = %+v, want SMB past the upload cap", info.RiskyServices)
+	}
+}
+
+func TestOnPublicAddress(t *testing.T) {
+	tests := []struct {
+		addr string
+		host []string
+		want bool
+	}{
+		{"203.0.113.10", nil, true},   // public IPv4 (bound)
+		{"10.103.2.126", nil, false},  // RFC 1918
+		{"192.168.1.5", nil, false},   // RFC 1918
+		{"100.72.1.9", nil, false},    // CGNAT
+		{"2001:db8::5", nil, true},    // global unicast IPv6
+		{"fd12:3456::1", nil, false},  // ULA
+		{"fe80::1%eth0", nil, false},  // link-local
+		{"127.0.0.1", nil, false},     // loopback
+		{"::ffff:8.8.8.8", nil, true}, // v4-mapped public
+		{"0.0.0.0", []string{"10.0.0.5", "203.0.113.7"}, true},
+		{"0.0.0.0", []string{"10.0.0.5", "2001:db8::7"}, false}, // only v6 is public
+		{"::", []string{"10.0.0.5", "2001:db8::7"}, true},
+		{"*", []string{"10.0.0.5", "fd00::7"}, false},
+	}
+	for _, tt := range tests {
+		stubHostAddrs(t, tt.host...)
+		if got := onPublicAddress(tt.addr); got != tt.want {
+			t.Errorf("onPublicAddress(%q) with host %v = %v, want %v", tt.addr, tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestReportedScope(t *testing.T) {
+	var many remoteScope
+	for i := 0; i < 15; i++ {
+		many.widen(remoteSpecific, fmt.Sprintf("10.0.%d.0/24", i))
+	}
+	tests := []struct {
+		name   string
+		res    firewallResult
+		scope  string
+		nAddrs int
+	}{
+		{"blocked", firewallResult{verdict: firewallBlocked}, "", 0},
+		{"unknown", firewallResult{verdict: firewallUnknown}, "", 0},
+		{"disabled is any", firewallResult{verdict: firewallDisabled}, remoteAny, 0},
+		{"allowed without a scope", firewallResult{verdict: firewallAllowed}, remoteUnknown, 0},
+		{"local subnet", firewallResult{verdict: firewallAllowed, scope: remoteScope{kind: remoteLocalSubnet}}, remoteLocalSubnet, 0},
+		{"specific capped at 10", firewallResult{verdict: firewallAllowed, scope: many}, remoteSpecific, maxRemoteAddresses},
+	}
+	for _, tt := range tests {
+		scope, addrs := reportedScope(tt.res)
+		if scope != tt.scope || len(addrs) != tt.nAddrs {
+			t.Errorf("%s: %q, %d addresses; want %q, %d", tt.name, scope, len(addrs), tt.scope, tt.nAddrs)
+		}
+	}
+}
+
+func TestRemoteScope_WidestWins(t *testing.T) {
+	var s remoteScope
+	s.widen(remoteSpecific, "10.0.0.0/8")
+	s.widen(remoteLocalSubnet)
+	if s.kind != remoteLocalSubnet {
+		t.Errorf("specific + local_subnet = %q", s.kind)
+	}
+	s.widen(remoteAny)
+	s.widen(remoteSpecific, "10.0.0.0/8")
+	if s.kind != remoteAny || !slices.Equal(s.addrs, []string{"10.0.0.0/8"}) {
+		t.Errorf("after any: %+v", s)
+	}
+}
+
+func TestSummarizeNetworkExposureLevel_Tiers(t *testing.T) {
+	smb := func(fw, scope string, public bool, profiles ...string) shared.RiskyService {
+		return shared.RiskyService{Name: "SMB", Port: 445, Protocol: "tcp", Firewall: fw, RemoteScope: scope, OnPublicAddress: public, ReachableProfiles: profiles}
+	}
+	tests := []struct {
+		name    string
+		svc     shared.RiskyService
+		level   string
+		recPart string
+	}{
+		{"any on a public address", smb(firewallAllowed, remoteAny, true, "Public"), "Critical", "SMB (445/tcp) on the Public network: allowed in from any address, on a public IP address"},
+		{"firewall off on a public address", smb(firewallDisabled, remoteAny, true), "Critical", "public IP"},
+		{"any on a private address", smb(firewallAllowed, remoteAny, false), "High", "allowed in from any address."},
+		{"unknown scope on a public address", smb(firewallAllowed, remoteUnknown, true), "High", "any address"},
+		{"old agent payload (no scope)", smb(firewallAllowed, "", false), "High", "any address"},
+		{"unknown verdict", smb(firewallUnknown, "", true), "High", "any address"},
+		{"local subnet only, even on a public address", smb(firewallAllowed, remoteLocalSubnet, true), "Medium", "only from the local subnet"},
+		{"specific addresses", smb(firewallAllowed, remoteSpecific, false), "Medium", "listed addresses"},
+		{"blocked", smb(firewallBlocked, "", true), "Medium", "host firewall blocks"},
+	}
+	for _, tt := range tests {
+		level, recs := summarizeNetworkExposureLevel(shared.NetworkExposureAccessInfo{RiskyServices: []shared.RiskyService{tt.svc}})
+		if level != tt.level || len(recs) != 1 || !strings.Contains(recs[0], tt.recPart) {
+			t.Errorf("%s: level = %q, recs = %q; want %q containing %q", tt.name, level, recs, tt.level, tt.recPart)
+		}
+	}
+
+	// A service let in from the local subnet on one socket and from any
+	// address on another is listed once, under the wider exposure.
+	level, recs := summarizeNetworkExposureLevel(shared.NetworkExposureAccessInfo{RiskyServices: []shared.RiskyService{
+		smb(firewallAllowed, remoteLocalSubnet, false), smb(firewallAllowed, remoteAny, false),
+		{Name: "RDP", Port: 3389, Protocol: "tcp", Firewall: firewallAllowed, RemoteScope: remoteSpecific},
+	}})
+	if level != "High" || len(recs) != 2 || !strings.Contains(recs[0], "SMB") || !strings.Contains(recs[1], "RDP") || strings.Contains(recs[1], "SMB") {
+		t.Errorf("mixed: level = %q, recs = %q", level, recs)
+	}
+}
+
+func TestComputePostureScore_CriticalExposureCostsPoint(t *testing.T) {
+	var fw shared.FirewallSecurityInfo
+	var enc shared.DeviceEncryptionInfo
+	var id shared.IdentityAccessControlInfo
+	if got := computePostureScore(fw, enc, id, postureRatings{exposure: "Critical"}); got != 0 {
+		t.Errorf("score = %d, want 0", got)
 	}
 }
