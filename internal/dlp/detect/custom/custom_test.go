@@ -46,6 +46,17 @@ func TestKeywords_CaseFoldingKeepsOffsets(t *testing.T) {
 	}
 }
 
+// Empty matches don't use up the cap and hide a later real match.
+func TestRegex_EmptyMatchesDontUseTheCap(t *testing.T) {
+	r, err := Compile(Spec{DetectorID: RegexID, RuleID: "r", Pattern: "x*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Find(strings.Repeat("a", 5000) + "x"); len(got) != 1 {
+		t.Errorf("Find = %d matches, want the x after 5000 empty matches", len(got))
+	}
+}
+
 func TestRegex_EmptyMatchesIgnored(t *testing.T) {
 	r, err := Compile(Spec{DetectorID: RegexID, RuleID: "r", Pattern: "x*"})
 	if err != nil {

@@ -118,3 +118,13 @@ func FuzzDecode(f *testing.F) {
 		}
 	})
 }
+
+func TestDecode_ClampsMaxScanBytes(t *testing.T) {
+	b, err := Decode([]byte(`{"schema_version":1,"version":"v","modules":{"clipboard":{"max_scan_bytes":1073741824}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Modules.Clipboard.MaxScanBytes; got != MaxScanBytesLimit {
+		t.Errorf("MaxScanBytes = %d, want clamped to %d", got, MaxScanBytesLimit)
+	}
+}

@@ -137,7 +137,7 @@ func (m *Manager) applyLocked() {
 	m.state = next
 
 	if next == StateEnforcing {
-		if m.compiled == nil || m.compiled.Version != m.bundle.Version {
+		if m.compiled == nil || m.compiled.Bundle != m.bundle {
 			m.compiled = policy.Compile(m.bundle)
 			for _, ce := range m.compiled.CompileErrors {
 				log.Printf("DLP: rule %s skipped: %s", ce.RuleID, ce.Error)
@@ -154,11 +154,11 @@ func (m *Manager) applyLocked() {
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.state = StateStopped
 	if !m.started {
 		return
 	}
 	m.started = false
-	m.state = StateStopped
 	m.compiled = nil
 	m.sup.Stop()
 }

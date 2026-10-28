@@ -287,16 +287,40 @@ func (e *Engine) Evaluate(match string, rules []Rule, res Result) (bool, []Findi
 
 // satisfies reports whether findings meet r's minimum count, and which
 // findings counted toward it.
+//
+// For secrets.all, overlapping matches count once: two rules can match the
+// same token (gitlab-pat and gitlab-pat-routable), and one token must not
+// meet a min_count of 2.
 func satisfies(r Rule, findings []Finding) ([]int, bool) {
 	count := 0
 	var hits []int
+	var spans [][2]int
 	for i, f := range findings {
 		if counts(r, f) {
 			count += f.Count
 			hits = append(hits, i)
+			spans = append(spans, f.Offsets...)
 		}
 	}
+	if r.DetectorID == SecretsAll {
+		count = distinctSpans(spans)
+	}
 	return hits, count >= max(1, r.MinCount)
+}
+
+// distinctSpans counts spans after merging overlapping ones.
+func distinctSpans(spans [][2]int) int {
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	n, end := 0, -1
+	for _, s := range spans {
+		if s[0] >= end {
+			n++
+			end = s[1]
+		} else if s[1] > end {
+			end = s[1]
+		}
+	}
+	return n
 }
 
 // counts reports whether finding f counts toward rule r.

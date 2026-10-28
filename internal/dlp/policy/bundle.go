@@ -89,6 +89,7 @@ const (
 	MaxPollInterval     = time.Hour
 
 	DefaultMaxScanBytes = 1 << 20
+	MaxScanBytesLimit   = 4 << 20
 )
 
 // ErrUnsupportedSchema is returned for a bundle whose schema_version this
@@ -122,6 +123,9 @@ func (b *Bundle) normalize() {
 	if b.Modules.Clipboard.MaxScanBytes <= 0 {
 		b.Modules.Clipboard.MaxScanBytes = DefaultMaxScanBytes
 	}
+	// The helper scans every copy up to this limit; a bundle can't raise it
+	// past what a desktop session should spend on one copy.
+	b.Modules.Clipboard.MaxScanBytes = min(b.Modules.Clipboard.MaxScanBytes, MaxScanBytesLimit)
 }
 
 // PollInterval is how often to poll for a new bundle: the bundle's

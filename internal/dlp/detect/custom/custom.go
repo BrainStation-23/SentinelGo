@@ -103,13 +103,17 @@ func keywordPattern(keywords []string, caseSensitive bool) (string, error) {
 	return p, nil
 }
 
-// Find returns the rule's matches in text.
+// Find returns the rule's matches in text, at most maxMatchesPerRule. Empty
+// matches (a pattern like "x*") flag nothing and don't count toward the cap.
 func (r *Rule) Find(text string) []Match {
-	locs := r.re.FindAllStringIndex(text, maxMatchesPerRule)
-	out := make([]Match, 0, len(locs))
-	for _, loc := range locs {
-		if loc[1] > loc[0] { // an empty match flags nothing
-			out = append(out, Match{DetectorID: r.DetectorID, RuleID: r.RuleID, Start: loc[0], End: loc[1]})
+	var out []Match
+	for _, loc := range r.re.FindAllStringIndex(text, -1) {
+		if loc[1] == loc[0] {
+			continue
+		}
+		out = append(out, Match{DetectorID: r.DetectorID, RuleID: r.RuleID, Start: loc[0], End: loc[1]})
+		if len(out) == maxMatchesPerRule {
+			break
 		}
 	}
 	return out

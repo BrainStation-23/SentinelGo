@@ -13,6 +13,7 @@ const ChannelClipboard = "clipboard"
 // Compiled is a bundle in the form channels enforce: each clipboard policy's
 // rules, and one detection engine over all of them so a copy is scanned once.
 type Compiled struct {
+	Bundle       *Bundle // what was compiled; the service forwards it to helpers
 	Version      string
 	EvidenceMode string
 	Modules      Modules
@@ -39,6 +40,7 @@ type CompiledPolicy struct {
 // stay active. b must not be nil.
 func Compile(b *Bundle) *Compiled {
 	c := &Compiled{
+		Bundle:       b,
 		Version:      b.Version,
 		EvidenceMode: b.EvidenceMode,
 		Modules:      b.Modules,

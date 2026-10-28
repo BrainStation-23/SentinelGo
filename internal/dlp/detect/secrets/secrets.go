@@ -33,7 +33,9 @@ import (
 //go:embed rules.json
 var rulesJSON []byte
 
-// maxMatchesPerRule bounds the work one rule does on one chunk of hostile input.
+// maxMatchesPerRule bounds the findings one rule reports per chunk. It counts
+// matches that survive the filters, so placeholders can't use it up and hide
+// a real secret further along.
 const maxMatchesPerRule = 100
 
 // Source records which upstream ruleset is embedded.
@@ -232,8 +234,12 @@ func (rs *Ruleset) candidates(text string, enabled func(id string) bool) ([]int,
 // find runs the rule over chunk, which starts at byte base of the text.
 func (r *rule) find(chunk string, base int, global *filter) []Match {
 	var out []Match
-	for _, loc := range r.re.FindAllStringSubmatchIndex(chunk, maxMatchesPerRule) {
-		start, end := secretSpan(loc, r.spec.SecretGroup)
+	names := r.re.SubexpNames()
+	for _, loc := range r.re.FindAllStringSubmatchIndex(chunk, -1) {
+		if len(out) == maxMatchesPerRule {
+			break
+		}
+		start, end := secretSpan(loc, r.spec.SecretGroup, names)
 		if start < 0 || start == end {
 			continue
 		}
@@ -247,8 +253,10 @@ func (r *rule) find(chunk string, base int, global *filter) []Match {
 }
 
 // secretSpan picks the secret out of a submatch index: the configured group,
-// else the first non-empty group, else the whole match (gitleaks semantics).
-func secretSpan(loc []int, group int) (int, int) {
+// else the first non-empty unnamed group, else the whole match. Named groups
+// only label alternatives (jwt-base64 names one per JWT claim), so they are
+// never taken for the secret unless configured. names is SubexpNames().
+func secretSpan(loc []int, group int, names []string) (int, int) {
 	groups := len(loc)/2 - 1
 	if group > 0 {
 		if group > groups {
@@ -257,6 +265,9 @@ func secretSpan(loc []int, group int) (int, int) {
 		return loc[2*group], loc[2*group+1]
 	}
 	for g := 1; g <= groups; g++ {
+		if g < len(names) && names[g] != "" {
+			continue
+		}
 		if loc[2*g] >= 0 && loc[2*g+1] > loc[2*g] {
 			return loc[2*g], loc[2*g+1]
 		}
