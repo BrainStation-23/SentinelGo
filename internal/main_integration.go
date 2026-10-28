@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
@@ -60,6 +62,7 @@ type MainIntegration struct {
 	taskManagerDone   chan struct{}
 	servicesStore     *store.ServicesStore
 	softwareStore     *store.SoftwareStore
+	dlpManager        *dlp.Manager
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -119,10 +122,13 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		return err
 	}
 
-	// 6. Start the task manager (polling + execution) if enabled.
+	// 6. Start DLP (a no-op when dlp_enabled is false or no policy is cached).
+	mi.startDLP(ctx)
+
+	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
-	// 7. Start the task scheduler.
+	// 8. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
 		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
@@ -144,6 +150,7 @@ func (mi *MainIntegration) logStartup() {
 	log.Printf("Config path: %s", sanitize.ForLog(mi.cfg.Path))
 	log.Printf("Audit logs enabled: %v", mi.cfg.AuditLogsEnabled)
 	log.Printf("Log storage enabled: %v", mi.cfg.LogStorageEnabled)
+	log.Printf("DLP enabled: %v", mi.cfg.DLPEnabled)
 }
 
 // maybeStartupUpdateCheck performs an async startup update check when
@@ -376,6 +383,18 @@ func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 	return nil
 }
 
+// startDLP starts the DLP manager. It decides from the kill switches whether
+// to run session helpers; with dlp_enabled false it starts nothing. Errors are
+// logged, never fatal: DLP must not keep the rest of the agent from running.
+func (mi *MainIntegration) startDLP(ctx context.Context) {
+	m := dlp.NewManager(mi.cfg.DLPEnabled, nil, session.New())
+	if err := m.Start(ctx); err != nil {
+		log.Printf("Warning: DLP failed to start: %v", err)
+		return
+	}
+	mi.dlpManager = m
+}
+
 // startTaskManager starts the polling + execution task manager when task
 // polling is enabled. Initialization failures are logged but non-fatal.
 func (mi *MainIntegration) startTaskManager(ctx context.Context) {
@@ -436,6 +455,11 @@ func (mi *MainIntegration) Stop() error {
 
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
+
+	// Stop DLP session helpers
+	if mi.dlpManager != nil {
+		mi.dlpManager.Stop()
+	}
 
 	// Stop audit log service
 	if mi.loggingService != nil {
@@ -500,6 +524,11 @@ func (mi *MainIntegration) GetStatus() map[string]interface{} {
 	// Logging status
 	if mi.loggingService != nil {
 		status["logging"] = mi.loggingService.GetStatistics()
+	}
+
+	// DLP status
+	if mi.dlpManager != nil {
+		status["dlp"] = string(mi.dlpManager.State())
 	}
 
 	return status
