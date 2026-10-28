@@ -23,6 +23,9 @@ const (
 	MaxKeywords       = 500
 	MaxKeywordBytes   = 256
 	maxMatchesPerRule = 1000
+	// maxRawMatches bounds the matches examined (and FindAll's memory),
+	// empty ones included.
+	maxRawMatches = 1 << 16
 )
 
 // Spec is one custom rule as the bundle carries it.
@@ -107,7 +110,7 @@ func keywordPattern(keywords []string, caseSensitive bool) (string, error) {
 // matches (a pattern like "x*") flag nothing and don't count toward the cap.
 func (r *Rule) Find(text string) []Match {
 	var out []Match
-	for _, loc := range r.re.FindAllStringIndex(text, -1) {
+	for _, loc := range r.re.FindAllStringIndex(text, maxRawMatches) {
 		if loc[1] == loc[0] {
 			continue
 		}

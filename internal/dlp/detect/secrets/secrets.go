@@ -38,6 +38,10 @@ var rulesJSON []byte
 // a real secret further along.
 const maxMatchesPerRule = 100
 
+// maxRawMatches bounds the regex matches examined per rule and chunk (and the
+// memory FindAll needs), counting ones the filters then discard.
+const maxRawMatches = 10_000
+
 // Source records which upstream ruleset is embedded.
 type Source struct {
 	Repo   string `json:"repo"`
@@ -235,7 +239,7 @@ func (rs *Ruleset) candidates(text string, enabled func(id string) bool) ([]int,
 func (r *rule) find(chunk string, base int, global *filter) []Match {
 	var out []Match
 	names := r.re.SubexpNames()
-	for _, loc := range r.re.FindAllStringSubmatchIndex(chunk, -1) {
+	for _, loc := range r.re.FindAllStringSubmatchIndex(chunk, maxRawMatches) {
 		if len(out) == maxMatchesPerRule {
 			break
 		}
