@@ -47,7 +47,7 @@ func (s *Service) FetchPolicy(ctx context.Context, knownVersion string, status *
 		params.KnownVersion = &knownVersion
 	}
 	var raw []byte
-	err := s.client().RPC(ctx, rpcGetPolicy, params, &raw, supabase.WithHeader(headerXDeviceID, s.deviceID))
+	err := s.client().RPC(ctx, rpcGetPolicy, params, &raw, s.deviceHeader())
 	if err != nil {
 		if e, ok := supabase.AsAPIError(err); ok && e.Code == codeInvalidParameter && status != nil {
 			return dlp.FetchResult{}, fmt.Errorf("%w: %w", dlp.ErrStatusRejected, err)
@@ -55,6 +55,10 @@ func (s *Service) FetchPolicy(ctx context.Context, knownVersion string, status *
 		return dlp.FetchResult{}, err
 	}
 	return decodePolicyResponse(raw)
+}
+
+func (s *Service) deviceHeader() supabase.CallOption {
+	return supabase.WithHeader(headerXDeviceID, s.deviceID)
 }
 
 // decodePolicyResponse tells {"unchanged":true,...} from a bundle.
