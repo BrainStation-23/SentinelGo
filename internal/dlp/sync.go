@@ -70,6 +70,8 @@ type Syncer struct {
 	capabilities func() map[string]string
 	now          func() time.Time
 
+	syncMu sync.Mutex // one poll at a time (scheduled, or pushed by a task)
+
 	mu         sync.Mutex
 	next       time.Time // zero: poll on the next tick
 	sentStatus [32]byte  // hash of the last status the server accepted
@@ -108,6 +110,8 @@ func (s *Syncer) PollNow() {
 // bundle is unchanged nothing is rewritten. On error the last-known bundle
 // stays in force and the next poll is a full interval later.
 func (s *Syncer) Sync(ctx context.Context) error {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
 	snap := s.mgr.Snapshot()
 	defer s.schedule()
 
