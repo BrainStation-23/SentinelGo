@@ -26,3 +26,5 @@ func (s *stubSupervisor) Apply(context.Context, *policy.Compiled) {
 }
 
 func (s *stubSupervisor) Stop() {}
+
+func (s *stubSupervisor) Sessions() []Info { return nil }

@@ -10,16 +10,20 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/channel/clipboard"
+	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
+	dlpsvc "sentinelgo/internal/service/dlp"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/updater"
 )
 
@@ -63,6 +67,7 @@ type MainIntegration struct {
 	servicesStore     *store.ServicesStore
 	softwareStore     *store.SoftwareStore
 	dlpManager        *dlp.Manager
+	dlpSyncer         *dlp.Syncer
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -383,16 +388,63 @@ func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 	return nil
 }
 
-// startDLP starts the DLP manager. It decides from the kill switches whether
-// to run session helpers; with dlp_enabled false it starts nothing. Errors are
-// logged, never fatal: DLP must not keep the rest of the agent from running.
+// dlpPolicySyncTick is how often the dlp-policy-sync task wakes up. The poll
+// itself follows the bundle's poll_interval_seconds (see dlp.Syncer.Due).
+const dlpPolicySyncTick = time.Minute
+
+// startDLP starts the DLP manager from the cached policy, then registers the
+// dlp-policy-sync task (the scheduler hasn't started yet). It decides from the
+// kill switches whether to run session helpers; with dlp_enabled false it
+// starts nothing and doesn't poll. Errors are logged, never fatal: DLP must
+// not keep the rest of the agent from running.
 func (mi *MainIntegration) startDLP(ctx context.Context) {
-	m := dlp.NewManager(mi.cfg.DLPEnabled, nil, session.New())
+	cache := policy.NewCache(filepath.Join(filepath.Dir(mi.cfg.Path), policy.CacheFileName))
+	m := dlp.NewManager(mi.cfg.DLPEnabled, cache, session.New())
 	if err := m.Start(ctx); err != nil {
 		log.Printf("Warning: DLP failed to start: %v", err)
 		return
 	}
 	mi.dlpManager = m
+	if !mi.cfg.DLPEnabled {
+		return
+	}
+
+	cfg := mi.cfg
+	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
+	mi.dlpSyncer = dlp.NewSyncer(fetcher, cache, m, config.Version, dlpCapabilities)
+	err := mi.scheduler.AddTask(&scheduler.Task{
+		Name:     "dlp-policy-sync",
+		Interval: dlpPolicySyncTick,
+		Enabled:  true,
+		Handler:  dlpPolicySyncHandler(mi.dlpSyncer),
+	})
+	if err != nil {
+		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
+	}
+}
+
+// dlpCapabilities reports what each DLP channel can do on this platform.
+func dlpCapabilities() map[string]string {
+	return map[string]string{policy.ChannelClipboard: clipboard.New().Supported().String()}
+}
+
+// dlpPolicySyncHandler polls for the DLP policy when a poll is due, wrapped in
+// DoWithAuthRetry so an expired token recovers once.
+func dlpPolicySyncHandler(s *dlp.Syncer) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !s.Due() {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping dlp-policy-sync until session recovers")
+			return nil
+		}
+		poll := func() error { return s.Sync(ctx) }
+		if authSvc != nil {
+			return authSvc.DoWithAuthRetry(ctx, cfg, poll)
+		}
+		return poll()
+	}
 }
 
 // startTaskManager starts the polling + execution task manager when task

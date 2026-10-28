@@ -21,4 +21,13 @@ type Supervisor interface {
 	Apply(ctx context.Context, p *policy.Compiled)
 	// Stop stops every helper. Safe to call when none are running.
 	Stop()
+	// Sessions reports each helper's state, for the status sent to the
+	// backend.
+	Sessions() []Info
+}
+
+// Info is one session helper's state, as reported to the backend.
+type Info struct {
+	User  string `json:"user"`
+	State string `json:"state"` // e.g. "running", "restarting"
 }

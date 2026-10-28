@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/dlp/session"
 )
 
 // fakeSource is a BundleSource returning a fixed bundle or error.
@@ -37,6 +38,10 @@ func (f *fakeSupervisor) Stop() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops++
+}
+
+func (f *fakeSupervisor) Sessions() []session.Info {
+	return []session.Info{{User: "CORP\alice", State: "running"}}
 }
 
 func (f *fakeSupervisor) counts() (applied, stops int) {
