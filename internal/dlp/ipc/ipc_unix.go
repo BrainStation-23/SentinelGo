@@ -36,7 +36,7 @@ func Listen(addr string) (Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ipc: listen %s: %w", addr, err)
 	}
-	if err := os.Chmod(addr, 0o666); err != nil { // #nosec G302 -- any local user's helper connects; peers are identified by SO_PEERCRED
+	if err := os.Chmod(addr, 0o666); err != nil { // #nosec G302 -- any local user's helper connects; peers are identified by SO_PEERCRED NOSONAR
 		_ = l.Close()
 		return nil, fmt.Errorf("ipc: socket mode: %w", err)
 	}
@@ -61,7 +61,7 @@ func secureSocketDir(dir string) error {
 	case !ok || int(st.Uid) != os.Geteuid():
 		return fmt.Errorf("ipc: socket dir %s is not owned by this account; refusing it", dir)
 	case fi.Mode().Perm()&0o022 != 0:
-		if err := os.Chmod(dir, 0o755); err != nil { // #nosec G302 -- readable by all helpers, writable by the service only
+		if err := os.Chmod(dir, 0o755); err != nil { // #nosec G302 -- readable by all helpers, writable by the service only NOSONAR
 			return fmt.Errorf("ipc: socket dir %s is writable by others: %w", dir, err)
 		}
 	}
