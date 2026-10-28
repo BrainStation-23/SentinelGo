@@ -68,6 +68,7 @@ type MainIntegration struct {
 	softwareStore     *store.SoftwareStore
 	dlpManager        *dlp.Manager
 	dlpSyncer         *dlp.Syncer
+	dlpEvents         *store.DLPEventStore
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -421,6 +422,45 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	if err != nil {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
+	mi.startDLPEventSync(fetcher)
+}
+
+// dlpEventSyncInterval is how often queued DLP evidence is uploaded.
+const dlpEventSyncInterval = time.Minute
+
+// startDLPEventSync opens the evidence queue and registers dlp-event-sync.
+// Without a queue DLP still enforces; evidence is just not kept.
+func (mi *MainIntegration) startDLPEventSync(sender dlp.EventSender) {
+	q, err := store.NewDLPEventStore(filepath.Join(filepath.Dir(mi.cfg.Path), store.DLPEventsDBName))
+	if err != nil {
+		log.Printf("Warning: DLP evidence queue unavailable, events will not be kept: %v", err)
+		return
+	}
+	mi.dlpEvents = q
+	es := dlp.NewEventSync(q, sender)
+	err = mi.scheduler.AddTask(&scheduler.Task{
+		Name:     "dlp-event-sync",
+		Interval: dlpEventSyncInterval,
+		Enabled:  true,
+		Handler:  dlpEventSyncHandler(es),
+	})
+	if err != nil {
+		log.Printf("Warning: DLP event sync not scheduled: %v", err)
+	}
+}
+
+// dlpEventSyncHandler uploads queued DLP evidence, wrapped in DoWithAuthRetry.
+func dlpEventSyncHandler(es *dlp.EventSync) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if authSvc != nil && !authSvc.Healthy() {
+			return nil
+		}
+		upload := func() error { return es.Sync(ctx) }
+		if authSvc != nil {
+			return authSvc.DoWithAuthRetry(ctx, cfg, upload)
+		}
+		return upload()
+	}
 }
 
 // dlpCapabilities reports what each DLP channel can do on this platform.
@@ -508,9 +548,15 @@ func (mi *MainIntegration) Stop() error {
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
 
-	// Stop DLP session helpers
+	// Stop DLP session helpers, then close the evidence queue
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
+	}
+	if mi.dlpEvents != nil {
+		if err := mi.dlpEvents.Close(); err != nil {
+			log.Printf("Warning: Failed to close DLP event store: %v", err)
+		}
+		mi.dlpEvents = nil
 	}
 
 	// Stop audit log service
