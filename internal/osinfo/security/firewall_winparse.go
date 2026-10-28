@@ -16,12 +16,18 @@ import (
 // winFirewall is the inbound firewall state read from the ActiveStore, the
 // policy in force: local rules merged with Group Policy.
 type winFirewall struct {
-	Rules    []winFwRule       `json:"rules"` // enabled inbound rules
-	Ports    []winFwPortFilter `json:"ports"`
-	Apps     []winFwAppFilter  `json:"apps"`
-	Addrs    []winFwAddrFilter `json:"addrs"`
-	Profiles []winFwProfile    `json:"profiles"`
-	Networks []winFwNetwork    `json:"networks"`
+	Rules      []winFwRule            `json:"rules"` // enabled inbound rules
+	Ports      []winFwPortFilter      `json:"ports"`
+	Apps       []winFwAppFilter       `json:"apps"`
+	Addrs      []winFwAddrFilter      `json:"addrs"`
+	Services   []winFwServiceFilter   `json:"services"`
+	Ifaces     []winFwIfaceFilter     `json:"ifaces"`
+	IfaceTypes []winFwIfaceTypeFilter `json:"iface_types"`
+	Profiles   []winFwProfile         `json:"profiles"`
+	Networks   []winFwNetwork         `json:"networks"`
+	// Hosted lists the running Windows services and the process hosting
+	// each, to match rules limited to a service. Empty when it can't be read.
+	Hosted []winHostedService `json:"hosted"`
 }
 
 type winFwRule struct {
@@ -50,6 +56,32 @@ type winFwAddrFilter struct {
 	RemoteAddress string `json:"remote_address"`
 }
 
+// winFwServiceFilter limits a rule to one Windows service ("Any" for none).
+type winFwServiceFilter struct {
+	ID      string `json:"id"`
+	Service string `json:"service"`
+}
+
+// winFwIfaceFilter limits a rule to interfaces by alias: comma-separated,
+// or "Any".
+type winFwIfaceFilter struct {
+	ID        string `json:"id"`
+	Interface string `json:"interface"`
+}
+
+// winFwIfaceTypeFilter limits a rule to interface types: "Any", or
+// comma-separated "Wired", "Wireless", "RemoteAccess".
+type winFwIfaceTypeFilter struct {
+	ID            string `json:"id"`
+	InterfaceType string `json:"interface_type"`
+}
+
+// winHostedService is a running service and the PID of its host process.
+type winHostedService struct {
+	Name string `json:"name"`
+	PID  int    `json:"pid"`
+}
+
 type winFwProfile struct {
 	Name           string `json:"name"` // "Domain", "Private" or "Public"
 	Enabled        bool   `json:"enabled"`
@@ -64,6 +96,20 @@ type winFwNetwork struct {
 	Interface string `json:"interface"`
 	Index     int    `json:"index"`    // InterfaceIndex, as net.Interface.Index
 	Category  string `json:"category"` // "Public", "Private" or "DomainAuthenticated"
+	Media     string `json:"media"`    // the adapter's PhysicalMediaType, e.g. "802.3", "Native 802.11"
+}
+
+// interfaceType maps the network's adapter media to a rule's interface
+// type, or "" when it can't be told.
+func (n winFwNetwork) interfaceType() string {
+	m := strings.ToLower(n.Media)
+	switch {
+	case strings.Contains(m, "802.11") || strings.Contains(m, "wireless"):
+		return "Wireless"
+	case strings.Contains(m, "802.3"):
+		return "Wired"
+	}
+	return ""
 }
 
 // winProfiles are the firewall profiles in flag order.
@@ -135,9 +181,14 @@ type winFwIndex struct {
 	ports      map[string]winFwPortFilter
 	apps       map[string]string
 	addrs      map[string]winFwAddrFilter
+	services   map[string]string
+	ifaces     map[string]string
+	ifaceTypes map[string]string
+	hosted     map[int][]string // PID → the services it hosts
 	profiles   map[string]winFwProfile
-	active     []string       // profiles of the connected networks
-	byIndex    map[int]string // interface index → its network's profile
+	active     []string             // profiles of the connected networks
+	networks   []winFwNetwork       // connected networks with a known profile
+	byIndex    map[int]winFwNetwork // interface index → its network
 	ifaceIndex interfaceIndexFunc
 }
 
@@ -146,9 +197,10 @@ type winFwIndex struct {
 // wildcard socket, or one whose interface has no network profile, against
 // every active profile. ifaceIndex may be nil.
 //
-// Every rule has a port, a program and an address filter. If the probe
-// returned a rule without one, the policy is incomplete and every verdict is
-// unknown: a missing filter must not be read as "any".
+// Every rule has a port, program, address, service, interface and
+// interface-type filter. If the probe returned a rule without one, the
+// policy is incomplete and every verdict is unknown: a missing filter must
+// not be read as "any".
 func (fw winFirewall) checker(ifaceIndex interfaceIndexFunc) firewallCheck {
 	ix, complete := fw.index(ifaceIndex)
 	if !complete {
@@ -163,10 +215,28 @@ func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
 		ports:      make(map[string]winFwPortFilter, len(fw.Ports)),
 		apps:       make(map[string]string, len(fw.Apps)),
 		addrs:      make(map[string]winFwAddrFilter, len(fw.Addrs)),
+		services:   make(map[string]string, len(fw.Services)),
+		ifaces:     make(map[string]string, len(fw.Ifaces)),
+		ifaceTypes: make(map[string]string, len(fw.IfaceTypes)),
+		hosted:     map[int][]string{},
 		profiles:   make(map[string]winFwProfile, len(fw.Profiles)),
 		active:     fw.activeProfiles(),
-		byIndex:    map[int]string{},
+		byIndex:    map[int]winFwNetwork{},
 		ifaceIndex: ifaceIndex,
+	}
+	for _, f := range fw.Services {
+		ix.services[f.ID] = f.Service
+	}
+	for _, f := range fw.Ifaces {
+		ix.ifaces[f.ID] = f.Interface
+	}
+	for _, f := range fw.IfaceTypes {
+		ix.ifaceTypes[f.ID] = f.InterfaceType
+	}
+	for _, h := range fw.Hosted {
+		if h.PID > 0 {
+			ix.hosted[h.PID] = append(ix.hosted[h.PID], h.Name)
+		}
 	}
 	for _, f := range fw.Ports {
 		ix.ports[f.ID] = f
@@ -181,75 +251,105 @@ func (fw winFirewall) index(ifaceIndex interfaceIndexFunc) (winFwIndex, bool) {
 		ix.profiles[p.Name] = p
 	}
 	for _, n := range fw.Networks {
-		if p := winProfileName(n.Category); p != "" && n.Index > 0 {
-			ix.byIndex[n.Index] = p
+		if winProfileName(n.Category) == "" {
+			continue
+		}
+		ix.networks = append(ix.networks, n)
+		if n.Index > 0 {
+			ix.byIndex[n.Index] = n
 		}
 	}
 	for _, r := range fw.Rules {
 		_, hasPort := ix.ports[r.ID]
 		_, hasApp := ix.apps[r.ID]
 		_, hasAddr := ix.addrs[r.ID]
-		if !hasPort || !hasApp || !hasAddr {
+		_, hasSvc := ix.services[r.ID]
+		_, hasIface := ix.ifaces[r.ID]
+		_, hasType := ix.ifaceTypes[r.ID]
+		if !hasPort || !hasApp || !hasAddr || !hasSvc || !hasIface || !hasType {
 			return winFwIndex{}, false
 		}
 	}
 	return ix, true
 }
 
+// winArrival is a way connections reach a socket: through a firewall
+// profile, on a connected network when known.
+type winArrival struct {
+	profile string
+	network *winFwNetwork // nil when the network can't be told
+}
+
 // check rates one socket: disabled when a governing profile has the
 // firewall off, allowed when one lets connections in, blocked otherwise.
-func (ix winFwIndex) check(p shared.ListeningPort) (string, []string) {
+// The scope is whom the allow rules (or a default inbound Allow) let in.
+func (ix winFwIndex) check(p shared.ListeningPort) firewallResult {
 	var reachable []string
+	var scope remoteScope
 	disabled := false
-	for _, name := range ix.socketProfiles(p.Address) {
-		prof, known := ix.profiles[name]
+	for _, a := range ix.socketArrivals(p.Address) {
+		prof, known := ix.profiles[a.profile]
 		switch {
 		case !known:
-			return firewallUnknown, nil
+			return firewallResult{verdict: firewallUnknown}
 		case !prof.Enabled:
 			disabled = true
-			reachable = append(reachable, name)
-		case ix.allows(prof, p):
-			reachable = append(reachable, name)
+			reachable = appendUnique(reachable, a.profile)
+		default:
+			if ok, s := ix.allows(prof, a.network, p); ok {
+				reachable = appendUnique(reachable, a.profile)
+				scope.merge(s)
+			}
 		}
 	}
 	switch {
 	case disabled:
-		return firewallDisabled, reachable
+		return firewallResult{verdict: firewallDisabled, profiles: reachable}
 	case len(reachable) > 0:
-		return firewallAllowed, reachable
+		return firewallResult{verdict: firewallAllowed, profiles: reachable, scope: scope}
 	default:
-		return firewallBlocked, nil
+		return firewallResult{verdict: firewallBlocked}
 	}
 }
 
-// socketProfiles returns the firewall profiles that govern connections to a
-// socket bound to addr.
-func (ix winFwIndex) socketProfiles(addr string) []string {
-	if ix.ifaceIndex == nil || bindScope(addr) != scopeInterface {
-		return ix.active
-	}
-	a := winBoundAddr(addr)
-	if !a.IsValid() {
-		return ix.active
-	}
-	if idx, ok := ix.ifaceIndex(a); ok {
-		if p, known := ix.byIndex[idx]; known {
-			return []string{p}
+// socketArrivals returns how connections reach a socket bound to addr. A
+// socket on one interface's address is reached through that interface's
+// network. A wildcard socket is reached through every connected network,
+// each judged on its own, since rules can be limited to an interface. With
+// no network known, every active profile governs it.
+func (ix winFwIndex) socketArrivals(addr string) []winArrival {
+	if ix.ifaceIndex != nil && bindScope(addr) == scopeInterface {
+		if a := winBoundAddr(addr); a.IsValid() {
+			if idx, ok := ix.ifaceIndex(a); ok {
+				if n, known := ix.byIndex[idx]; known {
+					return []winArrival{{profile: winProfileName(n.Category), network: &n}}
+				}
+			}
 		}
+	} else if bindScope(addr) != scopeInterface && len(ix.networks) > 0 {
+		out := make([]winArrival, 0, len(ix.networks))
+		for i := range ix.networks {
+			out = append(out, winArrival{profile: winProfileName(ix.networks[i].Category), network: &ix.networks[i]})
+		}
+		return out
 	}
-	return ix.active
+	out := make([]winArrival, 0, len(ix.active))
+	for _, name := range ix.active {
+		out = append(out, winArrival{profile: name})
+	}
+	return out
 }
 
-// allows reports whether inbound connections to p get through on a profile.
-// A block rule wins over any allow rule, as in Windows Firewall (allow rules
+// allows reports whether inbound connections to p get through on a profile,
+// arriving on network (nil when unknown), and whom they're let in from. A
+// block rule wins over any allow rule, as in Windows Firewall (allow rules
 // that override block rules are rare and not modelled), but only when it
 // covers every connection to the socket: from any remote address, to the
-// socket's address, for its program. A narrower block leaves the other
-// connections to the allow rules. With no matching rule the profile's
-// default inbound action decides; allow rules don't count when the profile
-// blocks all incoming connections.
-func (ix winFwIndex) allows(prof winFwProfile, p shared.ListeningPort) bool {
+// socket's address, for its program and service, on this interface. A
+// narrower block leaves the other connections to the allow rules. With no
+// matching rule the profile's default inbound action decides; allow rules
+// don't count when the profile blocks all incoming connections.
+func (ix winFwIndex) allows(prof winFwProfile, network *winFwNetwork, p shared.ListeningPort) (bool, remoteScope) {
 	bit := 0
 	for _, wp := range winProfiles {
 		if wp.name == prof.Name {
@@ -257,7 +357,11 @@ func (ix winFwIndex) allows(prof winFwProfile, p shared.ListeningPort) bool {
 		}
 	}
 	bound := winBoundAddr(p.Address)
+	var scope remoteScope
 	allowed := strings.EqualFold(prof.DefaultInbound, "Allow")
+	if allowed {
+		scope.widen(remoteAny)
+	}
 	for _, r := range ix.rules {
 		if mask := r.Profile & 7; mask != 0 && mask&bit == 0 {
 			continue
@@ -265,19 +369,106 @@ func (ix winFwIndex) allows(prof winFwProfile, p shared.ListeningPort) bool {
 		if !winRuleMatchesPort(ix.ports[r.ID], p) {
 			continue
 		}
+		onIface, ifaceCertain := winRuleOnInterface(ix.ifaces[r.ID], ix.ifaceTypes[r.ID], network)
+		if !onIface {
+			continue
+		}
 		addr := ix.addrs[r.ID]
+		forService, serviceCertain := ix.ruleForService(ix.services[r.ID], p)
 		switch {
 		case strings.EqualFold(r.Action, "Block"):
-			if winAddrIsAny(addr.RemoteAddress) && winLocalCoversAll(addr.LocalAddress, bound) && winProgramCoversAll(ix.apps[r.ID], p.ProcessName) {
-				return false
+			if ifaceCertain && forService && serviceCertain && winAddrIsAny(addr.RemoteAddress) &&
+				winLocalCoversAll(addr.LocalAddress, bound) && winProgramCoversAll(ix.apps[r.ID], p.ProcessName) {
+				return false, remoteScope{}
 			}
 		case strings.EqualFold(r.Action, "Allow") && !prof.BlockAllInbound:
-			if winRuleMatchesProgram(ix.apps[r.ID], p.ProcessName) && winLocalReaches(addr.LocalAddress, bound) {
+			if forService && winRuleMatchesProgram(ix.apps[r.ID], p.ProcessName) && winLocalReaches(addr.LocalAddress, bound) {
 				allowed = true
+				scope.merge(winRemoteScope(addr.RemoteAddress))
 			}
 		}
 	}
-	return allowed
+	return allowed, scope
+}
+
+// winRuleOnInterface reports whether a rule's interface and interface-type
+// filters let it apply on network. When the network or its type can't be
+// told, a limited rule is assumed to apply (an over-report) but not for
+// certain, so it can't count as a block covering every connection.
+func winRuleOnInterface(aliases, types string, network *winFwNetwork) (applies, certain bool) {
+	certain = true
+	if !winAddrIsAny(aliases) {
+		if network == nil {
+			certain = false
+		} else if !winListHas(aliases, network.Interface) {
+			return false, true
+		}
+	}
+	if !winAddrIsAny(types) {
+		t := ""
+		if network != nil {
+			t = network.interfaceType()
+		}
+		if t == "" {
+			certain = false
+		} else if !winListHas(types, t) {
+			return false, true
+		}
+	}
+	return true, certain
+}
+
+// winListHas reports whether a comma-separated list holds item, ignoring case.
+func winListHas(list, item string) bool {
+	for _, x := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(x), item) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleForService reports whether a rule's service filter covers the
+// listening process: "Any", or a service the process hosts. When the
+// process's services can't be told (no PID, or the service list couldn't be
+// read) the rule is assumed to match, an over-report, but not for certain.
+func (ix winFwIndex) ruleForService(service string, p shared.ListeningPort) (match, certain bool) {
+	if winAddrIsAny(service) {
+		return true, true
+	}
+	if p.ProcessID <= 0 || len(ix.hosted) == 0 {
+		return true, false
+	}
+	for _, name := range ix.hosted[int(p.ProcessID)] {
+		if strings.EqualFold(name, strings.TrimSpace(service)) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// winRemoteScope maps an allow rule's remote address filter to whom it lets
+// in, the widest of its items: "Any", "Internet" and "DefaultGateway" let in
+// any address, "LocalSubnet" the local subnets, and everything else
+// (addresses, ranges, "Intranet", "DNS", "DHCP", "WINS", …) only those.
+func winRemoteScope(spec string) remoteScope {
+	var s remoteScope
+	if winAddrIsAny(spec) {
+		s.widen(remoteAny)
+		return s
+	}
+	for _, item := range strings.Split(spec, ",") {
+		item = strings.TrimSpace(item)
+		switch strings.ToLower(item) {
+		case "", "any", "internet", "defaultgateway":
+			s.widen(remoteAny)
+		case "localsubnet", "localsubnet4", "localsubnet6":
+			s.widen(remoteLocalSubnet)
+		default:
+			s.widen(remoteSpecific, item)
+		}
+	}
+	return s
 }
 
 // winBoundAddr returns the address a socket is bound to, or the zero Addr

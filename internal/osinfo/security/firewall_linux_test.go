@@ -33,10 +33,10 @@ func TestLinuxFirewallCheck_UFW(t *testing.T) {
 		"ufw status verbose": cmdOK("Status: active\nDefault: deny (incoming), allow (outgoing)\n\nTo                         Action      From\n--                         ------      ----\nOpenSSH                    ALLOW IN    Anywhere\n"),
 	})
 	check := linuxFirewallCheck([]shared.FirewallProfile{{Name: "ufw", Enabled: true}}, nil)
-	if got, _ := check(sshPort); got != firewallAllowed {
+	if got, _ := vp(check(sshPort)); got != firewallAllowed {
 		t.Errorf("ssh = %q, want allowed", got)
 	}
-	if got, _ := check(smbPort); got != firewallBlocked {
+	if got, _ := vp(check(smbPort)); got != firewallBlocked {
 		t.Errorf("smb = %q, want blocked", got)
 	}
 }
@@ -51,10 +51,10 @@ func TestLinuxFirewallCheck_Firewalld(t *testing.T) {
 		"firewall-cmd --list-all-zones": cmdOK("public (default, active)\n  target: default\n  services: ssh samba\n"),
 	})
 	check := linuxFirewallCheck([]shared.FirewallProfile{{Name: "firewalld", Enabled: true}}, nil)
-	if got, _ := check(sshPort); got != firewallAllowed {
+	if got, _ := vp(check(sshPort)); got != firewallAllowed {
 		t.Errorf("ssh = %q, want allowed", got)
 	}
-	if got, _ := check(smbPort); got != firewallBlocked {
+	if got, _ := vp(check(smbPort)); got != firewallBlocked {
 		t.Errorf("smb = %q, want blocked (the admin samba.xml opens 139 only)", got)
 	}
 }
@@ -78,7 +78,7 @@ func TestLinuxFirewallCheck_NoManager(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stubLinuxSecurityCommands(t, tt.cmds)
-			if got, _ := linuxFirewallCheck(tt.profiles, nil)(smbPort); got != tt.want {
+			if got, _ := vp(linuxFirewallCheck(tt.profiles, nil)(smbPort)); got != tt.want {
 				t.Errorf("verdict = %q, want %q", got, tt.want)
 			}
 		})

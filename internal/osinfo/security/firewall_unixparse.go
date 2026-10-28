@@ -62,6 +62,7 @@ type ufwRule struct {
 	app       string     // application profile name
 	action    string     // "allow", "limit", "deny" or "reject"
 	anySource bool       // from "Anywhere"
+	source    string     // the "From" address or prefix when not anySource
 	family    int        // 4 or 6: ufw lists each address family's rules separately
 	iface     string     // "on eth0": only traffic arriving on that interface
 	dest      netip.Prefix
@@ -127,6 +128,9 @@ func parseUFWRule(line string) (ufwRule, bool) {
 	from, _ := ufwStrip(cols[2])
 	to, iface := ufwStrip(cols[0])
 	r := ufwRule{action: actionWords[0], anySource: from == "Anywhere", iface: iface, family: 4}
+	if !r.anySource {
+		r.source, _, _ = strings.Cut(from, " ")
+	}
 	if strings.Contains(cols[0], "(v6)") || strings.Contains(cols[2], "(v6)") {
 		r.family = 6
 	}
@@ -266,31 +270,37 @@ func newUFWHost(ports []shared.ListeningPort, arrival []string) ufwHost {
 // accepts, since ufw lists IPv4 and IPv6 rules separately; the socket is
 // reachable when either family lets connections in.
 func (st ufwStatus) check(apps map[string][]portSpec, host ufwHost) firewallCheck {
-	return func(p shared.ListeningPort) (string, []string) {
+	return func(p shared.ListeningPort) firewallResult {
 		families, bound := listenerFamilies(p.Address, host.v6Only != nil && host.v6Only(p))
 		verdicts := make([]string, 0, len(families))
+		var scope remoteScope
 		for _, f := range families {
-			verdicts = append(verdicts, st.checkFamily(apps, p, f, bound, host.arrival))
+			verdict, s := st.checkFamily(apps, p, f, bound, host.arrival)
+			verdicts = append(verdicts, verdict)
+			scope.merge(s)
 		}
 		switch {
 		case slices.Contains(verdicts, firewallAllowed):
-			return firewallAllowed, nil
+			return firewallResult{verdict: firewallAllowed, scope: scope}
 		case slices.Contains(verdicts, firewallUnknown):
-			return firewallUnknown, nil
+			return firewallResult{verdict: firewallUnknown}
 		default:
-			return firewallBlocked, nil
+			return firewallResult{verdict: firewallBlocked}
 		}
 	}
 }
 
 // checkFamily evaluates one family's rules in order, as ufw does: the first
-// rule letting matching traffic in decides. A deny decides only when it
-// covers every connection to the socket: from anywhere, on every interface
+// rule matching a connection decides it. A deny decides for every connection
+// only when it covers them all: from anywhere, on every interface
 // connections can arrive on, to the socket's address. Narrower denies leave
-// other traffic to later rules. Rules naming an application profile that
-// isn't installed make an otherwise blocked verdict unknown.
-func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr, arrival []string) string {
-	uncertain := false
+// other traffic to later rules. Every allow rule before that point lets its
+// sources in, so their scopes are collected: "Anywhere" is any, an address
+// or prefix is specific. Rules naming an application profile that isn't
+// installed make an otherwise blocked verdict unknown.
+func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPort, family int, bound netip.Addr, arrival []string) (string, remoteScope) {
+	uncertain, allowed := false, false
+	var scope remoteScope
 	for _, r := range st.rules {
 		matches, known := r.coversPort(apps, p)
 		uncertain = uncertain || (!known && r.reaches(family, bound))
@@ -299,20 +309,32 @@ func (st ufwStatus) checkFamily(apps map[string][]portSpec, p shared.ListeningPo
 		}
 		switch r.action {
 		case "allow", "limit":
-			return firewallAllowed
+			allowed = true
+			if r.anySource {
+				scope.widen(remoteAny)
+			} else {
+				scope.widen(remoteSpecific, r.source)
+			}
 		case "deny", "reject":
 			if r.blocksEverything(bound, arrival) {
-				return firewallBlocked
+				if allowed {
+					return firewallAllowed, scope
+				}
+				return firewallBlocked, remoteScope{}
 			}
 		}
 	}
 	if st.defaultIncoming == "allow" {
-		return firewallAllowed
+		scope.widen(remoteAny)
+		return firewallAllowed, scope
 	}
-	if uncertain {
-		return firewallUnknown
+	switch {
+	case allowed:
+		return firewallAllowed, scope
+	case uncertain:
+		return firewallUnknown, remoteScope{}
 	}
-	return firewallBlocked
+	return firewallBlocked, remoteScope{}
 }
 
 // reaches reports whether the rule can apply to traffic for a socket of this
@@ -356,16 +378,29 @@ type firewalldZone struct {
 	target     string
 	services   []string
 	ports      []portSpec
-	richOpen   []portSpec // ports a rich rule accepts
-	richSvcs   []string   // services a rich rule accepts
-	sourceAll  bool       // a rich rule accepts everything from some source
-	interfaces []string   // interfaces bound to the zone
-	sources    []string   // source addresses bound to the zone
+	richOpen   []richPortRule    // ports a rich rule accepts
+	richSvcs   []richServiceRule // services a rich rule accepts
+	sourceAll  []string          // sources a rich rule accepts everything from
+	interfaces []string          // interfaces bound to the zone
+	sources    []string          // source addresses bound to the zone
+}
+
+// richPortRule and richServiceRule are what an accepting rich rule opens,
+// and the source it's limited to ("" for any).
+type richPortRule struct {
+	spec   portSpec
+	source string
+}
+
+type richServiceRule struct {
+	name   string
+	source string
 }
 
 var (
 	richPort    = regexp.MustCompile(`port port="([^"]+)" protocol="(tcp|udp)"`)
 	richService = regexp.MustCompile(`service name="([^"]+)"`)
+	richSource  = regexp.MustCompile(`source (?:address|ipset)="([^"]+)"`)
 )
 
 // parseFirewalldZones parses `firewall-cmd --list-all-zones`.
@@ -429,16 +464,21 @@ func (z *firewalldZone) addRichRule(rule string) {
 	if !strings.HasSuffix(rule, " accept") && !strings.Contains(rule, " accept ") {
 		return
 	}
+	// A "source NOT address" rule admits everyone but that source.
+	source := ""
+	if m := richSource.FindStringSubmatch(rule); m != nil && !strings.Contains(rule, "source NOT ") {
+		source = m[1]
+	}
 	switch {
 	case richPort.MatchString(rule):
 		m := richPort.FindStringSubmatch(rule)
 		if lo, hi, ok := parsePortRange(m[1], "-"); ok {
-			z.richOpen = append(z.richOpen, portSpec{protocol: m[2], from: lo, to: hi})
+			z.richOpen = append(z.richOpen, richPortRule{spec: portSpec{protocol: m[2], from: lo, to: hi}, source: source})
 		}
 	case richService.MatchString(rule):
-		z.richSvcs = append(z.richSvcs, richService.FindStringSubmatch(rule)[1])
+		z.richSvcs = append(z.richSvcs, richServiceRule{name: richService.FindStringSubmatch(rule)[1], source: source})
 	case !strings.Contains(rule, " port ") && !strings.Contains(rule, " protocol ") && !strings.Contains(rule, "icmp"):
-		z.sourceAll = true
+		z.sourceAll = append(z.sourceAll, source)
 	}
 }
 
@@ -501,24 +541,30 @@ func firewalldCheck(zones []firewalldZone, serviceSpecs func(name string) ([]por
 		services[name] = s
 		return s.specs, s.ok
 	}
-	return func(p shared.ListeningPort) (string, []string) {
+	return func(p shared.ListeningPort) firewallResult {
 		zones, ok := set.forSocket(p.Address, ifaceName)
 		if !ok || len(zones) == 0 {
-			return firewallUnknown, nil
+			return firewallResult{verdict: firewallUnknown}
 		}
-		uncertain := false
+		uncertain, allowed := false, false
+		var scope remoteScope
 		for _, z := range zones {
-			switch z.lets(p, lookup) {
+			verdict, s := z.lets(p, lookup)
+			switch verdict {
 			case firewallAllowed:
-				return firewallAllowed, nil
+				allowed = true
+				scope.merge(s)
 			case firewallUnknown:
 				uncertain = true
 			}
 		}
-		if uncertain {
-			return firewallUnknown, nil
+		switch {
+		case allowed:
+			return firewallResult{verdict: firewallAllowed, scope: scope}
+		case uncertain:
+			return firewallResult{verdict: firewallUnknown}
 		}
-		return firewallBlocked, nil
+		return firewallResult{verdict: firewallBlocked}
 	}
 }
 
@@ -600,24 +646,57 @@ func (s firewalldZoneSet) forSocket(addr string, ifaceName interfaceNameFunc) ([
 	return zones, true
 }
 
-// lets returns whether the zone lets connections to p in: allowed, blocked,
-// or unknown when a service it opens can't be resolved.
-func (z firewalldZone) lets(p shared.ListeningPort, lookup func(string) ([]portSpec, bool)) string {
-	if strings.EqualFold(z.target, "ACCEPT") || z.sourceAll || anyCovers(z.ports, p) || anyCovers(z.richOpen, p) {
-		return firewallAllowed
+// lets returns whether the zone lets connections to p in (allowed, blocked,
+// or unknown when a service it opens can't be resolved) and from where: a
+// zone bound to source addresses takes traffic only from them, and a rich
+// rule with a source admits only that source; anything else admits any
+// address.
+func (z firewalldZone) lets(p shared.ListeningPort, lookup func(string) ([]portSpec, bool)) (string, remoteScope) {
+	var scope remoteScope
+	from := func(source string) {
+		switch {
+		case source != "":
+			scope.widen(remoteSpecific, source)
+		case len(z.sources) > 0:
+			scope.widen(remoteSpecific, z.sources...)
+		default:
+			scope.widen(remoteAny)
+		}
 	}
-	verdict := firewallBlocked
-	for _, name := range append(append([]string{}, z.services...), z.richSvcs...) {
+	if strings.EqualFold(z.target, "ACCEPT") || anyCovers(z.ports, p) {
+		from("")
+	}
+	for _, source := range z.sourceAll {
+		from(source)
+	}
+	for _, r := range z.richOpen {
+		if r.spec.covers(p) {
+			from(r.source)
+		}
+	}
+	unresolved := false
+	services := func(name, source string) {
 		specs, ok := lookup(name)
-		if !ok {
-			verdict = firewallUnknown
-			continue
-		}
-		if anyCovers(specs, p) {
-			return firewallAllowed
+		switch {
+		case !ok:
+			unresolved = true
+		case anyCovers(specs, p):
+			from(source)
 		}
 	}
-	return verdict
+	for _, name := range z.services {
+		services(name, "")
+	}
+	for _, r := range z.richSvcs {
+		services(r.name, r.source)
+	}
+	switch {
+	case scope.kind != "":
+		return firewallAllowed, scope
+	case unresolved:
+		return firewallUnknown, remoteScope{}
+	}
+	return firewallBlocked, remoteScope{}
 }
 
 // ── macOS Application Firewall ───────────────────────────────────────────────
