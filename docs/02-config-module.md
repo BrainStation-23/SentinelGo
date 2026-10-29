@@ -55,6 +55,7 @@ replaced with defaults on the next load.
   "log_storage_enabled":      true,
   "audit_logs_enabled":       true,
   "software_sync_enabled":    true,
+  "dlp_enabled":              true,
   "edge_function_url":        ""
 }
 ```
@@ -88,6 +89,7 @@ agent never reports a version it is not actually running — see
 | `log_storage_enabled`       | `bool`      | `true`                 | Enables local audit-log persistence.                   |
 | `audit_logs_enabled`        | `bool`      | `true`                 | Enables the audit-log upload service.                  |
 | `software_sync_enabled`     | `bool`      | `true`                 | Enables software-inventory upload.                     |
+| `dlp_enabled`               | `bool`      | `true`                 | Local DLP kill switch. `false` turns DLP off on this device whatever the server says. With `true`, DLP still stays off until the server sends an enabled policy. |
 | `edge_function_url`         | `string`    | `""`                   | Optional override for the `agent-software` Edge Fn URL. |
 
 ## Duration fields

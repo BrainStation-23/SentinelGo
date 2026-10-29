@@ -6,18 +6,27 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/channel"
+	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
+	dlpsvc "sentinelgo/internal/service/dlp"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
+	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/store"
+	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/updater"
 )
 
@@ -60,6 +69,9 @@ type MainIntegration struct {
 	taskManagerDone   chan struct{}
 	servicesStore     *store.ServicesStore
 	softwareStore     *store.SoftwareStore
+	dlpManager        *dlp.Manager
+	dlpSyncer         *dlp.Syncer
+	dlpEvents         *store.DLPEventStore
 }
 
 // NewMainIntegration wires the production dependencies and returns a ready
@@ -119,10 +131,13 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		return err
 	}
 
-	// 6. Start the task manager (polling + execution) if enabled.
+	// 6. Start DLP (a no-op when dlp_enabled is false or no policy is cached).
+	mi.startDLP(ctx)
+
+	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
-	// 7. Start the task scheduler.
+	// 8. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
 		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
@@ -144,6 +159,7 @@ func (mi *MainIntegration) logStartup() {
 	log.Printf("Config path: %s", sanitize.ForLog(mi.cfg.Path))
 	log.Printf("Audit logs enabled: %v", mi.cfg.AuditLogsEnabled)
 	log.Printf("Log storage enabled: %v", mi.cfg.LogStorageEnabled)
+	log.Printf("DLP enabled: %v", mi.cfg.DLPEnabled)
 }
 
 // maybeStartupUpdateCheck performs an async startup update check when
@@ -376,6 +392,138 @@ func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
 	return nil
 }
 
+// dlpPolicySyncTick is how often the dlp-policy-sync task wakes up. The poll
+// itself follows the bundle's poll_interval_seconds (see dlp.Syncer.Due).
+const dlpPolicySyncTick = time.Minute
+
+// startDLP starts the DLP manager from the cached policy, then registers the
+// dlp-policy-sync task (the scheduler hasn't started yet). It decides from the
+// kill switches whether to run session helpers; with dlp_enabled false it
+// starts nothing and doesn't poll. Errors are logged, never fatal: DLP must
+// not keep the rest of the agent from running.
+func (mi *MainIntegration) startDLP(ctx context.Context) {
+	cfg := mi.cfg
+	cache := policy.NewCache(filepath.Join(filepath.Dir(cfg.Path), policy.CacheFileName))
+	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
+
+	// Helper events go to the evidence queue (when it opens).
+	var sink channel.EventSink = discardEvents{}
+	if cfg.DLPEnabled {
+		if q := mi.startDLPEventSync(fetcher); q != nil {
+			sink = dlp.NewQueueSink(q)
+		}
+	}
+	m := dlp.NewManager(cfg.DLPEnabled, cache, session.New(sink))
+	if err := m.Start(ctx); err != nil {
+		log.Printf("Warning: DLP failed to start: %v", err)
+		return
+	}
+	mi.dlpManager = m
+	if !cfg.DLPEnabled {
+		return
+	}
+
+	mi.dlpSyncer = dlp.NewSyncer(fetcher, cache, m, config.Version, dlpCapabilities)
+	err := mi.scheduler.AddTask(&scheduler.Task{
+		Name:     "dlp-policy-sync",
+		Interval: dlpPolicySyncTick,
+		Enabled:  true,
+		Handler:  dlpPolicySyncHandler(mi.dlpSyncer),
+	})
+	if err != nil {
+		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
+	}
+	native.SetDLPPolicySync(mi.dlpSyncNow)
+}
+
+// dlpSyncNow polls for the DLP policy immediately (native task
+// dlp_sync_policy, "push policy now") and reports what is applied.
+func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state string, err error) {
+	poll := func() error { return mi.dlpSyncer.Sync(ctx) }
+	if mi.authSvc != nil {
+		err = mi.authSvc.DoWithAuthRetry(ctx, mi.cfg, poll)
+	} else {
+		err = poll()
+	}
+	snap := mi.dlpManager.Snapshot()
+	return snap.Version, string(snap.State), err
+}
+
+// discardEvents is the event sink when the evidence queue is unavailable.
+type discardEvents struct{}
+
+func (discardEvents) Emit(events.Event) {}
+
+// dlpEventSyncInterval is how often queued DLP evidence is uploaded.
+const dlpEventSyncInterval = time.Minute
+
+// startDLPEventSync opens the evidence queue and registers dlp-event-sync.
+// Without a queue (nil) DLP still enforces; evidence is just not kept.
+func (mi *MainIntegration) startDLPEventSync(sender dlp.EventSender) *store.DLPEventStore {
+	q, err := store.NewDLPEventStore(filepath.Join(filepath.Dir(mi.cfg.Path), store.DLPEventsDBName))
+	if err != nil {
+		log.Printf("Warning: DLP evidence queue unavailable, events will not be kept: %v", err)
+		return nil
+	}
+	mi.dlpEvents = q
+	es := dlp.NewEventSync(q, sender)
+	err = mi.scheduler.AddTask(&scheduler.Task{
+		Name:     "dlp-event-sync",
+		Interval: dlpEventSyncInterval,
+		Enabled:  true,
+		Handler:  dlpEventSyncHandler(es),
+	})
+	if err != nil {
+		log.Printf("Warning: DLP event sync not scheduled: %v", err)
+	}
+	return q
+}
+
+// dlpEventSyncHandler uploads queued DLP evidence, wrapped in DoWithAuthRetry.
+func dlpEventSyncHandler(es *dlp.EventSync) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if authSvc != nil && !authSvc.Healthy() {
+			return nil
+		}
+		upload := func() error { return es.Sync(ctx) }
+		if authSvc != nil {
+			return authSvc.DoWithAuthRetry(ctx, cfg, upload)
+		}
+		return upload()
+	}
+}
+
+// dlpCapabilities reports what each DLP channel can do on this platform.
+//
+// The service has no user session or display, so this is only the fallback
+// for when no helper is connected; helpers report the real capability.
+func dlpCapabilities() map[string]string {
+	reason := "unsupported:no_user_session"
+	if runtime.GOOS == "linux" {
+		reason = "unsupported:no_graphical_session"
+	}
+	return map[string]string{policy.ChannelClipboard: reason}
+}
+
+// dlpPolicySyncHandler polls for the DLP policy when a poll is due, wrapped in
+// DoWithAuthRetry so an expired token recovers once.
+func dlpPolicySyncHandler(s *dlp.Syncer) scheduler.TaskHandler {
+	return func(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
+		if !s.Due() {
+			return nil
+		}
+		if authSvc != nil && !authSvc.Healthy() {
+			log.Printf("Scheduler: auth degraded, skipping dlp-policy-sync until session recovers")
+			return nil
+		}
+		poll := func() error { return s.Sync(ctx) }
+		if authSvc != nil {
+			return authSvc.DoWithAuthRetry(ctx, cfg, poll)
+		}
+		return poll()
+	}
+}
+
 // startTaskManager starts the polling + execution task manager when task
 // polling is enabled. Initialization failures are logged but non-fatal.
 func (mi *MainIntegration) startTaskManager(ctx context.Context) {
@@ -436,6 +584,18 @@ func (mi *MainIntegration) Stop() error {
 
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
+
+	// Stop DLP session helpers, then close the evidence queue
+	native.SetDLPPolicySync(nil)
+	if mi.dlpManager != nil {
+		mi.dlpManager.Stop()
+	}
+	if mi.dlpEvents != nil {
+		if err := mi.dlpEvents.Close(); err != nil {
+			log.Printf("Warning: Failed to close DLP event store: %v", err)
+		}
+		mi.dlpEvents = nil
+	}
 
 	// Stop audit log service
 	if mi.loggingService != nil {
@@ -500,6 +660,11 @@ func (mi *MainIntegration) GetStatus() map[string]interface{} {
 	// Logging status
 	if mi.loggingService != nil {
 		status["logging"] = mi.loggingService.GetStatistics()
+	}
+
+	// DLP status
+	if mi.dlpManager != nil {
+		status["dlp"] = string(mi.dlpManager.State())
 	}
 
 	return status

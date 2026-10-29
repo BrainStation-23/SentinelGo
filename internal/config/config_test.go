@@ -245,6 +245,35 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// dlp_enabled defaults to true (DLP stays off until the server enables it),
+// and an explicit false is the device-local kill switch.
+func TestLoad_DLPEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"absent defaults to true", `{}`, true},
+		{"explicit false", `{"dlp_enabled": false}`, false},
+		{"explicit true", `{"dlp_enabled": true}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tt.json), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DLPEnabled != tt.want {
+				t.Errorf("DLPEnabled = %v, want %v", cfg.DLPEnabled, tt.want)
+			}
+		})
+	}
+}
+
 func minimalTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return &config.Config{

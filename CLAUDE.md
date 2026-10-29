@@ -33,11 +33,14 @@ internal/
   supabase/            the only Supabase client: RPC, Storage, token refresh, edge functions
   updater/             Supabase release check, signed download, atomic replace, restart
   auditlogs/           audit log collection and forwarding
+  dlp/                 Data Loss Prevention: Manager (kill switches, lifecycle) + policy, detect,
+                       events, channel (clipboard), session (per-user helpers), ipc, notify
   logging/             logging utilities
   models/              shared data models
   constants/           shared constants
 
 scripts/               Release, diagnostics, and pre-release checks
+tools/dlprules/        DLP secrets ruleset generator (own go.mod; run via scripts/update-dlp-rules.sh)
 release/               Compiled binaries (never edit directly)
 ```
 
@@ -47,6 +50,7 @@ release/               Compiled binaries (never edit directly)
 2. Authenticate via the agent-login edge function -> store JWT; refresh before expiry
 3. Collect osinfo -> send heartbeat -> sleep (default 5m) -> repeat
 4. Periodic Supabase release check -> download/verify -> replace binary -> service restart
+5. DLP (if `dlp_enabled`): the service-side `dlp.Manager` loads the cached policy bundle, applies the kill switches and has `dlp/session` run one `sentinelgo dlp-session` helper per interactive user session. The helper watches the clipboard, matches in-process and sends only masked evidence back over IPC. The service holds the credentials; helpers never do. `dlp.Syncer` (scheduler task `dlp-policy-sync`) polls `agent_get_dlp_policy`, caches the bundle in `dlp_policy.json` and reports status on the same call
 
 ## Key Conventions
 
@@ -69,6 +73,7 @@ release/               Compiled binaries (never edit directly)
 - Validate platform-specific code on all targets with `make verify-cross` (compiles every `GOOS/GOARCH` with `CGO_ENABLED=0`). Build tags / `_linux.go`/`_darwin.go`/`_windows.go` suffixes mean a file is only compiled on its OS, so a Windows-only dev never type-checks the Linux file otherwise.
 - Be careful with signal handling, startup order, and graceful shutdown (runs as system service)
 - Keep error handling explicit; this is a long-running service
+- **Never log, store or print clipboard (or any DLP-scanned) content**, including in the emergency log and debug output. DLP evidence carries only detector ids, masked matches, hashes and lengths (an excerpt only when the bundle's `evidence_mode` is `full`)
 - Auth tokens auto-refresh; never assume a token is permanently valid. Wrap Supabase calls in `auth.Service.DoWithAuthRetry` so a 401 recovers the session once
 
 ## Cross-Platform Considerations

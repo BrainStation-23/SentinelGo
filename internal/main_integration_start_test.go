@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,11 +26,16 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp"
+	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/models"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
+	"sentinelgo/internal/service/task/native"
+	"sentinelgo/internal/taskstore"
 	"sentinelgo/internal/updater"
 )
 
@@ -630,6 +636,73 @@ func TestStartLoggingService_StartsWithoutAuth(t *testing.T) {
 	}
 }
 
+// ── startDLP ────────────────────────────────────────────────────────────────
+
+func TestStartDLP_LocallyDisabled(t *testing.T) {
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = false
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	if mi.dlpManager == nil {
+		t.Fatal("dlpManager should be set so its state is reported")
+	}
+	if got := mi.dlpManager.State(); got != dlp.StateDisabledLocal {
+		t.Errorf("DLP state = %s, want %s", got, dlp.StateDisabledLocal)
+	}
+	if got := mi.GetStatus()["dlp"]; got != string(dlp.StateDisabledLocal) {
+		t.Errorf("GetStatus()[dlp] = %v, want %s", got, dlp.StateDisabledLocal)
+	}
+	if _, polls := mi.scheduler.GetTaskStatus()["dlp-policy-sync"]; polls {
+		t.Error("dlp-policy-sync scheduled although dlp_enabled is false")
+	}
+}
+
+func TestStartDLP_NoPolicyStaysOffAndPolls(t *testing.T) {
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = true
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	if got := mi.dlpManager.State(); got != dlp.StateNoPolicy {
+		t.Errorf("DLP state = %s, want %s", got, dlp.StateNoPolicy)
+	}
+	if _, polls := mi.scheduler.GetTaskStatus()["dlp-policy-sync"]; !polls {
+		t.Error("dlp-policy-sync not scheduled")
+	}
+	if err := mi.Stop(); err != nil {
+		t.Errorf("Stop() error: %v", err)
+	}
+	if got := mi.dlpManager.State(); got != dlp.StateStopped {
+		t.Errorf("DLP state after Stop = %s, want %s", got, dlp.StateStopped)
+	}
+}
+
+// The handler polls only when the syncer says a poll is due.
+func TestDLPPolicySyncHandler_PollsWhenDue(t *testing.T) {
+	fb := &countingFetcher{}
+	cfg := miTestConfig(t)
+	m := dlp.NewManager(true, nil, session.New(discardEvents{}))
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := dlpPolicySyncHandler(dlp.NewSyncer(fb, policy.NewCache(filepath.Join(t.TempDir(), "p.json")), m, "test", nil))
+
+	for range 3 {
+		if err := h(context.Background(), cfg, nil); err != nil {
+			t.Fatalf("handler: %v", err)
+		}
+	}
+	if fb.calls != 1 {
+		t.Errorf("polls = %d, want 1 (the next is a poll interval away)", fb.calls)
+	}
+}
+
+type countingFetcher struct{ calls int }
+
+func (f *countingFetcher) FetchPolicy(context.Context, string, *dlp.Status) (dlp.FetchResult, error) {
+	f.calls++
+	return dlp.FetchResult{Unchanged: true}, nil
+}
+
 // ── startTaskManager ────────────────────────────────────────────────────────
 
 func TestStartTaskManager_Disabled(t *testing.T) {
@@ -695,5 +768,41 @@ func TestAuthTokenRefresher_RefreshToken_Success(t *testing.T) {
 	}
 	if tok == "" || tok != cfg.GetAccessToken() {
 		t.Errorf("RefreshToken() = %q, want the recovered access token", tok)
+	}
+}
+
+// dlp_sync_policy polls immediately through the running syncer.
+func TestDLPSyncNow(t *testing.T) {
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = true
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	t.Cleanup(func() { _ = mi.Stop() })
+	fb := &countingFetcher{}
+	mi.dlpSyncer = dlp.NewSyncer(fb, policy.NewCache(filepath.Join(t.TempDir(), "p.json")), mi.dlpManager, "test", nil)
+
+	h := native.Find("dlp_sync_policy")
+	note, err := h.Run(context.Background(), cfg, taskstore.Task{})
+	if err != nil || fb.calls != 1 || !strings.Contains(note, "no_policy") {
+		t.Errorf("note %q, err %v, polls %d", note, err, fb.calls)
+	}
+	if err := mi.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Run(context.Background(), cfg, taskstore.Task{}); err == nil {
+		t.Error("dlp_sync_policy still works after Stop")
+	}
+}
+
+// Without a connected helper the service reports why the clipboard isn't
+// covered.
+func TestDLPCapabilitiesFallback(t *testing.T) {
+	got := dlpCapabilities()["clipboard"]
+	want := "unsupported:no_user_session"
+	if runtime.GOOS == "linux" {
+		want = "unsupported:no_graphical_session"
+	}
+	if got != want {
+		t.Errorf("clipboard capability = %q, want %q", got, want)
 	}
 }

@@ -75,6 +75,17 @@ var allowedLicenses = []string{
 // reviewed. Each entry must say why; remove it as soon as upstream is fixed.
 var exceptions = map[string]string{}
 
+// embeddedData is third-party data compiled into the binary that isn't a Go
+// module, so the module walk can't see its license. An entry is listed in the
+// notices when its package is linked into the binary on any target.
+var embeddedData = []struct{ Name, Pkg, License string }{
+	{
+		Name:    "betterleaks secrets ruleset (github.com/betterleaks/betterleaks, data only)",
+		Pkg:     "sentinelgo/internal/dlp/detect/secrets",
+		License: "internal/dlp/detect/secrets/LICENSE.betterleaks",
+	},
+}
+
 func main() {
 	check := flag.Bool("check", false, "fail if any dependency license is not in the allow-list")
 	notices := flag.String("notices", "", "write third-party notices for "+mainPkg+" to this file")
@@ -219,8 +230,9 @@ type module struct {
 
 func writeNotices(out string) error {
 	mods := map[string]*module{}
+	linked := map[string]bool{}
 	for _, t := range targets {
-		if err := collectModules(t, mods); err != nil {
+		if err := collectModules(t, mods, linked); err != nil {
 			return err
 		}
 	}
@@ -235,6 +247,9 @@ func writeNotices(out string) error {
 	if err != nil {
 		return err
 	}
+	if text, err = appendEmbeddedData(text, linked); err != nil {
+		return err
+	}
 	if err := os.WriteFile(out, []byte(text), 0o644); err != nil {
 		return err
 	}
@@ -242,10 +257,11 @@ func writeNotices(out string) error {
 	return nil
 }
 
-// collectModules adds every non-main module linked into mainPkg for target t.
-func collectModules(t [2]string, mods map[string]*module) error {
+// collectModules adds every non-main module linked into mainPkg for target t
+// to mods, and the import path of every linked package to linked.
+func collectModules(t [2]string, mods map[string]*module, linked map[string]bool) error {
 	cmd := exec.Command("go", "list", "-deps",
-		"-f", "{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}{{end}}{{end}}",
+		"-f", "{{.ImportPath}}\t{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}{{end}}{{end}}",
 		mainPkg)
 	cmd.Env = targetEnv(t)
 	cmd.Stderr = os.Stderr
@@ -255,7 +271,11 @@ func collectModules(t [2]string, mods map[string]*module) error {
 	}
 	platform := t[0] + "/" + t[1]
 	for _, line := range strings.Split(string(raw), "\n") {
-		f := strings.Split(strings.TrimSpace(line), "\t")
+		f := strings.Split(strings.TrimRight(line, "\r\t "), "\t")
+		if f[0] != "" {
+			linked[f[0]] = true
+		}
+		f = f[1:]
 		if len(f) != 3 {
 			continue
 		}
@@ -270,6 +290,28 @@ func collectModules(t [2]string, mods map[string]*module) error {
 		}
 	}
 	return nil
+}
+
+// appendEmbeddedData adds the license of every embeddedData entry whose
+// package is linked.
+func appendEmbeddedData(text string, linked map[string]bool) (string, error) {
+	var b strings.Builder
+	b.WriteString(text)
+	for _, d := range embeddedData {
+		if !linked[d.Pkg] {
+			continue
+		}
+		lic, err := os.ReadFile(d.License)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", d.Name, err)
+		}
+		b.WriteString("\n" + strings.Repeat("=", 78) + "\n")
+		b.WriteString(d.Name + "\n")
+		b.WriteString(strings.Repeat("=", 78) + "\n\n")
+		b.Write(bytes.TrimRight(lic, "\r\n\t "))
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
 
 // renderNotices builds the notices file: an index, then each module's license

@@ -11,6 +11,17 @@ import (
 )
 
 func main() {
+	// The DLP session helper runs before flag parsing, config loading and the
+	// process lock: it is launched per user session and holds no credentials.
+	// It is a positional subcommand so it stays out of -help.
+	if len(os.Args) > 1 && os.Args[1] == cli.DLPSessionCommand {
+		os.Exit(cli.RunDLPSession())
+	}
+	// `sentinelgo dlp status|test`: diagnostics from the cached policy.
+	if len(os.Args) > 1 && os.Args[1] == cli.DLPCommand {
+		os.Exit(cli.RunDLP(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	f := parseFlags()
 
 	// CLI subcommands that don't require a loaded config.
