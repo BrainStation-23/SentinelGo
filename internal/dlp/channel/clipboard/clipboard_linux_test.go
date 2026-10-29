@@ -18,6 +18,7 @@ type fakeDesktop struct {
 	targets    string
 	tools      map[string]bool
 	waylandErr string
+	readErr    bool
 }
 
 func installFake(t *testing.T, d *fakeDesktop) {
@@ -35,7 +36,9 @@ func installFake(t *testing.T, d *fakeDesktop) {
 		cmd := strings.Join(argv, " ")
 		switch {
 		case argv[0] == "wl-paste" && d.waylandErr != "":
-			return []byte(d.waylandErr), errors.New("exit 1")
+			return nil, errors.New("wl-paste: exit status 1: " + d.waylandErr) // as run reports stderr
+		case d.readErr && !strings.Contains(cmd, "TARGETS") && argv[0] != "wl-copy" && !strings.Contains(cmd, " -i"):
+			return nil, errors.New("xclip: read failed")
 		case strings.Contains(cmd, "TARGETS") || strings.Contains(cmd, "--list-types"):
 			return []byte(d.targets), nil
 		case argv[0] == "wl-copy" || strings.Contains(cmd, " -i") || strings.Contains(cmd, "--input"):
@@ -153,3 +156,31 @@ func TestPoller_FailedReplaceIsMonitored(t *testing.T) {
 		t.Errorf("events = %+v, want one monitored", s.evs)
 	}
 }
+
+// When the clipboard can't be re-read before replacing, nothing is written
+// (a newer copy might be there) and the event says monitored.
+func TestPoller_NoWriteWithoutReread(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+	d := &fakeDesktop{tools: map[string]bool{"xclip": true}}
+	installFake(t, d)
+	s := &recSink{}
+	w := &poller{b: xclip, p: compile(t, blockCards), sink: s}
+	d.copy("4111111111111111", "UTF8_STRING\n")
+	reads := 0
+	prev := run
+	run = func(ctx context.Context, stdin io.Reader, argv ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(argv, " "), "UTF8_STRING") {
+			reads++
+			if reads > 1 {
+				return nil, errors.New("xclip: busy")
+			}
+		}
+		return prev(ctx, stdin, argv...)
+	}
+	w.check(context.Background())
+	if d.clip() != "4111111111111111" || len(s.evs) != 1 || s.evs[0].Action != events.ActionMonitored {
+		t.Errorf("clipboard %q events %+v", d.clip(), s.evs)
+	}
+}
+

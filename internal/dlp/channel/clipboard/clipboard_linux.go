@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -51,7 +52,7 @@ type backend struct {
 var (
 	wayland = backend{
 		name:    "wayland",
-		read:    []string{"wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"},
+		read:    []string{"wl-paste", "--no-newline", "--type", "text"}, // any text type the app offers
 		targets: []string{"wl-paste", "--list-types"},
 		write:   []string{"wl-copy", "--type", "text/plain;charset=utf-8"},
 	}
@@ -77,9 +78,14 @@ var (
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- fixed clipboard tools
 		cmd.Stdin = stdin
 		var out bytes.Buffer
+		var stderr bytes.Buffer
 		cmd.Stdout = &limitedWriter{w: &out, n: maxReadBytes}
-		err := cmd.Run()
-		return out.Bytes(), err
+		cmd.Stderr = &limitedWriter{w: &stderr, n: 4096}
+		if err := cmd.Run(); err != nil {
+			// The tool's own message says why (e.g. no data-control).
+			return out.Bytes(), fmt.Errorf("%s: %w: %s", argv[0], err, bytes.TrimSpace(stderr.Bytes()))
+		}
+		return out.Bytes(), nil
 	}
 )
 
@@ -103,7 +109,7 @@ func pickBackend(ctx context.Context) (backend, channel.Capability) {
 			return backend{}, channel.Unsupported("no_wl_clipboard")
 		}
 		// wl-paste fails at once when the compositor lacks data-control.
-		if out, err := run(ctx, nil, wayland.targets...); err != nil && dataControlMissing(out) {
+		if _, err := run(ctx, nil, wayland.targets...); err != nil && dataControlMissing([]byte(err.Error())) {
 			return backend{}, channel.Unsupported("wayland_no_data_control")
 		}
 		return wayland, channel.Supported()
@@ -195,7 +201,11 @@ func (w *poller) check(ctx context.Context) {
 // replace writes msg in place of the content with hash scanned, unless a
 // newer copy has arrived meanwhile (it gets its own check).
 func (w *poller) replace(ctx context.Context, scanned [32]byte, msg string) error {
-	if now, err := run(ctx, nil, w.b.read...); err == nil && sha256.Sum256(now) != scanned {
+	now, err := run(ctx, nil, w.b.read...)
+	if err != nil {
+		return fmt.Errorf("re-read before replacing: %w", err) // can't tell what's there now
+	}
+	if sha256.Sum256(now) != scanned {
 		return errors.New("a newer copy replaced the scanned content")
 	}
 	if _, err := run(ctx, strings.NewReader(msg), w.b.write...); err != nil {
