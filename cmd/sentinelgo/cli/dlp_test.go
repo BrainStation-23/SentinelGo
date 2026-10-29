@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,7 +99,7 @@ func TestDLPTest_MaskedOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{`Matched "Block cards"`, `Matched "Falcon"`, "Result: BLOCK", "4111***********1111"} {
+	for _, want := range []string{`Matched "Block cards"`, `Matched "Falcon"`, "Policy outcome: BLOCK", "4111***********1111"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -128,5 +129,39 @@ func TestDLPTest_NoPolicyAndUsage(t *testing.T) {
 	}
 	if code, _, _ := runDLP(t, "", "test", "-file", filepath.Join(t.TempDir(), "missing")); code != 1 {
 		t.Errorf("missing file: exit %d, want 1", code)
+	}
+}
+
+// dlp test says when nothing would be enforced, and what wasn't scanned.
+func TestDLPTest_OffAndTruncated(t *testing.T) {
+	dlpTestConfig(t, true, 0)
+	cfg, _ := loadDefaultConfig()
+	cfg.DLPEnabled = false
+	_, out, _ := runDLP(t, "4111111111111111", "test")
+	if !strings.Contains(out, "nothing is enforced: DLP is off on this device") {
+		t.Errorf("local switch off not reported:\n%s", out)
+	}
+
+	cfg.DLPEnabled = true
+	big := strings.Repeat("x", (1<<20)+10) + " 4111111111111111"
+	_, out, _ = runDLP(t, big, "test")
+	if !strings.Contains(out, "only the first 1048576 bytes are scanned") || strings.Contains(out, "Matched") {
+		t.Errorf("truncation not reported:\n%s", out[:min(len(out), 400)])
+	}
+}
+
+// -config inspects a non-default install.
+func TestDLP_ConfigFlag(t *testing.T) {
+	dlpTestConfig(t, true, 0)
+	cfg, _ := loadDefaultConfig()
+	prev := loadDefaultConfig
+	loadDefaultConfig = func() (*config.Config, error) { t.Fatal("default config used despite -config"); return nil, nil }
+	t.Cleanup(func() { loadDefaultConfig = prev })
+	if err := os.WriteFile(cfg.Path, []byte(`{"dlp_enabled": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ := runDLP(t, "", "status", "-config", cfg.Path)
+	if code != 0 || !strings.Contains(out, "sha256:test") {
+		t.Errorf("exit %d:\n%s", code, out)
 	}
 }

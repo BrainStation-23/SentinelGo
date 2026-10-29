@@ -118,44 +118,40 @@ func dlpStatus(cfg *config.Config) DLPStatus {
 }
 
 // RunDLP runs `sentinelgo dlp <status|test> …` and returns the exit code.
+// -config points at a non-default install's config.json.
 func RunDLP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: sentinelgo dlp status [-json] | sentinelgo dlp test [-file <path>|-]")
+	if len(args) == 0 || (args[0] != "status" && args[0] != "test") {
+		_, _ = fmt.Fprintln(stderr, "usage: sentinelgo dlp status [-json] [-config PATH] | sentinelgo dlp test [-file PATH|-] [-config PATH]")
 		return 2
 	}
-	cfg, err := loadDefaultConfig()
+	fs := flag.NewFlagSet("dlp "+args[0], flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "config.json of the install to inspect (default: the standard path)")
+	asJSON := fs.Bool("json", false, "print JSON (status)")
+	file := fs.String("file", "-", "file to scan, or - for stdin (test)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	load := loadDefaultConfig
+	if *cfgPath != "" {
+		load = func() (*config.Config, error) { return config.Load(*cfgPath) }
+	}
+	cfg, err := load()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-	switch args[0] {
-	case "status":
-		fs := flag.NewFlagSet("dlp status", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		asJSON := fs.Bool("json", false, "print JSON")
-		if err := fs.Parse(args[1:]); err != nil {
-			return 2
-		}
-		st := dlpStatus(cfg)
-		if *asJSON {
-			data, _ := json.MarshalIndent(st, "", "  ")
-			_, _ = fmt.Fprintln(stdout, string(data))
-		} else {
-			printDLPStatus(stdout, st)
-		}
-		return 0
-	case "test":
-		fs := flag.NewFlagSet("dlp test", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		file := fs.String("file", "-", "file to scan, or - for stdin")
-		if err := fs.Parse(args[1:]); err != nil {
-			return 2
-		}
+	if args[0] == "test" {
 		return dlpTest(cfg, *file, stdin, stdout, stderr)
-	default:
-		_, _ = fmt.Fprintf(stderr, "unknown dlp command %q (want status or test)\n", args[0])
-		return 2
 	}
+	st := dlpStatus(cfg)
+	if *asJSON {
+		data, _ := json.MarshalIndent(st, "", "  ")
+		_, _ = fmt.Fprintln(stdout, string(data))
+	} else {
+		printDLPStatus(stdout, st)
+	}
+	return 0
 }
 
 func printDLPStatus(w io.Writer, st DLPStatus) {
@@ -232,30 +228,64 @@ func dlpTest(cfg *config.Config, file string, stdin io.Reader, stdout, stderr io
 		names[p.ID] = p.Name
 	}
 	d := clipboard.Decide(c, string(data), events.SourceApp{}, time.Now())
-	printDecision(stdout, b, d, names, len(data))
+	r := testReport{bundle: b, decision: d, names: names, inputLen: len(data), scanned: len(data),
+		offReason: enforcementOff(cfg.DLPEnabled, b)}
+	if c.Clipboard != nil {
+		res := c.Clipboard.Scan(string(data))
+		r.scanned, r.truncated = res.ScannedBytes, res.Truncated
+	}
+	printDecision(stdout, r)
 	return 0
 }
 
-func printDecision(w io.Writer, b *policy.Bundle, d clipboard.Decision, names map[string]string, n int) {
-	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format+"\n", a...) }
-	p("Policy %s (%d bytes scanned against the clipboard policies)", b.Version, n)
-	if !b.Enabled {
-		p("Note: DLP is switched off for this device (enabled: false); nothing would be enforced.")
+// testReport is what dlp test prints about one run.
+type testReport struct {
+	bundle    *policy.Bundle
+	decision  clipboard.Decision
+	names     map[string]string // policy id -> name
+	inputLen  int
+	scanned   int
+	truncated bool
+	offReason string // why nothing would be enforced on this device, if so
+}
+
+// enforcementOff says why the device enforces nothing, or "".
+func enforcementOff(localEnabled bool, b *policy.Bundle) string {
+	switch {
+	case !localEnabled:
+		return "DLP is off on this device (dlp_enabled: false in config.json)"
+	case !b.Enabled:
+		return "DLP is switched off for this device by the server (enabled: false)"
+	case !b.Modules.Clipboard.Enabled:
+		return "the clipboard module is switched off (modules.clipboard.enabled: false)"
 	}
+	return ""
+}
+
+func printDecision(w io.Writer, r testReport) {
+	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format+"\n", a...) }
+	p("Policy %s: %d of %d bytes scanned against the clipboard policies", r.bundle.Version, r.scanned, r.inputLen)
+	if r.truncated {
+		p("Note: only the first %d bytes are scanned (max_scan_bytes); anything after them is not checked.", r.scanned)
+	}
+	d := r.decision
 	if len(d.Events) == 0 {
 		p("No policy matched.")
-		return
-	}
-	for _, ev := range d.Events {
-		p("Matched %q (%s, severity %s)", names[ev.PolicyID], ev.Action, ev.Severity)
-		for _, f := range ev.Findings {
-			p("  %-32s x%-3d %s", f.Detector, f.Count, f.Masked)
+	} else {
+		for _, ev := range d.Events {
+			p("Matched %q (%s, severity %s)", r.names[ev.PolicyID], ev.Action, ev.Severity)
+			for _, f := range ev.Findings {
+				p("  %-32s x%-3d %s", f.Detector, f.Count, f.Masked)
+			}
+		}
+		if d.Block {
+			p("Policy outcome: BLOCK. The clipboard would read: %q", d.Message)
+		} else {
+			p("Policy outcome: MONITOR (recorded, not blocked)")
 		}
 	}
-	if d.Block {
-		p("Result: BLOCK. The clipboard would read: %q", d.Message)
-	} else {
-		p("Result: MONITOR (recorded, not blocked)")
+	if r.offReason != "" {
+		p("On this device nothing is enforced: %s.", r.offReason)
 	}
 }
 
