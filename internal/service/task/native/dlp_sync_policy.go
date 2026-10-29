@@ -37,8 +37,11 @@ type dlpSyncPolicyHandler struct{}
 
 func init() { Register(&dlpSyncPolicyHandler{}) }
 
+// Slugs: sentinel-ops sends "dlp-sync-policy", because its command slugs
+// allow only lowercase letters, digits and hyphens (commands_slug_format).
+// "dlp_sync_policy", the name in the original contract, keeps working.
 func (h *dlpSyncPolicyHandler) Slugs() []string {
-	return []string{"dlp_sync_policy"}
+	return []string{"dlp-sync-policy", "dlp_sync_policy"}
 }
 
 func (h *dlpSyncPolicyHandler) Run(ctx context.Context, _ *config.Config, _ taskstore.Task) (string, error) {
