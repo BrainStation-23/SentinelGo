@@ -9,10 +9,19 @@ import (
 	"sentinelgo/internal/taskstore"
 )
 
+func TestDLPSyncPolicySlugs(t *testing.T) {
+	// The console's slug, and the original contract's.
+	for _, slug := range []string{"dlp-sync-policy", "dlp_sync_policy"} {
+		if Find(slug) == nil {
+			t.Errorf("%s not registered", slug)
+		}
+	}
+}
+
 func TestDLPSyncPolicy(t *testing.T) {
-	h := Find("dlp_sync_policy")
+	h := Find("dlp-sync-policy")
 	if h == nil {
-		t.Fatal("dlp_sync_policy not registered")
+		t.Fatal("dlp-sync-policy not registered")
 	}
 	t.Cleanup(func() { SetDLPPolicySync(nil) })
 
