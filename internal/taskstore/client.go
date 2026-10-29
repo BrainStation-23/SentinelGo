@@ -2,6 +2,7 @@ package taskstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -35,6 +36,29 @@ func NewClient(supabaseURL, anonKey, accessToken string) *Client {
 // token after a refresh.
 func NewClientWithTokenSource(supabaseURL, anonKey string, token func() string) *Client {
 	return &Client{sb: supabase.New(supabaseURL, anonKey, token)}
+}
+
+// ErrNoPendingCheck means the server has no agent_has_pending_tasks (a
+// sentinel-ops older than #472). Tasks then arrive at the regular poll.
+var ErrNoPendingCheck = errors.New("server has no agent_has_pending_tasks")
+
+// HasPendingTasks calls agent_has_pending_tasks: whether a task is queued for
+// this agent, without claiming it. It only reads on the server, so it is cheap
+// to call between full polls.
+func (c *Client) HasPendingTasks(ctx context.Context) (bool, error) {
+	var out struct {
+		Pending bool `json:"pending"`
+	}
+	if err := c.sb.RPC(ctx, "agent_has_pending_tasks", nil, &out); err != nil {
+		if isFunctionNotFound(err) {
+			return false, ErrNoPendingCheck
+		}
+		if supabase.IsUnauthorized(err) {
+			return false, fmt.Errorf("authentication failed: %w", err)
+		}
+		return false, err
+	}
+	return out.Pending, nil
 }
 
 // GetTasks calls the agent_get_tasks RPC and returns the response.
