@@ -183,4 +183,3 @@ func TestPoller_NoWriteWithoutReread(t *testing.T) {
 		t.Errorf("clipboard %q events %+v", d.clip(), s.evs)
 	}
 }
-
