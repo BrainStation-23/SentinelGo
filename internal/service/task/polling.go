@@ -189,6 +189,29 @@ func (s *TaskPollingService) PollAndStoreTasks(ctx context.Context) error {
 	return nil
 }
 
+// pendingChecker is implemented by clients that can ask whether a task is
+// queued without claiming it (taskstore.Client). Test doubles may omit it.
+type pendingChecker interface {
+	HasPendingTasks(ctx context.Context) (bool, error)
+}
+
+// HasPendingTasks reports whether the server has a task queued for this agent,
+// recovering the session and retrying once after a 401. It returns
+// taskstore.ErrNoPendingCheck when the client or the server can't tell. No
+// connectivity probe first: that would double the requests of a check meant
+// to be cheap, and a failed call is just retried at the next check.
+func (s *TaskPollingService) HasPendingTasks(ctx context.Context) (bool, error) {
+	pc, ok := s.client.(pendingChecker)
+	if !ok {
+		return false, taskstore.ErrNoPendingCheck
+	}
+	pending, err := pc.HasPendingTasks(ctx)
+	if err != nil && s.recoverAfter401(ctx, err) {
+		pending, err = pc.HasPendingTasks(ctx)
+	}
+	return pending, err
+}
+
 // getTasksWithRetry attempts to get tasks with a single retry on 401.
 func (s *TaskPollingService) getTasksWithRetry(ctx context.Context) (*taskstore.AgentTasksResponse, error) {
 	resp, err := s.client.GetTasks(ctx)

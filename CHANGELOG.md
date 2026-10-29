@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Between full task polls, the agent asks every minute whether a task is queued for it (`agent_has_pending_tasks`, a read-only check) and fetches it at once. A command, an install or a DLP "Push now" now reaches the device within about a minute instead of at the next poll (5 minutes by default). Set `task_check_interval` in `config.json` to change it; a value at or above `task_polling_interval` turns it off. Against a server without the check, the agent keeps the regular poll and asks again an hour later.
+
 ## [v4.0.1] - 2026-10-29
 
 ### Fixed
