@@ -94,6 +94,7 @@ type Config struct {
 	AutoUpdateInterval      Duration `json:"auto_update_interval"`       // How often to check for a new release (default 1h)
 	AgentInfoUpdateInterval Duration `json:"agent_info_update_interval"` // How often to push inventory to Supabase (default 1h)
 	TaskPollingInterval     Duration `json:"task_polling_interval"`      // Task polling interval (supports both "5m0s" and numeric formats)
+	TaskCheckInterval       Duration `json:"task_check_interval"`        // How often to ask whether a task is queued, and poll at once if so (default 1m; off when >= task_polling_interval)
 	EnableTaskPolling       bool     `json:"enable_task_polling"`        // Enable task polling service
 	TaskExecutionInterval   Duration `json:"task_execution_interval"`    // Task execution interval (supports both "5m0s" and numeric formats)
 	TaskDBPath              string   `json:"task_db_path"`               // Override task database path (for testing)
@@ -204,6 +205,17 @@ func (c *Config) GetTaskPollingInterval() time.Duration {
 		return 5 * time.Minute // Default to 5 minutes
 	}
 	return time.Duration(c.TaskPollingInterval)
+}
+
+// GetTaskCheckInterval returns how often the agent asks the server whether a
+// task is queued (agent_has_pending_tasks) between full task polls. 0 means
+// the default, 1 minute; a value at or above the task polling interval turns
+// the check off.
+func (c *Config) GetTaskCheckInterval() time.Duration {
+	if time.Duration(c.TaskCheckInterval) <= 0 {
+		return time.Minute
+	}
+	return time.Duration(c.TaskCheckInterval)
 }
 
 // Load reads the configuration from the given path. If path is empty, the platform-specific default is used.

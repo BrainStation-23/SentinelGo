@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,7 +12,13 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/osinfo/system"
 	"sentinelgo/internal/sanitize"
+	"sentinelgo/internal/taskstore"
 )
+
+// pendingCheckRetry is how long the pending-task check stays off after the
+// server showed it doesn't have it, so a server upgrade is picked up without
+// an agent restart.
+const pendingCheckRetry = time.Hour
 
 // TokenRefresher is the interface for refreshing authentication tokens.
 type TokenRefresher interface {
@@ -26,6 +33,10 @@ type TaskManager struct {
 	dbPath        string
 	lastTaskCount int
 	runningTasks  map[string]bool
+
+	// pendingCheckOffUntil: no pending-task checks before this time (the
+	// server has no agent_has_pending_tasks).
+	pendingCheckOffUntil time.Time
 
 	// closeOnce makes Close idempotent: Run closes on ctx cancellation and the
 	// owner (MainIntegration.Stop) closes again after joining Run.
@@ -124,6 +135,17 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 	ticker := time.NewTicker(mainInterval)
 	defer ticker.Stop()
 
+	// Between full polls, ask cheaply whether a task is queued and fetch it
+	// at once, so a queued task (e.g. DLP "Push now") arrives within a minute
+	// instead of at the next poll (sentinel-ops#472).
+	var checkC <-chan time.Time
+	if checkInterval := tm.cfg.GetTaskCheckInterval(); checkInterval < mainInterval {
+		check := time.NewTicker(checkInterval)
+		defer check.Stop()
+		checkC = check.C
+		log.Printf("TaskManager: Checking for queued tasks every %v", checkInterval)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -134,8 +156,34 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 
 			log.Printf("TaskManager: Executing tasks...")
 			tm.executeTasks(ctx)
+		case <-checkC:
+			if tm.tasksPending(ctx, time.Now()) {
+				log.Printf("TaskManager: A task is queued; polling now")
+				tm.pollTasks(ctx)
+				tm.executeTasks(ctx)
+			}
 		}
 	}
+}
+
+// tasksPending asks the server whether a task is queued for this agent. A
+// server without the check turns it off for pendingCheckRetry; other errors
+// are logged and the next check tries again.
+func (tm *TaskManager) tasksPending(ctx context.Context, now time.Time) bool {
+	if now.Before(tm.pendingCheckOffUntil) {
+		return false
+	}
+	pending, err := tm.pollingSvc.HasPendingTasks(ctx)
+	if errors.Is(err, taskstore.ErrNoPendingCheck) {
+		tm.pendingCheckOffUntil = now.Add(pendingCheckRetry)
+		log.Printf("TaskManager: server can't report queued tasks; tasks arrive at the regular poll (checking again in %v)", pendingCheckRetry)
+		return false
+	}
+	if err != nil {
+		log.Printf("TaskManager: queued-task check failed: %v", sanitize.ForLog(err.Error()))
+		return false
+	}
+	return pending
 }
 
 func (tm *TaskManager) pollTasks(ctx context.Context) {
