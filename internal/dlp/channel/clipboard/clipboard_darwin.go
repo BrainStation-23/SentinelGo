@@ -86,7 +86,11 @@ func goString(id objc.ID) string {
 }
 
 // withPool runs fn in an autorelease pool, so per-poll objects are freed.
+// A pool belongs to the thread that created it, so the goroutine stays on
+// its OS thread from creating the pool to draining it.
 func withPool(fn func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(selAlloc).Send(selInit)
 	defer pool.Send(selDrain)
 	fn()
@@ -178,7 +182,11 @@ func (w *pbWatcher) check() {
 }
 
 // replace swaps the content seen at changeCount scanned for msg, unless a
-// newer copy has arrived meanwhile (it gets its own check).
+// newer copy has arrived meanwhile (it gets its own check). NSPasteboard has
+// no compare-and-swap, so a copy landing between the check and
+// clearContents (microseconds) is replaced unscanned; unlike Windows, where
+// the clipboard is held open across the check and the write, this window
+// can only be kept small.
 func (w *pbWatcher) replace(pb objc.ID, scanned int, msg string) bool {
 	if objc.Send[int](pb, selChangeCount) != scanned {
 		return false
