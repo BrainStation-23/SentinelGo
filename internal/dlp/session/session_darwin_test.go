@@ -76,3 +76,15 @@ func TestLaunchdAgents(t *testing.T) {
 		t.Error("plist left after Uninstall")
 	}
 }
+
+func FuzzConsoleUsers(f *testing.F) {
+	f.Add([]byte("alice    console  Oct 28 09:12\nbob ttys000 Oct 28\n"))
+	f.Add([]byte("console\n  console x\n"))
+	f.Fuzz(func(t *testing.T, out []byte) {
+		for _, u := range consoleUsers(out) {
+			if u == "" || strings.ContainsAny(u, " \t\n") {
+				t.Fatalf("bad user name %q", u)
+			}
+		}
+	})
+}

@@ -27,11 +27,29 @@ const agentLabel = "com.sentinelgo.dlp"
 // agentPlist is the LaunchAgent definition (a var for tests).
 var agentPlist = "/Library/LaunchAgents/com.sentinelgo.dlp.plist"
 
-// runCmd runs a system tool. Replaced in tests.
+// runCmd runs a system tool by absolute path (never through PATH). Replaced
+// in tests.
 var runCmd = func(name string, args ...string) ([]byte, error) {
+	path, err := sysTool(name)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).CombinedOutput() // #nosec G204 -- fixed tool names; arguments are uids and the fixed label/path
+	return exec.CommandContext(ctx, path, args...).CombinedOutput() // #nosec G204 -- fixed system tools; arguments are uids and the fixed label/path
+}
+
+// CleanupHelpers unloads the LaunchAgent and removes its plist, for
+// `sentinelgo -uninstall`: the running service normally does this when it
+// stops, but not after an abrupt exit.
+func CleanupHelpers() error {
+	a := &launchdAgents{}
+	if uids, err := a.Users(); err == nil {
+		for _, uid := range uids {
+			_ = a.Stop(uid)
+		}
+	}
+	return a.Uninstall()
 }
 
 // lookupUID maps a user name to its uid. Replaced in tests.
