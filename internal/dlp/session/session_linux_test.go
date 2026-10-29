@@ -98,3 +98,18 @@ func TestSystemdAgents_InstallStartStopUninstall(t *testing.T) {
 		t.Error("autostart entry left after Uninstall")
 	}
 }
+
+func FuzzLoginctlParsers(f *testing.F) {
+	f.Add([]byte("    2 1000 alice seat0 tty2\n  c1 0 root - -\n"), []byte("Name=alice\nType=wayland\nClass=user\n"))
+	f.Add([]byte(""), []byte("Name=\nType=x11\nClass=greeter"))
+	f.Fuzz(func(t *testing.T, list, props []byte) {
+		for _, id := range sessionIDs(list) {
+			if id == "" || strings.ContainsAny(id, " \t\n") {
+				t.Fatalf("bad session id %q", id)
+			}
+		}
+		if name, ok := graphicalUser(props); ok && name == "" {
+			t.Fatal("graphical session without a user name")
+		}
+	})
+}

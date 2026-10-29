@@ -130,6 +130,8 @@ func (s *agentSupervisor) Stop() {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Unconditionally: a definition installed before an unclean restart, or
+	// while DLP was on during a previous run, must not survive DLP being off.
 	if users, err := s.agents.Users(); err == nil {
 		for _, u := range users {
 			if err := s.agents.Stop(u); err != nil {
@@ -137,12 +139,10 @@ func (s *agentSupervisor) Stop() {
 			}
 		}
 	}
-	if s.installed {
-		if err := s.agents.Uninstall(); err != nil {
-			log.Printf("DLP: remove session helper definition: %v", err)
-		}
-		s.installed = false
+	if err := s.agents.Uninstall(); err != nil {
+		log.Printf("DLP: remove session helper definition: %v", err)
 	}
+	s.installed = false
 	s.started = map[string]bool{}
 	s.restarted = false
 }

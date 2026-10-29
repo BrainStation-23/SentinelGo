@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,11 +33,34 @@ var autostartFile = "/etc/xdg/autostart/sentinelgo-dlp.desktop"
 // unitDirs are tried in order for the global user unit.
 var unitDirs = []string{"/usr/lib/systemd/user", "/etc/systemd/user"}
 
-// runCmd runs a system tool. Replaced in tests.
+// runCmd runs a system tool by absolute path (never through PATH). Replaced
+// in tests.
 var runCmd = func(name string, args ...string) ([]byte, error) {
+	path, err := sysTool(name)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).CombinedOutput() // #nosec G204 -- fixed tool names; arguments are unit names and local user names
+	return exec.CommandContext(ctx, path, args...).CombinedOutput() // #nosec G204 -- fixed system tools; arguments are unit names and local user names
+}
+
+// CleanupHelpers removes the helper definitions and stops helpers, for
+// `sentinelgo -uninstall`: the running service normally does this when it
+// stops, but not after an abrupt exit.
+func CleanupHelpers() error {
+	a := &systemdAgents{}
+	if users, err := a.Users(); err == nil {
+		for _, u := range users {
+			_ = a.Stop(u)
+		}
+	}
+	for _, dir := range unitDirs {
+		if err := os.Remove(filepath.Join(dir, unitName)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return a.Uninstall()
 }
 
 // New returns the Linux supervisor.
@@ -102,8 +126,10 @@ func (a *systemdAgents) Install() error {
 			return err
 		}
 	}
+	// Without systemd the XDG autostart entry alone starts helpers at login,
+	// so this isn't fatal.
 	if out, err := runCmd("systemctl", "--global", "enable", unitName); err != nil {
-		return fmt.Errorf("systemctl --global enable: %v: %s", err, bytes.TrimSpace(out))
+		log.Printf("DLP: systemctl --global enable (XDG autostart still applies): %v: %s", err, bytes.TrimSpace(out))
 	}
 	return nil
 }
@@ -121,7 +147,9 @@ func (a *systemdAgents) Uninstall() error {
 	return nil
 }
 
-// Users lists users with a graphical (X11 or Wayland) login session.
+// Users lists users with a graphical (X11 or Wayland) login session. A user
+// gets one helper even with two graphical sessions at once: systemd user
+// units are per user. That rare case is a known limitation.
 func (a *systemdAgents) Users() ([]string, error) {
 	out, err := runCmd("loginctl", "list-sessions", "--no-legend")
 	if err != nil {

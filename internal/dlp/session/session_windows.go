@@ -151,3 +151,7 @@ func (p *winProcess) Kill() error {
 	}
 	return windows.TerminateProcess(p.h, 1)
 }
+
+// CleanupHelpers has nothing to remove on Windows: helpers live in the
+// service's job object and end with it.
+func CleanupHelpers() error { return nil }
