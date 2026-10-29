@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ type Hub struct {
 	policy  json.RawMessage // current bundle; nil before the first Apply
 	helpers map[*helper]struct{}
 	conns   map[ipc.Conn]string // every accepted connection -> peer uid ("" before identified)
+	lastErr map[string]string   // session id -> why its last connection failed
 
 	// requireSameExe: only peers running this binary may connect (a test
 	// process talks to itself, so the check holds in tests too).
@@ -71,7 +74,7 @@ const (
 
 // NewHub returns a hub listening on addr once started.
 func NewHub(addr string, sink channel.EventSink) *Hub {
-	return &Hub{addr: addr, sink: sink, helpers: map[*helper]struct{}{}, conns: map[ipc.Conn]string{}, requireSameExe: true}
+	return &Hub{addr: addr, sink: sink, helpers: map[*helper]struct{}{}, conns: map[ipc.Conn]string{}, lastErr: map[string]string{}, requireSameExe: true}
 }
 
 // Apply starts the hub if needed and pushes p to every connected helper (and
@@ -146,6 +149,31 @@ func (h *Hub) Sessions() []Info {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
 	return out
+}
+
+// maxLastError bounds a session's last error in the status report.
+const maxLastError = 200
+
+// setLastError records why a connection from session failed ("" clears it).
+func (h *Hub) setLastError(session, reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if reason == "" {
+		delete(h.lastErr, session)
+		return
+	}
+	reason = sanitize.ForLog(reason)
+	if len(reason) > maxLastError {
+		reason = strings.ToValidUTF8(reason[:maxLastError], "")
+	}
+	h.lastErr[session] = reason
+}
+
+// lastError returns why session's last connection failed, if it did.
+func (h *Hub) lastError(session string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastErr[session]
 }
 
 func (h *Hub) snapshotLocked() []*helper {
@@ -253,13 +281,21 @@ func (h *Hub) serve(c ipc.Conn) {
 	if err := h.admit(c, id); err != nil {
 		log.Printf("DLP: rejecting helper connection from %s (pid %d, %s): %v",
 			sanitize.ForLog(id.User), id.PID, sanitize.ForLog(id.Exe), err)
+		h.setLastError(id.SessionID, "helper rejected: "+err.Error())
 		return
 	}
 	hello, err := readHello(c)
 	if err != nil {
 		log.Printf("DLP: helper for %s (pid %d) did not say hello: %v", sanitize.ForLog(id.User), id.PID, err)
+		reason := "helper did not say hello: " + err.Error()
+		if errors.Is(err, io.EOF) {
+			// What a helper that doesn't trust the endpoint does.
+			reason = "helper disconnected before hello (it may not trust the service endpoint)"
+		}
+		h.setLastError(id.SessionID, reason)
 		return
 	}
+	h.setLastError(id.SessionID, "")
 	hp := &helper{conn: c, id: id, state: "running", caps: sanitizeCaps(hello.Capabilities), out: make(chan ipc.Message, helperOutbox), done: make(chan struct{})}
 	h.mu.Lock()
 	if !h.running { // Stop ran while this helper was saying hello

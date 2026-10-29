@@ -4,9 +4,11 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -334,3 +336,42 @@ type nopConn struct{ _ byte } // non-zero size: distinct pointers
 func (*nopConn) Read([]byte) (int, error)    { return 0, io.EOF }
 func (*nopConn) Write(p []byte) (int, error) { return len(p), nil }
 func (*nopConn) Close() error                { return nil }
+
+// A helper that keeps refusing the endpoint exits (so the launcher restarts
+// it), and the hub records why it never connected (#292).
+func TestHelperExitsAfterUntrustedEndpoints(t *testing.T) {
+	prev := trustServer
+	trustServer = func(ipc.Identity) bool { return false }
+	t.Cleanup(func() { trustServer = prev })
+
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), compiled(t, "v1", true))
+	t.Cleanup(hub.Stop)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHelper(context.Background(), HelperOptions{
+			Addr: addr, Channels: []channel.Channel{&fakeChannel{}},
+			Backoff: func(int) time.Duration { return 10 * time.Millisecond },
+		})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errUntrusted) {
+			t.Fatalf("RunHelper = %v, want errUntrusted", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("helper kept retrying an untrusted endpoint")
+	}
+	eventually(t, "the hub to record the failure", func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		for _, reason := range hub.lastErr {
+			if strings.Contains(reason, "before hello") {
+				return true
+			}
+		}
+		return false
+	})
+}

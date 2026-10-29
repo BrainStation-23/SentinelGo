@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clipboard DLP never ran on Windows: the session helper couldn't verify the service's pipe, because it queried the service process, which a user can't do for a LocalSystem service. It now checks the pipe's owner (SYSTEM or Administrators) instead, and the service creates the pipe owned by SYSTEM. A helper that keeps refusing the endpoint now exits after 5 attempts, so the device shows `restarting` instead of `starting` forever. Sessions without a connected helper report why in a new `last_error` field of the DLP status (#292).
+
 ## [v4.0.0] - 2026-10-29
 
 ### Added

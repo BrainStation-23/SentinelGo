@@ -205,3 +205,28 @@ func TestLauncher_StartingHelperVisible(t *testing.T) {
 		t.Errorf("Sessions() = %+v, want session 4 starting", got)
 	}
 }
+
+// A helper that exits without connecting is reported restarting, with the
+// reason its last connection failed; the reason goes when the session ends.
+func TestLauncher_RestartingHelperShowsLastError(t *testing.T) {
+	l := &fakeLauncher{started: map[string][]*fakeProc{}}
+	s := newTestSupervisor(l)
+	now := time.Unix(1_700_000_000, 0)
+	l.set("5")
+	s.reconcile(now)
+	s.setLastError("5", "helper disconnected before hello")
+
+	l.procs("5")[0].exit() // gave up on an untrusted endpoint
+	waitExited(t, s, "5")
+	s.reconcile(now.Add(time.Second))
+	got := s.Sessions()
+	if len(got) != 1 || got[0].State != stateRestarting || got[0].LastError != "helper disconnected before hello" {
+		t.Errorf("Sessions() = %+v, want session 5 restarting with its last error", got)
+	}
+
+	l.set()
+	s.reconcile(now.Add(2 * time.Second))
+	if s.lastError("5") != "" {
+		t.Error("last error kept after the session ended")
+	}
+}
