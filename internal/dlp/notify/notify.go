@@ -47,6 +47,8 @@ func (n *Notifier) Notify(title, body string) {
 	go func() {
 		defer n.wg.Done()
 		if err := n.send(trim(title), trim(body)); err != nil {
+			// Exec errors carry the tool and exit status, never its
+			// arguments or environment, so no message text reaches the log.
 			log.Printf("DLP helper: desktop notification failed: %v", err)
 		}
 	}()

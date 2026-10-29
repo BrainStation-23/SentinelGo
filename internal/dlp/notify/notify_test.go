@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -80,5 +81,24 @@ func TestPlatformSend_Live(t *testing.T) {
 	}
 	if err := platformSend("SentinelOps DLP (test)", "Test notification from the SentinelGo test suite"); err != nil {
 		t.Errorf("toast: %v", err)
+	}
+}
+
+// Tools are run by absolute path, not looked up through PATH.
+func TestCommand_AbsolutePath(t *testing.T) {
+	cmd := command(context.Background(), "t", "b")
+	if !filepath.IsAbs(cmd.Path) && runtime.GOOS != "windows" {
+		t.Errorf("tool path %q is not absolute", cmd.Path)
+	}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(cmd.Path), `\windowspowershell\v1.0\powershell.exe`) {
+		t.Errorf("powershell path = %q", cmd.Path)
+	}
+}
+
+// A failed send's error doesn't contain the message.
+func TestSendError_NoText(t *testing.T) {
+	err := command(context.Background(), "t", "very-secret-body").Run()
+	if err != nil && strings.Contains(err.Error(), "very-secret-body") {
+		t.Errorf("error leaks the message: %v", err)
 	}
 }

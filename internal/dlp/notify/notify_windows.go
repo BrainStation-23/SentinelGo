@@ -6,8 +6,11 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // toastScript shows a toast through WinRT from Windows PowerShell, under
@@ -22,8 +25,18 @@ $x.Item(1).AppendChild($t.CreateTextNode($env:SG_NOTIFY_BODY)) > $null
 
 const createNoWindow = 0x08000000
 
+// powershellPath is Windows PowerShell in the system directory, not looked
+// up through PATH.
+func powershellPath() string {
+	dir, err := windows.GetSystemDirectory()
+	if err != nil {
+		dir = `C:\Windows\System32`
+	}
+	return filepath.Join(dir, `WindowsPowerShell\v1.0\powershell.exe`)
+}
+
 func command(ctx context.Context, title, body string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", toastScript) // #nosec G204 -- fixed script; text arrives via environment
+	cmd := exec.CommandContext(ctx, powershellPath(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", toastScript) // #nosec G204 -- fixed script; text arrives via environment
 	cmd.Env = append(os.Environ(), "SG_NOTIFY_TITLE="+title, "SG_NOTIFY_BODY="+body)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	return cmd
