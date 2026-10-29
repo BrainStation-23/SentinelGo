@@ -214,7 +214,7 @@ func TestLauncher_RestartingHelperShowsLastError(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	l.set("5")
 	s.reconcile(now)
-	s.Hub.setLastError("5", "helper disconnected before hello")
+	s.setLastError("5", "helper disconnected before hello")
 
 	l.procs("5")[0].exit() // gave up on an untrusted endpoint
 	waitExited(t, s, "5")
@@ -226,7 +226,7 @@ func TestLauncher_RestartingHelperShowsLastError(t *testing.T) {
 
 	l.set()
 	s.reconcile(now.Add(2 * time.Second))
-	if s.Hub.lastError("5") != "" {
+	if s.lastError("5") != "" {
 		t.Error("last error kept after the session ended")
 	}
 }
