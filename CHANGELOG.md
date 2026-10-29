@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.1] - 2026-10-29
+
 ### Fixed
 
 - Clipboard DLP never ran on Windows: the session helper couldn't verify the service's pipe, because it queried the service process, which a user can't do for a LocalSystem service. It now checks the pipe's owner (SYSTEM or Administrators) instead, and the service creates the pipe owned by SYSTEM. A helper that keeps refusing the endpoint now exits after 5 attempts, so the device shows `restarting` instead of `starting` forever. Sessions without a connected helper report why in a new `last_error` field of the DLP status (#292).
@@ -444,7 +446,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.1...HEAD
+[v4.0.1]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.0...v4.0.1
 [v4.0.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.2...v4.0.0
 [v3.7.2]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...v3.7.2
 [v3.7.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...v3.7.1
