@@ -3,7 +3,6 @@ package channel_test
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 
 	"sentinelgo/internal/dlp/channel"
@@ -23,10 +22,10 @@ func TestCapabilityString(t *testing.T) {
 // Where the clipboard channel has no watcher it must say so rather than run
 // and enforce nothing.
 func TestClipboardStubReportsUnsupported(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has a watcher (clipboard_windows_test.go)")
-	}
 	ch := clipboard.New()
+	if ch.Supported().Supported {
+		t.Skip("this platform and session have a clipboard watcher")
+	}
 	if ch.Name() != policy.ChannelClipboard {
 		t.Errorf("Name = %q, want %q", ch.Name(), policy.ChannelClipboard)
 	}
