@@ -67,7 +67,9 @@ func New(sink channel.EventSink) Supervisor {
 	if err != nil {
 		return &manualSupervisor{Hub: NewHub(ipc.DefaultAddress, sink)}
 	}
-	return newAgentSupervisor(NewHub(ipc.DefaultAddress, sink), &launchdAgents{exe: exe})
+	s := newAgentSupervisor(NewHub(ipc.DefaultAddress, sink), &launchdAgents{exe: exe})
+	s.label = labelUID
+	return s
 }
 
 type launchdAgents struct{ exe string }
@@ -153,20 +155,71 @@ func consoleUsers(out []byte) []string {
 	return users
 }
 
+// Start makes sure the helper runs in uid's GUI session: a job that isn't
+// loaded is bootstrapped, one that is loaded but not running (it exited
+// cleanly, which launchd doesn't restart) is kickstarted, and a running one
+// is replaced only with restart.
 func (a *launchdAgents) Start(uid string, restart bool) error {
 	domain := "gui/" + uid
-	if _, err := runCmd("launchctl", "print", domain+"/"+agentLabel); err != nil {
-		if out, err := runCmd("launchctl", "bootstrap", domain, agentPlist); err != nil {
-			return fmt.Errorf("launchctl bootstrap %s: %v: %s", domain, err, bytes.TrimSpace(out))
-		}
-		return nil // just loaded: RunAtLoad starts the current binary
+	target := domain + "/" + agentLabel
+	out, err := runCmd("launchctl", "print", target)
+	if err != nil {
+		return a.bootstrap(domain)
 	}
-	if restart {
-		if out, err := runCmd("launchctl", "kickstart", "-k", domain+"/"+agentLabel); err != nil {
-			return fmt.Errorf("launchctl kickstart %s: %v: %s", domain, err, bytes.TrimSpace(out))
+	if !jobRunning(out) {
+		if out, err := runCmd("launchctl", "kickstart", target); err != nil {
+			return fmt.Errorf("launchctl kickstart %s: %v: %s", target, err, bytes.TrimSpace(out))
 		}
+		return nil
+	}
+	if !restart {
+		return nil
+	}
+	out, err = runCmd("launchctl", "kickstart", "-k", target)
+	if err == nil {
+		return nil
+	}
+	// kickstart -k has been seen to hang when root runs it against a GUI
+	// domain. Replace the job instead: unload it (stopping the old helper)
+	// and load it again, which starts the current binary (RunAtLoad).
+	kerr := fmt.Errorf("launchctl kickstart -k %s: %v: %s", target, err, bytes.TrimSpace(out))
+	if err := a.Stop(uid); err != nil {
+		return fmt.Errorf("%v; then %v", kerr, err)
+	}
+	if err := a.bootstrap(domain); err != nil {
+		return fmt.Errorf("%v; then %v", kerr, err)
 	}
 	return nil
+}
+
+// bootstrap loads the job in domain; RunAtLoad starts the current binary.
+func (a *launchdAgents) bootstrap(domain string) error {
+	if out, err := runCmd("launchctl", "bootstrap", domain, agentPlist); err != nil {
+		return fmt.Errorf("launchctl bootstrap %s: %v: %s", domain, err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// jobRunning reads `launchctl print` output: the job's own top-level
+// "state = running" (nested blocks are indented further).
+func jobRunning(out []byte) bool {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "\tstate = ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "\tstate = ")) == "running"
+		}
+	}
+	return false
+}
+
+// labelUID names a uid for the status: the account name, and the uid as the
+// session id (what the hub reports for a connected helper).
+func labelUID(uid string) (string, string) {
+	if u, err := user.LookupId(uid); err == nil {
+		return u.Username, uid
+	}
+	return uid, uid
 }
 
 func (a *launchdAgents) Stop(uid string) error {

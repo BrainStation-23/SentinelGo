@@ -2,11 +2,13 @@ package dlp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +64,7 @@ func newSyncFixture(t *testing.T, cachePath string, replies ...func(string, *Sta
 		t.Fatal(err)
 	}
 	fx.f = &scriptedFetcher{replies: replies}
-	fx.s = NewSyncer(fx.f, fx.cache, fx.mgr, "9.9.9", func() map[string]string {
+	fx.s = NewSyncer(fx.f, fx.cache, fx.mgr, "9.9.9", func(Snapshot) map[string]string {
 		return map[string]string{"clipboard": "unsupported:not_implemented"}
 	})
 	fx.s.now = func() time.Time { return fx.now }
@@ -141,6 +143,38 @@ func TestSync_UnchangedDoesNotRewriteCache(t *testing.T) {
 
 // enabled:false is cached, so the org kill switch holds after an offline
 // restart; a cached enabled bundle enforces at once on the next start.
+// The status carries the Manager's state, and the capability fallback sees
+// it, so "not enforcing" doesn't look like "helper failed to start".
+func TestSync_StatusReportsState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), policy.CacheFileName)
+	fx := newSyncFixture(t, path, newBundle(bundleJSON("v1", true, 300)), unchanged)
+	var seen []State
+	fx.s.capabilities = func(snap Snapshot) map[string]string {
+		seen = append(seen, snap.State)
+		return map[string]string{"clipboard": "unsupported:test"}
+	}
+	for range 2 {
+		fx.s.PollNow()
+		if err := fx.s.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := fx.f.calls
+	if calls[0].status == nil || calls[0].status.State != StateNoPolicy {
+		t.Errorf("first status state = %+v, want no_policy", calls[0].status)
+	}
+	if calls[1].status == nil || calls[1].status.State != StateEnforcing {
+		t.Errorf("second status state = %+v, want enforcing", calls[1].status)
+	}
+	if !slices.Equal(seen, []State{StateNoPolicy, StateEnforcing}) {
+		t.Errorf("capabilities saw states %v", seen)
+	}
+	raw, _ := json.Marshal(calls[1].status)
+	if !strings.Contains(string(raw), `"state":"enforcing"`) {
+		t.Errorf("status JSON lacks state: %s", raw)
+	}
+}
+
 func TestSync_KillSwitchSurvivesOfflineRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), policy.CacheFileName)
 	fx := newSyncFixture(t, path, newBundle(bundleJSON("v1", true, 300)), newBundle(bundleJSON("v2", false, 300)))
