@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -14,6 +15,17 @@ import (
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 )
+
+// maxUntrusted is how many endpoints in a row a helper refuses before it
+// exits, so the launcher reports it restarting instead of starting forever.
+const maxUntrusted = 5
+
+// errUntrusted: the endpoint isn't served by the service account.
+var errUntrusted = errors.New("untrusted endpoint")
+
+// trustServer decides whether the helper takes policy from an endpoint's
+// owner; tests replace it.
+var trustServer = ipc.TrustedServer
 
 // maxBufferedEvents bounds the events a helper holds while the service is
 // unreachable; the oldest are dropped beyond it.
@@ -39,14 +51,15 @@ func defaultBackoff(n int) time.Duration {
 // the policy it receives with the configured channels, and sends events back.
 // When the service is unreachable it keeps enforcing the last policy and
 // reconnects with backoff. It returns nil when the service says stop, when
-// the policy turns DLP off, or when ctx ends.
+// the policy turns DLP off, or when ctx ends, and an error after
+// maxUntrusted untrusted endpoints in a row.
 func RunHelper(ctx context.Context, o HelperOptions) error {
 	if o.Backoff == nil {
 		o.Backoff = defaultBackoff
 	}
 	r := &helperRuntime{o: o}
 	defer r.stopChannels()
-	for attempt := 0; ; {
+	for attempt, untrusted := 0, 0; ; {
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -56,6 +69,13 @@ func RunHelper(ctx context.Context, o HelperOptions) error {
 		}
 		if err == nil {
 			attempt = 0 // connected and then lost: retry soon
+		}
+		if errors.Is(err, errUntrusted) {
+			if untrusted++; untrusted >= maxUntrusted {
+				return fmt.Errorf("%s refused %d times in a row: %w", o.Addr, untrusted, err)
+			}
+		} else {
+			untrusted = 0
 		}
 		attempt++
 		select {
@@ -85,9 +105,9 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		return false, err
 	}
 	defer func() { _ = c.Close() }()
-	if id, err := ipc.ServerIdentity(c); err != nil || !ipc.TrustedServer(id) {
+	if id, err := ipc.ServerIdentity(c); err != nil || !trustServer(id) {
 		log.Printf("DLP helper: refusing endpoint %s served by %s (%v)", r.o.Addr, id.User, err)
-		return false, errors.New("untrusted endpoint")
+		return false, errUntrusted
 	}
 
 	// Unblock the read below when ctx ends.

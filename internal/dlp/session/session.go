@@ -34,4 +34,7 @@ type Info struct {
 	// Capabilities the helper reported per channel ("supported" or
 	// "unsupported:<reason>"); empty for a helper that isn't connected.
 	Capabilities map[string]string `json:"capabilities,omitempty"`
+	// LastError is why the session's last helper connection was refused or
+	// dropped before it said hello; only set while no helper is connected.
+	LastError string `json:"last_error,omitempty"`
 }

@@ -18,9 +18,15 @@ import (
 // DefaultAddress is the service's pipe.
 const DefaultAddress = `\\.\pipe\sentinelgo-dlp`
 
-// pipeSDDL: SYSTEM and Administrators full access, interactive users
+// pipeDACL: SYSTEM and Administrators full access, interactive users
 // read/write (connect). Remote clients are rejected by the pipe mode.
-const pipeSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+const pipeDACL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+
+// pipeSDDLs are tried in order. The service (LocalSystem) owns the pipe as
+// SYSTEM, which is what helpers check (ServerIdentity); a non-SYSTEM caller
+// (tests, a manual run) can't set that owner and falls back to its token's
+// default owner.
+var pipeSDDLs = []string{"O:SY" + pipeDACL, pipeDACL}
 
 const pipeBufferSize = 64 << 10
 
@@ -41,26 +47,36 @@ type pipeListener struct {
 // Listen creates the pipe. The first instance uses FILE_FLAG_FIRST_PIPE_INSTANCE,
 // so Listen fails if another process already owns the name (pipe squatting).
 func Listen(addr string) (Listener, error) {
-	sd, err := windows.SecurityDescriptorFromString(pipeSDDL)
-	if err != nil {
-		return nil, fmt.Errorf("ipc: pipe security descriptor: %w", err)
-	}
+	return listen(addr, pipeSDDLs)
+}
+
+// listen creates the pipe with the first of sddls whose owner this process
+// may set.
+func listen(addr string, sddls []string) (Listener, error) {
 	ev, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ipc: create event: %w", err)
 	}
-	l := &pipeListener{
-		addr:    addr,
-		sa:      &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd},
-		closeEv: ev,
+	l := &pipeListener{addr: addr, closeEv: ev}
+	err = errors.New("ipc: no pipe security descriptor")
+	for _, sddl := range sddls {
+		var sd *windows.SECURITY_DESCRIPTOR
+		if sd, err = windows.SecurityDescriptorFromString(sddl); err != nil {
+			err = fmt.Errorf("ipc: pipe security descriptor: %w", err)
+			break
+		}
+		l.sa = &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+		var h windows.Handle
+		if h, err = l.newInstance(true); err == nil {
+			l.next = h
+			return l, nil
+		}
+		if !errors.Is(err, windows.ERROR_INVALID_OWNER) {
+			break
+		}
 	}
-	h, err := l.newInstance(true)
-	if err != nil {
-		_ = windows.CloseHandle(ev)
-		return nil, err
-	}
-	l.next = h
-	return l, nil
+	_ = windows.CloseHandle(ev)
+	return nil, err
 }
 
 func (l *pipeListener) newInstance(first bool) (windows.Handle, error) {
@@ -313,18 +329,42 @@ func PeerIdentity(c Conn) (Identity, error) {
 	return processIdentity(pid)
 }
 
-// ServerIdentity returns the identity of the pipe server, for a helper to
-// check it is talking to the agent and not a squatter.
+// ServerIdentity returns the owner of the pipe, for a helper to check it is
+// talking to the agent and not a squatter. It reads the owner from the pipe
+// handle rather than the server process: a user can't query a SYSTEM
+// process, but can read the pipe's owner (GENERIC_READ includes
+// READ_CONTROL). Only SYSTEM or Administrators can create a pipe they own,
+// and FILE_FLAG_FIRST_PIPE_INSTANCE stops anyone else taking the name.
+// PID is the server's, for logging only.
 func ServerIdentity(c Conn) (Identity, error) {
 	pc, ok := c.(*pipeConn)
 	if !ok {
 		return Identity{}, errors.New("ipc: not a pipe connection")
 	}
+	var id Identity
 	var pid uint32
-	if err := windows.GetNamedPipeServerProcessId(pc.h, &pid); err != nil {
-		return Identity{}, fmt.Errorf("ipc: server pid: %w", err)
+	if windows.GetNamedPipeServerProcessId(pc.h, &pid) == nil {
+		id.PID = int(pid)
 	}
-	return processIdentity(pid)
+	sd, err := windows.GetSecurityInfo(pc.h, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return id, fmt.Errorf("ipc: pipe owner: %w", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return id, fmt.Errorf("ipc: pipe has no owner: %v", err)
+	}
+	setAccount(&id, owner)
+	return id, nil
+}
+
+// setAccount fills id's UID and User from sid.
+func setAccount(id *Identity, sid *windows.SID) {
+	id.UID = sid.String()
+	id.User = id.UID
+	if account, domain, _, err := sid.LookupAccount(""); err == nil {
+		id.User = domain + `\` + account
+	}
 }
 
 func processIdentity(pid uint32) (Identity, error) {
@@ -354,11 +394,7 @@ func processIdentity(pid uint32) (Identity, error) {
 	if err != nil {
 		return id, fmt.Errorf("ipc: token user: %w", err)
 	}
-	id.UID = tu.User.Sid.String()
-	id.User = id.UID
-	if account, domain, _, err := tu.User.Sid.LookupAccount(""); err == nil {
-		id.User = domain + `\` + account
-	}
+	setAccount(&id, tu.User.Sid)
 	return id, nil
 }
 

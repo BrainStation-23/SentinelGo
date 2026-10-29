@@ -115,6 +115,7 @@ func (s *launchSupervisor) reconcile(now time.Time) {
 				_ = h.proc.Kill()
 			}
 			delete(s.helpers, id)
+			s.setLastError(id, "")
 			log.Printf("DLP: session %s ended; helper stopped", id)
 		}
 	}
@@ -195,7 +196,7 @@ func (s *launchSupervisor) Stop() {
 }
 
 // Sessions reports the connected helpers, plus sessions whose helper is
-// starting or restarting.
+// starting or restarting, with why its last connection failed.
 func (s *launchSupervisor) Sessions() []Info {
 	out := s.Hub.Sessions()
 	connected := map[string]bool{}
@@ -207,7 +208,7 @@ func (s *launchSupervisor) Sessions() []Info {
 		// A started helper shows as "starting" until it connects; then the
 		// hub lists it.
 		if !connected[id] {
-			out = append(out, Info{User: "session " + id, State: h.state, SessionID: id})
+			out = append(out, Info{User: "session " + id, State: h.state, SessionID: id, LastError: s.lastError(id)})
 		}
 	}
 	s.mu.Unlock()
