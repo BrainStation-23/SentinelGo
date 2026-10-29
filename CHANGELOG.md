@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.0] - 2026-10-29
+
 ### Added
 
 - Groundwork for clipboard Data Loss Prevention (DLP): a new `internal/dlp` subsystem the service starts at boot, and a `dlp_enabled` setting in `config.json` (default `true`). DLP stays off until the server sends a policy that enables it; `dlp_enabled: false` turns it off on that device whatever the server says. Nothing is enforced yet: watching the clipboard comes in later releases (#258).
@@ -438,7 +440,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.2...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.0...HEAD
+[v4.0.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.2...v4.0.0
 [v3.7.2]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...v3.7.2
 [v3.7.1]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.0...v3.7.1
 [v3.7.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.6.1...v3.7.0
