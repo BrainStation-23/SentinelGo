@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/events"
 )
 
@@ -181,5 +185,83 @@ func TestPoller_NoWriteWithoutReread(t *testing.T) {
 	w.check(context.Background())
 	if d.clip() != "4111111111111111" || len(s.evs) != 1 || s.evs[0].Action != events.ActionMonitored {
 		t.Errorf("clipboard %q events %+v", d.clip(), s.evs)
+	}
+}
+
+// Run polls until cancelled and blocks a copy made meanwhile.
+func TestRun_PollsUntilCancelled(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+	d := &fakeDesktop{tools: map[string]bool{"xclip": true}}
+	installFake(t, d)
+	s := &recSink{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- New().Run(ctx, compile(t, blockCards), s) }()
+	d.copy("4111111111111111", "UTF8_STRING")
+	deadline := time.Now().Add(5 * time.Second)
+	for d.clip() != "Blocked by SentinelOps: credit card" {
+		if time.Now().After(deadline) {
+			t.Fatalf("not blocked: %q", d.clip())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v", err)
+	}
+
+	t.Setenv("DISPLAY", "")
+	if err := New().Run(context.Background(), compile(t, blockCards), s); !errors.Is(err, channel.ErrUnsupported) {
+		t.Errorf("headless Run = %v, want ErrUnsupported", err)
+	}
+}
+
+// The source app comes from xdotool's window pid and /proc.
+func TestSourceApp_Xdotool(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+	prevLook, prevRun := lookPath, run
+	t.Cleanup(func() { lookPath, run = prevLook, prevRun })
+	lookPath = func(string) (string, error) { return "/usr/bin/xdotool", nil }
+	run = func(context.Context, io.Reader, ...string) ([]byte, error) {
+		return []byte(strconv.Itoa(os.Getpid()) + "\n"), nil
+	}
+	src := sourceApp(context.Background())
+	if src.Path == "" || src.Name == "" || !strings.HasSuffix(src.Path, src.Name) {
+		t.Errorf("source = %+v, want this process", src)
+	}
+
+	run = func(context.Context, io.Reader, ...string) ([]byte, error) { return []byte("not-a-pid"), nil }
+	if src := sourceApp(context.Background()); src != (events.SourceApp{}) {
+		t.Errorf("bad pid gave %+v", src)
+	}
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	if src := sourceApp(context.Background()); src != (events.SourceApp{}) {
+		t.Errorf("wayland gave %+v (xdotool is X11 only)", src)
+	}
+}
+
+// The real command runner returns stdout, and stderr inside the error.
+func TestRun_RealCommand(t *testing.T) {
+	out, err := run(context.Background(), strings.NewReader("hello"), "cat")
+	if err != nil || string(out) != "hello" {
+		t.Fatalf("cat = %q, %v", out, err)
+	}
+	_, err = run(context.Background(), nil, "sh", "-c", "echo compositor lacks data-control >&2; exit 1")
+	if err == nil || !dataControlMissing([]byte(err.Error())) {
+		t.Errorf("stderr not in error: %v", err)
+	}
+}
+
+func TestLimitedWriter(t *testing.T) {
+	var b strings.Builder
+	w := &limitedWriter{w: &b, n: 5}
+	if n, err := w.Write([]byte("hello world")); n != 11 || err != nil {
+		t.Errorf("Write = %d, %v (must report the full length)", n, err)
+	}
+	_, _ = w.Write([]byte("more"))
+	if b.String() != "hello" {
+		t.Errorf("kept %q, want the first 5 bytes", b.String())
 	}
 }
