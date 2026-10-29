@@ -10,13 +10,18 @@ import (
 	"sentinelgo/internal/dlp/policy"
 )
 
-// defaultBlockMessage is used when the bundle has none.
-const defaultBlockMessage = "Blocked by SentinelOps: {{detector}}"
+// Defaults for when the bundle has no message of its own.
+const (
+	defaultBlockMessage  = "Blocked by SentinelOps: {{detector}}"
+	defaultNotifyMessage = "SentinelOps blocked sensitive data on your clipboard: {{detector}}"
+	notifyTitle          = "SentinelOps DLP"
+)
 
 // Decision is what to do with one copy.
 type Decision struct {
 	Block   bool
 	Message string         // the placeholder to put on the clipboard when Block
+	Notify  string         // the desktop notification text when Block
 	Events  []events.Event // one per matching policy
 }
 
@@ -66,15 +71,17 @@ func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time
 		for i := range d.Events {
 			d.Events[i].Action = events.ActionBlocked
 		}
-		d.Message = blockMessage(p.Modules.Clipboard.BlockMessage, blockFinding.DetectorID)
+		d.Message = fillDetector(p.Modules.Clipboard.BlockMessage, defaultBlockMessage, blockFinding.DetectorID)
+		d.Notify = fillDetector(p.Modules.Clipboard.NotifyMessage, defaultNotifyMessage, blockFinding.DetectorID)
 	}
 	return d
 }
 
-// blockMessage fills the {{detector}} placeholder with a readable name.
-func blockMessage(tmpl, detectorID string) string {
+// fillDetector fills the {{detector}} placeholder of tmpl (def when empty)
+// with a readable name.
+func fillDetector(tmpl, def, detectorID string) string {
 	if tmpl == "" {
-		tmpl = defaultBlockMessage
+		tmpl = def
 	}
 	return strings.ReplaceAll(tmpl, "{{detector}}", DetectorName(detectorID))
 }
