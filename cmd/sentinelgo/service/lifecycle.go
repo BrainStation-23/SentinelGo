@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal"
 	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp/session"
 )
 
 // HandleInstall installs SentinelGo as a system service (launchd on macOS,
@@ -73,6 +74,15 @@ func HandleInstall(svc AgentService) {
 	}
 }
 
+// cleanupDLPHelpers removes the DLP session helper definitions (LaunchAgent,
+// systemd user unit, XDG autostart). The service removes them when it stops
+// cleanly; this covers an abrupt exit before uninstall.
+func cleanupDLPHelpers() {
+	if err := session.CleanupHelpers(); err != nil {
+		log.Printf("Warning: failed to remove DLP session helpers: %v", err)
+	}
+}
+
 // HandleUninstall removes the SentinelGo system service.
 func HandleUninstall(svc AgentService) {
 	if runtime.GOOS == "darwin" {
@@ -85,6 +95,7 @@ func HandleUninstall(svc AgentService) {
 		if err := removeLaunchdPlist(); err != nil {
 			log.Fatalf("Failed to remove launchd plist: %v", err)
 		}
+		cleanupDLPHelpers()
 
 		fmt.Println("SentinelGo service uninstalled successfully!")
 		return
@@ -93,6 +104,7 @@ func HandleUninstall(svc AgentService) {
 	if err := svc.Uninstall(); err != nil {
 		log.Fatalf("Failed to uninstall service: %v", err)
 	}
+	cleanupDLPHelpers()
 	if err := logger.Info("Service uninstalled"); err != nil {
 		log.Fatalf("Failed to log service uninstallation: %v", err)
 	}

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package session
 
@@ -12,3 +12,6 @@ import (
 func New(sink channel.EventSink) Supervisor {
 	return &manualSupervisor{Hub: NewHub(ipc.DefaultAddress, sink)}
 }
+
+// CleanupHelpers has nothing to remove on this platform.
+func CleanupHelpers() error { return nil }

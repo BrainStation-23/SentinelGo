@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/channel"
@@ -36,7 +37,19 @@ func RunDLPSession() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err := session.RunHelper(ctx, session.HelperOptions{
+
+	// One helper per user session: a systemd unit and an XDG autostart entry
+	// (or a manual run) may both start one. The second waits as a standby
+	// and takes over if the first dies, so a crash isn't left unrecovered.
+	release, err := waitForHelperLock(ctx)
+	if err != nil {
+		log.Printf("DLP helper: single-instance lock unavailable, continuing: %v", err)
+	} else if release == nil {
+		return 0 // stopped while on standby
+	} else {
+		defer release()
+	}
+	err = session.RunHelper(ctx, session.HelperOptions{
 		Addr:     ipc.DefaultAddress,
 		Version:  config.Version,
 		Channels: []channel.Channel{clipboard.New()},
@@ -47,6 +60,30 @@ func RunDLPSession() int {
 	}
 	log.Printf("DLP helper exiting")
 	return 0
+}
+
+// helperLockRetry is how often a standby helper retries the lock.
+var helperLockRetry = 5 * time.Second
+
+// waitForHelperLock takes the session's helper lock, waiting as a standby
+// while another helper holds it. It returns a nil release (and nil error)
+// when ctx ends first.
+func waitForHelperLock(ctx context.Context) (func(), error) {
+	for logged := false; ; {
+		release, ok, err := session.AcquireHelperLock()
+		if err != nil || ok {
+			return release, err
+		}
+		if !logged {
+			log.Printf("DLP helper: another helper runs in this session; standing by")
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-time.After(helperLockRetry):
+		}
+	}
 }
 
 // openHelperLog opens the per-user helper log (rotating it past

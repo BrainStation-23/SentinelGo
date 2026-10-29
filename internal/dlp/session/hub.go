@@ -50,8 +50,9 @@ type helper struct {
 	conn  ipc.Conn
 	id    ipc.Identity
 	state string
-	out   chan ipc.Message // drained by the helper's writer goroutine
-	done  chan struct{}    // closed when the connection is finished
+	caps  map[string]string // from hello / status
+	out   chan ipc.Message  // drained by the helper's writer goroutine
+	done  chan struct{}     // closed when the connection is finished
 }
 
 // helperOutbox is how many messages may wait for a helper. A helper that
@@ -141,7 +142,7 @@ func (h *Hub) Sessions() []Info {
 	defer h.mu.Unlock()
 	out := make([]Info, 0, len(h.helpers))
 	for hp := range h.helpers {
-		out = append(out, Info{User: hp.id.User, State: hp.state, SessionID: hp.id.SessionID})
+		out = append(out, Info{User: hp.id.User, State: hp.state, SessionID: hp.id.SessionID, Capabilities: hp.caps})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
 	return out
@@ -259,7 +260,7 @@ func (h *Hub) serve(c ipc.Conn) {
 		log.Printf("DLP: helper for %s (pid %d) did not say hello: %v", sanitize.ForLog(id.User), id.PID, err)
 		return
 	}
-	hp := &helper{conn: c, id: id, state: "running", out: make(chan ipc.Message, helperOutbox), done: make(chan struct{})}
+	hp := &helper{conn: c, id: id, state: "running", caps: sanitizeCaps(hello.Capabilities), out: make(chan ipc.Message, helperOutbox), done: make(chan struct{})}
 	h.mu.Lock()
 	if !h.running { // Stop ran while this helper was saying hello
 		h.mu.Unlock()
@@ -283,6 +284,19 @@ func (h *Hub) serve(c ipc.Conn) {
 		h.send(hp, ipc.Message{Type: ipc.TypePolicy, Policy: raw})
 	}
 	h.readLoop(hp)
+}
+
+// sanitizeCaps keeps a few short capability strings from a helper, which is
+// a user-controlled process: they go into logs and the status report.
+func sanitizeCaps(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range in {
+		if len(out) == 8 || len(k) > 32 || len(v) > 64 {
+			continue
+		}
+		out[sanitize.ForLog(k)] = sanitize.ForLog(v)
+	}
+	return out
 }
 
 // readHello waits (bounded) for the helper's first frame.
@@ -331,6 +345,9 @@ func (h *Hub) readLoop(hp *helper) {
 			if m.Status != nil {
 				h.mu.Lock()
 				hp.state = m.Status.State
+				if m.Status.Capabilities != nil {
+					hp.caps = sanitizeCaps(m.Status.Capabilities)
+				}
 				h.mu.Unlock()
 			}
 		}

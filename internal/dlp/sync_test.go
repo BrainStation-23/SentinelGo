@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/dlp/session"
 )
 
 // scriptedFetcher answers polls from a script and records each call.
@@ -255,5 +256,24 @@ func TestSync_ScheduleFollowsPollInterval(t *testing.T) {
 	fx.s.PollNow()
 	if !fx.s.Due() {
 		t.Error("PollNow didn't make a poll due")
+	}
+}
+
+// Helpers' capabilities override the service's guess: supported if any
+// helper supports a channel, else the first reason reported.
+func TestMergeHelperCapabilities(t *testing.T) {
+	caps := map[string]string{"clipboard": "unsupported:no_graphical_session"}
+	mergeHelperCapabilities(caps, []session.Info{
+		{User: "a", Capabilities: map[string]string{"clipboard": "unsupported:wayland_no_data_control"}},
+		{User: "b", Capabilities: map[string]string{"clipboard": "supported"}},
+		{User: "c"},
+	})
+	if caps["clipboard"] != "supported" {
+		t.Errorf("caps = %v", caps)
+	}
+	caps = map[string]string{"clipboard": "unsupported:no_graphical_session"}
+	mergeHelperCapabilities(caps, []session.Info{{Capabilities: map[string]string{"clipboard": "unsupported:no_xclip_or_xsel"}}})
+	if caps["clipboard"] != "unsupported:no_xclip_or_xsel" {
+		t.Errorf("caps = %v", caps)
 	}
 }

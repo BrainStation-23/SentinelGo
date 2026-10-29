@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -790,5 +791,18 @@ func TestDLPSyncNow(t *testing.T) {
 	}
 	if _, err := h.Run(context.Background(), cfg, taskstore.Task{}); err == nil {
 		t.Error("dlp_sync_policy still works after Stop")
+	}
+}
+
+// Without a connected helper the service reports why the clipboard isn't
+// covered.
+func TestDLPCapabilitiesFallback(t *testing.T) {
+	got := dlpCapabilities()["clipboard"]
+	want := "unsupported:no_user_session"
+	if runtime.GOOS == "linux" {
+		want = "unsupported:no_graphical_session"
+	}
+	if got != want {
+		t.Errorf("clipboard capability = %q, want %q", got, want)
 	}
 }
