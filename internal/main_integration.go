@@ -24,6 +24,7 @@ import (
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
 	tasksvc "sentinelgo/internal/service/task"
+	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/updater"
@@ -432,6 +433,20 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	if err != nil {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
+	native.SetDLPPolicySync(mi.dlpSyncNow)
+}
+
+// dlpSyncNow polls for the DLP policy immediately (native task
+// dlp_sync_policy, "push policy now") and reports what is applied.
+func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state string, err error) {
+	poll := func() error { return mi.dlpSyncer.Sync(ctx) }
+	if mi.authSvc != nil {
+		err = mi.authSvc.DoWithAuthRetry(ctx, mi.cfg, poll)
+	} else {
+		err = poll()
+	}
+	snap := mi.dlpManager.Snapshot()
+	return snap.Version, string(snap.State), err
 }
 
 // discardEvents is the event sink when the evidence queue is unavailable.
@@ -564,6 +579,7 @@ func (mi *MainIntegration) Stop() error {
 	mi.stopTaskManager()
 
 	// Stop DLP session helpers, then close the evidence queue
+	native.SetDLPPolicySync(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}

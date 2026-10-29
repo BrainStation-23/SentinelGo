@@ -33,6 +33,8 @@ import (
 	authsvc "sentinelgo/internal/service/auth"
 	servicessvc "sentinelgo/internal/service/services"
 	swsvc "sentinelgo/internal/service/software"
+	"sentinelgo/internal/service/task/native"
+	"sentinelgo/internal/taskstore"
 	"sentinelgo/internal/updater"
 )
 
@@ -765,5 +767,28 @@ func TestAuthTokenRefresher_RefreshToken_Success(t *testing.T) {
 	}
 	if tok == "" || tok != cfg.GetAccessToken() {
 		t.Errorf("RefreshToken() = %q, want the recovered access token", tok)
+	}
+}
+
+// dlp_sync_policy polls immediately through the running syncer.
+func TestDLPSyncNow(t *testing.T) {
+	cfg := miTestConfig(t)
+	cfg.DLPEnabled = true
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	t.Cleanup(func() { _ = mi.Stop() })
+	fb := &countingFetcher{}
+	mi.dlpSyncer = dlp.NewSyncer(fb, policy.NewCache(filepath.Join(t.TempDir(), "p.json")), mi.dlpManager, "test", nil)
+
+	h := native.Find("dlp_sync_policy")
+	note, err := h.Run(context.Background(), cfg, taskstore.Task{})
+	if err != nil || fb.calls != 1 || !strings.Contains(note, "no_policy") {
+		t.Errorf("note %q, err %v, polls %d", note, err, fb.calls)
+	}
+	if err := mi.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Run(context.Background(), cfg, taskstore.Task{}); err == nil {
+		t.Error("dlp_sync_policy still works after Stop")
 	}
 }
