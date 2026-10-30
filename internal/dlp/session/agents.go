@@ -172,7 +172,7 @@ func (s *agentSupervisor) Sessions() []Info {
 		in := Info{User: name, State: au.state, SessionID: sid, LastError: au.lastErr}
 		if in.LastError == "" {
 			// Started, but the hub refused it or it left before hello.
-			in.LastError = s.Hub.lastError(sid)
+			in.LastError = s.lastError(sid)
 		}
 		out = append(out, in)
 	}
