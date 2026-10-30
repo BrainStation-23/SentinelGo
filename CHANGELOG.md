@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clipboard DLP never started on macOS and Linux devices set up with `install.sh`: the installer (and, on Linux, the service install) made `/opt/sentinelgo` and the binary `0750`, but the per-user DLP helper runs as the signed-in user, who couldn't run it, so every session showed `start_failed` and the clipboard `helper_not_connected`. The installer now uses `0755` (root still owns both and is the only one who can write them; the config directory with the tokens is unchanged), and the service repairs existing installs on its own, adding read and execute for other users to the install directory and binary before it sets up the helpers. When a directory on the way is still closed to users, the session status says which one in `last_error` (#308).
+
 ## [v4.0.2] - 2026-10-30
 
 ### Added
