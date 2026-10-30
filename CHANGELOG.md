@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.2] - 2026-10-30
+
 ### Added
 
 - Between full task polls, the agent asks every minute whether a task is queued for it (`agent_has_pending_tasks`, a read-only check) and fetches it at once. A command, an install or a DLP "Push now" now reaches the device within about a minute instead of at the next poll (5 minutes by default). Set `task_check_interval` in `config.json` to change it; a value at or above `task_polling_interval` turns it off. Against a server without the check, the agent keeps the regular poll and asks again an hour later.
@@ -455,7 +457,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.1...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.2...HEAD
+[v4.0.2]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.1...v4.0.2
 [v4.0.1]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.0...v4.0.1
 [v4.0.0]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.2...v4.0.0
 [v3.7.2]: https://github.com/BrainStation-23/SentinelGo/compare/v3.7.1...v3.7.2
