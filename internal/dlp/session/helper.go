@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -26,6 +27,13 @@ var errUntrusted = errors.New("untrusted endpoint")
 // trustServer decides whether the helper takes policy from an endpoint's
 // owner; tests replace it.
 var trustServer = ipc.TrustedServer
+
+// refusedLinger bounds how long a helper that refused an endpoint waits for
+// it to hang up (a var for tests), and refusedDrain how much it reads (and
+// discards) meanwhile.
+var refusedLinger = 2 * time.Second
+
+const refusedDrain = 64 << 10
 
 // maxBufferedEvents bounds the events a helper holds while the service is
 // unreachable; the oldest are dropped beyond it.
@@ -111,6 +119,7 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 	defer func() { _ = c.Close() }()
 	if id, err := ipc.ServerIdentity(c); err != nil || !trustServer(id) {
 		log.Printf("DLP helper: refusing endpoint %s served by %s (%v)", r.o.Addr, id.User, err)
+		lingerRefused(c)
 		return false, errUntrusted
 	}
 
@@ -281,4 +290,22 @@ func (r *helperRuntime) detach() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.conn = nil
+}
+
+// lingerRefused ends a refused connection without sending anything: it
+// closes the write side, so the service reads EOF where the hello would be,
+// and waits for the service to hang up. Closing outright races the service
+// reading the peer's credentials, which macOS can't report once the socket
+// is disconnected; the service then can't record why this helper never
+// connected. An endpoint that doesn't hang up is left after refusedLinger.
+func lingerRefused(c ipc.Conn) {
+	hc, ok := c.(interface {
+		CloseWrite() error
+		SetReadDeadline(time.Time) error
+	})
+	if !ok || hc.CloseWrite() != nil {
+		return
+	}
+	_ = hc.SetReadDeadline(time.Now().Add(refusedLinger))
+	_, _ = io.Copy(io.Discard, io.LimitReader(c, refusedDrain))
 }
