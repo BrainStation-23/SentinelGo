@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,7 +33,7 @@ type Hub struct {
 	running bool
 	stopCh  chan struct{}
 	l       ipc.Listener
-	policy  json.RawMessage // current bundle; nil before the first Apply
+	policy  json.RawMessage // current bundle; nil without a DLP policy
 	helpers map[*helper]struct{}
 	conns   map[ipc.Conn]string // every accepted connection -> peer uid ("" before identified)
 	lastErr map[string]string   // session id -> why its last connection failed
@@ -56,6 +58,8 @@ type helper struct {
 	caps  map[string]string // from hello / status
 	out   chan ipc.Message  // drained by the helper's writer goroutine
 	done  chan struct{}     // closed when the connection is finished
+
+	pending map[string]chan string // notify id -> its result (guarded by Hub.mu)
 }
 
 // helperOutbox is how many messages may wait for a helper. A helper that
@@ -78,15 +82,20 @@ func NewHub(addr string, sink channel.EventSink) *Hub {
 }
 
 // Apply starts the hub if needed and pushes p to every connected helper (and
-// to each one that connects later).
+// to each one that connects later). A nil p means no DLP policy: helpers stay
+// connected (for notifications) with their channels stopped.
 func (h *Hub) Apply(_ context.Context, p *policy.Compiled) {
-	raw, err := json.Marshal(p.Bundle)
-	if err != nil {
-		log.Printf("DLP: encode policy for helpers: %v", err)
-		return
+	m := ipc.Message{Type: ipc.TypeClear}
+	if p != nil {
+		raw, err := json.Marshal(p.Bundle)
+		if err != nil {
+			log.Printf("DLP: encode policy for helpers: %v", err)
+			return
+		}
+		m = ipc.Message{Type: ipc.TypePolicy, Policy: raw}
 	}
 	h.mu.Lock()
-	h.policy = raw
+	h.policy = m.Policy
 	if !h.running {
 		h.running = true
 		h.stopCh = make(chan struct{})
@@ -97,8 +106,69 @@ func (h *Hub) Apply(_ context.Context, p *policy.Compiled) {
 	h.mu.Unlock()
 
 	for _, hp := range helpers {
-		h.send(hp, ipc.Message{Type: ipc.TypePolicy, Policy: raw})
+		h.send(hp, m)
 	}
+}
+
+// NotifyResult is one session's answer to Notify.
+type NotifyResult struct {
+	User      string
+	SessionID string
+	Err       string // "" when the notification was shown
+}
+
+// Notify asks every connected helper to show n and waits for each answer
+// until ctx ends. The text is never logged.
+func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
+	if n.ID == "" {
+		n.ID = newNotifyID()
+	}
+	type wait struct {
+		hp *helper
+		ch chan string
+	}
+	h.mu.Lock()
+	waits := make([]wait, 0, len(h.helpers))
+	for hp := range h.helpers {
+		ch := make(chan string, 1)
+		if hp.pending == nil {
+			hp.pending = map[string]chan string{}
+		}
+		hp.pending[n.ID] = ch
+		waits = append(waits, wait{hp, ch})
+	}
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		for _, w := range waits {
+			delete(w.hp.pending, n.ID)
+		}
+		h.mu.Unlock()
+	}()
+
+	for _, w := range waits {
+		h.send(w.hp, ipc.Message{Type: ipc.TypeNotify, Notify: &n})
+	}
+	out := make([]NotifyResult, 0, len(waits))
+	for _, w := range waits {
+		r := NotifyResult{User: w.hp.id.User, SessionID: w.hp.id.SessionID}
+		select {
+		case r.Err = <-w.ch:
+		case <-w.hp.done:
+			r.Err = "the session helper disconnected"
+		case <-ctx.Done():
+			r.Err = "no answer from the session helper (it may run an older agent)"
+		}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
+	return out
+}
+
+func newNotifyID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // Stop tells every helper to exit, closes the endpoint and waits for the
@@ -162,11 +232,17 @@ func (h *Hub) setLastError(session, reason string) {
 		delete(h.lastErr, session)
 		return
 	}
+	h.lastErr[session] = boundError(reason)
+}
+
+// boundError makes a helper-reported error (a user-controlled process) safe
+// for the log and the task result.
+func boundError(reason string) string {
 	reason = sanitize.ForLog(reason)
 	if len(reason) > maxLastError {
 		reason = strings.ToValidUTF8(reason[:maxLastError], "")
 	}
-	h.lastErr[session] = reason
+	return reason
 }
 
 // lastError returns why session's last connection failed, if it did.
@@ -377,6 +453,17 @@ func (h *Hub) readLoop(hp *helper) {
 			ev.User = hp.id.User
 			ev.SessionID = hp.id.SessionID
 			h.sink.Emit(ev)
+		case ipc.TypeNotifyResult:
+			if m.NotifyResult == nil {
+				continue
+			}
+			h.mu.Lock()
+			ch := hp.pending[m.NotifyResult.ID]
+			delete(hp.pending, m.NotifyResult.ID)
+			h.mu.Unlock()
+			if ch != nil {
+				ch <- boundError(m.NotifyResult.Error)
+			}
 		case ipc.TypeStatus:
 			if m.Status != nil {
 				h.mu.Lock()

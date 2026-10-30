@@ -38,10 +38,21 @@ const (
 const (
 	TypeHello  = "hello"  // helper → service, first frame
 	TypePolicy = "policy" // service → helper
+	TypeClear  = "clear"  // service → helper: no DLP policy; stop the channels, stay connected
 	TypeEvent  = "event"  // helper → service
 	TypeStatus = "status" // helper → service
 	TypePing   = "ping"   // either way
 	TypeStop   = "stop"   // service → helper: exit
+
+	TypeNotify       = "notify"        // service → helper: show a desktop notification
+	TypeNotifyResult = "notify_result" // helper → service: whether it was shown
+)
+
+// Notification levels.
+const (
+	LevelInfo     = "info"
+	LevelWarning  = "warning"
+	LevelCritical = "critical"
 )
 
 // ErrFrameTooLarge is returned for a frame over the reader's limit.
@@ -55,6 +66,24 @@ type Message struct {
 	Policy json.RawMessage `json:"policy,omitempty"` // the bundle, as the server sent it
 	Event  *events.Event   `json:"event,omitempty"`
 	Status *Status         `json:"status,omitempty"`
+	Notify *Notify         `json:"notify,omitempty"`
+	// NotifyResult answers a Notify with the same ID.
+	NotifyResult *NotifyResult `json:"notify_result,omitempty"`
+}
+
+// Notify is a desktop notification an admin sends to the signed-in user.
+type Notify struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	Level   string `json:"level"` // LevelInfo, LevelWarning or LevelCritical
+}
+
+// NotifyResult says whether a helper showed a Notify. Error is "" when it
+// did; otherwise it says why (the tool and exit status, never the text).
+type NotifyResult struct {
+	ID    string `json:"id"`
+	Error string `json:"error,omitempty"`
 }
 
 // Hello introduces a helper. PID is informational: the service reads the

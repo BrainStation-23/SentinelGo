@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -56,7 +57,7 @@ func TestTrim(t *testing.T) {
 // script or options.
 func TestCommand_TextNotInScript(t *testing.T) {
 	evil := `"; Remove-Item C:\ -Recurse; $(rm -rf /) -x`
-	cmd := command(context.Background(), "title", evil)
+	cmd := command(context.Background(), "title", evil, LevelCritical)
 	args := strings.Join(cmd.Args, " ")
 	switch runtime.GOOS {
 	case "windows", "darwin":
@@ -79,14 +80,54 @@ func TestPlatformSend_Live(t *testing.T) {
 	if testing.Short() || runtime.GOOS != "windows" {
 		t.Skip("shows a real notification; run on Windows without -short")
 	}
-	if err := platformSend("SentinelOps DLP (test)", "Test notification from the SentinelGo test suite"); err != nil {
+	if err := platformSend("SentinelOps DLP (test)", "Test notification from the SentinelGo test suite", ""); err != nil {
 		t.Errorf("toast: %v", err)
+	}
+}
+
+// The level reaches each tool in its own form; DLP's notifications (no
+// level) look as before.
+func TestCommand_Level(t *testing.T) {
+	for _, tc := range []struct{ level, mac, linux, win string }{
+		{"", "", "", "SG_NOTIFY_LEVEL="},
+		{LevelInfo, "", "--urgency=low", "SG_NOTIFY_LEVEL=info"},
+		{LevelWarning, "SG_NOTIFY_SUBTITLE=Warning", "--urgency=normal", "SG_NOTIFY_LEVEL=warning"},
+		{LevelCritical, "SG_NOTIFY_SUBTITLE=Critical", "--urgency=critical", "SG_NOTIFY_LEVEL=critical"},
+	} {
+		cmd := command(context.Background(), "t", "b", tc.level)
+		args, env := strings.Join(cmd.Args, " "), strings.Join(cmd.Env, "\n")
+		switch runtime.GOOS {
+		case "darwin":
+			if hasSub := strings.Contains(args, "subtitle"); hasSub != (tc.mac != "") || (tc.mac != "" && !slices.Contains(cmd.Env, tc.mac)) {
+				t.Errorf("level %q: args %q", tc.level, args)
+			}
+		case "linux":
+			if hasU := strings.Contains(args, "--urgency"); hasU != (tc.linux != "") || (tc.linux != "" && !slices.Contains(cmd.Args, tc.linux)) {
+				t.Errorf("level %q: args %q", tc.level, cmd.Args)
+			}
+		case "windows":
+			if !strings.Contains(env, tc.win) {
+				t.Errorf("level %q: env lacks %s", tc.level, tc.win)
+			}
+		}
+	}
+}
+
+// Show is not rate-limited, unlike the DLP Notifier.
+func TestShow_NotRateLimited(t *testing.T) {
+	if testing.Short() || os.Getenv("SENTINELGO_LIVE_NOTIFY") == "" {
+		t.Skip("shows real notifications; set SENTINELGO_LIVE_NOTIFY=1")
+	}
+	for i, level := range []string{LevelInfo, LevelWarning, LevelCritical} {
+		if err := Show("SentinelGo test "+level, "Notification "+string(rune('1'+i))+" of 3 from the test suite", level); err != nil {
+			t.Errorf("%s: %v", level, err)
+		}
 	}
 }
 
 // Tools are run by absolute path, not looked up through PATH.
 func TestCommand_AbsolutePath(t *testing.T) {
-	cmd := command(context.Background(), "t", "b")
+	cmd := command(context.Background(), "t", "b", "")
 	if !filepath.IsAbs(cmd.Path) && runtime.GOOS != "windows" {
 		t.Errorf("tool path %q is not absolute", cmd.Path)
 	}
@@ -97,7 +138,7 @@ func TestCommand_AbsolutePath(t *testing.T) {
 
 // A failed send's error doesn't contain the message.
 func TestSendError_NoText(t *testing.T) {
-	err := command(context.Background(), "t", "very-secret-body").Run()
+	err := command(context.Background(), "t", "very-secret-body", LevelWarning).Run()
 	if err != nil && strings.Contains(err.Error(), "very-secret-body") {
 		t.Errorf("error leaks the message: %v", err)
 	}

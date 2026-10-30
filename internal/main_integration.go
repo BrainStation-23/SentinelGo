@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
@@ -72,7 +73,14 @@ type MainIntegration struct {
 	dlpManager        *dlp.Manager
 	dlpSyncer         *dlp.Syncer
 	dlpEvents         *store.DLPEventStore
+	// sessions runs a helper in each user session whenever the agent runs:
+	// DLP enforces through it, and notify-user shows notifications with it.
+	sessions session.Service
 }
+
+// newSessions returns the session helper service (replaced in tests, which
+// must not start helpers on the machine running them).
+var newSessions = session.New
 
 // NewMainIntegration wires the production dependencies and returns a ready
 // MainIntegration. Use NewMainIntegrationWith to inject collaborators (e.g. in
@@ -131,7 +139,9 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		return err
 	}
 
-	// 6. Start DLP (a no-op when dlp_enabled is false or no policy is cached).
+	// 6. Start the session helpers and DLP (DLP enforces nothing when
+	// dlp_enabled is false or no policy is cached; the helpers still run for
+	// notify-user).
 	mi.startDLP(ctx)
 
 	// 7. Start the task manager (polling + execution) if enabled.
@@ -413,7 +423,14 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 			sink = dlp.NewQueueSink(q)
 		}
 	}
-	m := dlp.NewManager(cfg.DLPEnabled, cache, session.New(sink))
+	// The helpers run whether or not DLP enforces, so notify-user can reach
+	// the signed-in user; DLP only sets their policy.
+	sup := newSessions(sink)
+	sup.Apply(ctx, nil)
+	mi.sessions = sup
+	native.SetUserNotifier(mi.notifyUser)
+
+	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if err := m.Start(ctx); err != nil {
 		log.Printf("Warning: DLP failed to start: %v", err)
 		return
@@ -447,6 +464,32 @@ func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state strin
 	}
 	snap := mi.dlpManager.Snapshot()
 	return snap.Version, string(snap.State), err
+}
+
+// notifyUser is the notify-user hook: it shows n in every session with a
+// connected helper, and lists the signed-in users it couldn't reach.
+func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotification) ([]native.NotifyResult, []string) {
+	sup := mi.sessions
+	if sup == nil {
+		return nil, nil
+	}
+	var results []native.NotifyResult
+	for _, r := range sup.Notify(ctx, ipc.Notify{Title: n.Title, Message: n.Message, Level: n.Level}) {
+		results = append(results, native.NotifyResult{User: r.User, Err: r.Err})
+	}
+	var unreached []string
+	for _, in := range sup.Sessions() {
+		if in.Capabilities != nil {
+			continue // a connected helper (it reported its capabilities)
+		}
+		why := in.State
+		if in.LastError != "" {
+			why += ": " + in.LastError
+		}
+		unreached = append(unreached, fmt.Sprintf("%s (%s)", in.User, why))
+	}
+	log.Printf("notify-user: %d session(s) answered, %d not reached", len(results), len(unreached))
+	return results, unreached
 }
 
 // discardEvents is the event sink when the evidence queue is unavailable.
@@ -594,10 +637,15 @@ func (mi *MainIntegration) Stop() error {
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
 
-	// Stop DLP session helpers, then close the evidence queue
+	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
+	native.SetUserNotifier(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
+	}
+	if mi.sessions != nil {
+		mi.sessions.Stop()
+		mi.sessions = nil
 	}
 	if mi.dlpEvents != nil {
 		if err := mi.dlpEvents.Close(); err != nil {
