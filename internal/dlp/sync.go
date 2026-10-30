@@ -25,6 +25,10 @@ var ErrStatusRejected = errors.New("DLP status rejected by the server")
 // Status is what this device actually applied, piggy-backed on the policy
 // poll (agent_get_dlp_policy p_status). The server rejects it over 64 KB.
 type Status struct {
+	// State is the Manager's decision (enforcing, no_policy, disabled_local,
+	// disabled_server, idle), so a device that isn't enforcing doesn't look
+	// like one whose helper failed to start.
+	State              State                 `json:"state"`
 	AppliedVersion     string                `json:"applied_version"`
 	AgentVersion       string                `json:"agent_version"`
 	Capabilities       map[string]string     `json:"capabilities"`
@@ -67,7 +71,7 @@ type Syncer struct {
 	store        BundleStore
 	mgr          *Manager
 	agentVersion string
-	capabilities func() map[string]string
+	capabilities func(Snapshot) map[string]string
 	now          func() time.Time
 
 	syncMu sync.Mutex // one poll at a time (scheduled, or pushed by a task)
@@ -80,8 +84,9 @@ type Syncer struct {
 }
 
 // NewSyncer returns a Syncer. capabilities reports each channel's capability
-// ("supported" / "unsupported:<reason>").
-func NewSyncer(f Fetcher, store BundleStore, mgr *Manager, agentVersion string, capabilities func() map[string]string) *Syncer {
+// ("supported" / "unsupported:<reason>") from the service's view (the
+// Manager's state and sessions); connected helpers override it.
+func NewSyncer(f Fetcher, store BundleStore, mgr *Manager, agentVersion string, capabilities func(Snapshot) map[string]string) *Syncer {
 	return &Syncer{
 		fetcher:      f,
 		store:        store,
@@ -169,6 +174,7 @@ func (s *Syncer) schedule() {
 // status builds the current status report and its hash.
 func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 	st := &Status{
+		State:              snap.State,
 		AppliedVersion:     snap.Version,
 		AgentVersion:       s.agentVersion,
 		Capabilities:       map[string]string{},
@@ -177,7 +183,7 @@ func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 		Sessions:           []session.Info{},
 	}
 	if s.capabilities != nil {
-		st.Capabilities = s.capabilities()
+		st.Capabilities = s.capabilities(snap)
 	}
 	mergeHelperCapabilities(st.Capabilities, snap.Sessions)
 	s.mu.Lock()

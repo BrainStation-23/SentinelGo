@@ -16,6 +16,11 @@ the contributing guide. History before v2.1.17 is not recorded here.
 ### Added
 
 - Between full task polls, the agent asks every minute whether a task is queued for it (`agent_has_pending_tasks`, a read-only check) and fetches it at once. A command, an install or a DLP "Push now" now reaches the device within about a minute instead of at the next poll (5 minutes by default). Set `task_check_interval` in `config.json` to change it; a value at or above `task_polling_interval` turns it off. Against a server without the check, the agent keeps the regular poll and asks again an hour later.
+- The DLP status now has a `state` field (`enforcing`, `no_policy`, `disabled_local`, `disabled_server`, `idle`), so a device that isn't enforcing no longer looks like one whose helper failed to start (#299).
+
+### Fixed
+
+- Clipboard DLP could stay off on macOS after a self-update until the user logged out: a helper whose job launchd had loaded but wasn't running was taken as started, and a failed restart (`launchctl kickstart -k` timing out) wasn't retried as a restart. The agent now checks that the helper runs and starts it if not, keeps retrying a failed restart, and falls back to unloading and reloading the job when `kickstart -k` fails. On macOS and Linux, sessions without a connected helper are now reported as `starting`, `restarting` or `start_failed` with `last_error`, as on Windows, and the clipboard capability says why it isn't covered: `dlp_not_enforcing`, `helper_not_connected` or, only when nobody is logged in, `no_user_session` (#299).
 
 ## [v4.0.1] - 2026-10-29
 

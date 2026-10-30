@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -34,17 +35,37 @@ type agentSupervisor struct {
 	agents userAgents
 	poll   time.Duration
 
+	// label names a user for the status: its account name and session id
+	// (the uid on macOS, where Users returns uids).
+	label func(user string) (name, sessionID string)
+
 	mu        sync.Mutex
 	running   bool
 	stopCh    chan struct{}
 	loopWG    sync.WaitGroup
 	installed bool
-	restarted bool            // first start this service run replaces old helpers
-	started   map[string]bool // users whose helper we started
+	firstPass bool                  // the first pass of this service run hasn't finished
+	users     map[string]*agentUser // users with a graphical session, by Users() key
+	setupErr  string                // why Install or Users last failed ("" when it didn't)
+}
+
+// agentUser is what the supervisor did for one user's helper.
+type agentUser struct {
+	state   string // stateStarting, stateRestarting or stateFailed
+	lastErr string // the Start error while state is stateFailed
+	// restart: the next Start must replace a running helper. Set for every
+	// user on the first pass (the old one may run the binary from before a
+	// self-update) and kept until a restart succeeds.
+	restart bool
 }
 
 func newAgentSupervisor(hub *Hub, a userAgents) *agentSupervisor {
-	return &agentSupervisor{Hub: hub, agents: a, poll: 30 * time.Second, started: map[string]bool{}}
+	return &agentSupervisor{
+		Hub: hub, agents: a, poll: 30 * time.Second,
+		label:     func(u string) (string, string) { return u, "" },
+		firstPass: true,
+		users:     map[string]*agentUser{},
+	}
 }
 
 // Apply pushes p to the helpers and makes sure every graphical session has
@@ -79,13 +100,14 @@ func (s *agentSupervisor) loop(stop chan struct{}) {
 // reconcile installs the definition and starts helpers for sessions that
 // don't have one yet. New logins also start it by themselves (the
 // definition is installed globally); this covers sessions that already
-// existed.
+// existed, and retries a start that failed.
 func (s *agentSupervisor) reconcile() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.installed {
 		if err := s.agents.Install(); err != nil {
 			log.Printf("DLP: install session helper definition: %v", err)
+			s.setupErr = "install session helper definition: " + err.Error()
 			return
 		}
 		s.installed = true
@@ -93,26 +115,90 @@ func (s *agentSupervisor) reconcile() {
 	users, err := s.agents.Users()
 	if err != nil {
 		log.Printf("DLP: list graphical sessions: %v", err)
+		s.setupErr = "list graphical sessions: " + err.Error()
 		return
 	}
+	s.setupErr = ""
+	connected := s.connected()
 	present := map[string]bool{}
 	for _, u := range users {
 		present[u] = true
-		if s.started[u] {
+		au := s.users[u]
+		if au == nil {
+			au = &agentUser{restart: s.firstPass}
+			s.users[u] = au
+		} else if au.state != stateFailed && s.isConnected(connected, u) {
 			continue
 		}
-		if err := s.agents.Start(u, !s.restarted); err != nil {
+		// Not connected (yet): Start again. It does nothing to a helper
+		// that is running, and starts one that launchd/systemd loaded but
+		// doesn't run (e.g. it exited cleanly when the old service stopped).
+		if err := s.agents.Start(u, au.restart); err != nil {
 			log.Printf("DLP: start session helper for %s: %v", u, err)
+			au.state, au.lastErr = stateFailed, err.Error()
+			continue // au.restart stays: the next pass tries the same again
+		}
+		au.state, au.lastErr = stateStarting, ""
+		if au.restart {
+			au.state = stateRestarting
+		}
+		au.restart = false
+	}
+	s.firstPass = false
+	for u := range s.users {
+		if !present[u] {
+			delete(s.users, u) // logged out; a new login starts it again
+		}
+	}
+}
+
+// Sessions reports the connected helpers, plus each graphical session whose
+// helper hasn't connected: "starting" / "restarting" after a successful
+// Start, "start_failed" with the error after a failed one. When the
+// definition can't be installed or the sessions can't be listed, one entry
+// carries that error.
+func (s *agentSupervisor) Sessions() []Info {
+	out := s.Hub.Sessions()
+	connected := connectedSet(out)
+	s.mu.Lock()
+	if s.setupErr != "" {
+		out = append(out, Info{User: "all sessions", State: stateFailed, LastError: s.setupErr})
+	}
+	for u, au := range s.users {
+		if s.isConnected(connected, u) {
 			continue
 		}
-		s.started[u] = true
+		name, sid := s.label(u)
+		in := Info{User: name, State: au.state, SessionID: sid, LastError: au.lastErr}
+		if in.LastError == "" {
+			// Started, but the hub refused it or it left before hello.
+			in.LastError = s.lastError(sid)
+		}
+		out = append(out, in)
 	}
-	s.restarted = true
-	for u := range s.started {
-		if !present[u] {
-			delete(s.started, u) // logged out; a new login starts it again
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
+	return out
+}
+
+// connected returns the users and session ids with a connected helper.
+func (s *agentSupervisor) connected() map[string]bool { return connectedSet(s.Hub.Sessions()) }
+
+func connectedSet(sessions []Info) map[string]bool {
+	set := map[string]bool{}
+	for _, in := range sessions {
+		set[in.User] = true
+		if in.SessionID != "" {
+			set[in.SessionID] = true
 		}
 	}
+	return set
+}
+
+// isConnected reports whether user (a Users() key) has a connected helper.
+func (s *agentSupervisor) isConnected(connected map[string]bool, user string) bool {
+	name, sid := s.label(user)
+	return connected[user] || connected[name] || (sid != "" && connected[sid])
 }
 
 // Stop tells helpers to exit, stops their agents and uninstalls the
@@ -143,6 +229,7 @@ func (s *agentSupervisor) Stop() {
 		log.Printf("DLP: remove session helper definition: %v", err)
 	}
 	s.installed = false
-	s.started = map[string]bool{}
-	s.restarted = false
+	s.users = map[string]*agentUser{}
+	s.setupErr = ""
+	s.firstPass = true
 }

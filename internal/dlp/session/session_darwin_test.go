@@ -32,6 +32,8 @@ func TestLaunchdAgents(t *testing.T) {
 			return []byte("alice console Oct 28 09:12\nbob console Oct 28 10:01\nbob ttys000 Oct 28 10:02\n"), nil
 		case len(args) > 1 && args[0] == "print" && !loaded[args[1]]:
 			return nil, errors.New("not loaded")
+		case len(args) > 1 && args[0] == "print":
+			return []byte(printRunning), nil
 		}
 		return nil, nil
 	}
@@ -74,6 +76,90 @@ func TestLaunchdAgents(t *testing.T) {
 	}
 	if _, err := os.Stat(agentPlist); !os.IsNotExist(err) {
 		t.Error("plist left after Uninstall")
+	}
+}
+
+// launchctl print output (abridged) for a running and a stopped job.
+const (
+	printRunning = "gui/501/com.sentinelgo.dlp = {\n\tactive count = 1\n\tpath = /Library/LaunchAgents/com.sentinelgo.dlp.plist\n\tstate = running\n\n\tendpoints = {\n\t\t\"x\" = {\n\t\t\tstate = active\n\t\t}\n\t}\n\tpid = 4242\n}\n"
+	printStopped = "gui/501/com.sentinelgo.dlp = {\n\tactive count = 0\n\tpath = /Library/LaunchAgents/com.sentinelgo.dlp.plist\n\tstate = not running\n\n\tendpoints = {\n\t\t\"x\" = {\n\t\t\tstate = running\n\t\t}\n\t}\n\truns = 1\n\tlast exit code = 0\n}\n"
+)
+
+func TestJobRunning(t *testing.T) {
+	if !jobRunning([]byte(printRunning)) {
+		t.Error("running job reported as not running")
+	}
+	if jobRunning([]byte(printStopped)) {
+		t.Error("stopped job reported as running (nested state must not count)")
+	}
+	if jobRunning(nil) {
+		t.Error("empty output reported as running")
+	}
+}
+
+// Start makes sure the helper runs, not only that its job is loaded (#299).
+func TestLaunchdAgentsStart(t *testing.T) {
+	const target = "gui/501/" + agentLabel
+	bootstrap := "launchctl bootstrap gui/501 "
+	for _, tc := range []struct {
+		name    string
+		print   string // "" = not loaded
+		restart bool
+		fail    string // a call prefix that fails
+		want    []string
+		wantErr bool
+	}{
+		{name: "not loaded: bootstrap", restart: false, want: []string{"launchctl print " + target, bootstrap}},
+		{name: "loaded, not running: kickstart without -k", print: printStopped, want: []string{"launchctl print " + target, "launchctl kickstart " + target}},
+		{name: "loaded, not running, restart: kickstart", print: printStopped, restart: true, want: []string{"launchctl print " + target, "launchctl kickstart " + target}},
+		{name: "running, no restart: nothing", print: printRunning, want: []string{"launchctl print " + target}},
+		{name: "running, restart: kickstart -k", print: printRunning, restart: true, want: []string{"launchctl print " + target, "launchctl kickstart -k " + target}},
+		{name: "kickstart fails: error", print: printStopped, fail: "launchctl kickstart", want: []string{"launchctl print " + target, "launchctl kickstart " + target}, wantErr: true},
+		{name: "kickstart -k fails: bootout then bootstrap", print: printRunning, restart: true, fail: "launchctl kickstart -k",
+			want: []string{"launchctl print " + target, "launchctl kickstart -k " + target, "launchctl bootout " + target, bootstrap}},
+		{name: "kickstart -k and bootstrap fail: error", print: printRunning, restart: true, fail: "launchctl b",
+			want: []string{"launchctl print " + target, "launchctl kickstart -k " + target, "launchctl bootout " + target}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			prevRun := runCmd
+			t.Cleanup(func() { runCmd = prevRun })
+			runCmd = func(name string, args ...string) ([]byte, error) {
+				call := name + " " + strings.Join(args, " ")
+				calls = append(calls, call)
+				if args[0] == "print" {
+					if tc.print == "" {
+						return []byte("Could not find service"), errors.New("exit status 113")
+					}
+					return []byte(tc.print), nil
+				}
+				if tc.fail == "launchctl kickstart -k" && args[0] == "kickstart" && len(args) > 1 && args[1] == "-k" {
+					return nil, errors.New("signal: killed")
+				}
+				if tc.fail == "launchctl b" && (strings.HasPrefix(call, "launchctl kickstart -k") || args[0] == "bootstrap") {
+					return nil, errors.New("exit status 5")
+				}
+				if tc.fail == "launchctl kickstart" && args[0] == "kickstart" {
+					return nil, errors.New("exit status 5")
+				}
+				return nil, nil
+			}
+			err := (&launchdAgents{}).Start("501", tc.restart)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Start err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if len(calls) < len(tc.want) {
+				t.Fatalf("calls = %v, want %v", calls, tc.want)
+			}
+			for i, w := range tc.want {
+				if !strings.HasPrefix(calls[i], w) {
+					t.Errorf("call %d = %q, want %q (all: %v)", i, calls[i], w, calls)
+				}
+			}
+			if len(calls) != len(tc.want) && !tc.wantErr {
+				t.Errorf("calls = %v, want %v", calls, tc.want)
+			}
+		})
 	}
 }
 
