@@ -117,6 +117,9 @@ X-GNOME-Autostart-enabled=true
 }
 
 func (a *systemdAgents) Install() error {
+	if err := userExecutable(a.exe); err != nil {
+		return err
+	}
 	a.unitPath = ""
 	for _, dir := range unitDirs {
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {

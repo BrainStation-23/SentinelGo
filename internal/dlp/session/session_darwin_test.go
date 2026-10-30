@@ -19,8 +19,9 @@ func TestConsoleUsers(t *testing.T) {
 func TestLaunchdAgents(t *testing.T) {
 	var calls []string
 	loaded := map[string]bool{"gui/502/" + agentLabel: true}
-	prevRun, prevPlist, prevLookup := runCmd, agentPlist, lookupUID
+	prevRun, prevPlist, prevLookup, prevExec := runCmd, agentPlist, lookupUID, userExecutable
 	agentPlist = filepath.Join(t.TempDir(), agentLabel+".plist")
+	userExecutable = func(string) error { return nil }
 	lookupUID = func(name string) (string, error) {
 		return map[string]string{"alice": "501", "bob": "502"}[name], nil
 	}
@@ -37,7 +38,7 @@ func TestLaunchdAgents(t *testing.T) {
 		}
 		return nil, nil
 	}
-	t.Cleanup(func() { runCmd, agentPlist, lookupUID = prevRun, prevPlist, prevLookup })
+	t.Cleanup(func() { runCmd, agentPlist, lookupUID, userExecutable = prevRun, prevPlist, prevLookup, prevExec })
 
 	a := &launchdAgents{exe: "/opt/sentinelgo/sentinelgo"}
 	if err := a.Install(); err != nil {
