@@ -91,10 +91,10 @@ func (ls *linuxService) Install() error {
 	// Running as root (required for service installation) means os.Chmod and
 	// os.Chown succeed without additional privilege escalation.
 	installDir := filepath.Dir(exePath)
-	if err := os.Chmod(installDir, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user
+	if err := os.Chmod(installDir, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user NOSONAR
 		log.Printf("warning: failed to set permissions on install directory %s: %v", installDir, err)
 	}
-	if err := os.Chmod(exePath, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user
+	if err := os.Chmod(exePath, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user NOSONAR
 		log.Printf("warning: failed to set permissions on agent binary %s: %v", exePath, err)
 	}
 

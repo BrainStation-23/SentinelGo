@@ -35,7 +35,7 @@ func grantUserExec(exe string) error {
 		if mode&0o005 == 0o005 {
 			continue
 		}
-		if err := os.Chmod(p, mode|0o005); err != nil { // #nosec G302 -- r-x for session users, who run this binary as their DLP helper; no write bits
+		if err := os.Chmod(p, mode|0o005); err != nil { // #nosec G302 -- r-x for session users, who run this binary as their DLP helper; no write bits NOSONAR
 			return fmt.Errorf("%s (mode %04o) is not accessible to session users, so their DLP helper can't run: %w", p, mode, err)
 		}
 	}
@@ -54,7 +54,7 @@ func userCanReach(exe string) error {
 		if mode := fi.Mode().Perm(); mode&need != need {
 			return fmt.Errorf("%s (mode %04o) is not accessible to session users, so their DLP helper can't run", p, mode)
 		}
-		if parent := filepath.Dir(p); parent == p {
+		if filepath.Dir(p) == p {
 			return nil
 		}
 		need = 0o001 // directories: traverse
