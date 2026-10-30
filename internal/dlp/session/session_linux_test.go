@@ -114,3 +114,15 @@ func FuzzLoginctlParsers(f *testing.F) {
 		}
 	})
 }
+
+func TestSystemdAgents_InstallNotExecutable(t *testing.T) {
+	fakeSystem(t, nil)
+	userExecutable = func(string) error { return errors.New("not accessible") }
+	a := &systemdAgents{exe: "/opt/sentinelgo/sentinelgo"}
+	if err := a.Install(); err == nil {
+		t.Fatal("Install = nil, want the permission error")
+	}
+	if _, err := os.Stat(filepath.Join(unitDirs[1], unitName)); !os.IsNotExist(err) {
+		t.Errorf("unit written although no user can run the binary (%v)", err)
+	}
+}

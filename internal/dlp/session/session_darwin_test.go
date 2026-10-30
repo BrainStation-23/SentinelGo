@@ -175,3 +175,18 @@ func FuzzConsoleUsers(f *testing.F) {
 		}
 	})
 }
+
+func TestLaunchdAgents_InstallNotExecutable(t *testing.T) {
+	prevPlist, prevExec := agentPlist, userExecutable
+	agentPlist = filepath.Join(t.TempDir(), agentLabel+".plist")
+	userExecutable = func(string) error { return errors.New("not accessible") }
+	t.Cleanup(func() { agentPlist, userExecutable = prevPlist, prevExec })
+
+	a := &launchdAgents{exe: "/opt/sentinelgo/sentinelgo"}
+	if err := a.Install(); err == nil {
+		t.Fatal("Install = nil, want the permission error")
+	}
+	if _, err := os.Stat(agentPlist); !os.IsNotExist(err) {
+		t.Errorf("plist written although no user can run the binary (%v)", err)
+	}
+}
