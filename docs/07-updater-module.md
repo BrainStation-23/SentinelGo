@@ -11,9 +11,18 @@
 
 The updater (`internal/updater/`) installs newer SentinelGo binaries
 automatically. Release **discovery and download** go through Supabase
-(RPC + Storage). **GitHub Actions** only builds, ed25519-signs, and
+(RPC + Storage). **GitHub Actions** builds, ed25519-signs, and
 publishes release assets; the running agent does **not** call the
 GitHub Releases API.
+
+A GitHub Release reaches agents only once SentinelOps has **mirrored** it
+into the `agent-releases` bucket and **marked it latest**
+(`agent_release_config.latest_version`). `get_latest_agent_release` returns
+that version and nothing newer, so until then agents report
+`Already up to date`. The release workflow's **Roll out to agents** job
+(`scripts/rollout-release.sh`) does both steps; without its secrets an admin
+does them in the console with Settings → Agents → **Mirror & mark vX as
+latest**. See [`RELEASE.md`](../RELEASE.md#5-rolling-out-to-agents).
 
 Package layout:
 

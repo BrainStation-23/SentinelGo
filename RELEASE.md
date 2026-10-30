@@ -83,10 +83,44 @@ The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.ym
 5. Creates build provenance and SBOM attestations.
 6. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
    description, plus all of the artifacts below.
+7. Rolls the release out to agents (the **Roll out to agents** job, see below).
 
-The backend syncs release assets from GitHub Releases, and agents pick up the
-new version through the updater, which verifies the checksum and signature
-before replacing itself.
+### 5. Rolling out to agents
+
+Publishing the GitHub Release does **not** update any agent. Agents never read
+GitHub: the updater asks SentinelOps (`get_latest_agent_release`) and installs
+only the version SentinelOps marks as latest, downloaded from its own Storage
+mirror (`agent-releases`). Until that version changes, agents log
+`Already up to date (running v3.3.0, latest v3.3.0)` and stay where they are
+(#306).
+
+The **Roll out to agents** job does what Settings → Agents → **Mirror & mark
+v3.4.0 as latest** does in the console, using
+[`scripts/rollout-release.sh`](scripts/rollout-release.sh):
+
+1. signs in to SentinelOps as the release user,
+2. mirrors the GitHub Release into the `agent-releases` bucket,
+3. marks it as the latest agent version (`sync_latest_agent_version`),
+4. checks that `get_latest_agent_release` now offers it on every platform.
+
+Agents then update at their next check: on restart, or within
+`auto_update_interval` (1 hour by default, plus up to 5 minutes of jitter). An
+`agent-update` task updates a device at once.
+
+It needs these repository (or `agent-rollout` environment) secrets:
+
+| Secret | Value |
+|---|---|
+| `SENTINELOPS_SUPABASE_URL` | The SentinelOps Supabase URL |
+| `SENTINELOPS_SUPABASE_ANON_KEY` | Its anon key |
+| `SENTINELOPS_RELEASE_EMAIL` | A SentinelOps user that may manage agent releases (an administrator), used only by this job |
+| `SENTINELOPS_RELEASE_PASSWORD` | That user's password |
+
+Without them the job passes with a warning, and an admin has to click **Mirror
+& mark v3.4.0 as latest** by hand. To approve each rollout before it happens,
+add required reviewers to the `agent-rollout` environment (Settings →
+Environments); the job then waits for approval after the GitHub Release is
+published.
 
 ## Release assets
 
@@ -159,9 +193,16 @@ only reproduce on a GitHub Actions runner.
 - **Verify CI passed fails.** CI on the tagged commit failed or never ran. If
   the failure was flaky, re-run the failed CI jobs on `main`, then re-run the
   release workflow. Otherwise fix it in a PR and release the next version.
-- **The release workflow fails after tagging.** Fix the cause in a PR, delete
+- **The release workflow fails after tagging** (before the GitHub Release is
+  published; for **Roll out to agents**, see below). Fix the cause in a PR, delete
   the tag (`git push --delete origin vX.Y.Z`) and run **Tag Release** manually
   to tag `main` again. Or release the next patch version instead.
+- **Agents don't update to the new release.** Check the **Roll out to agents**
+  job. If it warned that the secrets are missing, or was skipped, click
+  **Mirror & mark vX.Y.Z as latest** in SentinelOps, Settings → Agents. If it
+  failed, the GitHub Release is fine: don't delete the tag. Fix the cause (for
+  example a changed password, or the mirror error shown in the log and on the
+  Settings → Agents card) and re-run the job.
 - **A published release is broken.** Don't move or reuse its tag. Release a new
   patch version with the fix, and describe the problem in that version's
   changelog section.

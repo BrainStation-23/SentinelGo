@@ -276,3 +276,40 @@ jobs:
             installation-doc/INSTALLATION.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 5. Roll out to agents ──────────────────────────────────────────────────
+  # Agents never update from GitHub: they install only the version SentinelOps
+  # marks as latest, from its own Storage mirror (get_latest_agent_release).
+  # This does what Settings -> Agents -> "Mirror & mark vX as latest" does, so
+  # a release reaches devices without anyone remembering that step (#306).
+  # Runs in the `agent-rollout` environment: add required reviewers to it in
+  # Settings -> Environments to approve each rollout by hand. Without the
+  # SENTINELOPS_* secrets it only warns. If it fails, the GitHub Release is
+  # fine: fix the cause and re-run this job, don't delete the tag.
+  rollout:
+    name: Roll out to agents
+    runs-on: ubuntu-latest
+    needs: release
+    timeout-minutes: 30
+    environment: agent-rollout
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Read the release's publish time
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "published_at=$(gh release view "${GITHUB_REF#refs/tags/}" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)" >> "$GITHUB_OUTPUT"
+
+      - name: Mirror the release into SentinelOps and mark it latest
+        env:
+          SENTINELOPS_SUPABASE_URL: ${{ secrets.SENTINELOPS_SUPABASE_URL }}
+          SENTINELOPS_SUPABASE_ANON_KEY: ${{ secrets.SENTINELOPS_SUPABASE_ANON_KEY }}
+          SENTINELOPS_RELEASE_EMAIL: ${{ secrets.SENTINELOPS_RELEASE_EMAIL }}
+          SENTINELOPS_RELEASE_PASSWORD: ${{ secrets.SENTINELOPS_RELEASE_PASSWORD }}
+          PUBLISHED_AT: ${{ steps.release.outputs.published_at }}
+        run: scripts/rollout-release.sh "${GITHUB_REF#refs/tags/}"
