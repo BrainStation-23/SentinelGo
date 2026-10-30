@@ -250,16 +250,16 @@ setup_directories() {
     #
     # Security model: root owns the install directory and binary so that the
     # service account ($SERVICE_USER) cannot replace its own executable and
-    # escalate to root. chmod 750 on the directory prevents unprivileged users
-    # from listing or traversing it; chmod 750 on the binary allows root to
-    # execute it while denying write access to everyone else. The service user
-    # is added to the sentinelgo group (created below) so it can read the
-    # binary — no world-read or world-write bits are set.
+    # escalate to root. chmod 755 on both: only root can write them, and every
+    # desktop user can run the binary, which DLP needs (each user's
+    # clipboard helper, `sentinelgo dlp-session`, runs as that user; with 750
+    # it can't start, #308). Secrets live in the config directory, which the
+    # agent keeps at 700.
     if [[ "$os" == "macos" ]]; then
-        # macOS: root owns install dir and binary; group wheel can read.
+        # macOS: root owns install dir and binary; everyone can read/execute.
         chown -R root:wheel "$INSTALL_DIR" 2>/dev/null || true
-        chmod 750 "$INSTALL_DIR" 2>/dev/null || true
-        chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        chmod 755 "$INSTALL_DIR" 2>/dev/null || true
+        chmod 755 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         # Config dir is owned by root but accessible to the service group only.
         chmod 750 "$CONFIG_DIR" 2>/dev/null || true
         # Remove download quarantine flag and register with Gatekeeper so macOS
@@ -273,16 +273,15 @@ setup_directories() {
         echo "[INFO] Skipping ownership change on Windows"
     else
         # Linux: root owns install dir and binary so the service user cannot
-        # replace them. Create a dedicated group for the service account so it
-        # can execute the binary without world-execute permissions.
+        # replace them.
         groupadd -f "$SERVICE_USER" 2>/dev/null || true
         if id "$SERVICE_USER" &>/dev/null; then
             usermod -aG "$SERVICE_USER" "$SERVICE_USER" 2>/dev/null || true
         fi
         chown -R root:"$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-        # 750: root rwx, service group r-x, others ---
-        chmod 750 "$INSTALL_DIR" 2>/dev/null || true
-        chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        # 755: root rwx, everyone r-x (desktop users run the DLP helper)
+        chmod 755 "$INSTALL_DIR" 2>/dev/null || true
+        chmod 755 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         # Config dir: root owns it, group readable (agent writes via root
         # service context; 750 prevents unprivileged reads of secrets).
         chown -R root:"$SERVICE_USER" "$CONFIG_DIR" 2>/dev/null || true
@@ -568,16 +567,16 @@ fix_service() {
     # Check and fix permissions
     print_status "Fixing permissions..."
     if [[ "$os" != "$OS_WINDOWS" ]]; then
-        # Re-assert root ownership and restrictive permissions on the install
-        # directory and binary (mirrors the hardening applied during install).
+        # Re-assert root ownership and the install permissions on the install
+        # directory and binary (mirrors setup_directories).
         if [[ "$os" == "macos" ]]; then
             chown -R root:wheel "$INSTALL_DIR" 2>/dev/null || true
-            chmod 750 "$INSTALL_DIR" 2>/dev/null || true
-            chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+            chmod 755 "$INSTALL_DIR" 2>/dev/null || true
+            chmod 755 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         else
             chown -R root:"$SERVICE_USER" "$INSTALL_DIR" 2>/dev/null || true
-            chmod 750 "$INSTALL_DIR" 2>/dev/null || true
-            chmod 750 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+            chmod 755 "$INSTALL_DIR" 2>/dev/null || true
+            chmod 755 "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
         fi
     fi
     
@@ -649,12 +648,12 @@ fix_service() {
             if [[ -n "$repair_src" ]]; then
                 verify_binary "$repair_src"
                 cp "$repair_src" "$INSTALL_DIR/$BINARY_NAME"
-                chmod 750 "$INSTALL_DIR/$BINARY_NAME"
+                chmod 755 "$INSTALL_DIR/$BINARY_NAME"
                 chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed, trying again..."
             elif [[ -f "./build/linux/sentinelgo-linux-amd64" ]]; then
                 cp "./build/linux/sentinelgo-linux-amd64" "$INSTALL_DIR/$BINARY_NAME"
-                chmod 750 "$INSTALL_DIR/$BINARY_NAME"
+                chmod 755 "$INSTALL_DIR/$BINARY_NAME"
                 chown root:"$SERVICE_USER" "$INSTALL_DIR/$BINARY_NAME"
                 print_status "Binary installed from build/, trying again..."
             else

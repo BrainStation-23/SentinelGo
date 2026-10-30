@@ -4,4 +4,6 @@ package notify
 
 import "errors"
 
-func platformSend(string, string) error { return errors.New("notifications are not supported here") }
+func platformSend(string, string, string) error {
+	return errors.New("notifications are not supported here")
+}

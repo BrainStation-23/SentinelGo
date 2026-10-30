@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -27,6 +28,13 @@ var errUntrusted = errors.New("untrusted endpoint")
 // owner; tests replace it.
 var trustServer = ipc.TrustedServer
 
+// refusedLinger bounds how long a helper that refused an endpoint waits for
+// it to hang up (a var for tests), and refusedDrain how much it reads (and
+// discards) meanwhile.
+var refusedLinger = 2 * time.Second
+
+const refusedDrain = 64 << 10
+
 // maxBufferedEvents bounds the events a helper holds while the service is
 // unreachable; the oldest are dropped beyond it.
 const maxBufferedEvents = 100
@@ -36,6 +44,9 @@ type HelperOptions struct {
 	Addr     string            // the service endpoint (ipc.DefaultAddress)
 	Version  string            // agent version, sent in hello
 	Channels []channel.Channel // what this helper watches
+	// Notify shows an admin's desktop notification and waits for it; nil
+	// means this helper can't show one.
+	Notify func(title, message, level string) error
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -50,9 +61,10 @@ func defaultBackoff(n int) time.Duration {
 // RunHelper is `sentinelgo dlp-session`: it connects to the service, enforces
 // the policy it receives with the configured channels, and sends events back.
 // When the service is unreachable it keeps enforcing the last policy and
-// reconnects with backoff. It returns nil when the service says stop, when
-// the policy turns DLP off, or when ctx ends, and an error after
-// maxUntrusted untrusted endpoints in a row.
+// reconnects with backoff. Without a DLP policy it stays connected with its
+// channels stopped, to show the service's notifications. It returns nil when
+// the service says stop or when ctx ends, and an error after maxUntrusted
+// untrusted endpoints in a row.
 func RunHelper(ctx context.Context, o HelperOptions) error {
 	if o.Backoff == nil {
 		o.Backoff = defaultBackoff
@@ -107,6 +119,7 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 	defer func() { _ = c.Close() }()
 	if id, err := ipc.ServerIdentity(c); err != nil || !trustServer(id) {
 		log.Printf("DLP helper: refusing endpoint %s served by %s (%v)", r.o.Addr, id.User, err)
+		lingerRefused(c)
 		return false, errUntrusted
 	}
 
@@ -139,9 +152,12 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 			log.Printf("DLP helper: service asked to stop")
 			return true, nil
 		case ipc.TypePolicy:
-			if r.apply(ctx, m.Policy) {
-				log.Printf("DLP helper: DLP is off; exiting")
-				return true, nil
+			r.apply(ctx, m.Policy)
+		case ipc.TypeClear:
+			r.clear()
+		case ipc.TypeNotify:
+			if m.Notify != nil {
+				go r.notify(*m.Notify)
 			}
 		}
 	}
@@ -155,21 +171,22 @@ func (r *helperRuntime) capabilities() map[string]string {
 	return caps
 }
 
-// apply enforces a new bundle. It returns true when the bundle turns DLP off.
-func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) (off bool) {
+// apply enforces a new bundle; one that turns DLP off stops the channels.
+func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) {
 	b, err := policy.Decode(raw)
 	if err != nil {
 		log.Printf("DLP helper: ignoring policy: %v", err)
-		return false
+		return
 	}
 	if !b.Enabled {
-		return true
+		r.clear()
+		return
 	}
 	r.mu.Lock()
 	same := b.Version == r.version
 	r.mu.Unlock()
 	if same {
-		return false
+		return
 	}
 	c := policy.Compile(b)
 	r.stopChannels()
@@ -199,7 +216,32 @@ func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) (off boo
 		state = "idle"
 	}
 	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: state, Capabilities: r.capabilities()}})
-	return false
+}
+
+// clear stops the channels: no DLP policy. The helper stays connected.
+func (r *helperRuntime) clear() {
+	r.stopChannels()
+	r.mu.Lock()
+	had := r.version != ""
+	r.version = ""
+	r.mu.Unlock()
+	if had {
+		log.Printf("DLP helper: no DLP policy; channels stopped")
+	}
+	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: "idle", Capabilities: r.capabilities()}})
+}
+
+// notify shows an admin's notification and answers with the result. The
+// text is never logged; the error carries the tool and exit status only.
+func (r *helperRuntime) notify(n ipc.Notify) {
+	res := &ipc.NotifyResult{ID: n.ID}
+	if r.o.Notify == nil {
+		res.Error = "this helper can't show notifications"
+	} else if err := r.o.Notify(n.Title, n.Message, n.Level); err != nil {
+		log.Printf("Session helper: notification %s failed: %v", n.ID, err)
+		res.Error = err.Error()
+	}
+	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
 }
 
 func (r *helperRuntime) stopChannels() {
@@ -248,4 +290,22 @@ func (r *helperRuntime) detach() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.conn = nil
+}
+
+// lingerRefused ends a refused connection without sending anything: it
+// closes the write side, so the service reads EOF where the hello would be,
+// and waits for the service to hang up. Closing outright races the service
+// reading the peer's credentials, which macOS can't report once the socket
+// is disconnected; the service then can't record why this helper never
+// connected. An endpoint that doesn't hang up is left after refusedLinger.
+func lingerRefused(c ipc.Conn) {
+	hc, ok := c.(interface {
+		CloseWrite() error
+		SetReadDeadline(time.Time) error
+	})
+	if !ok || hc.CloseWrite() != nil {
+		return
+	}
+	_ = hc.SetReadDeadline(time.Now().Add(refusedLinger))
+	_, _ = io.Copy(io.Discard, io.LimitReader(c, refusedDrain))
 }

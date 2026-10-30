@@ -14,6 +14,7 @@ import (
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/channel/clipboard"
 	"sentinelgo/internal/dlp/ipc"
+	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/session"
 )
 
@@ -24,8 +25,9 @@ const DLPSessionCommand = "dlp-session"
 // maxHelperLogBytes is where the helper log is rotated (one old copy kept).
 const maxHelperLogBytes = 5 << 20
 
-// RunDLPSession runs the per-user DLP session helper until the service tells
-// it to stop or it is signalled. It deliberately takes no process lock and
+// RunDLPSession runs the per-user session helper until the service tells it
+// to stop or it is signalled. It enforces DLP when there is a policy and
+// shows the admin's notifications (notify-user) either way. It deliberately takes no process lock and
 // reads no config.json (it holds no credentials), and logs to a per-user
 // file. Clipboard content is never logged.
 func RunDLPSession() int {
@@ -53,6 +55,7 @@ func RunDLPSession() int {
 		Addr:     ipc.DefaultAddress,
 		Version:  config.Version,
 		Channels: []channel.Channel{clipboard.New()},
+		Notify:   notify.Show,
 	})
 	if err != nil {
 		log.Printf("DLP helper stopped: %v", err)

@@ -13,12 +13,18 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clipboard DLP never started on macOS and Linux devices set up with `install.sh`: the installer (and, on Linux, the service install) made `/opt/sentinelgo` and the binary `0750`, but the per-user DLP helper runs as the signed-in user, who couldn't run it, so every session showed `start_failed` and the clipboard `helper_not_connected`. The installer now uses `0755` (root still owns both and is the only one who can write them; the config directory with the tokens is unchanged), and the service repairs existing installs on its own, adding read and execute for other users to the install directory and binary before it sets up the helpers. When a directory on the way is still closed to users, the session status says which one in `last_error` (#308).
+- On macOS, a helper that refused the service's endpoint could be reported without `last_error`: it closed the connection at once, and macOS can't give the service the peer's credentials once the socket is disconnected, so the service couldn't tell whose helper it was. The helper now closes only its sending side and waits up to 2 seconds for the service to hang up, still sending nothing, so the service records `helper disconnected before hello`. This also fixes the intermittent `TestHelperExitsAfterUntrustedEndpoints` failure on macOS CI.
+
 ## [v4.0.2] - 2026-10-30
 
 ### Added
 
 - Between full task polls, the agent asks every minute whether a task is queued for it (`agent_has_pending_tasks`, a read-only check) and fetches it at once. A command, an install or a DLP "Push now" now reaches the device within about a minute instead of at the next poll (5 minutes by default). Set `task_check_interval` in `config.json` to change it; a value at or above `task_polling_interval` turns it off. Against a server without the check, the agent keeps the regular poll and asks again an hour later.
 - The DLP status now has a `state` field (`enforcing`, `no_policy`, `disabled_local`, `disabled_server`, `idle`), so a device that isn't enforcing no longer looks like one whose helper failed to start (#299).
+- New native task `notify-user` (capability `desktop_notify_v1`): shows an admin's desktop notification to everyone signed in to the device, with a `title` (up to 64 characters), a `message` (up to 256) and a `level` (`info`, `warning` or `critical`). The task succeeds when at least one session shows it (`Shown to 2 sessions (alice, bob)`) and fails when nobody is signed in; the message isn't kept for later. To reach the user's desktop, the per-user session helper now runs whenever the agent runs, not only while DLP enforces; with DLP off it watches nothing and only shows notifications. Admin notifications aren't rate-limited like DLP's block notifications. The text is never logged (#301).
 
 ### Fixed
 

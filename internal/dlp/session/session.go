@@ -11,13 +11,15 @@ package session
 import (
 	"context"
 
+	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 )
 
 // Supervisor starts, updates and stops the session helpers.
 type Supervisor interface {
 	// Apply makes sure a helper runs in every interactive session and hands
-	// each one p. It is called again with every new policy.
+	// each one p. It is called again with every new policy. A nil p means no
+	// DLP policy: helpers run with their channels stopped.
 	Apply(ctx context.Context, p *policy.Compiled)
 	// Stop stops every helper. Safe to call when none are running.
 	Stop()
@@ -38,3 +40,25 @@ type Info struct {
 	// dropped before it said hello; only set while no helper is connected.
 	LastError string `json:"last_error,omitempty"`
 }
+
+// Service is the session helpers as the agent runs them: always, whether DLP
+// enforces or not, so an admin's notification (the notify-user task) reaches
+// the signed-in user. The agent starts it with Apply(ctx, nil) and stops it
+// at shutdown; DLP only sets the policy, through PolicyOnly.
+type Service interface {
+	Supervisor
+	// Notify shows n in every session with a connected helper and returns
+	// each one's answer.
+	Notify(ctx context.Context, n ipc.Notify) []NotifyResult
+}
+
+// PolicyOnly lets DLP's Manager set the policy on s without owning the
+// helpers: its Stop clears the policy (helpers stay, with their channels
+// stopped) instead of stopping them.
+func PolicyOnly(s Supervisor) Supervisor { return policyOnly{s} }
+
+type policyOnly struct{ s Supervisor }
+
+func (p policyOnly) Apply(ctx context.Context, c *policy.Compiled) { p.s.Apply(ctx, c) }
+func (p policyOnly) Stop()                                         { p.s.Apply(context.Background(), nil) }
+func (p policyOnly) Sessions() []Info                              { return p.s.Sessions() }

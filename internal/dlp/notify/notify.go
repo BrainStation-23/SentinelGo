@@ -1,10 +1,11 @@
 // Package notify shows the user a desktop notification when a DLP channel
-// blocks content. It runs in the session helper. Notifications go through
+// blocks content, or when an admin sends one (the notify-user task). It runs
+// in the session helper. Notifications go through
 // the desktop's own tools (PowerShell toast on Windows, osascript on macOS,
 // notify-send on Linux) with the text passed in environment variables or as
 // plain arguments, never inside a script or through a shell. Sending is
-// asynchronous and rate-limited; a failure to notify never affects
-// enforcement.
+// asynchronous and rate-limited for DLP (Notifier); a failure to notify never
+// affects enforcement. An admin's message (Show) is never rate-limited.
 package notify
 
 import (
@@ -28,8 +29,30 @@ type Notifier struct {
 	wg   sync.WaitGroup
 }
 
+// Levels for Show. DLP notifications have none.
+const (
+	LevelInfo     = "info"
+	LevelWarning  = "warning"
+	LevelCritical = "critical"
+)
+
 // New returns a Notifier for this platform.
-func New() *Notifier { return &Notifier{now: time.Now, send: platformSend} }
+func New() *Notifier {
+	return &Notifier{now: time.Now, send: func(title, body string) error { return platformSend(title, body, "") }}
+}
+
+// Show shows title and body at level (LevelInfo, LevelWarning or
+// LevelCritical; anything else is LevelInfo) and waits for the desktop tool.
+// Unlike Notifier it is not rate-limited: an admin's message must not be
+// dropped. The error names the tool and its exit status, never the text.
+func Show(title, body, level string) error {
+	switch level {
+	case LevelWarning, LevelCritical:
+	default:
+		level = LevelInfo
+	}
+	return platformSend(trim(title), trim(body), level)
+}
 
 // Notify shows title and body unless a notification went out less than
 // MinInterval ago. It doesn't wait for the notification.
