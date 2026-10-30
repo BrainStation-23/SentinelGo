@@ -493,14 +493,23 @@ func dlpEventSyncHandler(es *dlp.EventSync) scheduler.TaskHandler {
 	}
 }
 
-// dlpCapabilities reports what each DLP channel can do on this platform.
+// dlpCapabilities reports what each DLP channel can do, from the service's
+// view of DLP.
 //
 // The service has no user session or display, so this is only the fallback
-// for when no helper is connected; helpers report the real capability.
-func dlpCapabilities() map[string]string {
+// for when no helper is connected; helpers report the real capability. It
+// says why none is: DLP isn't enforcing, no helper has connected yet (the
+// sessions list says why), or there is no user session to run one in.
+func dlpCapabilities(snap dlp.Snapshot) map[string]string {
 	reason := "unsupported:no_user_session"
 	if runtime.GOOS == "linux" {
 		reason = "unsupported:no_graphical_session"
+	}
+	switch {
+	case snap.State != dlp.StateEnforcing:
+		reason = "unsupported:dlp_not_enforcing"
+	case len(snap.Sessions) > 0:
+		reason = "unsupported:helper_not_connected"
 	}
 	return map[string]string{policy.ChannelClipboard: reason}
 }

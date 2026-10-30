@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -69,7 +70,18 @@ func New(sink channel.EventSink) Supervisor {
 	if err != nil {
 		return &manualSupervisor{Hub: NewHub(ipc.DefaultAddress, sink)}
 	}
-	return newAgentSupervisor(NewHub(ipc.DefaultAddress, sink), &systemdAgents{exe: exe})
+	s := newAgentSupervisor(NewHub(ipc.DefaultAddress, sink), &systemdAgents{exe: exe})
+	s.label = labelUser
+	return s
+}
+
+// labelUser names a user for the status: the name, and the uid as the
+// session id (what the hub reports for a connected helper).
+func labelUser(name string) (string, string) {
+	if u, err := user.Lookup(name); err == nil {
+		return name, u.Uid
+	}
+	return name, ""
 }
 
 type systemdAgents struct {

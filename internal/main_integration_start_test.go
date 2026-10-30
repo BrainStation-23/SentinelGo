@@ -797,12 +797,26 @@ func TestDLPSyncNow(t *testing.T) {
 // Without a connected helper the service reports why the clipboard isn't
 // covered.
 func TestDLPCapabilitiesFallback(t *testing.T) {
-	got := dlpCapabilities()["clipboard"]
-	want := "unsupported:no_user_session"
+	noSession := "unsupported:no_user_session"
 	if runtime.GOOS == "linux" {
-		want = "unsupported:no_graphical_session"
+		noSession = "unsupported:no_graphical_session"
 	}
-	if got != want {
-		t.Errorf("clipboard capability = %q, want %q", got, want)
+	waiting := []session.Info{{User: "alice", State: "start_failed", LastError: "launchctl bootstrap: boom"}}
+	for _, tc := range []struct {
+		name string
+		snap dlp.Snapshot
+		want string
+	}{
+		{"enforcing, no users", dlp.Snapshot{State: dlp.StateEnforcing}, noSession},
+		{"enforcing, helper not connected", dlp.Snapshot{State: dlp.StateEnforcing, Sessions: waiting}, "unsupported:helper_not_connected"},
+		{"no policy", dlp.Snapshot{State: dlp.StateNoPolicy}, "unsupported:dlp_not_enforcing"},
+		{"disabled locally", dlp.Snapshot{State: dlp.StateDisabledLocal}, "unsupported:dlp_not_enforcing"},
+		{"disabled by server", dlp.Snapshot{State: dlp.StateDisabledServer}, "unsupported:dlp_not_enforcing"},
+		{"idle", dlp.Snapshot{State: dlp.StateIdle}, "unsupported:dlp_not_enforcing"},
+		{"stopped", dlp.Snapshot{State: dlp.StateStopped}, "unsupported:dlp_not_enforcing"},
+	} {
+		if got := dlpCapabilities(tc.snap)["clipboard"]; got != tc.want {
+			t.Errorf("%s: clipboard capability = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
