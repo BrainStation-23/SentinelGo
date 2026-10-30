@@ -109,6 +109,9 @@ func xmlEscape(s string) string {
 }
 
 func (a *launchdAgents) Install() error {
+	if err := userExecutable(a.exe); err != nil {
+		return err
+	}
 	content := plistFor(a.exe)
 	if old, err := os.ReadFile(agentPlist); err == nil && string(old) == content { // #nosec G304 -- fixed system path
 		return nil

@@ -12,7 +12,8 @@ import (
 func fakeSystem(t *testing.T, sessions map[string]string) *[]string {
 	t.Helper()
 	var calls []string
-	prevRun, prevDirs, prevAuto := runCmd, unitDirs, autostartFile
+	prevRun, prevDirs, prevAuto, prevExec := runCmd, unitDirs, autostartFile, userExecutable
+	userExecutable = func(string) error { return nil }
 	dir := t.TempDir()
 	unitDirs = []string{filepath.Join(dir, "lib-user"), filepath.Join(dir, "etc-user")}
 	autostartFile = filepath.Join(dir, "autostart", "sentinelgo-dlp.desktop")
@@ -34,7 +35,7 @@ func fakeSystem(t *testing.T, sessions map[string]string) *[]string {
 		}
 		return nil, nil
 	}
-	t.Cleanup(func() { runCmd, unitDirs, autostartFile = prevRun, prevDirs, prevAuto })
+	t.Cleanup(func() { runCmd, unitDirs, autostartFile, userExecutable = prevRun, prevDirs, prevAuto, prevExec })
 	return &calls
 }
 

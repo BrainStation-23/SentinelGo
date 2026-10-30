@@ -83,17 +83,18 @@ func (ls *linuxService) Install() error {
 	// cannot replace the executable and gain root via the service.
 	//
 	// Security model (mirrors install.sh):
-	//   - root owns everything; the sentinelgo group can read/execute.
-	//   - 0750 on the directory: others cannot list or traverse it.
-	//   - 0750 on the binary: others cannot read or execute it directly.
+	//   - root owns everything, so only root can write the directory or binary.
+	//   - 0755 on both: every desktop user runs this binary as their DLP
+	//     helper (sentinelgo dlp-session), so they need read and execute
+	//     (#308). Secrets stay in the config directory, which is 0700.
 	//
 	// Running as root (required for service installation) means os.Chmod and
 	// os.Chown succeed without additional privilege escalation.
 	installDir := filepath.Dir(exePath)
-	if err := os.Chmod(installDir, 0750); err != nil {
+	if err := os.Chmod(installDir, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user
 		log.Printf("warning: failed to set permissions on install directory %s: %v", installDir, err)
 	}
-	if err := os.Chmod(exePath, 0750); err != nil {
+	if err := os.Chmod(exePath, 0755); err != nil { // #nosec G302 -- DLP helpers run this binary as the desktop user
 		log.Printf("warning: failed to set permissions on agent binary %s: %v", exePath, err)
 	}
 
