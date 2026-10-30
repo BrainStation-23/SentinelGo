@@ -22,7 +22,7 @@ import (
 // is in a job object that kills it when the service exits, so a crash, a
 // stop or a self-update (which needs the .exe unlocked) never leaves helpers
 // running the old image.
-func New(sink channel.EventSink) Supervisor {
+func New(sink channel.EventSink) Service {
 	l, err := newWinLauncher()
 	if err != nil {
 		log.Printf("DLP: helper launcher unavailable (%v); helpers must be started by hand", err)

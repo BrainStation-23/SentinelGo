@@ -175,6 +175,46 @@ func TestSync_StatusReportsState(t *testing.T) {
 	}
 }
 
+// Helpers run while DLP is off too (for notify-user, #301): their reported
+// capability counts only while enforcing, or the device would claim the
+// clipboard is covered when it isn't.
+func TestSync_HelperCapabilitiesOnlyWhileEnforcing(t *testing.T) {
+	sup := &capsSupervisor{}
+	m := NewManager(true, nil, sup)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSyncer(&scriptedFetcher{}, policy.NewCache(filepath.Join(t.TempDir(), policy.CacheFileName)), m, "9.9.9",
+		func(Snapshot) map[string]string {
+			return map[string]string{"clipboard": "unsupported:dlp_not_enforcing"}
+		})
+	st, _ := s.status(m.Snapshot())
+	if st.State != StateNoPolicy || st.Capabilities["clipboard"] != "unsupported:dlp_not_enforcing" {
+		t.Errorf("not enforcing: state %s, clipboard %q", st.State, st.Capabilities["clipboard"])
+	}
+	m.Apply(newBundleT(t, bundleJSON("v1", true, 300)))
+	st, _ = s.status(m.Snapshot())
+	if st.State != StateEnforcing || st.Capabilities["clipboard"] != "supported" {
+		t.Errorf("enforcing: state %s, clipboard %q", st.State, st.Capabilities["clipboard"])
+	}
+}
+
+// capsSupervisor has one connected helper that supports the clipboard.
+type capsSupervisor struct{ fakeSupervisor }
+
+func (*capsSupervisor) Sessions() []session.Info {
+	return []session.Info{{User: "alice", State: "idle", Capabilities: map[string]string{"clipboard": "supported"}}}
+}
+
+func newBundleT(t *testing.T, raw []byte) *policy.Bundle {
+	t.Helper()
+	b, err := policy.Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestSync_KillSwitchSurvivesOfflineRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), policy.CacheFileName)
 	fx := newSyncFixture(t, path, newBundle(bundleJSON("v1", true, 300)), newBundle(bundleJSON("v2", false, 300)))

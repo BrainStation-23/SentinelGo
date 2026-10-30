@@ -185,7 +185,11 @@ func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 	if s.capabilities != nil {
 		st.Capabilities = s.capabilities(snap)
 	}
-	mergeHelperCapabilities(st.Capabilities, snap.Sessions)
+	if snap.State == StateEnforcing {
+		// Helpers also run while DLP is off (for notifications); then their
+		// capability doesn't mean the channel is covered.
+		mergeHelperCapabilities(st.Capabilities, snap.Sessions)
+	}
 	s.mu.Lock()
 	errs := append(append([]detect.CompileError{}, s.syncErrors...), snap.CompileErrors...)
 	s.mu.Unlock()

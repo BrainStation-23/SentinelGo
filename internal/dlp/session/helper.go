@@ -36,6 +36,9 @@ type HelperOptions struct {
 	Addr     string            // the service endpoint (ipc.DefaultAddress)
 	Version  string            // agent version, sent in hello
 	Channels []channel.Channel // what this helper watches
+	// Notify shows an admin's desktop notification and waits for it; nil
+	// means this helper can't show one.
+	Notify func(title, message, level string) error
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -50,9 +53,10 @@ func defaultBackoff(n int) time.Duration {
 // RunHelper is `sentinelgo dlp-session`: it connects to the service, enforces
 // the policy it receives with the configured channels, and sends events back.
 // When the service is unreachable it keeps enforcing the last policy and
-// reconnects with backoff. It returns nil when the service says stop, when
-// the policy turns DLP off, or when ctx ends, and an error after
-// maxUntrusted untrusted endpoints in a row.
+// reconnects with backoff. Without a DLP policy it stays connected with its
+// channels stopped, to show the service's notifications. It returns nil when
+// the service says stop or when ctx ends, and an error after maxUntrusted
+// untrusted endpoints in a row.
 func RunHelper(ctx context.Context, o HelperOptions) error {
 	if o.Backoff == nil {
 		o.Backoff = defaultBackoff
@@ -139,9 +143,12 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 			log.Printf("DLP helper: service asked to stop")
 			return true, nil
 		case ipc.TypePolicy:
-			if r.apply(ctx, m.Policy) {
-				log.Printf("DLP helper: DLP is off; exiting")
-				return true, nil
+			r.apply(ctx, m.Policy)
+		case ipc.TypeClear:
+			r.clear()
+		case ipc.TypeNotify:
+			if m.Notify != nil {
+				go r.notify(*m.Notify)
 			}
 		}
 	}
@@ -155,21 +162,22 @@ func (r *helperRuntime) capabilities() map[string]string {
 	return caps
 }
 
-// apply enforces a new bundle. It returns true when the bundle turns DLP off.
-func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) (off bool) {
+// apply enforces a new bundle; one that turns DLP off stops the channels.
+func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) {
 	b, err := policy.Decode(raw)
 	if err != nil {
 		log.Printf("DLP helper: ignoring policy: %v", err)
-		return false
+		return
 	}
 	if !b.Enabled {
-		return true
+		r.clear()
+		return
 	}
 	r.mu.Lock()
 	same := b.Version == r.version
 	r.mu.Unlock()
 	if same {
-		return false
+		return
 	}
 	c := policy.Compile(b)
 	r.stopChannels()
@@ -199,7 +207,32 @@ func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) (off boo
 		state = "idle"
 	}
 	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: state, Capabilities: r.capabilities()}})
-	return false
+}
+
+// clear stops the channels: no DLP policy. The helper stays connected.
+func (r *helperRuntime) clear() {
+	r.stopChannels()
+	r.mu.Lock()
+	had := r.version != ""
+	r.version = ""
+	r.mu.Unlock()
+	if had {
+		log.Printf("DLP helper: no DLP policy; channels stopped")
+	}
+	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: "idle", Capabilities: r.capabilities()}})
+}
+
+// notify shows an admin's notification and answers with the result. The
+// text is never logged; the error carries the tool and exit status only.
+func (r *helperRuntime) notify(n ipc.Notify) {
+	res := &ipc.NotifyResult{ID: n.ID}
+	if r.o.Notify == nil {
+		res.Error = "this helper can't show notifications"
+	} else if err := r.o.Notify(n.Title, n.Message, n.Level); err != nil {
+		log.Printf("Session helper: notification %s failed: %v", n.ID, err)
+		res.Error = err.Error()
+	}
+	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
 }
 
 func (r *helperRuntime) stopChannels() {

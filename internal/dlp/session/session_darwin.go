@@ -62,7 +62,7 @@ var lookupUID = func(name string) (string, error) {
 }
 
 // New returns the macOS supervisor.
-func New(sink channel.EventSink) Supervisor {
+func New(sink channel.EventSink) Service {
 	exe, err := os.Executable()
 	if err != nil {
 		return &manualSupervisor{Hub: NewHub(ipc.DefaultAddress, sink)}

@@ -9,7 +9,7 @@ import (
 
 // New returns the session supervisor for this platform. Helper events go to
 // sink. macOS and Linux get launchers in #265 / #267.
-func New(sink channel.EventSink) Supervisor {
+func New(sink channel.EventSink) Service {
 	return &manualSupervisor{Hub: NewHub(ipc.DefaultAddress, sink)}
 }
 

@@ -185,25 +185,175 @@ func crash(h *Hub) {
 	h.wg.Wait()
 }
 
-// A bundle with enabled:false makes the helper exit.
-func TestHelperExitsWhenDisabled(t *testing.T) {
+// fakeNotifier records what a helper was asked to show.
+type fakeNotifier struct {
+	mu    sync.Mutex
+	shown []string // "level|title|message"
+	err   error
+	block chan struct{} // when set, Notify waits for it
+}
+
+func (f *fakeNotifier) Notify(title, message, level string) error {
+	if f.block != nil {
+		<-f.block
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shown = append(f.shown, level+"|"+title+"|"+message)
+	return f.err
+}
+
+func (f *fakeNotifier) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.shown)
+}
+
+// startHelper runs a helper against addr until the test ends.
+func startHelper(t *testing.T, addr string, ch *fakeChannel, n *fakeNotifier) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o := HelperOptions{Addr: addr, Version: "test", Channels: []channel.Channel{ch},
+			Backoff: func(int) time.Duration { return 20 * time.Millisecond }}
+		if n != nil {
+			o.Notify = n.Notify
+		}
+		_ = RunHelper(ctx, o)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+func connectedHelpers(h *Hub) int { return len(h.Sessions()) }
+
+// A bundle with enabled:false stops the channels, but the helper stays
+// connected to show notifications (#301).
+func TestHelperStaysWhenDisabled(t *testing.T) {
 	addr := testAddress(t)
 	hub := NewHub(addr, &recordingSink{})
 	hub.Apply(context.Background(), compiled(t, "off", false))
 	t.Cleanup(hub.Stop)
 
-	done := make(chan error, 1)
-	go func() {
-		done <- RunHelper(context.Background(), HelperOptions{Addr: addr, Channels: []channel.Channel{&fakeChannel{}}})
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("RunHelper = %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("helper didn't exit on enabled:false")
+	ch, n := &fakeChannel{}, &fakeNotifier{}
+	startHelper(t, addr, ch, n)
+	eventually(t, "the helper to connect, idle", func() bool {
+		s := hub.Sessions()
+		return len(s) == 1 && s[0].State == "idle"
+	})
+	if v := ch.versions(); len(v) != 0 {
+		t.Errorf("channel ran on a disabled bundle: %v", v)
 	}
+	res := hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m", Level: ipc.LevelInfo})
+	if len(res) != 1 || res[0].Err != "" || n.count() != 1 {
+		t.Errorf("Notify = %+v, shown %d", res, n.count())
+	}
+}
+
+// With no DLP policy at all (DLP off or never configured) the hub still
+// serves helpers, and an admin's notification reaches every one (#301).
+func TestNotifyWithoutPolicy(t *testing.T) {
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), nil)
+	t.Cleanup(hub.Stop)
+
+	n := &fakeNotifier{}
+	startHelper(t, addr, &fakeChannel{}, n)
+	eventually(t, "the helper to connect", func() bool { return connectedHelpers(hub) == 1 })
+
+	// Not rate-limited: three in a row are all shown.
+	for i, level := range []string{ipc.LevelInfo, ipc.LevelWarning, ipc.LevelCritical} {
+		res := hub.Notify(context.Background(), ipc.Notify{Title: "Reboot", Message: fmt.Sprint("in ", i, " min"), Level: level})
+		if len(res) != 1 || res[0].Err != "" || res[0].User == "" {
+			t.Fatalf("Notify %d = %+v", i, res)
+		}
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	want := []string{"info|Reboot|in 0 min", "warning|Reboot|in 1 min", "critical|Reboot|in 2 min"}
+	if strings.Join(n.shown, ",") != strings.Join(want, ",") {
+		t.Errorf("shown = %v, want %v", n.shown, want)
+	}
+}
+
+// A helper's failure comes back as the session's error; one that doesn't
+// answer in time (an older helper ignores the message) is reported too.
+func TestNotifyFailures(t *testing.T) {
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), nil)
+	t.Cleanup(hub.Stop)
+
+	if res := hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m"}); len(res) != 0 {
+		t.Errorf("Notify with no helpers = %+v", res)
+	}
+
+	n := &fakeNotifier{err: errors.New("exec: \"/usr/bin/notify-send\": file does not exist\n")}
+	startHelper(t, addr, &fakeChannel{}, n)
+	eventually(t, "the helper to connect", func() bool { return connectedHelpers(hub) == 1 })
+	res := hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m"})
+	if len(res) != 1 || !strings.Contains(res[0].Err, "notify-send") || strings.Contains(res[0].Err, "\n") {
+		t.Errorf("failed Notify = %+v", res)
+	}
+
+	n.err, n.block = nil, make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	res = hub.Notify(ctx, ipc.Notify{Title: "t", Message: "m"})
+	close(n.block)
+	if len(res) != 1 || !strings.Contains(res[0].Err, "no answer") {
+		t.Errorf("unanswered Notify = %+v", res)
+	}
+}
+
+// A helper started without a notifier says so instead of hanging.
+func TestNotifyHelperWithoutNotifier(t *testing.T) {
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), nil)
+	t.Cleanup(hub.Stop)
+	startHelper(t, addr, &fakeChannel{}, nil)
+	eventually(t, "the helper to connect", func() bool { return connectedHelpers(hub) == 1 })
+	res := hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m"})
+	if len(res) != 1 || res[0].Err == "" {
+		t.Errorf("Notify = %+v, want an error", res)
+	}
+}
+
+// DLP's Manager drives the helpers through PolicyOnly: its Stop (DLP turned
+// off) stops the channels but keeps the helper connected (#301).
+func TestPolicyOnly(t *testing.T) {
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), nil) // the service starts the helpers
+	t.Cleanup(hub.Stop)
+	dlpView := PolicyOnly(hub)
+
+	ch, n := &fakeChannel{}, &fakeNotifier{}
+	startHelper(t, addr, ch, n)
+	dlpView.Apply(context.Background(), compiled(t, "v1", true))
+	eventually(t, "the channel to run", func() bool { return len(ch.versions()) == 1 })
+	eventually(t, "the helper to report running", func() bool {
+		s := dlpView.Sessions()
+		return len(s) == 1 && s[0].State == "running"
+	})
+
+	dlpView.Stop()
+	eventually(t, "the helper to go idle", func() bool {
+		s := hub.Sessions()
+		return len(s) == 1 && s[0].State == "idle"
+	})
+	if res := hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m"}); len(res) != 1 || res[0].Err != "" {
+		t.Errorf("Notify after DLP stopped = %+v", res)
+	}
+
+	dlpView.Apply(context.Background(), compiled(t, "v2", true))
+	eventually(t, "the channel to run v2", func() bool {
+		v := ch.versions()
+		return len(v) == 2 && v[1] == "v2"
+	})
 }
 
 // A connection that never says hello is dropped and never listed.
