@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="SentinelGo">
+  <title>SentinelGo</title>
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2ff0c6"/>
+      <stop offset="1" stop-color="#00a986"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2535"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+  <!-- Background rounded square -->
+  <rect width="256" height="256" rx="52" fill="url(#bg)"/>
+  <!-- Shield: centered, proportional to canvas -->
+  <!-- Shield path scaled to fit ~180px wide, ~190px tall, centered at (128,128) -->
+  <g transform="translate(38, 28)">
+    <path d="M90 0 L0 32 L0 87 C0 139 38.5 182 90 194 C141.5 182 180 139 180 87 L180 32 Z" fill="url(#shield)"/>
+    <!-- Checkmark -->
+    <path d="M52 97 L79 124 L131 68" stroke="#0d1117" stroke-width="17" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
