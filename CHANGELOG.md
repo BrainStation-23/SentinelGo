@@ -13,6 +13,12 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Clipboard DLP never ran on Linux GNOME desktops with Wayland, the default on Ubuntu, Fedora and Debian. The clipboard showed `Not supported: no wl clipboard`, and installing `wl-clipboard` as that suggested would have made it open a window and grab focus 2.5 times a second, because GNOME has no data-control protocol. The agent now reads and blocks the clipboard over X11 itself, with no tools to install: on X11 sessions, and through XWayland on GNOME, KDE Plasma and wlroots desktops. It reacts to each copy as it happens instead of checking every 0.4 s, reconnects when XWayland restarts, and names the source app for X11 apps without `xdotool`. `wl-clipboard` is only used on Wayland without XWayland, and only when the compositor offers data-control (checked by asking the compositor, not by running `wl-paste`). The status reasons now point to what fixes them; see "Clipboard DLP Shows Not supported" in `installation-doc/INSTALLATION.md` (#315).
+- A DLP channel that couldn't run when the policy arrived (a tool missing, the X server not up yet) only started with the next policy version or a helper restart. A channel that stopped with an error stayed stopped while the status said `running`. The session helper now checks again every minute, restarts a stopped channel with backoff, and reports each change to the console (#315).
+- Linux: the session helper no longer runs twice in each GNOME or KDE session (one copy standing by). The autostart entry is now skipped where the systemd user unit starts the helper (#315).
+
 ## [v4.0.3] - 2026-10-30
 
 ### Fixed
