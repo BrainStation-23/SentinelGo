@@ -21,8 +21,10 @@ import (
 
 // The helper runs as a systemd user service in each graphical session,
 // started by graphical-session.target. An XDG autostart entry covers
-// desktops without that target; when both start one, the helper's
-// single-instance lock keeps one. The session's DISPLAY / WAYLAND_DISPLAY
+// desktops without that target; systemd-managed sessions skip it
+// (X-GNOME-HiddenUnderSystemd for gnome-session, X-systemd-skip for
+// systemd-xdg-autostart-generator), and if both still start one, the
+// helper's single-instance lock keeps one. The session's DISPLAY / WAYLAND_DISPLAY
 // reach the unit through the user manager's environment, which desktops
 // import with `dbus-update-activation-environment --systemd` (GNOME and KDE
 // do so on login).
@@ -113,6 +115,8 @@ Comment=Data loss prevention session helper
 Exec=%q dlp-session
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
+X-GNOME-HiddenUnderSystemd=true
+X-systemd-skip=true
 `, exe)
 }
 

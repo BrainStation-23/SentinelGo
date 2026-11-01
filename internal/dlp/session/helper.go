@@ -39,6 +39,11 @@ const refusedDrain = 64 << 10
 // unreachable; the oldest are dropped beyond it.
 const maxBufferedEvents = 100
 
+// channelRecheck is how often a channel that can't run is checked again (a
+// tool installed, an X server started), and the longest wait before a failed
+// channel is restarted. A var for tests.
+var channelRecheck = time.Minute
+
 // HelperOptions configures a session helper.
 type HelperOptions struct {
 	Addr     string            // the service endpoint (ipc.DefaultAddress)
@@ -104,7 +109,9 @@ type helperRuntime struct {
 	mu      sync.Mutex
 	conn    ipc.Conn // nil while disconnected
 	buffer  []events.Event
-	version string // applied bundle version
+	version string          // applied bundle version
+	running map[string]bool // channels whose Run is active
+	sent    string          // the last status sent, to skip repeats
 
 	chCancel context.CancelFunc
 	chWG     sync.WaitGroup
@@ -186,6 +193,7 @@ func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) {
 	same := b.Version == r.version
 	r.mu.Unlock()
 	if same {
+		r.sendStatus(false) // e.g. a new connection after a service restart
 		return
 	}
 	c := policy.Compile(b)
@@ -193,29 +201,89 @@ func (r *helperRuntime) apply(ctx context.Context, raw json.RawMessage) {
 
 	chCtx, cancel := context.WithCancel(ctx)
 	r.chCancel = cancel
-	running := 0
 	for _, ch := range r.o.Channels {
-		if !c.ChannelEnabled(ch.Name()) || !ch.Supported().Supported {
+		if !c.ChannelEnabled(ch.Name()) {
 			continue
 		}
-		running++
+		supported := ch.Supported().Supported
+		r.setRunning(ch.Name(), supported)
 		r.chWG.Add(1)
 		go func(ch channel.Channel) {
 			defer r.chWG.Done()
-			if err := ch.Run(chCtx, c, r); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("DLP helper: %s channel stopped: %v", ch.Name(), err)
-			}
+			r.supervise(chCtx, ch, c, supported)
 		}(ch)
 	}
 	r.mu.Lock()
 	r.version = b.Version
 	r.mu.Unlock()
+	r.sendStatus(true)
+}
 
-	state := "running"
-	if running == 0 {
-		state = "idle"
+// supervise runs ch for the bundle until ctx ends. A channel that can't run
+// here yet starts once it can, and one whose Run fails is restarted with
+// backoff; both are checked at most channelRecheck apart, and the service
+// hears of each change.
+func (r *helperRuntime) supervise(ctx context.Context, ch channel.Channel, c *policy.Compiled, supported bool) {
+	for failures := 0; ; {
+		wait := channelRecheck
+		if supported {
+			r.setRunning(ch.Name(), true)
+			r.sendStatus(false)
+			started := time.Now()
+			err := ch.Run(ctx, c, r)
+			r.setRunning(ch.Name(), false)
+			if ctx.Err() != nil {
+				return
+			}
+			if time.Since(started) > channelRecheck {
+				failures = 0 // it ran for a while: not a crash loop
+			}
+			if !errors.Is(err, channel.ErrUnsupported) {
+				failures++
+				wait = min(time.Second<<min(failures-1, 6), channelRecheck)
+				log.Printf("DLP helper: %s channel stopped: %v; restarting in %v", ch.Name(), err, wait)
+			}
+		}
+		r.sendStatus(false)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		supported = ch.Supported().Supported
 	}
-	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: state, Capabilities: r.capabilities()}})
+}
+
+func (r *helperRuntime) setRunning(name string, on bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running == nil {
+		r.running = map[string]bool{}
+	}
+	r.running[name] = on
+}
+
+// sendStatus tells the service the helper's state and capabilities: always
+// when force is set, otherwise only when they changed since the last one.
+func (r *helperRuntime) sendStatus(force bool) {
+	caps := r.capabilities()
+	r.mu.Lock()
+	state := "idle"
+	if r.version != "" {
+		for _, on := range r.running {
+			if on {
+				state = "running"
+			}
+		}
+	}
+	key := fmt.Sprint(state, caps) // maps print sorted
+	if !force && key == r.sent {
+		r.mu.Unlock()
+		return
+	}
+	r.sent = key
+	r.mu.Unlock()
+	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: state, Capabilities: caps}})
 }
 
 // clear stops the channels: no DLP policy. The helper stays connected.
@@ -228,7 +296,7 @@ func (r *helperRuntime) clear() {
 	if had {
 		log.Printf("DLP helper: no DLP policy; channels stopped")
 	}
-	r.send(ipc.Message{Type: ipc.TypeStatus, Status: &ipc.Status{State: "idle", Capabilities: r.capabilities()}})
+	r.sendStatus(true)
 }
 
 // notify shows an admin's notification and answers with the result. The
@@ -250,6 +318,9 @@ func (r *helperRuntime) stopChannels() {
 		r.chWG.Wait()
 		r.chCancel = nil
 	}
+	r.mu.Lock()
+	r.running = nil
+	r.mu.Unlock()
 }
 
 // Emit implements channel.EventSink: send now, or buffer while disconnected.
@@ -278,6 +349,7 @@ func (r *helperRuntime) attach(c ipc.Conn) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.conn = c
+	r.sent = "" // a new connection hasn't heard any status yet
 	for len(r.buffer) > 0 {
 		if ipc.Write(c, ipc.Message{Type: ipc.TypeEvent, Event: &r.buffer[0]}) != nil {
 			return

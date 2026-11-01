@@ -319,6 +319,19 @@ sudo chown -R root:root /opt/sentinelgo
 sudo chmod +x /opt/sentinelgo/sentinelgo
 ```
 
+#### Clipboard DLP Shows "Not supported"
+Clipboard DLP needs no extra packages on X11 sessions or on Wayland desktops that run XWayland (GNOME, KDE Plasma, Sway and other wlroots compositors do by default). The agent reads the clipboard over X11 itself. The console's clipboard status says why it can't run:
+
+| Status | Meaning | Fix |
+|---|---|---|
+| `x11_unavailable` | `DISPLAY` is set but the X server (or XWayland) can't be reached | Check that XWayland isn't disabled for the session |
+| `wayland_no_data_control` | Wayland without XWayland, and the compositor has no data-control protocol (GNOME with XWayland turned off) | Re-enable XWayland. There's no supported way to watch the clipboard otherwise |
+| `no_wl_clipboard` | Wayland without XWayland, on a compositor with data-control (KDE, wlroots) | `sudo apt install wl-clipboard` (or `dnf`/`zypper`) |
+| `no_xclip_or_xsel` | The X server lacks the XFixes extension (rare) | `sudo apt install xclip` |
+| `no_graphical_session` | No desktop session (a server, or SSH only) | Nothing to fix: there's no clipboard to watch |
+
+Don't install `wl-clipboard` on GNOME to fix a status: GNOME has no data-control protocol, and the agent never uses it there. The helper checks again every minute, so the status updates without a restart. Its log is `~/.cache/SentinelGo/dlp-session.log`, and the line `DLP helper: clipboard via ...` names the method in use.
+
 ### Windows
 
 #### Option 1: Using Installation Script (Recommended)

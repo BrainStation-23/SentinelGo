@@ -525,3 +525,96 @@ func TestHelperExitsAfterUntrustedEndpoints(t *testing.T) {
 		return false
 	})
 }
+
+// toggleChannel can't run until made supported, and its first runs fail.
+type toggleChannel struct {
+	mu        sync.Mutex
+	supported bool
+	failFirst int
+	runs      int
+}
+
+func (c *toggleChannel) Name() string { return policy.ChannelClipboard }
+func (c *toggleChannel) Supported() channel.Capability {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.supported {
+		return channel.Supported()
+	}
+	return channel.Unsupported("no_tool")
+}
+func (c *toggleChannel) Run(ctx context.Context, _ *policy.Compiled, _ channel.EventSink) error {
+	c.mu.Lock()
+	c.runs++
+	fail := c.runs <= c.failFirst
+	c.mu.Unlock()
+	if fail {
+		return errors.New("lost the display")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (c *toggleChannel) set(supported bool) { c.mu.Lock(); c.supported = supported; c.mu.Unlock() }
+func (c *toggleChannel) count() int         { c.mu.Lock(); defer c.mu.Unlock(); return c.runs }
+
+func fastRecheck(t *testing.T) {
+	prev := channelRecheck
+	channelRecheck = 50 * time.Millisecond
+	t.Cleanup(func() { channelRecheck = prev })
+}
+
+func runToggleHelper(t *testing.T, addr string, ch *toggleChannel) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = RunHelper(ctx, HelperOptions{Addr: addr, Version: "test", Channels: []channel.Channel{ch},
+			Backoff: func(int) time.Duration { return 20 * time.Millisecond }})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+// A channel that can't run when the policy arrives (a tool missing, the X
+// server not up yet) starts once it can, and the service is told, without a
+// new policy version (#315).
+func TestHelperStartsChannelOnceSupported(t *testing.T) {
+	fastRecheck(t)
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), compiled(t, "v1", true))
+	t.Cleanup(hub.Stop)
+
+	ch := &toggleChannel{}
+	runToggleHelper(t, addr, ch)
+	eventually(t, "the helper to report idle and why", func() bool {
+		s := hub.Sessions()
+		return len(s) == 1 && s[0].State == "idle" && s[0].Capabilities["clipboard"] == "unsupported:no_tool"
+	})
+	if ch.count() != 0 {
+		t.Fatal("an unsupported channel ran")
+	}
+
+	ch.set(true)
+	eventually(t, "the channel to start and be reported", func() bool {
+		s := hub.Sessions()
+		return ch.count() == 1 && len(s) == 1 && s[0].State == "running" && s[0].Capabilities["clipboard"] == "supported"
+	})
+}
+
+// A channel whose Run fails is restarted instead of left stopped while the
+// status says running (#315).
+func TestHelperRestartsFailedChannel(t *testing.T) {
+	fastRecheck(t)
+	addr := testAddress(t)
+	hub := NewHub(addr, &recordingSink{})
+	hub.Apply(context.Background(), compiled(t, "v1", true))
+	t.Cleanup(hub.Stop)
+
+	ch := &toggleChannel{supported: true, failFirst: 2}
+	runToggleHelper(t, addr, ch)
+	eventually(t, "the channel to run after two failures", func() bool {
+		s := hub.Sessions()
+		return ch.count() == 3 && len(s) == 1 && s[0].State == "running"
+	})
+}
