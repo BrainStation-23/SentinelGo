@@ -82,7 +82,7 @@ func waylandGlobals(ctx context.Context) (map[string]uint32, error) {
 func wlMessage(obj uint32, opcode uint16, args ...uint32) []byte {
 	b := make([]byte, 8+4*len(args))
 	binary.LittleEndian.PutUint32(b[0:], obj)
-	binary.LittleEndian.PutUint32(b[4:], uint32(len(b))<<16|uint32(opcode))
+	binary.LittleEndian.PutUint32(b[4:], u32(len(b))<<16|uint32(opcode)) // a probe request is 8 or 12 bytes
 	for i, a := range args {
 		binary.LittleEndian.PutUint32(b[8+4*i:], a)
 	}

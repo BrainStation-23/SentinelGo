@@ -2,7 +2,9 @@ package clipboard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -10,11 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
-
-	"github.com/jezek/xgb"
-	"github.com/jezek/xgb/xproto"
 
 	"sentinelgo/internal/dlp/events"
 )
@@ -52,7 +52,7 @@ func startXvfb(t *testing.T, display string) (disp string, stop func()) {
 	var once sync.Once
 	stop = func() {
 		once.Do(func() {
-			_ = cmd.Process.Kill()
+			_ = cmd.Process.Signal(syscall.SIGTERM) // lets Xvfb remove its socket and lock
 			_ = cmd.Wait()
 		})
 	}
@@ -75,11 +75,11 @@ func startXvfb(t *testing.T, display string) (disp string, stop func()) {
 		}
 	}
 	waitFor(t, "Xvfb on "+display, func() bool {
-		c, err := xgb.NewConnDisplay(display)
+		x, err := dialXDisplay(display)
 		if err != nil {
 			return false
 		}
-		c.Close()
+		x.close()
 		return true
 	})
 	return display, stop
@@ -123,52 +123,49 @@ func (s *lockedSink) events() []events.Event {
 // xApp is another X client that copies, and reads what's on the clipboard.
 type xApp struct {
 	t     *testing.T
-	conn  *xgb.Conn
-	root  xproto.Window
-	win   xproto.Window
-	atoms map[string]xproto.Atom
+	x     *xConn
+	win   uint32
+	atoms map[string]uint32
+	done  chan struct{}
 
-	mu      sync.Mutex
-	data    []byte
-	targets []string
-	incr    map[xproto.Window]incrTransfer // in progress, by requestor
-	notify  chan xproto.SelectionNotifyEvent
+	mu       sync.Mutex
+	data     []byte
+	targets  []string
+	listed   int                     // TARGETS requests served
+	incr     map[uint32]incrTransfer // in progress, by requestor
+	notified chan xSelectionNotify
 }
 
 // incrTransfer is what's left to send of an INCR transfer, and where.
 type incrTransfer struct {
-	prop xproto.Atom
+	prop uint32
 	rest []byte
 }
 
 const (
-	testIncrThreshold = 256 << 10 // copies larger than this are sent with INCR
+	testIncrThreshold = 128 << 10 // copies larger than this are sent with INCR
 	testIncrChunk     = 64 << 10
 )
 
 func newXApp(t *testing.T, display string) *xApp {
 	t.Helper()
-	conn, err := xgb.NewConnDisplay(display)
+	x, err := dialXDisplay(display)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(conn.Close)
-	screen := xproto.Setup(conn).DefaultScreen(conn)
-	win, _ := xproto.NewWindowId(conn)
-	if err := xproto.CreateWindowChecked(conn, 0, win, screen.Root, 0, 0, 1, 1, 0,
-		xproto.WindowClassInputOnly, screen.RootVisual, 0, nil).Check(); err != nil {
+	win, err := x.createInputWindow(0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	a := &xApp{t: t, conn: conn, root: screen.Root, win: win, atoms: map[string]xproto.Atom{},
-		incr: map[xproto.Window]incrTransfer{}, notify: make(chan xproto.SelectionNotifyEvent, 1)}
+	a := &xApp{t: t, x: x, win: win, atoms: map[string]uint32{}, done: make(chan struct{}),
+		incr: map[uint32]incrTransfer{}, notified: make(chan xSelectionNotify, 1)}
 	for _, n := range []string{"CLIPBOARD", "TARGETS", "INCR", "UTF8_STRING", "image/png", hintTarget, "APP_PROP", "_NET_ACTIVE_WINDOW", "_NET_WM_PID"} {
-		r, err := xproto.InternAtom(conn, false, uint16(len(n)), n).Reply()
-		if err != nil {
+		if a.atoms[n], err = x.internAtom(n); err != nil {
 			t.Fatal(err)
 		}
-		a.atoms[n] = r.Atom
 	}
 	go a.loop()
+	t.Cleanup(func() { close(a.done); x.close() })
 	return a
 }
 
@@ -177,109 +174,119 @@ func (a *xApp) copy(data string, targets ...string) {
 	a.mu.Lock()
 	a.data, a.targets = []byte(data), targets
 	a.mu.Unlock()
-	xproto.SetSelectionOwner(a.conn, a.win, a.atoms["CLIPBOARD"], xproto.TimeCurrentTime)
-	if _, err := xproto.GetSelectionOwner(a.conn, a.atoms["CLIPBOARD"]).Reply(); err != nil {
+	if err := a.x.setSelectionOwner(a.win, a.atoms["CLIPBOARD"], currentTime); err != nil {
+		a.t.Fatal(err)
+	}
+	if _, err := a.x.selectionOwner(a.atoms["CLIPBOARD"]); err != nil {
 		a.t.Fatal(err) // also a round trip: the owner change has happened
 	}
 }
 
+// listedCount is how many times the channel asked for the copy's types.
+func (a *xApp) listedCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listed
+}
+
 // focus marks the app's window as the focused one, as a window manager does.
 func (a *xApp) focus() {
-	pid := make([]byte, 4)
-	xgb.Put32(pid, uint32(os.Getpid()))
-	xproto.ChangeProperty(a.conn, xproto.PropModeReplace, a.win, a.atoms["_NET_WM_PID"], xproto.AtomCardinal, 32, 1, pid)
-	w := make([]byte, 4)
-	xgb.Put32(w, uint32(a.win))
-	xproto.ChangeProperty(a.conn, xproto.PropModeReplace, a.root, a.atoms["_NET_ACTIVE_WINDOW"], xproto.AtomWindow, 32, 1, w)
+	pid := binary.LittleEndian.AppendUint32(nil, uint32(os.Getpid())) // #nosec G115 -- a pid
+	_ = a.x.changeProperty(a.win, a.atoms["_NET_WM_PID"], atomCardinal, 32, pid)
+	w := binary.LittleEndian.AppendUint32(nil, a.win)
+	_ = a.x.changeProperty(a.x.root, a.atoms["_NET_ACTIVE_WINDOW"], atomWindow, 32, w)
 }
 
 // clipboard reads the clipboard's text as another app would.
-func (a *xApp) clipboard() string {
-	xproto.ConvertSelection(a.conn, a.win, a.atoms["CLIPBOARD"], a.atoms["UTF8_STRING"], a.atoms["APP_PROP"], xproto.TimeCurrentTime)
+func (a *xApp) clipboard() string { return a.clipboardAs("UTF8_STRING") }
+
+// clipboardAs reads the clipboard in the given type.
+func (a *xApp) clipboardAs(target string) string {
+	if err := a.x.convertSelection(a.win, a.atoms["CLIPBOARD"], a.atoms[target], a.atoms["APP_PROP"], currentTime); err != nil {
+		return "<" + err.Error() + ">"
+	}
 	select {
-	case n := <-a.notify:
-		if n.Property == 0 {
+	case n := <-a.notified:
+		if n.property == 0 {
 			return "<refused>"
 		}
 	case <-time.After(5 * time.Second):
 		return "<timeout>"
 	}
-	r, err := xproto.GetProperty(a.conn, true, a.win, a.atoms["APP_PROP"], xproto.GetPropertyTypeAny, 0, 1<<20).Reply()
+	r, err := a.x.getProperty(true, a.win, a.atoms["APP_PROP"], anyPropertyType, 1<<20)
 	if err != nil {
 		return "<" + err.Error() + ">"
 	}
-	return string(r.Value)
+	return string(r.value)
 }
 
 func (a *xApp) loop() {
 	for {
-		ev, xerr := a.conn.WaitForEvent()
-		if ev == nil && xerr == nil {
+		ev, err := a.x.nextEvent(a.done, time.Time{})
+		if err != nil {
 			return
 		}
 		switch e := ev.(type) {
-		case xproto.SelectionRequestEvent:
+		case xSelectionRequest:
 			a.serve(e)
-		case xproto.PropertyNotifyEvent:
+		case xPropertyNotify:
 			a.nextChunk(e)
-		case xproto.SelectionNotifyEvent:
+		case xSelectionNotify:
 			select {
-			case a.notify <- e:
+			case a.notified <- e:
 			default:
 			}
 		}
 	}
 }
 
-func (a *xApp) serve(e xproto.SelectionRequestEvent) {
+func (a *xApp) serve(e xSelectionRequest) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	prop := e.Property
+	prop := e.property
 	offered := false
 	for _, n := range a.targets {
-		offered = offered || a.atoms[n] == e.Target
+		offered = offered || a.atoms[n] == e.target
 	}
 	switch {
-	case e.Target == a.atoms["TARGETS"]:
-		buf := make([]byte, 4*(len(a.targets)+1))
-		xgb.Put32(buf, uint32(a.atoms["TARGETS"]))
-		for i, n := range a.targets {
-			xgb.Put32(buf[4*(i+1):], uint32(a.atoms[n]))
+	case e.target == a.atoms["TARGETS"]:
+		buf := binary.LittleEndian.AppendUint32(nil, a.atoms["TARGETS"])
+		for _, n := range a.targets {
+			buf = binary.LittleEndian.AppendUint32(buf, a.atoms[n])
 		}
-		xproto.ChangeProperty(a.conn, xproto.PropModeReplace, e.Requestor, prop, xproto.AtomAtom, 32, uint32(len(a.targets)+1), buf)
+		_ = a.x.changeProperty(e.requestor, prop, atomAtom, 32, buf)
+		a.listed++
 	case offered && len(a.data) > testIncrThreshold:
 		// Watch the requestor's property; each deletion asks for a chunk.
-		xproto.ChangeWindowAttributes(a.conn, e.Requestor, xproto.CwEventMask, []uint32{xproto.EventMaskPropertyChange})
-		a.incr[e.Requestor] = incrTransfer{prop: prop, rest: a.data}
-		size := make([]byte, 4)
-		xgb.Put32(size, uint32(len(a.data)))
-		xproto.ChangeProperty(a.conn, xproto.PropModeReplace, e.Requestor, prop, a.atoms["INCR"], 32, 1, size)
+		_ = a.x.selectWindowEvents(e.requestor, eventMaskPropChange)
+		a.incr[e.requestor] = incrTransfer{prop: prop, rest: a.data}
+		size := binary.LittleEndian.AppendUint32(nil, uint32(len(a.data))) // #nosec G115 -- test data, a few MB
+		_ = a.x.changeProperty(e.requestor, prop, a.atoms["INCR"], 32, size)
 	case offered:
-		xproto.ChangeProperty(a.conn, xproto.PropModeReplace, e.Requestor, prop, e.Target, 8, uint32(len(a.data)), a.data)
+		_ = a.x.changeProperty(e.requestor, prop, e.target, 8, a.data)
 	default:
 		prop = 0
 	}
-	ev := xproto.SelectionNotifyEvent{Time: e.Time, Requestor: e.Requestor, Selection: e.Selection, Target: e.Target, Property: prop}
-	xproto.SendEvent(a.conn, false, e.Requestor, 0, string(ev.Bytes()))
+	_ = a.x.sendSelectionNotify(e, prop)
 }
 
 // nextChunk sends the next INCR chunk once the requestor has taken the last
 // (deleted the property); an empty chunk ends the transfer.
-func (a *xApp) nextChunk(e xproto.PropertyNotifyEvent) {
+func (a *xApp) nextChunk(e xPropertyNotify) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	tr, ok := a.incr[e.Window]
-	if !ok || e.Atom != tr.prop || e.State != xproto.PropertyDelete {
+	tr, ok := a.incr[e.window]
+	if !ok || e.atom != tr.prop || !e.deleted {
 		return
 	}
 	chunk := tr.rest[:min(len(tr.rest), testIncrChunk)]
 	if len(chunk) == 0 {
-		delete(a.incr, e.Window)
+		delete(a.incr, e.window)
 	} else {
 		tr.rest = tr.rest[len(chunk):]
-		a.incr[e.Window] = tr
+		a.incr[e.window] = tr
 	}
-	xproto.ChangeProperty(a.conn, xproto.PropModeReplace, e.Window, tr.prop, a.atoms["UTF8_STRING"], 8, uint32(len(chunk)), chunk)
+	_ = a.x.changeProperty(e.window, tr.prop, a.atoms["UTF8_STRING"], 8, chunk)
 }
 
 // runChannel runs the clipboard channel until the test ends.
@@ -337,6 +344,13 @@ func TestX11_BlockMonitorAndRepeats(t *testing.T) {
 		}
 	}
 
+	// The placeholder is only text: other types are refused.
+	app.copy("card 4111 1111 1111 1111", "UTF8_STRING")
+	waitFor(t, "the card to be replaced again", func() bool { return app.clipboard() == placeholder })
+	if got := app.clipboardAs("image/png"); got != "<refused>" {
+		t.Errorf("placeholder as image/png = %q, want refused", got)
+	}
+
 	// The secret copied again after the placeholder is blocked again.
 	app.copy("4111111111111111", "UTF8_STRING")
 	waitFor(t, "the re-copied card to be replaced", func() bool { return app.clipboard() == placeholder })
@@ -364,8 +378,12 @@ func TestX11_ConcealedAndNonText(t *testing.T) {
 	s := runChannel(t, blockCards, true)
 	time.Sleep(100 * time.Millisecond)
 
+	// Each copy is let through only once the channel has looked at it (asked
+	// for its types), so it never reads the next one's content.
 	app.copy("4111111111111111", "UTF8_STRING", hintTarget)
+	waitFor(t, "the concealed copy to be looked at", func() bool { return app.listedCount() == 1 })
 	app.copy("4111111111111111", "image/png")
+	waitFor(t, "the image to be looked at", func() bool { return app.listedCount() == 2 })
 	app.copy("project falcon 4111111111111111", "UTF8_STRING") // a marker: handled after both
 	waitFor(t, "the marker copy", func() bool { return len(s.events()) >= 1 })
 	if evs := s.events(); len(evs) != 1 {
@@ -417,5 +435,110 @@ func TestX11Probe(t *testing.T) {
 	t.Setenv("DISPLAY", ":999")
 	if c, _ := x11Probe(); c {
 		t.Error("connected to a display that doesn't exist")
+	}
+}
+
+func TestParseDisplay(t *testing.T) {
+	tests := []struct {
+		in, host, number string
+		screen           int
+		ok               bool
+	}{
+		{":0", "", "0", 0, true},
+		{":1.2", "", "1", 2, true},
+		{"unix:3", "unix", "3", 0, true},
+		{"host.example:10.0", "host.example", "10", 0, true},
+		{"", "", "", 0, false},
+		{"0", "", "", 0, false},
+		{":x", "", "", 0, false},
+		{":-1", "", "", 0, false},
+		{":0.x", "", "", 0, false},
+	}
+	for _, tt := range tests {
+		host, number, screen, err := parseDisplay(tt.in)
+		if (err == nil) != tt.ok || (tt.ok && (host != tt.host || number != tt.number || screen != tt.screen)) {
+			t.Errorf("parseDisplay(%q) = %q %q %d %v", tt.in, host, number, screen, err)
+		}
+	}
+}
+
+// xauthEntry encodes one Xauthority entry.
+func xauthEntry(family uint16, addr, number, name string, data []byte) []byte {
+	b := binary.BigEndian.AppendUint16(nil, family)
+	for _, f := range [][]byte{[]byte(addr), []byte(number), []byte(name), data} {
+		b = binary.BigEndian.AppendUint16(b, uint16(len(f))) // #nosec G115 -- short test fields
+		b = append(b, f...)
+	}
+	return b
+}
+
+func TestFindCookie(t *testing.T) {
+	cookie := []byte("0123456789abcdef")
+	other := []byte("fedcba9876543210")
+	file := bytes.Join([][]byte{
+		xauthEntry(familyLocal, "otherhost", "0", "MIT-MAGIC-COOKIE-1", other),
+		xauthEntry(familyLocal, "myhost", "5", "MIT-MAGIC-COOKIE-1", other),
+		xauthEntry(familyLocal, "myhost", "0", "XDM-AUTHORIZATION-1", other),
+		xauthEntry(familyLocal, "myhost", "", "MIT-MAGIC-COOKIE-1", cookie), // XWayland: any display
+	}, nil)
+	if name, data := findCookie(bytes.NewReader(file), true, "myhost", "0"); name != "MIT-MAGIC-COOKIE-1" || !bytes.Equal(data, cookie) {
+		t.Errorf("local: %q %x", name, data)
+	}
+	if _, data := findCookie(bytes.NewReader(file), true, "myhost", "5"); !bytes.Equal(data, other) {
+		t.Errorf("display 5: %x, want its own entry", data)
+	}
+	if name, _ := findCookie(bytes.NewReader(file), false, "myhost", "0"); name != "" {
+		t.Errorf("remote display matched a local entry: %q", name)
+	}
+	wild := xauthEntry(familyWild, "\x00\x01", "", "MIT-MAGIC-COOKIE-1", cookie)
+	if _, data := findCookie(bytes.NewReader(wild), false, "myhost", "7"); !bytes.Equal(data, cookie) {
+		t.Errorf("wild entry: %x", data)
+	}
+	if name, _ := findCookie(bytes.NewReader(file[:len(file)-3]), true, "myhost", "0"); name != "" {
+		t.Errorf("truncated file gave %q", name)
+	}
+}
+
+// The real Xauthority lookup, against a file named by XAUTHORITY.
+func TestXauthCookie(t *testing.T) {
+	host, _ := os.Hostname()
+	cookie := []byte("0123456789abcdef")
+	path := filepath.Join(t.TempDir(), "auth")
+	if err := os.WriteFile(path, xauthEntry(familyLocal, host, "", "MIT-MAGIC-COOKIE-1", cookie), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XAUTHORITY", path)
+	if _, data := xauthCookie("", "0"); !bytes.Equal(data, cookie) {
+		t.Errorf("cookie = %x", data)
+	}
+	t.Setenv("XAUTHORITY", filepath.Join(t.TempDir(), "missing"))
+	if name, _ := xauthCookie("", "0"); name != "" {
+		t.Errorf("missing file gave %q", name)
+	}
+}
+
+// A request the server rejects reports the X error.
+func TestXConn_ServerError(t *testing.T) {
+	display, _ := useXvfb(t)
+	x, err := dialXDisplay(display)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.close()
+	if err := x.initXFixes(); err != nil {
+		t.Fatal(err)
+	}
+	err = x.watchSelectionOwner(0x1fffffff, 1) // no such window
+	var xe *xError
+	if !errors.As(err, &xe) || !strings.Contains(err.Error(), "X error") {
+		t.Fatalf("err = %v, want an X error", err)
+	}
+	// The connection stays usable after an error.
+	if _, err := x.internAtom("CLIPBOARD"); err != nil {
+		t.Errorf("after an error: %v", err)
+	}
+	x.close()
+	if _, err := x.internAtom("CLIPBOARD"); !errors.Is(err, errXConnClosed) {
+		t.Errorf("after close: %v, want errXConnClosed", err)
 	}
 }
