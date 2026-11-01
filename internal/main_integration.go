@@ -7,6 +7,7 @@ import (
 	"log"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -73,6 +74,9 @@ type MainIntegration struct {
 	dlpManager        *dlp.Manager
 	dlpSyncer         *dlp.Syncer
 	dlpEvents         *store.DLPEventStore
+	// mu protects sessions against concurrent access between notifyUser
+	// (which reads it) and Stop (which nils it).
+	mu sync.Mutex
 	// sessions runs a helper in each user session whenever the agent runs:
 	// DLP enforces through it, and notify-user shows notifications with it.
 	sessions session.Service
@@ -427,7 +431,9 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	// the signed-in user; DLP only sets their policy.
 	sup := newSessions(sink)
 	sup.Apply(ctx, nil)
+	mi.mu.Lock()
 	mi.sessions = sup
+	mi.mu.Unlock()
 	native.SetUserNotifier(mi.notifyUser)
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
@@ -469,18 +475,34 @@ func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state strin
 // notifyUser is the notify-user hook: it shows n in every session with a
 // connected helper, and lists the signed-in users it couldn't reach.
 func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotification) ([]native.NotifyResult, []string) {
+	mi.mu.Lock()
 	sup := mi.sessions
+	mi.mu.Unlock()
 	if sup == nil {
 		return nil, nil
 	}
+
+	notifyResults := sup.Notify(ctx, ipc.Notify{Title: n.Title, Message: n.Message, Level: n.Level})
+
+	// Build an explicit set of sessions that answered (by user and session ID)
+	// so we don't rely on Capabilities != nil as a proxy for "connected".
+	answered := make(map[string]bool, len(notifyResults))
 	var results []native.NotifyResult
-	for _, r := range sup.Notify(ctx, ipc.Notify{Title: n.Title, Message: n.Message, Level: n.Level}) {
+	for _, r := range notifyResults {
 		results = append(results, native.NotifyResult{User: r.User, Err: r.Err})
+		answered[r.User] = true
+		if r.SessionID != "" {
+			answered[r.SessionID] = true
+		}
 	}
+
+	// Sessions() includes both connected helpers (already in answered) and
+	// sessions whose helper hasn't connected yet (starting, failed, etc.).
+	// Only report those that did not answer as unreached.
 	var unreached []string
 	for _, in := range sup.Sessions() {
-		if in.Capabilities != nil {
-			continue // a connected helper (it reported its capabilities)
+		if answered[in.User] || (in.SessionID != "" && answered[in.SessionID]) {
+			continue
 		}
 		why := in.State
 		if in.LastError != "" {
@@ -645,7 +667,9 @@ func (mi *MainIntegration) Stop() error {
 	}
 	if mi.sessions != nil {
 		mi.sessions.Stop()
+		mi.mu.Lock()
 		mi.sessions = nil
+		mi.mu.Unlock()
 	}
 	if mi.dlpEvents != nil {
 		if err := mi.dlpEvents.Close(); err != nil {
