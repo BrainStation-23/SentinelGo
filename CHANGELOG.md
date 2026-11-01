@@ -22,6 +22,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 - Windows: notifications were sent as Windows PowerShell, so they disappeared from the Action Center and were hidden when the user had turned PowerShell notifications off. They are now sent under SentinelGo's own app ID with the current toast template (#320).
 - `notify-user` could list a user whose helper had shown the notification as unreached, and could race with the service stopping (#320).
 - Linux: an sshd `Include` pattern that matched the file being read made the SSH settings collector read the same files over and over. Each file is now read once (#320).
+- Windows: after a user signed out and back in, clipboard DLP and `notify-user` stopped working for them until the service restarted. The session showed `start_failed` and the clipboard `helper_not_connected`. All helpers shared one job object, and Windows binds a job to the session of its first process, so every helper for a later session was refused with "Access is denied". Each helper now gets its own job. A helper that can't start now reports why in the session's `last_error`, instead of only `start_failed`.
 
 ## [v4.0.4] - 2026-11-01
 
