@@ -17,17 +17,27 @@ import (
 
 // fakeDesktop is a clipboard behind the tool seams.
 type fakeDesktop struct {
-	mu         sync.Mutex
-	text       string
-	targets    string
-	tools      map[string]bool
-	waylandErr string
-	readErr    bool
+	mu      sync.Mutex
+	text    string
+	targets string
+	tools   map[string]bool
+	readErr bool
+
+	xConnected, xFixes bool // what the X server probe finds
+	dataControl        bool // the compositor offers zwlr_data_control
 }
 
 func installFake(t *testing.T, d *fakeDesktop) {
 	t.Helper()
-	prevLook, prevRun := lookPath, run
+	prevLook, prevRun, prevProbe, prevGlobals := lookPath, run, x11Probe, wlGlobals
+	x11Probe = func() (bool, bool) { return d.xConnected, d.xFixes }
+	wlGlobals = func(context.Context) (map[string]uint32, error) {
+		g := map[string]uint32{"wl_data_device_manager": 3}
+		if d.dataControl {
+			g[wlrDataControl] = 2
+		}
+		return g, nil
+	}
 	lookPath = func(name string) (string, error) {
 		if d.tools[name] {
 			return "/usr/bin/" + name, nil
@@ -39,8 +49,6 @@ func installFake(t *testing.T, d *fakeDesktop) {
 		defer d.mu.Unlock()
 		cmd := strings.Join(argv, " ")
 		switch {
-		case argv[0] == "wl-paste" && d.waylandErr != "":
-			return nil, errors.New("wl-paste: exit status 1: " + d.waylandErr) // as run reports stderr
 		case d.readErr && !strings.Contains(cmd, "TARGETS") && argv[0] != "wl-copy" && !strings.Contains(cmd, " -i"):
 			return nil, errors.New("xclip: read failed")
 		case strings.Contains(cmd, "TARGETS") || strings.Contains(cmd, "--list-types"):
@@ -53,7 +61,7 @@ func installFake(t *testing.T, d *fakeDesktop) {
 			return []byte(d.text), nil
 		}
 	}
-	t.Cleanup(func() { lookPath, run = prevLook, prevRun })
+	t.Cleanup(func() { lookPath, run, x11Probe, wlGlobals = prevLook, prevRun, prevProbe, prevGlobals })
 }
 
 func (d *fakeDesktop) copy(text, targets string) {
@@ -65,27 +73,39 @@ func (d *fakeDesktop) copy(text, targets string) {
 func (d *fakeDesktop) clip() string { d.mu.Lock(); defer d.mu.Unlock(); return d.text }
 
 func TestPickBackend(t *testing.T) {
+	all := map[string]bool{"wl-paste": true, "xclip": true, "xsel": true}
 	tests := []struct {
 		name, wayland, display string
-		tools                  map[string]bool
-		waylandErr             string
-		want                   string
+		d                      *fakeDesktop
+		want, backend          string
 	}{
-		{"headless", "", "", nil, "", "unsupported:no_graphical_session"},
-		{"x11 xclip", "", ":0", map[string]bool{"xclip": true}, "", "supported"},
-		{"x11 xsel", "", ":0", map[string]bool{"xsel": true}, "", "supported"},
-		{"x11 no tool", "", ":0", map[string]bool{}, "", "unsupported:no_xclip_or_xsel"},
-		{"wayland ok", "wayland-0", "", map[string]bool{"wl-paste": true}, "", "supported"},
-		{"wayland gnome", "wayland-0", "", map[string]bool{"wl-paste": true}, "Compositor does not support the data-control protocol", "unsupported:wayland_no_data_control"},
-		{"wayland no tool", "wayland-0", ":0", map[string]bool{"xclip": true}, "", "unsupported:no_wl_clipboard"},
+		{"headless", "", "", &fakeDesktop{tools: all}, "unsupported:no_graphical_session", ""},
+		{"x11 native", "", ":0", &fakeDesktop{xConnected: true, xFixes: true}, "supported", "x11-native"},
+		{"x11 no xfixes xclip", "", ":0", &fakeDesktop{xConnected: true, tools: map[string]bool{"xclip": true}}, "supported", "x11"},
+		{"x11 no xfixes xsel", "", ":0", &fakeDesktop{xConnected: true, tools: map[string]bool{"xsel": true}}, "supported", "x11"},
+		{"x11 no xfixes no tool", "", ":0", &fakeDesktop{xConnected: true}, "unsupported:no_xclip_or_xsel", ""},
+		{"x11 server unreachable", "", ":0", &fakeDesktop{tools: all}, "unsupported:x11_unavailable", ""},
+		// GNOME: no data-control, XWayland. wl-paste must not be chosen even
+		// when installed (it would grab focus on every read).
+		{"gnome xwayland", "wayland-0", ":0", &fakeDesktop{xConnected: true, xFixes: true, tools: all}, "supported", "x11-native"},
+		{"gnome xwayland no xfixes", "wayland-0", ":0", &fakeDesktop{xConnected: true, tools: all}, "supported", "x11"},
+		{"gnome no xwayland", "wayland-0", "", &fakeDesktop{tools: all}, "unsupported:wayland_no_data_control", ""},
+		{"gnome xwayland down", "wayland-0", ":0", &fakeDesktop{tools: all}, "unsupported:x11_unavailable", ""},
+		// wlroots / KDE: data-control. XWayland still comes first: no tools.
+		{"kde xwayland", "wayland-0", ":0", &fakeDesktop{xConnected: true, xFixes: true, dataControl: true, tools: all}, "supported", "x11-native"},
+		{"kde no xwayland", "wayland-0", "", &fakeDesktop{dataControl: true, tools: all}, "supported", "wayland"},
+		{"kde no xwayland no tool", "wayland-0", "", &fakeDesktop{dataControl: true}, "unsupported:no_wl_clipboard", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("WAYLAND_DISPLAY", tt.wayland)
 			t.Setenv("DISPLAY", tt.display)
-			installFake(t, &fakeDesktop{tools: tt.tools, waylandErr: tt.waylandErr})
+			installFake(t, tt.d)
 			if got := New().Supported().String(); got != tt.want {
 				t.Errorf("capability = %s, want %s", got, tt.want)
+			}
+			if b, _ := pickBackend(context.Background()); b.name != tt.backend {
+				t.Errorf("backend = %q, want %q", b.name, tt.backend)
 			}
 		})
 	}
@@ -192,7 +212,7 @@ func TestPoller_NoWriteWithoutReread(t *testing.T) {
 func TestRun_PollsUntilCancelled(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("DISPLAY", ":0")
-	d := &fakeDesktop{tools: map[string]bool{"xclip": true}}
+	d := &fakeDesktop{tools: map[string]bool{"xclip": true}, xConnected: true}
 	installFake(t, d)
 	s := &recSink{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -248,8 +268,8 @@ func TestRun_RealCommand(t *testing.T) {
 	if err != nil || string(out) != "hello" {
 		t.Fatalf("cat = %q, %v", out, err)
 	}
-	_, err = run(context.Background(), nil, "sh", "-c", "echo compositor lacks data-control >&2; exit 1")
-	if err == nil || !dataControlMissing([]byte(err.Error())) {
+	_, err = run(context.Background(), nil, "sh", "-c", "echo tool failed for a reason >&2; exit 1")
+	if err == nil || !strings.Contains(err.Error(), "tool failed for a reason") {
 		t.Errorf("stderr not in error: %v", err)
 	}
 }

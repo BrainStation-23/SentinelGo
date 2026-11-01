@@ -73,7 +73,9 @@ func TestSystemdAgents_InstallStartStopUninstall(t *testing.T) {
 		!strings.Contains(string(unit), "WantedBy=graphical-session.target") {
 		t.Fatalf("unit = %s (%v)", unit, err)
 	}
-	if desk, err := os.ReadFile(autostartFile); err != nil || !strings.Contains(string(desk), "dlp-session") {
+	// Systemd-managed sessions leave it to the unit: no second helper.
+	if desk, err := os.ReadFile(autostartFile); err != nil || !strings.Contains(string(desk), "dlp-session") ||
+		!strings.Contains(string(desk), "X-GNOME-HiddenUnderSystemd=true") || !strings.Contains(string(desk), "X-systemd-skip=true") {
 		t.Errorf("autostart = %s (%v)", desk, err)
 	}
 	if err := a.Start("alice", true); err != nil {
