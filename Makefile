@@ -42,12 +42,17 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom changelog-check changelog-release
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom changelog-check changelog-release generate
 
 all: windows linux macos
 
 windows:
+	GOOS=windows GOARCH=amd64 go generate ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
+
+# NOTE: go generate in the windows target re-runs goversioninfo to refresh
+# resource_windows.syso (icon + version metadata). Requires goversioninfo:
+#   go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
 
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/linux/sentinelgo-linux-amd64 ./cmd/sentinelgo
@@ -71,6 +76,8 @@ release: pre-release clean all
 	@cp installation-doc/install.sh release/
 	@cp installation-doc/install.command release/
 	@cp installation-doc/sentinelgo-install.desktop release/
+	@cp assets/icons/sentinelgo.png release/
+	@cp assets/icons/sentinelgo.ico release/
 	@cp build/windows/sentinelgo-windows-amd64.exe release/
 	@cp build/linux/sentinelgo-linux-amd64 release/
 	@cp build/linux/sentinelgo-linux-arm64 release/
@@ -238,6 +245,19 @@ format-check:
 	fi
 	@echo "✅ Code formatting check passed"
 
+# Regenerate the Windows binary resource (icon + version metadata).
+# Requires goversioninfo: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
+# The output resource.syso is committed and consumed automatically by go build
+# for GOOS=windows — no extra flags needed.
+generate:
+	GOOS=windows GOARCH=amd64 go generate ./cmd/sentinelgo
+
+# The generate directive in cmd/sentinelgo/resource_windows.go invokes:
+#   goversioninfo -64 -icon=assets/icons/sentinelgo.ico \
+#     -manifest=assets/sentinelgo.exe.manifest \
+#     -o cmd/sentinelgo/resource_windows.syso assets/resource.json
+# Install goversioninfo once: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
+
 # Create release assets directory structure
 setup:
 	mkdir -p build/windows build/linux build/darwin
@@ -246,11 +266,11 @@ setup:
 packages: release
 	@echo "Creating distribution packages..."
 	@cd release && \
-		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe INSTALLATION.md THIRD_PARTY_NOTICES.txt install.bat && \
-		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
-		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command && \
-		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command
+		tar -czf sentinelgo-$(VERSION)-windows.tar.gz sentinelgo-windows-amd64.exe sentinelgo.ico INSTALLATION.md THIRD_PARTY_NOTICES.txt install.bat && \
+		tar -czf sentinelgo-$(VERSION)-linux-amd64.tar.gz sentinelgo-linux-amd64 sentinelgo.png INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-linux-arm64.tar.gz sentinelgo-linux-arm64 sentinelgo.png INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh sentinelgo-install.desktop && \
+		tar -czf sentinelgo-$(VERSION)-darwin-amd64.tar.gz sentinelgo-darwin-amd64 sentinelgo.png INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command && \
+		tar -czf sentinelgo-$(VERSION)-darwin-arm64.tar.gz sentinelgo-darwin-arm64 sentinelgo.png INSTALLATION.md THIRD_PARTY_NOTICES.txt install.sh install.command
 	@echo "Packages created:"
 	@ls -la release/*.tar.gz
 

@@ -491,16 +491,32 @@ func parseSSHEffectiveConfig(out string) (s sshSettings, ok bool) {
 // nothing is skipped, as sshd does. So is one outside /etc/ssh: the agent
 // reads only sshd's own config directory.
 func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
+	visited := make(map[string]bool)
+	return readSSHGlobalConfigInner(path, depth, lines, visited)
+}
+
+func readSSHGlobalConfigInner(path string, depth int, lines *[]string, visited map[string]bool) error {
 	if depth > maxSSHIncludeDepth {
 		return nil
 	}
+	// Resolve the path to its canonical form to detect cycles (e.g. a glob
+	// pattern that matches the file currently being read).
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if visited[abs] {
+		return nil
+	}
+	visited[abs] = true
+
 	// #nosec G304 G703 - sshd_config and the files it Includes, under the fixed /etc/ssh tree
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		key, _, ok := parseSSHConfigLine(line)
+		key, val, ok := parseSSHConfigLine(line)
 		if !ok {
 			continue
 		}
@@ -508,7 +524,16 @@ func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
 		case "match":
 			return nil
 		case "include":
-			for _, pattern := range strings.Fields(strings.TrimSpace(line))[1:] {
+			// sshd allows multiple space-separated glob patterns on one Include
+			// line. Collect them from the raw line rather than relying on val
+			// (which only holds the first token), but strip the keyword itself.
+			rawFields := strings.Fields(strings.TrimSpace(line))
+			patterns := rawFields[1:]
+			// Fallback: if re-tokenisation produced nothing, use the parsed val.
+			if len(patterns) == 0 {
+				patterns = []string{val}
+			}
+			for _, pattern := range patterns {
 				pattern = strings.Trim(pattern, `"`)
 				if !strings.HasPrefix(pattern, "/") {
 					pattern = sshdConfigDir + "/" + pattern
@@ -519,7 +544,7 @@ func readSSHGlobalConfig(path string, depth int, lines *[]string) error {
 				}
 				matches, _ := filepath.Glob(securityHostRoot + pattern)
 				for _, m := range matches {
-					_ = readSSHGlobalConfig(m, depth+1, lines)
+					_ = readSSHGlobalConfigInner(m, depth+1, lines, visited)
 				}
 			}
 		default:

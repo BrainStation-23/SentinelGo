@@ -204,6 +204,20 @@ if %errorLevel% equ 0 (
 ) else (
     echo [WARNING] Failed to harden binary permissions
 )
+
+REM Deploy notification icon so the SentinelGo brand appears in Windows
+REM Action Center. The agent's AUMID IconUri points at this file.
+if exist "sentinelgo.png" (
+    copy "sentinelgo.png" "%INSTALL_DIR%\sentinelgo.png" /Y >nul 2>&1
+    if !errorLevel! equ 0 (
+        echo [SUCCESS] Notification icon deployed to %INSTALL_DIR%\sentinelgo.png
+    ) else (
+        echo [WARNING] Failed to deploy notification icon
+    )
+) else (
+    echo [WARNING] sentinelgo.png not found next to install.bat - desktop notifications will show without a branded icon
+    echo [INFO] Download sentinelgo.png from https://github.com/BrainStation-23/SentinelGo/releases and place it in %INSTALL_DIR%
+)
 echo.
 
 REM Step 6: Install New Service with Auto-Start and Recovery

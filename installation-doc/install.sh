@@ -244,6 +244,18 @@ setup_directories() {
     # Set permissions
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
+    # Install the branded notification icon so desktop notifications show the
+    # SentinelGo logo. notify-send (Linux) and terminal-notifier (macOS) both
+    # pick it up from the install directory automatically.
+    if [[ -f "./sentinelgo.png" ]]; then
+        cp "./sentinelgo.png" "$INSTALL_DIR/sentinelgo.png"
+        chmod 644 "$INSTALL_DIR/sentinelgo.png"
+        print_success "Notification icon installed to $INSTALL_DIR/sentinelgo.png"
+    else
+        print_warning "sentinelgo.png not found next to installer; desktop notifications will show without a branded icon"
+        print_status "Download sentinelgo.png from https://github.com/BrainStation-23/SentinelGo/releases and place it in $INSTALL_DIR"
+    fi
+
     local os=$(detect_os)
 
     # Harden install directory and binary ownership/permissions.
