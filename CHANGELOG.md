@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.4] - 2026-11-01
+
 ### Fixed
 
 - Clipboard DLP never ran on Linux GNOME desktops with Wayland, the default on Ubuntu, Fedora and Debian. The clipboard showed `Not supported: no wl clipboard`, and installing `wl-clipboard` as that suggested would have made it open a window and grab focus 2.5 times a second, because GNOME has no data-control protocol. The agent now reads and blocks the clipboard over X11 itself, with no tools to install: on X11 sessions, and through XWayland on GNOME, KDE Plasma and wlroots desktops. It reacts to each copy as it happens instead of checking every 0.4 s, reconnects when XWayland restarts, and names the source app for X11 apps without `xdotool`. `wl-clipboard` is only used on Wayland without XWayland, and only when the compositor offers data-control (checked by asking the compositor, not by running `wl-paste`). The status reasons now point to what fixes them; see "Clipboard DLP Shows Not supported" in `installation-doc/INSTALLATION.md` (#315).
@@ -471,7 +473,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.3...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.4...HEAD
+[v4.0.4]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.3...v4.0.4
 [v4.0.3]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.2...v4.0.3
 [v4.0.2]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.1...v4.0.2
 [v4.0.1]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.0...v4.0.1
