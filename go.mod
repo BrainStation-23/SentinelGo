@@ -7,6 +7,7 @@ toolchain go1.26.10
 require (
 	github.com/ebitengine/purego v0.11.1
 	github.com/hoophq/alcatraz v0.23.0
+	github.com/jezek/xgb v1.3.1
 	github.com/rrethy/ahocorasick v1.0.0
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/yusufpapurcu/wmi v1.2.4

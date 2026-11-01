@@ -21,19 +21,20 @@ import (
 	"sentinelgo/internal/dlp/policy"
 )
 
-// On Linux the clipboard is read and written with the desktop's own tools,
-// as subprocesses (no cgo, no X11/Wayland client library):
+// On Linux the channel picks the first of these that works in the session:
 //
-//   - Wayland: wl-paste / wl-copy (wl-clipboard). Background access needs the
-//     compositor's data-control protocol (wlroots, KDE); without it (GNOME)
-//     the channel reports unsupported:wayland_no_data_control, never a
-//     silent no-op.
-//   - X11: xclip, else xsel.
+//   - x11-native: the X protocol in pure Go (x11_linux.go), on X11 sessions
+//     and, through XWayland, on Wayland desktops (GNOME, KDE, wlroots
+//     compositors mirror the clipboard to X11). Event driven, no tools.
+//   - wayland: wl-paste / wl-copy (wl-clipboard), only when the compositor
+//     offers the data-control protocol (wlprobe_linux.go). Without it (GNOME)
+//     wl-clipboard opens a window and grabs focus on every call.
+//   - x11: xclip, else xsel, for an X server without XFixes.
 //
-// The clipboard is polled every pollInterval (these tools have no change
-// notification for X11, so new copies are found by comparing the text's
-// hash). A copy marked by a password manager (x-kde-passwordManagerHint, set
-// by KeePassXC and KDE apps) is ignored when the policy says so.
+// The tool backends poll every pollInterval and find new copies by comparing
+// the text's hash. A copy marked by a password manager
+// (x-kde-passwordManagerHint, set by KeePassXC and KDE apps) is ignored when
+// the policy says so.
 const (
 	pollInterval = 400 * time.Millisecond
 	toolTimeout  = 2 * time.Second
@@ -44,13 +45,15 @@ const (
 // backend is one way to reach the session's clipboard.
 type backend struct {
 	name    string
+	native  bool     // x11-native: no tools, see x11_linux.go
 	read    []string // prints the clipboard text
 	targets []string // prints the offered MIME types/targets, one per line
 	write   []string // reads the new text on stdin and owns the clipboard
 }
 
 var (
-	wayland = backend{
+	x11Native = backend{name: "x11-native", native: true}
+	wayland   = backend{
 		name:    "wayland",
 		read:    []string{"wl-paste", "--no-newline", "--type", "text"}, // any text type the app offers
 		targets: []string{"wl-paste", "--list-types"},
@@ -101,41 +104,53 @@ func (linuxChannel) Supported() channel.Capability {
 	return c
 }
 
-// pickBackend chooses the clipboard tool for this session.
+// pickBackend chooses the clipboard backend for this session, or says why
+// there is none in the terms an admin can act on.
 func pickBackend(ctx context.Context) (backend, channel.Capability) {
-	switch {
-	case os.Getenv("WAYLAND_DISPLAY") != "":
-		if _, err := lookPath("wl-paste"); err != nil {
-			return backend{}, channel.Unsupported("no_wl_clipboard")
+	isWayland, isX := os.Getenv("WAYLAND_DISPLAY") != "", os.Getenv("DISPLAY") != ""
+	connected := false
+	if isX {
+		var fixes bool
+		if connected, fixes = x11Probe(); fixes {
+			return x11Native, channel.Supported()
 		}
-		// wl-paste fails at once when the compositor lacks data-control.
-		if _, err := run(ctx, nil, wayland.targets...); err != nil && dataControlMissing([]byte(err.Error())) {
-			return backend{}, channel.Unsupported("wayland_no_data_control")
+	}
+	dataControl := isWayland && hasWlrDataControl(ctx)
+	if dataControl {
+		if _, err := lookPath("wl-paste"); err == nil {
+			return wayland, channel.Supported()
 		}
-		return wayland, channel.Supported()
-	case os.Getenv("DISPLAY") != "":
+	}
+	if connected {
 		if _, err := lookPath("xclip"); err == nil {
 			return xclip, channel.Supported()
 		}
 		if _, err := lookPath("xsel"); err == nil {
 			return xsel, channel.Supported()
 		}
-		return backend{}, channel.Unsupported("no_xclip_or_xsel")
+	}
+	switch {
+	case dataControl:
+		return backend{}, channel.Unsupported("no_wl_clipboard")
+	case isX && !connected:
+		return backend{}, channel.Unsupported("x11_unavailable")
+	case isX:
+		return backend{}, channel.Unsupported("no_xclip_or_xsel") // X server without XFixes
+	case isWayland:
+		return backend{}, channel.Unsupported("wayland_no_data_control")
 	default:
 		return backend{}, channel.Unsupported("no_graphical_session")
 	}
 }
 
-func dataControlMissing(out []byte) bool {
-	s := strings.ToLower(string(out))
-	return strings.Contains(s, "data-control") || strings.Contains(s, "data control") || strings.Contains(s, "not supported")
-}
-
-// Run polls the clipboard until ctx ends.
+// Run watches the clipboard until ctx ends.
 func (linuxChannel) Run(ctx context.Context, p *policy.Compiled, sink channel.EventSink) error {
 	b, c := pickBackend(ctx)
 	if !c.Supported {
 		return channel.ErrUnsupported
+	}
+	if b.native {
+		return runX11(ctx, p, sink)
 	}
 	log.Printf("DLP helper: clipboard via %s (%s)", b.name, b.read[0])
 	w := &poller{b: b, p: p, sink: sink}
@@ -184,19 +199,26 @@ func (w *poller) check(ctx context.Context) {
 		return
 	}
 	src := sourceApp(ctx)
-	d := Decide(w.p, string(out), src, time.Now())
+	d := enforce(w.p, w.sink, out, src, func(msg string) error { return w.replace(ctx, hash, msg) })
 	w.lastHash, w.lastBlock, w.lastSrc = hash, d.Block, src
+}
+
+// enforce decides on one copy and acts on it: replace puts the placeholder
+// on the clipboard when a policy blocks, and a copy it couldn't replace is
+// recorded as monitored (the content is still there).
+func enforce(p *policy.Compiled, sink channel.EventSink, text []byte, src events.SourceApp, replace func(msg string) error) Decision {
+	d := Decide(p, string(text), src, time.Now())
 	if d.Block {
-		if err := w.replace(ctx, hash, d.Message); err != nil {
-			// The content is still there: don't claim it was blocked.
+		if err := replace(d.Message); err != nil {
 			log.Printf("DLP helper: clipboard not replaced (%v); recording as monitored", err)
 			markMonitored(d.Events)
 		}
 		notifyBlocked(d)
 	}
 	for _, ev := range d.Events {
-		w.sink.Emit(ev)
+		sink.Emit(ev)
 	}
+	return d
 }
 
 // replace writes msg in place of the content with hash scanned, unless a
@@ -239,14 +261,10 @@ func sourceApp(ctx context.Context) events.SourceApp {
 		return events.SourceApp{}
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || pid <= 0 {
-		return events.SourceApp{}
-	}
-	exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
 	if err != nil {
 		return events.SourceApp{}
 	}
-	return events.SourceApp{Name: exe[strings.LastIndexByte(exe, '/')+1:], Path: exe}
+	return processApp(pid)
 }
 
 // limitedWriter keeps at most n bytes and drops the rest.
