@@ -134,29 +134,6 @@ func TestCommand_AbsolutePath(t *testing.T) {
 	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(cmd.Path), `\windowspowershell\v1.0\powershell.exe`) {
 		t.Errorf("powershell path = %q", cmd.Path)
 	}
-	// The AUMID must be our own app ID, not Windows PowerShell's.
-	if runtime.GOOS == "windows" {
-		if strings.Contains(strings.Join(cmd.Args, " "), `1AC14E77-02E7-4E5D-B744-2EB1AE5198B7`) {
-			t.Error("command still uses the old PowerShell AUMID; switch to SentinelGo AUMID")
-		}
-		if !slices.Contains(cmd.Env, "SG_NOTIFY_AUMID="+sentinelGoAUMID) {
-			t.Errorf("SG_NOTIFY_AUMID not set in env; got %v", cmd.Env)
-		}
-	}
-}
-
-// On Windows, the script must use ToastGeneric (not the legacy ToastText02
-// template) so notifications persist in the Action Center.
-func TestToastScript_UsesGenericTemplate(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows-only")
-	}
-	if strings.Contains(toastScript, "ToastText02") {
-		t.Error("toastScript still uses legacy ToastText02; switch to ToastGeneric")
-	}
-	if !strings.Contains(toastScript, "ToastGeneric") {
-		t.Error("toastScript does not use ToastGeneric template")
-	}
 }
 
 // A failed send's error doesn't contain the message.

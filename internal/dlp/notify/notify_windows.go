@@ -89,7 +89,7 @@ func registerAUMID() error {
 	if err != nil {
 		return fmt.Errorf("open registry key: %w", err)
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 
 	if err := k.SetStringValue("DisplayName", "SentinelGo"); err != nil {
 		return fmt.Errorf("set DisplayName: %w", err)

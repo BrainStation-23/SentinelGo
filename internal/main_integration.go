@@ -665,11 +665,12 @@ func (mi *MainIntegration) Stop() error {
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}
-	if mi.sessions != nil {
-		mi.sessions.Stop()
-		mi.mu.Lock()
-		mi.sessions = nil
-		mi.mu.Unlock()
+	mi.mu.Lock()
+	sup := mi.sessions
+	mi.sessions = nil
+	mi.mu.Unlock()
+	if sup != nil {
+		sup.Stop()
 	}
 	if mi.dlpEvents != nil {
 		if err := mi.dlpEvents.Close(); err != nil {

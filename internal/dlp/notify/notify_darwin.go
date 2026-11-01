@@ -39,7 +39,6 @@ func terminalNotifierCmd(ctx context.Context, bin, title, body, level string) *e
 	args := []string{
 		"-title", title,
 		"-message", body,
-		"-sender", "com.sentinelgo.agent",
 	}
 	if _, err := os.Stat(iconPath); err == nil {
 		args = append(args, "-appIcon", iconPath)
@@ -64,8 +63,8 @@ const levelScript = notifyScript + ` subtitle (system attribute "SG_NOTIFY_SUBTI
 // subtitles show a warning or critical level; info has none.
 var subtitles = map[string]string{LevelWarning: "Warning", LevelCritical: "Critical"}
 
-// osascriptCmd builds the osascript fallback invocation.
-func osascriptCmd(ctx context.Context, title, body, level string) *exec.Cmd {
+// command builds the osascript fallback invocation.
+func command(ctx context.Context, title, body, level string) *exec.Cmd {
 	script, env := notifyScript, []string{"SG_NOTIFY_TITLE=" + title, "SG_NOTIFY_BODY=" + body}
 	if sub, ok := subtitles[level]; ok {
 		script, env = levelScript, append(env, "SG_NOTIFY_SUBTITLE="+sub)
@@ -85,5 +84,5 @@ func platformSend(title, body, level string) error {
 	if bin := findTerminalNotifier(); bin != "" {
 		return terminalNotifierCmd(ctx, bin, title, body, level).Run()
 	}
-	return osascriptCmd(ctx, title, body, level).Run()
+	return command(ctx, title, body, level).Run()
 }
