@@ -102,13 +102,14 @@ func TestDecider_ProcessTaint(t *testing.T) {
 		removed := 0
 		d.SetRemediator(func(Request, string) error { removed++; return nil })
 		d.Apply(compile(t, bundle))
-		f, err := os.CreateTemp(t.TempDir(), "dest")
+		destPath := filepath.Join(t.TempDir(), "dest") // the scanner answers by this name
+		if err := os.WriteFile(destPath, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		g, err := os.Open(destPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = f.Close() }()
-		_ = os.Rename(f.Name(), filepath.Join(filepath.Dir(f.Name()), "dest"))
-		g, _ := os.Open(filepath.Join(filepath.Dir(f.Name()), "dest"))
 		defer func() { _ = g.Close() }()
 		r := usbRequest()
 		r.File, r.Sources = g, sources
