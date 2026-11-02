@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.5] - 2026-11-02
+
 ### Added
 
 - File DLP copy correlation, part 1 (#334; backend Compliance-OS#570): the agent reads `modules.files.copy_correlation`. Unreadable settings fall back to the defaults, which keep today's behaviour, and are reported.
@@ -518,7 +520,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.4...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.5...HEAD
+[v4.0.5]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.4...v4.0.5
 [v4.0.4]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.3...v4.0.4
 [v4.0.3]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.2...v4.0.3
 [v4.0.2]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.1...v4.0.2
