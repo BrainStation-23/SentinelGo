@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"sentinelgo/internal"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/emergencylog"
+	"sentinelgo/internal/enrollment"
 	"sentinelgo/internal/lockfile"
+	mdmpkg "sentinelgo/internal/osinfo/mdm"
+	systempkg "sentinelgo/internal/osinfo/system"
 	"sentinelgo/internal/sanitize"
 )
 
@@ -76,11 +82,40 @@ func acquireProcessLock() (*lockfile.LockFile, error) {
 // Program implements the service start/stop lifecycle. It is constructed in
 // main and passed to NewAgentService.
 type Program struct {
-	Cfg             *config.Config
-	lockFile        *lockfile.LockFile
+	Cfg      *config.Config
+	lockFile *lockfile.LockFile
+	cancel   context.CancelFunc
+
+	mu              sync.Mutex // guards mainIntegration, started late after first-boot enrollment
 	mainIntegration *internal.MainIntegration
-	cancel          context.CancelFunc
+	enrollWG        sync.WaitGroup
 }
+
+// First-boot enrollment (#351). Vars so tests can stub them.
+var (
+	// enroll exchanges an enrollment token for agent credentials.
+	enroll = enrollment.Enroll
+	// enrollIdentity is what the backend checks the token against.
+	enrollIdentity = func() enrollment.Identity {
+		id := enrollment.Identity{Serial: systempkg.GetSerialNumber()}
+		if info := mdmpkg.Collect(""); info != nil {
+			id.ProvisioningUDID = info.Identity.ProvisioningUDID
+			if info.Identity.Serial != "" {
+				id.Serial = info.Identity.Serial
+			}
+		}
+		return id
+	}
+	// enrollRetry is the wait before enrollment attempt n+1 (n >= 1).
+	enrollRetry = func(n int) time.Duration {
+		return min(30*time.Second<<min(n-1, 5), 15*time.Minute)
+	}
+	// tokenMayArriveLater is enrollment.TokenMayArriveLater.
+	tokenMayArriveLater = enrollment.TokenMayArriveLater
+	// exitProcess ends a service whose start after enrollment failed, so the
+	// service manager restarts it instead of it running without an agent.
+	exitProcess = os.Exit
+)
 
 // NewProgram constructs a Program for the given config.
 func NewProgram(cfg *config.Config) *Program {
@@ -125,7 +160,72 @@ func (p *Program) Start(_ AgentService) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
-	p.mainIntegration = internal.NewMainIntegration(p.Cfg)
+
+	// A generic package has no config.json: enroll with a token first. With
+	// no token yet where one can still arrive (the MDM can install the
+	// package before the profile that carries it), or a failed exchange,
+	// keep the service up and retry instead of exiting into a restart loop.
+	// With no token where none will come, start as before: config
+	// validation fails and the service exits with ExitConfigInvalid.
+	if enrollment.Needed(p.Cfg) {
+		err := p.tryEnroll(ctx)
+		if err != nil && (tokenMayArriveLater || !errors.Is(err, enrollment.ErrNoToken)) {
+			log.Printf("First-boot enrollment: %v; retrying in the background", err)
+			emergencylog.Record("startup", "waiting for first-boot enrollment: %v", err)
+			p.enrollWG.Add(1)
+			go p.enrollThenStart(ctx)
+			return nil
+		}
+	}
+	return p.startIntegration(ctx)
+}
+
+// tryEnroll makes one first-boot enrollment attempt.
+func (p *Program) tryEnroll(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	if err := enroll(ctx, p.Cfg, enrollIdentity()); err != nil {
+		return err
+	}
+	log.Printf("First-boot enrollment: enrolled as agent %s", sanitize.ForLog(p.Cfg.AgentID))
+	return nil
+}
+
+// enrollThenStart retries enrollment with backoff until it succeeds or the
+// service stops, then starts the agent.
+func (p *Program) enrollThenStart(ctx context.Context) {
+	defer p.enrollWG.Done()
+	for n := 1; ; n++ {
+		t := time.NewTimer(enrollRetry(n))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		err := p.tryEnroll(ctx)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if n == 1 || errors.Is(err, enrollment.ErrRejected) {
+			log.Printf("First-boot enrollment: %v", err)
+		}
+	}
+	if err := p.startIntegration(ctx); err != nil {
+		emergencylog.Record("startup", "start after first-boot enrollment failed: %v", err)
+		exitProcess(int(StartExitCode(err)))
+	}
+}
+
+// startIntegration starts the agent proper.
+func (p *Program) startIntegration(ctx context.Context) error {
+	mi := internal.NewMainIntegration(p.Cfg)
+	p.mu.Lock()
+	p.mainIntegration = mi
+	p.mu.Unlock()
 
 	// Run startup synchronously so an initialization failure (config validation,
 	// logging service init, scheduler start) propagates to the service manager,
@@ -133,7 +233,7 @@ func (p *Program) Start(_ AgentService) error {
 	// instead of the previous behaviour where the service reported "running"
 	// while the agent was actually dead. Start kicks off the long-running loops
 	// in their own goroutines and returns promptly.
-	if err := p.mainIntegration.Start(ctx); err != nil {
+	if err := mi.Start(ctx); err != nil {
 		log.Printf("FATAL: main integration failed to start: %v", err)
 		// Release the lock we just acquired so a restart in this process (or a
 		// -run) isn't refused while this failed start is still unwinding.
@@ -157,9 +257,13 @@ func (p *Program) Stop(_ AgentService) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+	p.enrollWG.Wait() // a pending first-boot enrollment ends with the context
 
-	if p.mainIntegration != nil {
-		if err := p.mainIntegration.Stop(); err != nil {
+	p.mu.Lock()
+	mi := p.mainIntegration
+	p.mu.Unlock()
+	if mi != nil {
+		if err := mi.Stop(); err != nil {
 			log.Printf("Warning: Failed to stop main integration: %v", err)
 		}
 	}
