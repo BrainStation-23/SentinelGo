@@ -55,3 +55,18 @@ func TestCapabilities_PwshDependsOnDevice(t *testing.T) {
 		}
 	}
 }
+
+// apple_mdm_state_v1 is advertised on macOS only (#349).
+func TestCapabilities_AppleMDMStateOnMacOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"darwin": true, "linux": false, "windows": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityAppleMDMState); got != want {
+			t.Errorf("%s: apple_mdm_state_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+	if slices.Contains(AgentCapabilities, CapabilityAppleMDMState) {
+		t.Error("apple_mdm_state_v1 must not be in the static list")
+	}
+}

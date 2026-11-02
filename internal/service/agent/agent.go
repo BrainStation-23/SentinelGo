@@ -41,6 +41,9 @@ type AgentUpdatePayload struct {
 	Printers         interface{} `json:"printers,omitempty"`
 	OSInformation    interface{} `json:"os_information"`
 	SecurityInfo     interface{} `json:"security_info,omitempty"`
+	// MDM is the device's MDM enrollment state (#349); left out on
+	// platforms without a collector.
+	MDM *shared.MDMInfo `json:"mdm,omitempty"`
 	// PowerTelemetry covers the time since the last successful upload
 	// (#198); left out until a sampling interval has completed.
 	PowerTelemetry *shared.PowerTelemetry `json:"power_telemetry,omitempty"`
@@ -98,6 +101,7 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		Printers:         sysInfo.Printers,
 		OSInformation:    sysInfo.OSInformation,
 		SecurityInfo:     sysInfo.SecurityInfo,
+		MDM:              sysInfo.MDM,
 		PowerTelemetry:   sysInfo.PowerTelemetry,
 		Capabilities:     constants.Capabilities(),
 		UserIdentity:     sysInfo.UserIdentity,

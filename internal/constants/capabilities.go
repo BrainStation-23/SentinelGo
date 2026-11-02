@@ -30,11 +30,18 @@ var AgentCapabilities = []string{
 // never reports it.
 const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name, not a credential
 
+// CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
+// enrollment state, ADE assignment and the provisioning UDID (#349).
+const CapabilityAppleMDMState = "apple_mdm_state_v1"
+
+// goos is runtime.GOOS; a var so tests can check other platforms' lists.
+var goos = runtime.GOOS
+
 // pwshInstalled reports whether the task executor can find pwsh. It uses the
 // same strict lookup as the executor, so the capability is never advertised
 // for a pwsh the executor would not run. A var so tests can stub it.
 var pwshInstalled = func() bool {
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		return false
 	}
 	_, ok := binpath.Lookup("pwsh")
@@ -49,6 +56,9 @@ func Capabilities() []string {
 	caps := append([]string{}, AgentCapabilities...)
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)
+	}
+	if goos == "darwin" {
+		caps = append(caps, CapabilityAppleMDMState)
 	}
 	return caps
 }

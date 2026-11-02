@@ -49,6 +49,17 @@ func samplePowerWindow(now time.Time) {
 	}
 }
 
+// stableMDM is the MDM block without its collection time, which changes on
+// every run and would otherwise force an upload each cycle.
+func stableMDM(m *shared.MDMInfo) *shared.MDMInfo {
+	if m == nil {
+		return nil
+	}
+	c := *m
+	c.CollectedAt = time.Time{}
+	return &c
+}
+
 // sysInfoFingerprint hashes the stable (non-volatile) fields of SystemInfo.
 // Volatile fields (CPU/memory/disk usage, uptime, timestamp) are excluded so
 // that normal telemetry churn does not trigger a redundant upload every cycle.
@@ -78,6 +89,7 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		AudioDevices    interface{}
 		Printers        interface{}
 		Peripherals     interface{}
+		MDM             interface{}
 	}{
 		Hostname:        s.Hostname,
 		SerialNumber:    s.SerialNumber,
@@ -103,6 +115,7 @@ func sysInfoFingerprint(s *shared.SystemInfo) string {
 		AudioDevices:    s.AudioDevices,
 		Printers:        s.Printers,
 		Peripherals:     s.Peripherals,
+		MDM:             stableMDM(s.MDM),
 	}
 	data, _ := json.Marshal(fp)
 	sum := sha256.Sum256(data)
