@@ -40,6 +40,7 @@ type Destination struct {
 	USB         *events.USB
 	ShareHost   string
 	Source      string // what was mounted (device or //host/share)
+	Host        string // uploads: the destination host, never the URL
 }
 
 // Process is the program that wrote the file.
@@ -67,6 +68,9 @@ type Request struct {
 	Proc  Process
 	Ident Identity
 	At    time.Time
+	// NoCache skips the verdict cache: for inputs whose identity is reused
+	// (an upload's spill file is deleted after the scan, its inode recycled).
+	NoCache bool
 }
 
 // Stats are the decider's counters.
@@ -112,6 +116,16 @@ func (d *Decider) Apply(c *policy.Compiled) {
 	d.mu.Unlock()
 }
 
+// Files returns the files module of the policy in force (zero when none).
+func (d *Decider) Files() policy.FilesModule {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.compiled == nil {
+		return policy.FilesModule{}
+	}
+	return d.compiled.Modules.Files
+}
+
 // Invalidate drops cached results for a file (it was written again).
 func (d *Decider) Invalidate(id Identity) { d.cache.InvalidateFile(fileID(id)) }
 
@@ -125,23 +139,40 @@ func fileID(id Identity) string {
 	return strconv.FormatUint(id.Dev, 10) + ":" + strconv.FormatUint(id.Ino, 10)
 }
 
-// Handle decides one file event and records any evidence.
-func (d *Decider) Handle(ctx context.Context, r Request) {
+// Verdict is what a hook that can hold the operation should do.
+type Verdict struct {
+	Block   bool
+	Message string // the files module's block message, for the user
+}
+
+// Handle decides one file event and records any evidence, for hooks that
+// can't block (the Linux monitor sees files after they were written).
+func (d *Decider) Handle(ctx context.Context, r Request) { d.Decide(ctx, r, false) }
+
+// Decide decides one file event, records any evidence and returns the
+// verdict. It blocks only when canBlock is true, the files module isn't
+// audit-only, and a matching policy's action is block, or the file couldn't
+// be scanned and on_unscannable / on_timeout say block. Events record what
+// was done: blocked, or monitored.
+func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict {
 	d.mu.Lock()
 	c, eng := d.compiled, d.engine
 	d.mu.Unlock()
 	if c == nil || !c.ChannelEnabled(r.Dest.Channel) || r.Ident.Size <= 0 {
-		return
+		return Verdict{}
 	}
 	pols := applicable(c, r)
 	if len(pols) == 0 {
-		return // nothing to decide: don't read the file
+		return Verdict{} // nothing to decide: don't read the file
 	}
 
 	key := filescan.CacheKey{FileID: fileID(r.Ident), Size: r.Ident.Size, ModTime: r.Ident.ModTime,
 		ChangeTime: r.Ident.ChangeTime, PolicyVersion: c.Version}
 	source := "cache"
-	res, ok := d.cache.Get(key)
+	res, ok := filescan.Result{}, false
+	if !r.NoCache {
+		res, ok = d.cache.Get(key)
+	}
 	if ok {
 		d.cached.Add(1)
 	} else {
@@ -149,7 +180,9 @@ func (d *Decider) Handle(ctx context.Context, r Request) {
 		timeout := time.Duration(c.Modules.Files.ScanTimeoutMs) * time.Millisecond
 		res = d.scanner.Scan(ctx, r.File, r.Ident.Size, timeout)
 		d.scans.Add(1)
-		d.cache.Put(key, res)
+		if !r.NoCache {
+			d.cache.Put(key, res)
+		}
 	}
 	switch {
 	case res.Status == filescan.StatusTimeout:
@@ -159,22 +192,58 @@ func (d *Decider) Handle(ctx context.Context, r Request) {
 	}
 
 	files := c.Modules.Files
+	mayBlock := canBlock && !files.IsAuditOnly()
 	ext := fileExt(r.Path)
+	var v Verdict
 	for _, p := range pols {
 		matched, findings := evaluate(eng, p, res, ext)
 		typeOK := p.FileFilters.TypeOK(ext, res.DetectedType)
+		block := false
 		switch {
 		case matched:
+			block = p.Action == policy.ActionBlock
 		case !typeOK:
 			continue // not a file type this policy covers
 		case filescan.IsUnscannable(res.Status) && files.OnUnscannable != policy.OnFailAllow:
+			block = files.OnUnscannable == policy.OnFailBlock
 		case res.Status == filescan.StatusTimeout && files.OnTimeout == policy.OnFailBlock:
+			block = true
 		default:
 			continue
 		}
-		d.sink.Emit(buildEvent(c, p, r, res, findings, source))
+		ev := buildEvent(c, p, r, res, findings, source)
+		if block && mayBlock {
+			ev.Action = events.ActionBlocked
+			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, findings)}
+		}
+		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}
+	return v
+}
+
+// defaultFileBlockMessage is used when the bundle has none.
+const defaultFileBlockMessage = "SentinelOps blocked this file: {{detector}}"
+
+// blockMessage fills {{detector}} with the detectors that matched (never the
+// matched values).
+func blockMessage(tmpl string, findings []detect.Finding) string {
+	if tmpl == "" {
+		tmpl = defaultFileBlockMessage
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, f := range findings {
+		if !seen[f.DetectorID] {
+			seen[f.DetectorID] = true
+			ids = append(ids, f.DetectorID)
+		}
+	}
+	what := strings.Join(ids, ", ")
+	if what == "" {
+		what = "a file that couldn't be checked"
+	}
+	return strings.ReplaceAll(tmpl, "{{detector}}", what)
 }
 
 // applicable returns the policies for r's channel that no exception or size
@@ -300,7 +369,7 @@ func buildEvent(c *policy.Compiled, p policy.CompiledPolicy, r Request, res file
 			Size:         r.Ident.Size,
 			SHA256:       res.SHA256,
 		},
-		Destination: &events.Destination{Type: r.Dest.Type, VolumeLabel: r.Dest.VolumeLabel, USB: r.Dest.USB, ShareHost: r.Dest.ShareHost},
+		Destination: &events.Destination{Type: r.Dest.Type, VolumeLabel: r.Dest.VolumeLabel, USB: r.Dest.USB, ShareHost: r.Dest.ShareHost, Host: r.Dest.Host},
 		Process:     &events.Process{Name: r.Proc.Name, Path: r.Proc.Exe},
 		Scan:        &events.Scan{Status: res.Status, VerdictSource: source, DurationMs: res.Duration.Milliseconds()},
 	}
@@ -318,4 +387,5 @@ func buildEvent(c *policy.Compiled, p policy.CompiledPolicy, r Request, res file
 const (
 	TypeRemovable    = "removable"
 	TypeNetworkShare = "network_share"
+	TypeUpload       = "upload"
 )

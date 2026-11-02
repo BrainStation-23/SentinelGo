@@ -2,6 +2,7 @@ package filedlp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -358,5 +359,56 @@ func TestDecider_FileFilters(t *testing.T) {
 		if n := len(sink.events()); n != tc.events || int(sc.calls.Load()) != tc.scans {
 			t.Errorf("%s: %d events, %d scans; want %d, %d", tc.name, n, sc.calls.Load(), tc.events, tc.scans)
 		}
+	}
+}
+
+// Decide blocks only when the hook can, the module isn't audit-only and the
+// policy (or the fail mode) says block; the event records what was done.
+func TestDecider_DecideVerdict(t *testing.T) {
+	bundleWith := func(auditOnly bool, action, onUnscannable string) string {
+		return fmt.Sprintf(`{"schema_version": 1, "version": "v1", "enabled": true,
+		  "modules": {"files": {"enabled": true, "channels": {"file.removable": true}, "audit_only": %v, "on_unscannable": %q,
+		    "block_message": "No: {{detector}}"}},
+		  "policies": [{"id": "p1", "name": "Cards", "channels": ["file.removable"], "action": %q,
+		    "detectors": [{"id": "pii.credit_card", "rule_id": "r1", "min_count": 1}]}]}`, auditOnly, onUnscannable, action)
+	}
+	match := filescan.Result{Status: filescan.StatusScanned, Findings: []detect.Finding{cardFinding()}}
+	unscannable := filescan.Result{Status: filescan.Unscannable(filescan.ReasonPasswordProtected)}
+	for _, tc := range []struct {
+		name     string
+		bundle   string
+		res      filescan.Result
+		canBlock bool
+		block    bool
+		action   string
+	}{
+		{"block policy, enforcing", bundleWith(false, "block", "allow"), match, true, true, events.ActionBlocked},
+		{"block policy, hook can't block", bundleWith(false, "block", "allow"), match, false, false, events.ActionMonitored},
+		{"block policy, audit only", bundleWith(true, "block", "allow"), match, true, false, events.ActionMonitored},
+		{"monitor policy", bundleWith(false, "monitor", "allow"), match, true, false, events.ActionMonitored},
+		{"unscannable, on_unscannable block", bundleWith(false, "monitor", "block"), unscannable, true, true, events.ActionBlocked},
+		{"unscannable, on_unscannable monitor", bundleWith(false, "block", "monitor"), unscannable, true, false, events.ActionMonitored},
+	} {
+		sink := &recordingSink{}
+		d := NewDecider(&fakeScanner{res: tc.res}, sink)
+		d.Apply(compile(t, tc.bundle))
+		v := d.Decide(context.Background(), usbRequest(), tc.canBlock)
+		evs := sink.events()
+		if v.Block != tc.block || len(evs) != 1 || evs[0].Action != tc.action {
+			t.Errorf("%s: verdict %+v, events %+v", tc.name, v, evs)
+			continue
+		}
+		if tc.block && !strings.HasPrefix(v.Message, "No: ") {
+			t.Errorf("%s: message %q", tc.name, v.Message)
+		}
+	}
+	if got := blockMessage("", []detect.Finding{cardFinding(), cardFinding()}); got != "SentinelOps blocked this file: pii.credit_card" {
+		t.Errorf("default message %q", got)
+	}
+	if got := blockMessage("x {{detector}}", nil); got != "x a file that couldn't be checked" {
+		t.Errorf("no findings %q", got)
+	}
+	if d := NewDecider(&fakeScanner{}, &recordingSink{}); d.Files().Enabled {
+		t.Error("files module without a policy")
 	}
 }
