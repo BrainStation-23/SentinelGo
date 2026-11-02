@@ -21,6 +21,7 @@ var AgentCapabilities = []string{
 	"users_inventory_v2",    // built-in accounts, local_admin_members, signed_in_users, … (#223)
 	"exposure_scope_v1",     // risky_services[].remote_scope, remote_addresses, on_public_address (#251)
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
+	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on

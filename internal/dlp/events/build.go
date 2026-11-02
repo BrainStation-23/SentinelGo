@@ -34,7 +34,7 @@ type Meta struct {
 type Match struct {
 	PolicyID      string
 	PolicyVersion string
-	Action        string // ActionMonitored or ActionBlocked
+	Action        string // ActionMonitored, ActionWarned or ActionBlocked
 	Severity      string
 	EvidenceMode  string // none | masked | full
 }

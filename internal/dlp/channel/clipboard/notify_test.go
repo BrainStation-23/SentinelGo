@@ -39,18 +39,31 @@ func TestDecide_NotifyMessage(t *testing.T) {
 	}
 
 	before := len(testNotifier.msgs)
-	notifyBlocked(d)
+	notifyUser(d)
 	if len(testNotifier.msgs) != before+1 || !strings.Contains(testNotifier.msgs[before], "credit card") {
-		t.Errorf("notifyBlocked didn't notify: %v", testNotifier.msgs)
+		t.Errorf("notifyUser didn't notify: %v", testNotifier.msgs)
+	}
+}
+
+// A warned copy notifies with the warn message; a monitor-only one doesn't.
+func TestNotifyUser_Warn(t *testing.T) {
+	before := len(testNotifier.msgs)
+	notifyUser(Decide(compile(t, warnEmails), "jane@example.com", events.SourceApp{}, now))
+	if len(testNotifier.msgs) != before+1 || !strings.Contains(testNotifier.msgs[before], "allowed and logged") {
+		t.Errorf("warn not notified: %v", testNotifier.msgs[before:])
+	}
+	notifyUser(Decide(compile(t, monitorFalcon), "falcon", events.SourceApp{}, now))
+	if len(testNotifier.msgs) != before+1 {
+		t.Error("monitor-only copy notified")
 	}
 }
 
 // A block that couldn't be applied (events marked monitored) doesn't notify.
-func TestNotifyBlocked_OnlyWhenReallyBlocked(t *testing.T) {
+func TestNotifyUser_OnlyWhenReallyBlocked(t *testing.T) {
 	d := Decide(compile(t, blockCards), "4111111111111111", events.SourceApp{}, now)
 	markMonitored(d.Events)
 	before := len(testNotifier.msgs)
-	notifyBlocked(d)
+	notifyUser(d)
 	if len(testNotifier.msgs) != before {
 		t.Error("notified although nothing was blocked")
 	}

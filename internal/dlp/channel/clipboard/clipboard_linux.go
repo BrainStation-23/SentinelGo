@@ -205,7 +205,8 @@ func (w *poller) check(ctx context.Context) {
 
 // enforce decides on one copy and acts on it: replace puts the placeholder
 // on the clipboard when a policy blocks, and a copy it couldn't replace is
-// recorded as monitored (the content is still there).
+// recorded as monitored (the content is still there). A warned copy is left
+// alone; the user is told.
 func enforce(p *policy.Compiled, sink channel.EventSink, text []byte, src events.SourceApp, replace func(msg string) error) Decision {
 	d := Decide(p, string(text), src, time.Now())
 	if d.Block {
@@ -213,8 +214,8 @@ func enforce(p *policy.Compiled, sink channel.EventSink, text []byte, src events
 			log.Printf("DLP helper: clipboard not replaced (%v); recording as monitored", err)
 			markMonitored(d.Events)
 		}
-		notifyBlocked(d)
 	}
+	notifyUser(d)
 	for _, ev := range d.Events {
 		sink.Emit(ev)
 	}
