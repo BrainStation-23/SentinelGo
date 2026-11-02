@@ -31,10 +31,25 @@ import (
 // linuxChannels are the file channels this hook monitors.
 var linuxChannels = map[string]bool{policy.ChannelFileRemovable: true, policy.ChannelFileNetworkShare: true}
 
-// Test seams: how a mount is classified, and the scan workers' environment.
+// Test seams: how a mount is classified, the scan workers' environment, the
+// mount table, and the fanotify calls (so the loops run without root).
 var (
 	classifyMount = classify
 	workerEnv     []string
+	mountinfoPath = "/proc/self/mountinfo"
+	fanotifyInit  = func() (int, error) {
+		return unix.FanotifyInit(unix.FAN_CLASS_NOTIF|unix.FAN_CLOEXEC|unix.FAN_NONBLOCK,
+			unix.O_RDONLY|unix.O_LARGEFILE|unix.O_CLOEXEC)
+	}
+	markMount = func(fan int, add bool, mountPoint string) error {
+		flags := uint(unix.FAN_MARK_MOUNT)
+		if add {
+			flags |= unix.FAN_MARK_ADD
+		} else {
+			flags |= unix.FAN_MARK_REMOVE
+		}
+		return unix.FanotifyMark(fan, flags, unix.FAN_CLOSE_WRITE, unix.AT_FDCWD, mountPoint)
+	}
 )
 
 // Tuning.
@@ -59,6 +74,7 @@ type linuxEnforcer struct {
 	queue    chan Request
 	kick     chan struct{}
 	failure  string // why the hook couldn't start ("" when it could)
+	tried    bool   // start was attempted at least once (Health is reported from then on)
 	lastPool scanworker.Health
 
 	// pool is read by the decide loops, so it is atomic: they must never
@@ -126,8 +142,8 @@ func (e *linuxEnforcer) Stop() {
 
 // startLocked opens the fanotify group and starts the loops. e.mu is held.
 func (e *linuxEnforcer) startLocked() {
-	fan, err := unix.FanotifyInit(unix.FAN_CLASS_NOTIF|unix.FAN_CLOEXEC|unix.FAN_NONBLOCK,
-		unix.O_RDONLY|unix.O_LARGEFILE|unix.O_CLOEXEC)
+	e.tried = true
+	fan, err := fanotifyInit()
 	if err != nil {
 		e.failure = fanotifyFailure(err)
 		log.Printf("DLP: file monitoring unavailable: fanotify: %v", err)
@@ -226,7 +242,7 @@ func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, f
 	}
 	for mp := range marked {
 		if _, ok := want[mp]; !ok {
-			_ = unix.FanotifyMark(fan, unix.FAN_MARK_REMOVE|unix.FAN_MARK_MOUNT, unix.FAN_CLOSE_WRITE, unix.AT_FDCWD, mp)
+			_ = markMount(fan, false, mp)
 			delete(marked, mp)
 		}
 	}
@@ -235,7 +251,7 @@ func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, f
 			marked[mp] = d
 			continue
 		}
-		if err := unix.FanotifyMark(fan, unix.FAN_MARK_ADD|unix.FAN_MARK_MOUNT, unix.FAN_CLOSE_WRITE, unix.AT_FDCWD, mp); err != nil {
+		if err := markMount(fan, true, mp); err != nil {
 			if !failed[mp] {
 				failed[mp] = true
 				log.Printf("DLP: can't watch %s mount: %v", d.Type, err) // the mount point may name a user; not logged
@@ -261,7 +277,7 @@ func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, f
 // monitoredMounts lists the mounts to watch under c: removable media and
 // network shares whose channel is on, minus trusted devices and shares.
 func (e *linuxEnforcer) monitoredMounts(c *policy.Compiled) map[string]Destination {
-	f, err := os.Open("/proc/self/mountinfo")
+	f, err := os.Open(mountinfoPath)
 	if err != nil {
 		return nil
 	}
@@ -425,9 +441,9 @@ func (e *linuxEnforcer) stateLocked() (string, scanworker.Health) {
 func (e *linuxEnforcer) Health() *Health {
 	e.mu.Lock()
 	state, workers := e.stateLocked()
-	everStarted := e.running || e.failure != "" || e.lastPool != (scanworker.Health{})
+	tried := e.tried
 	e.mu.Unlock()
-	if !everStarted {
+	if !tried {
 		return nil
 	}
 	return &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
