@@ -121,6 +121,9 @@ var knownPaths = func() map[string][]string {
 		"sc.exe":     {filepath.Join(sys32, "sc.exe")},
 		"secedit":    {filepath.Join(sys32, "secedit.exe")},
 		"dsregcmd":   {filepath.Join(sys32, "dsregcmd.exe")},
+		// MDM client: starts an OMA-DM session for an enrollment (#357).
+		"deviceenroller": {filepath.Join(sys32, "deviceenroller.exe")},
+		"schtasks":       {filepath.Join(sys32, "schtasks.exe")},
 
 		// shutdown exists on all three OSes, at different paths.
 		"shutdown": {"/sbin/shutdown", "/usr/sbin/shutdown", filepath.Join(sys32, "shutdown.exe")},

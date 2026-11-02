@@ -80,5 +80,8 @@ func TestCapabilities_WindowsMDMStateOnWindowsOnly(t *testing.T) {
 		if got := slices.Contains(Capabilities(), CapabilityWindowsMDMState); got != want {
 			t.Errorf("%s: windows_mdm_state_v1 advertised = %v, want %v", os, got, want)
 		}
+		if got := slices.Contains(Capabilities(), CapabilityMDMSync); got != want {
+			t.Errorf("%s: mdm_sync_v1 advertised = %v, want %v", os, got, want)
+		}
 	}
 }

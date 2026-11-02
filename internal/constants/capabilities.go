@@ -38,6 +38,10 @@ const CapabilityMDMEnroll = "mdm_enroll_v1"
 // block: edition eligibility, MDM enrollments and the OMA-DM identity (#355).
 const CapabilityWindowsMDMState = "windows_mdm_state_v1"
 
+// CapabilityMDMSync means the agent runs the mdm-sync native task: start an
+// MDM session now, standing in for push (#357).
+const CapabilityMDMSync = "mdm_sync_v1"
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -69,7 +73,7 @@ func Capabilities() []string {
 	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	case "windows":
-		caps = append(caps, CapabilityWindowsMDMState)
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync)
 	}
 	return caps
 }

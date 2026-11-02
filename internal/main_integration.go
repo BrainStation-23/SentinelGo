@@ -437,6 +437,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	mi.mu.Unlock()
 	native.SetUserNotifier(mi.notifyUser)
 	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
+	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if err := m.Start(ctx); err != nil {
@@ -492,6 +493,20 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 			return "", err
 		}
 		out, err := e.Enroll(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
+}
+
+// mdmSyncHook is the mdm-sync task (#357): start an MDM session for our
+// enrollment now.
+func (mi *MainIntegration) mdmSyncHook(cfg *config.Config) native.MDMSyncer {
+	s := mdmenroll.NewSyncer(func() string { return cfg.MDMHost })
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		host, _ := payload["mdm_host"].(string)
+		out, err := s.Sync(ctx, host)
 		if err != nil {
 			return "", err
 		}
@@ -703,6 +718,7 @@ func (mi *MainIntegration) Stop() error {
 	native.SetDLPPolicySync(nil)
 	native.SetUserNotifier(nil)
 	native.SetMDMEnroller(nil)
+	native.SetMDMSyncer(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}
