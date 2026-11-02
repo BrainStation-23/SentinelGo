@@ -231,6 +231,26 @@ jobs:
         shell: bash
         run: go test -timeout=5m -coverprofile=coverage.out -coverpkg=./... -short ./...
 
+      # File DLP's end-to-end tests need root: they mount a tmpfs that plays a
+      # USB stick and watch it with fanotify, and run the sandboxed scan
+      # workers as `nobody` the way the service does. Hosted runners allow
+      # sudo. Root gets its own build cache, so the steps after this one (run
+      # as the runner user) never meet root-owned cache files, and its
+      # coverage is added to this runner's report for SonarCloud.
+      - name: Run file DLP tests as root
+        if: runner.os == 'Linux'
+        run: |
+          sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$RUNNER_TEMP/gocache-root" \
+            "GOFLAGS=$(go env GOFLAGS)" CGO_ENABLED=0 \
+            go test -timeout=5m -count=1 -v -coverprofile="$RUNNER_TEMP/coverage-root.out" -coverpkg=./... \
+            ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ | tee "$RUNNER_TEMP/root-tests.log"
+          # The end-to-end tests skip themselves when they can't run: make
+          # sure they really ran here.
+          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestSandbox_Probe; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/root-tests.log" || { echo "::error::$t did not run as root"; exit 1; }
+          done
+          tail -n +2 "$RUNNER_TEMP/coverage-root.out" >> coverage.out
+
       # tools/dlprules (the DLP rules generator) is its own module, so ./...
       # above doesn't reach it. Linux only: it has no platform-specific code.
       - name: Run DLP rules generator tests
