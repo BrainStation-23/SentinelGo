@@ -70,6 +70,11 @@ var knownPaths = func() map[string][]string {
 		"sudo":       {"/usr/bin/sudo"},
 		"env":        {"/usr/bin/env", "/bin/env"},
 
+		// Linux accounts (the file DLP scan workers' account).
+		"useradd": {"/usr/sbin/useradd", "/sbin/useradd"},
+		"userdel": {"/usr/sbin/userdel", "/sbin/userdel"},
+		"nologin": {"/usr/sbin/nologin", "/sbin/nologin"},
+
 		// Linux firewalls (osinfo/security). firewall-cmd is a Python
 		// script under bin; iptables and nft are under sbin.
 		"firewall-cmd": {"/usr/bin/firewall-cmd", "/bin/firewall-cmd"},
