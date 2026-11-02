@@ -1,0 +1,13 @@
+//go:build !linux
+
+package cli
+
+import (
+	"sentinelgo/internal/dlp/filedlp"
+	"sentinelgo/internal/dlp/policy"
+)
+
+// newProxyScanner scans in this process: sandboxed workers only run on Linux.
+func newProxyScanner(c *policy.Compiled, _ []byte, spill string) (filedlp.Scanner, func(), string) {
+	return inProcessScanner(c, spill), func() {}, "files are scanned in this process (sandboxed workers are Linux only)"
+}

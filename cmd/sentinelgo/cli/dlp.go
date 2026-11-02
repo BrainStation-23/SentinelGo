@@ -117,11 +117,15 @@ func dlpStatus(cfg *config.Config) DLPStatus {
 	return st
 }
 
-// RunDLP runs `sentinelgo dlp <status|test> …` and returns the exit code.
+// RunDLP runs `sentinelgo dlp <status|test|proxy> …` and returns the exit code.
 // -config points at a non-default install's config.json.
 func RunDLP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "proxy" {
+		return runDLPProxy(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || (args[0] != "status" && args[0] != "test") {
-		_, _ = fmt.Fprintln(stderr, "usage: sentinelgo dlp status [-json] [-config PATH] | sentinelgo dlp test [-file PATH|-] [-config PATH]")
+		_, _ = fmt.Fprintln(stderr, "usage: sentinelgo dlp status [-json] [-config PATH] | sentinelgo dlp test [-file PATH|-] [-config PATH] |"+
+			" sentinelgo dlp proxy -hosts H1,H2 [-listen 127.0.0.1:3129] [-ca-out FILE] [-config PATH]")
 		return 2
 	}
 	fs := flag.NewFlagSet("dlp "+args[0], flag.ContinueOnError)
