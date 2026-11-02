@@ -15,6 +15,7 @@ import (
 	diskpkg "sentinelgo/internal/osinfo/disk"
 	displaypkg "sentinelgo/internal/osinfo/display"
 	gpupkg "sentinelgo/internal/osinfo/gpu"
+	mdmpkg "sentinelgo/internal/osinfo/mdm"
 	networkpkg "sentinelgo/internal/osinfo/network"
 	peripheralspkg "sentinelgo/internal/osinfo/peripherals"
 	printerspkg "sentinelgo/internal/osinfo/printers"
@@ -128,5 +129,6 @@ func Collect() *shared.SystemInfo {
 		Printers:         printerspkg.Get(),
 		OSInformation:    osInformation,
 		SecurityInfo:     securitypkg.Collect(),
+		MDM:              mdmpkg.Collect(cfg.MDMHost),
 	}
 }

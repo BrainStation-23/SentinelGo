@@ -52,6 +52,9 @@ type HelperOptions struct {
 	// Notify shows an admin's desktop notification and waits for it; nil
 	// means this helper can't show one.
 	Notify func(title, message, level string) error
+	// OpenProfile presents a configuration profile to the user (#350); nil
+	// means this platform can't.
+	OpenProfile func(name string, data []byte) error
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -165,6 +168,10 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		case ipc.TypeNotify:
 			if m.Notify != nil {
 				go r.notify(*m.Notify)
+			}
+		case ipc.TypeOpenProfile:
+			if m.OpenProfile != nil {
+				go r.openProfile(*m.OpenProfile)
 			}
 		}
 	}
@@ -310,6 +317,23 @@ func (r *helperRuntime) notify(n ipc.Notify) {
 		res.Error = err.Error()
 	}
 	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
+}
+
+// openProfile presents a configuration profile to this helper's user, then
+// tells them what to do with it. The profile's bytes are never logged.
+func (r *helperRuntime) openProfile(p ipc.OpenProfile) {
+	res := &ipc.OpenProfileResult{ID: p.ID}
+	if r.o.OpenProfile == nil {
+		res.Error = "this helper can't open configuration profiles on this platform"
+	} else if err := r.o.OpenProfile(p.Name, p.Data); err != nil {
+		log.Printf("Session helper: profile %s not opened: %v", p.ID, err)
+		res.Error = err.Error()
+	} else if r.o.Notify != nil && p.Title != "" {
+		if err := r.o.Notify(p.Title, p.Message, ipc.LevelWarning); err != nil {
+			log.Printf("Session helper: profile %s opened; instructions not shown: %v", p.ID, err)
+		}
+	}
+	r.send(ipc.Message{Type: ipc.TypeOpenProfileResult, OpenProfileResult: res})
 }
 
 func (r *helperRuntime) stopChannels() {

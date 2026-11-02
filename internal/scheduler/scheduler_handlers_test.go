@@ -88,6 +88,24 @@ func TestSysInfoFingerprint_DifferentInputDifferentHash(t *testing.T) {
 	}
 }
 
+// The MDM block counts, except its collection time (#349).
+func TestSysInfoFingerprint_MDM(t *testing.T) {
+	mk := func(enrolled bool, at int64) *shared.SystemInfo {
+		return &shared.SystemInfo{Hostname: "h", MDM: &shared.MDMInfo{Enrolled: enrolled, CollectedAt: time.Unix(at, 0)}}
+	}
+	if sysInfoFingerprint(mk(true, 1)) != sysInfoFingerprint(mk(true, 2)) {
+		t.Error("a new collected_at alone changed the fingerprint")
+	}
+	if sysInfoFingerprint(mk(true, 1)) == sysInfoFingerprint(mk(false, 1)) {
+		t.Error("an enrollment change didn't change the fingerprint")
+	}
+	info := mk(true, 1)
+	sysInfoFingerprint(info)
+	if info.MDM.CollectedAt.IsZero() {
+		t.Error("fingerprinting modified the caller's MDM block")
+	}
+}
+
 func TestSysInfoFingerprint_IgnoresVolatileFields(t *testing.T) {
 	// Volatile fields (CPU/memory/disk usage, uptime, timestamp) aren't part of
 	// the fingerprint struct at all, so changing Hostname-independent live data

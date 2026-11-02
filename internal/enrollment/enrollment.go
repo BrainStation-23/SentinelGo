@@ -1,0 +1,177 @@
+// Package enrollment is first-boot enrollment (#351): an agent installed from
+// a generic package, with no config.json, registers itself with a single-use
+// token and gets its own agent_id and agent_secret.
+//
+// The token comes from the device's management system: MDM managed
+// preferences on macOS, or enrollment.json next to config.json, which an
+// installer can write (the Windows MSI does, #358). The backend binds each
+// token to one device, so a copied token is useless elsewhere.
+package enrollment
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	"sentinelgo/internal/config"
+	"sentinelgo/internal/supabase"
+)
+
+// FileName is the token file an installer can drop next to config.json.
+const FileName = "enrollment.json"
+
+// enrollFunction exchanges a token for agent credentials (contract v1,
+// Compliance-OS#543). It's public: the anon key gates it, the token
+// authenticates the device.
+const enrollFunction = "agent-enroll"
+
+// ErrNoToken means no enrollment token is available yet.
+var ErrNoToken = errors.New("no enrollment token found")
+
+// Source is where an enrollment token came from and what to do with it.
+type Source struct {
+	Token     string
+	ServerURL string // the API (Supabase) URL
+	AnonKey   string
+	Origin    string // where it was found, for logs
+	// file is the token file to delete once used; "" for managed preferences.
+	file string
+}
+
+// Identity is what the backend checks the token against.
+type Identity struct {
+	Serial           string
+	ProvisioningUDID string
+}
+
+// Needed reports whether the agent has no usable configuration: no API URL
+// at all. An install from a per-agent package or zip always has one, so it
+// never enrolls.
+func Needed(cfg *config.Config) bool {
+	return cfg != nil && strings.TrimSpace(cfg.SupabaseURL) == ""
+}
+
+// Find returns the first available token: the token file in the config
+// directory, then the platform's managed settings.
+func Find(cfg *config.Config) (Source, error) {
+	if cfg.Path != "" {
+		path := filepath.Join(filepath.Dir(cfg.Path), FileName)
+		src, err := readFile(path)
+		if err == nil {
+			return src, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return Source{}, err
+		}
+	}
+	return platformSource()
+}
+
+func readFile(path string) (Source, error) {
+	b, err := os.ReadFile(path) // #nosec G304 -- fixed file in the root/SYSTEM-only config directory
+	if err != nil {
+		return Source{}, err
+	}
+	var f struct {
+		Token     string `json:"enrollment_token"`
+		ServerURL string `json:"server_url"`
+		AnonKey   string `json:"anon_key"`
+	}
+	if err := json.Unmarshal(b, &f); err != nil {
+		return Source{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return validate(Source{Token: f.Token, ServerURL: f.ServerURL, AnonKey: f.AnonKey, Origin: path, file: path})
+}
+
+// validate checks a token source: all fields set, the API URL https.
+func validate(s Source) (Source, error) {
+	s.Token, s.ServerURL, s.AnonKey = strings.TrimSpace(s.Token), strings.TrimSpace(s.ServerURL), strings.TrimSpace(s.AnonKey)
+	if s.Token == "" || s.ServerURL == "" || s.AnonKey == "" {
+		return Source{}, fmt.Errorf("%s: enrollment token, server URL and API key are all required", s.Origin)
+	}
+	u, err := url.Parse(s.ServerURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return Source{}, fmt.Errorf("%s: server URL must be https", s.Origin)
+	}
+	s.ServerURL = strings.TrimSuffix(s.ServerURL, "/")
+	return s, nil
+}
+
+// ErrRejected means the backend refused the token (expired, used, or bound
+// to another device). Retrying the same token won't help; a new one will.
+var ErrRejected = errors.New("the enrollment token was rejected")
+
+// httpClient is the client for the exchange; nil means the supabase
+// package's default. A var for tests.
+var httpClient *http.Client
+
+// Exchange trades the token for this device's agent credentials.
+func Exchange(ctx context.Context, src Source, id Identity) (agentID, agentSecret string, err error) {
+	return exchangeWith(ctx, src, id, httpClient)
+}
+
+func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (agentID, agentSecret string, err error) {
+	body := map[string]string{
+		"token":             src.Token,
+		"serial":            id.Serial,
+		"provisioning_udid": id.ProvisioningUDID,
+		"os":                runtime.GOOS,
+		"arch":              runtime.GOARCH,
+	}
+	var resp struct {
+		AgentID     string `json:"agent_id"`
+		AgentSecret string `json:"agent_secret"`
+	}
+	var opts []supabase.Option
+	if hc != nil {
+		opts = append(opts, supabase.WithHTTPClient(hc))
+	}
+	c := supabase.New(src.ServerURL, src.AnonKey, func() string { return "" }, opts...)
+	if err := c.InvokeFunction(ctx, enrollFunction, body, &resp); err != nil {
+		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) {
+			return "", "", fmt.Errorf("%w: %v", ErrRejected, err)
+		}
+		return "", "", err
+	}
+	if resp.AgentID == "" || resp.AgentSecret == "" {
+		return "", "", errors.New("the server's answer has no agent credentials")
+	}
+	return resp.AgentID, resp.AgentSecret, nil
+}
+
+// Apply writes the credentials to cfg, saves config.json and deletes the
+// used token file. The secret is never logged.
+func Apply(cfg *config.Config, src Source, agentID, agentSecret string) error {
+	cfg.SupabaseURL, cfg.SupabaseKey = src.ServerURL, src.AnonKey
+	cfg.AgentID, cfg.AgentSecret = agentID, agentSecret
+	if err := cfg.SaveAtomic(); err != nil {
+		return fmt.Errorf("saving config.json: %w", err)
+	}
+	if src.file != "" {
+		if err := os.Remove(src.file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("enrolled, but the used token file wasn't removed: %w", err)
+		}
+	}
+	return nil
+}
+
+// Enroll finds a token and, if there is one, exchanges it and saves the
+// result. ErrNoToken means there's nothing to do yet.
+func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
+	src, err := Find(cfg)
+	if err != nil {
+		return err
+	}
+	agentID, secret, err := Exchange(ctx, src, id)
+	if err != nil {
+		return fmt.Errorf("enrolling with the token from %s: %w", src.Origin, err)
+	}
+	return Apply(cfg, src, agentID, secret)
+}

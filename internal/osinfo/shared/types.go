@@ -38,6 +38,10 @@ type SystemInfo struct {
 	OSInformation    OSInformation      `json:"os_information"`
 	SecurityInfo     SecurityInfo       `json:"security_info"`
 
+	// MDM is the device's MDM enrollment state and the identifiers MDM uses
+	// (#349). nil on platforms without a collector.
+	MDM *MDMInfo `json:"mdm,omitempty"`
+
 	// PowerTelemetry summarises the window since the last successful
 	// inventory upload (#198). The scheduler fills it in just before an
 	// upload; it is not part of the inventory fingerprint.
@@ -730,4 +734,52 @@ type ListeningPort struct {
 	Address     string `json:"address"`      // bound address, e.g. "0.0.0.0" or "127.0.0.1"
 	ProcessName string `json:"process_name"` // best-effort; empty if lookup fails
 	ProcessID   int32  `json:"process_id"`
+}
+
+// MDMInfo is a device's MDM enrollment state (contract v1 "mdm" block,
+// SentinelGo#348). Fields the agent couldn't determine are null.
+type MDMInfo struct {
+	Enrolled     bool `json:"enrolled"`
+	UserApproved bool `json:"user_approved"`
+	// EnrollmentType is "ade" (Automated Device Enrollment), "profile"
+	// (an enrollment profile the user installed), "none" or "unknown".
+	EnrollmentType string `json:"enrollment_type"`
+	Supervised     *bool  `json:"supervised"`
+	// ServerURLHost is the host of the MDM the device is enrolled in, never
+	// the full URL (it may carry tokens).
+	ServerURLHost string `json:"server_url_host,omitempty"`
+	// IsOurServer is true when ServerURLHost is this deployment's MDM host
+	// (config mdm_host). False when the host isn't configured.
+	IsOurServer bool `json:"is_our_server"`
+	// ADEAssigned is true when Apple Business Manager assigns the device to
+	// an MDM server; ADEServerHost is that server's host.
+	ADEAssigned            *bool       `json:"ade_assigned"`
+	ADEServerHost          string      `json:"ade_server_host,omitempty"`
+	BootstrapTokenEscrowed *bool       `json:"bootstrap_token_escrowed"`
+	Identity               MDMIdentity `json:"identity"`
+	// ManagedSettings lists the settings an installed configuration profile
+	// enforces ("firewall", "screen_lock", …), so the console stops offering
+	// agent-side switches for them (#353). ProfilePayloadTypes are the raw
+	// payload types of the installed profiles, sorted, de-duplicated.
+	ManagedSettings     []string `json:"managed_settings,omitempty"`
+	ProfilePayloadTypes []string `json:"profile_payload_types,omitempty"`
+	// Grants are permissions the agent holds, typically granted by a profile.
+	Grants      MDMGrants `json:"grants"`
+	CollectedAt time.Time `json:"collected_at"`
+}
+
+// MDMGrants are permissions the agent holds on the device. nil means unknown.
+type MDMGrants struct {
+	// FullDiskAccess is true when the agent can read TCC-protected files,
+	// which on macOS needs Full Disk Access even as root.
+	FullDiskAccess *bool `json:"full_disk_access"`
+}
+
+// MDMIdentity holds the identifiers the backend links an MDM device to an
+// agent with: the provisioning UDID first (on Apple silicon it differs from
+// the hardware UUID), then the serial number.
+type MDMIdentity struct {
+	Serial           string `json:"serial,omitempty"`
+	ProvisioningUDID string `json:"provisioning_udid,omitempty"`
+	HardwareUUID     string `json:"hardware_uuid,omitempty"`
 }
