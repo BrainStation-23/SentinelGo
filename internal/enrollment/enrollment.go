@@ -175,3 +175,35 @@ func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
 	}
 	return Apply(cfg, src, agentID, secret)
 }
+
+// WriteToken saves a token where Find looks for it: enrollment.json in the
+// config directory, readable by SYSTEM/root only. Installers call it through
+// `sentinelgo enroll` (e.g. the generic MSI's custom action, #358). The file
+// is written to a temp name and renamed, so the agent never reads half of it.
+func WriteToken(cfg *config.Config, token, serverURL, anonKey string) (string, error) {
+	if cfg.Path == "" {
+		return "", errors.New("no config path")
+	}
+	src, err := validate(Source{Token: token, ServerURL: serverURL, AnonKey: anonKey, Origin: "the enrollment token"})
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(map[string]string{"enrollment_token": src.Token, "server_url": src.ServerURL, "anon_key": src.AnonKey})
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(filepath.Dir(cfg.Path), FileName)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return "", err
+	}
+	if err := config.SecureFile(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("securing the token file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return path, nil
+}
