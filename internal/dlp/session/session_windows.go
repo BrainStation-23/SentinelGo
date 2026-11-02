@@ -19,8 +19,8 @@ import (
 
 // New returns the Windows supervisor: one `sentinelgo dlp-session` helper per
 // active interactive session, launched as that session's user. Every helper
-// is in a job object that kills it when the service exits, so a crash, a
-// stop or a self-update (which needs the .exe unlocked) never leaves helpers
+// is in its own job object that kills it when the service exits, so a crash,
+// a stop or a self-update (which needs the .exe unlocked) never leaves helpers
 // running the old image.
 func New(sink channel.EventSink) Service {
 	l, err := newWinLauncher()
@@ -33,7 +33,6 @@ func New(sink channel.EventSink) Service {
 
 type winLauncher struct {
 	exe string
-	job windows.Handle
 }
 
 func newWinLauncher() (*winLauncher, error) {
@@ -41,20 +40,31 @@ func newWinLauncher() (*winLauncher, error) {
 	if err != nil {
 		return nil, err
 	}
+	return &winLauncher{exe: exe}, nil
+}
+
+// newHelperJob creates the job a single helper runs in. The service holds the
+// handle until the helper exits; if the service dies first, the handle closes
+// and the job kills the helper.
+//
+// Each helper needs its own job: all processes in a job must be in the same
+// session, and a job stays bound to the session of the first process
+// assigned to it even after that process exits. One job for every helper
+// meant that after the user signed out and in again, every helper for the
+// new session failed with "Access is denied" until the service restarted.
+func newHelperJob() (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create job object: %w", err)
+		return 0, fmt.Errorf("create job object: %w", err)
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil { // #nosec G103 -- Win32 struct passed by pointer
 		_ = windows.CloseHandle(job)
-		return nil, fmt.Errorf("configure job object: %w", err)
+		return 0, fmt.Errorf("configure job object: %w", err)
 	}
-	// The job handle stays open for the life of the service: closing it (the
-	// process exiting) kills every helper.
-	return &winLauncher{exe: exe, job: job}, nil
+	return job, nil
 }
 
 // Sessions lists active interactive sessions. Session 0 (services) never
@@ -110,26 +120,37 @@ func (l *winLauncher) Start(session string) (Process, error) {
 		return nil, fmt.Errorf("start helper in session %s: %w", session, err)
 	}
 	defer func() { _ = windows.CloseHandle(pi.Thread) }()
-
-	// Into the job before it runs, so it can't outlive the service.
-	if err := windows.AssignProcessToJobObject(l.job, pi.Process); err != nil {
+	abort := func() {
 		_ = windows.TerminateProcess(pi.Process, 1)
 		_ = windows.CloseHandle(pi.Process)
+	}
+
+	// Into its job before it runs, so it can't outlive the service.
+	job, err := newHelperJob()
+	if err != nil {
+		abort()
+		return nil, err
+	}
+	if err := windows.AssignProcessToJobObject(job, pi.Process); err != nil {
+		abort()
+		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("assign helper to job: %w", err)
 	}
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
-		_ = windows.TerminateProcess(pi.Process, 1)
-		_ = windows.CloseHandle(pi.Process)
+		abort()
+		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("resume helper: %w", err)
 	}
 	log.Printf("DLP: started helper in session %s (pid %d)", session, pi.ProcessId)
-	return &winProcess{h: pi.Process}, nil
+	return &winProcess{h: pi.Process, job: job}, nil
 }
 
-// winProcess owns the helper's process handle. Kill after the handle is
-// closed is a no-op (a closed handle value can be reused by another object).
+// winProcess owns the helper's process and job handles. Kill after the
+// handles are closed is a no-op (a closed handle value can be reused by
+// another object).
 type winProcess struct {
 	h      windows.Handle
+	job    windows.Handle
 	mu     sync.Mutex
 	closed bool
 }
@@ -139,6 +160,7 @@ func (p *winProcess) Wait() error {
 	p.mu.Lock()
 	p.closed = true
 	_ = windows.CloseHandle(p.h)
+	_ = windows.CloseHandle(p.job) // empty now: the helper has exited
 	p.mu.Unlock()
 	return err
 }

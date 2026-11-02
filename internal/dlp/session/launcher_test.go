@@ -121,8 +121,8 @@ func TestLauncher_StartFailureReportedAndRetried(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	l.set("3")
 	s.reconcile(now)
-	if !slices.ContainsFunc(s.Sessions(), func(i Info) bool { return i.State == stateFailed }) {
-		t.Errorf("Sessions() = %+v, want start_failed", s.Sessions())
+	if !slices.ContainsFunc(s.Sessions(), func(i Info) bool { return i.State == stateFailed && i.LastError == "no token" }) {
+		t.Errorf("Sessions() = %+v, want start_failed with the start error", s.Sessions())
 	}
 	l.mu.Lock()
 	l.fail = false
@@ -130,6 +130,9 @@ func TestLauncher_StartFailureReportedAndRetried(t *testing.T) {
 	s.reconcile(now.Add(11 * time.Second))
 	if len(l.procs("3")) != 1 {
 		t.Error("start not retried after backoff")
+	}
+	if slices.ContainsFunc(s.Sessions(), func(i Info) bool { return i.LastError != "" }) {
+		t.Errorf("Sessions() = %+v, start error kept after a successful start", s.Sessions())
 	}
 }
 

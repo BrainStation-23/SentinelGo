@@ -54,6 +54,7 @@ type managedHelper struct {
 	restarts int
 	next     time.Time // earliest (re)start
 	state    string
+	startErr string // why the last start failed, while state is stateFailed
 }
 
 func newLaunchSupervisor(hub *Hub, l Launcher) *launchSupervisor {
@@ -150,11 +151,18 @@ func (s *launchSupervisor) tend(id string, h *managedHelper, now time.Time) {
 	if err != nil {
 		h.restarts++
 		h.next = now.Add(s.backoff(h.restarts))
-		if h.state != stateFailed {
+		// Logged and reported once per distinct error, not every retry. The
+		// status carries it, so the console says why, not just start_failed.
+		if h.state != stateFailed || h.startErr != err.Error() {
 			log.Printf("DLP: start helper in session %s: %v", id, err)
+			s.setLastError(id, err.Error())
 		}
-		h.state = stateFailed
+		h.state, h.startErr = stateFailed, err.Error()
 		return
+	}
+	if h.startErr != "" {
+		h.startErr = ""
+		s.setLastError(id, "")
 	}
 	h.proc = p
 	h.exited = make(chan struct{})
