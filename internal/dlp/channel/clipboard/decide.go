@@ -14,22 +14,25 @@ import (
 const (
 	defaultBlockMessage  = "Blocked by SentinelOps: {{detector}}"
 	defaultNotifyMessage = "SentinelOps blocked sensitive data on your clipboard: {{detector}}"
+	defaultWarnMessage   = "SentinelOps: you copied {{detector}}. This was allowed and logged."
 	notifyTitle          = "SentinelOps DLP"
 )
 
 // Decision is what to do with one copy.
 type Decision struct {
 	Block   bool
+	Warn    bool           // a policy warns and none blocks: keep the content, tell the user
 	Message string         // the placeholder to put on the clipboard when Block
-	Notify  string         // the desktop notification text when Block
+	Notify  string         // the desktop notification text when Block or Warn
 	Events  []events.Event // one per matching policy
 }
 
 // Decide scans text against every clipboard policy in p. Policies whose
-// exceptions list src are skipped. If any matching policy blocks, the copy is
-// blocked; every matching policy gets an event. The text itself never leaves
-// this function except through events.Build (hash, length, and an excerpt in
-// evidence_mode "full").
+// exceptions list src are skipped. Every matching policy gets an event, and
+// the strictest action wins: if any matching policy blocks, the copy is
+// blocked; otherwise if any warns, the content stays and the user is told.
+// The text itself never leaves this function except through events.Build
+// (hash, length, and an excerpt in evidence_mode "full").
 func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time) Decision {
 	var d Decision
 	if p == nil || p.Clipboard == nil || text == "" {
@@ -43,7 +46,7 @@ func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time
 	if len(res.Findings) == 0 {
 		return d
 	}
-	var blockFinding *detect.Finding
+	var blockFinding, warnFinding *detect.Finding
 	for _, pol := range pols {
 		if excepted(pol.Exceptions.SourceApps, src) {
 			continue
@@ -53,11 +56,17 @@ func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time
 			continue
 		}
 		action := events.ActionMonitored
-		if pol.Action == policy.ActionBlock {
+		switch pol.Action {
+		case policy.ActionBlock:
 			action = events.ActionBlocked
 			d.Block = true
 			if blockFinding == nil {
 				blockFinding = &used[0]
+			}
+		case policy.ActionWarn:
+			action = events.ActionWarned
+			if warnFinding == nil {
+				warnFinding = &used[0]
 			}
 		}
 		d.Events = append(d.Events, events.Build(
@@ -73,6 +82,9 @@ func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time
 		}
 		d.Message = fillDetector(p.Modules.Clipboard.BlockMessage, defaultBlockMessage, blockFinding.DetectorID)
 		d.Notify = fillDetector(p.Modules.Clipboard.NotifyMessage, defaultNotifyMessage, blockFinding.DetectorID)
+	} else if warnFinding != nil {
+		d.Warn = true
+		d.Notify = fillDetector(p.Modules.Clipboard.WarnMessage, defaultWarnMessage, warnFinding.DetectorID)
 	}
 	return d
 }

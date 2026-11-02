@@ -84,3 +84,19 @@ func TestCompile_BadRulesDontDisableOthers(t *testing.T) {
 		}
 	}
 }
+
+// monitor, warn and block compile; any other action is still skipped and
+// reported (which is why the backend sends older agents monitor for warn).
+func TestCompile_Actions(t *testing.T) {
+	for action, ok := range map[string]bool{ActionMonitor: true, ActionWarn: true, ActionBlock: true, "quarantine": false} {
+		c := Compile(&Bundle{
+			SchemaVersion: 1, Version: "v",
+			Modules: Modules{Clipboard: ClipboardModule{Enabled: true}},
+			Policies: []Policy{{ID: "p", Name: "p", Channels: []string{ChannelClipboard}, Action: action,
+				Detectors: []Detector{{ID: "custom.regex", RuleID: "r", Pattern: "x"}}}},
+		})
+		if got := len(c.For(ChannelClipboard)) == 1; got != ok {
+			t.Errorf("action %q compiled = %v, want %v (errors %+v)", action, got, ok, c.CompileErrors)
+		}
+	}
+}

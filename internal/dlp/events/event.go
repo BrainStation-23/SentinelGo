@@ -10,6 +10,7 @@ import "time"
 // Actions recorded on an event.
 const (
 	ActionMonitored = "monitored"
+	ActionWarned    = "warned"
 	ActionBlocked   = "blocked"
 )
 

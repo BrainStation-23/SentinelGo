@@ -278,9 +278,12 @@ func printDecision(w io.Writer, r testReport) {
 				p("  %-32s x%-3d %s", f.Detector, f.Count, f.Masked)
 			}
 		}
-		if d.Block {
+		switch {
+		case d.Block:
 			p("Policy outcome: BLOCK. The clipboard would read: %q", d.Message)
-		} else {
+		case d.Warn:
+			p("Policy outcome: WARN. The content stays; the user is told: %q", d.Notify)
+		default:
 			p("Policy outcome: MONITOR (recorded, not blocked)")
 		}
 	}

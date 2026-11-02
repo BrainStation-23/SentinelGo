@@ -15,6 +15,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ### Added
 
+- Clipboard DLP policies can **warn**, a middle ground between monitor and block: the copy is left on the clipboard, and the user gets a notification that they copied sensitive data and that it was logged. The event is recorded as `warned`. When one copy matches several policies, block wins over warn, and warn over monitor. The notification text is the bundle's `modules.clipboard.warn_message` (default: "SentinelOps: you copied {{detector}}. This was allowed and logged.") and never includes the matched value. Copying the same text from the same app again doesn't warn again. The agent reports capability `dlp_warn_v1`; older agents skip a policy with an action they don't know, so the backend sends them `monitor` instead (#343).
 - Desktop notifications show the SentinelGo icon. On Linux `notify-send` gets the icon installed at `/opt/sentinelgo/sentinelgo.png`; on macOS the icon is used when `terminal-notifier` is installed (otherwise notifications still go through `osascript`, without it); on Windows the icon is registered for SentinelGo's own app ID, and the binary carries the icon and version info. `install.sh` and `install.bat` copy the icon from the release bundle (#321).
 
 ### Fixed
