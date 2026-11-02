@@ -250,3 +250,32 @@ func TestPoolScanner_NoPool(t *testing.T) {
 		t.Error("Wants uploads")
 	}
 }
+
+// The real fanotify calls behind the seams. As a normal user the kernel
+// refuses them; as root they work and are undone.
+func TestRealFanotifyCalls(t *testing.T) {
+	fan, err := fanotifyInit()
+	if err != nil {
+		if os.Geteuid() == 0 {
+			t.Skipf("fanotify unavailable here: %v", err)
+		}
+		if got := fanotifyFailure(err); !strings.HasPrefix(got, "unavailable:") {
+			t.Errorf("failure %q", got)
+		}
+		if err := markMount(-1, true, t.TempDir()); err == nil {
+			t.Error("marking with a bad descriptor succeeded")
+		}
+		if err := markMount(-1, false, t.TempDir()); err == nil {
+			t.Error("unmarking with a bad descriptor succeeded")
+		}
+		return
+	}
+	defer func() { _ = unix.Close(fan) }()
+	dir := t.TempDir()
+	if err := markMount(fan, true, dir); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if err := markMount(fan, false, dir); err != nil {
+		t.Errorf("unmark: %v", err)
+	}
+}
