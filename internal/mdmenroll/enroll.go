@@ -114,6 +114,9 @@ type Deps struct {
 	ConsoleSession func() (Session, bool)
 	// RenewADE runs `profiles renew -type enrollment`.
 	RenewADE func(ctx context.Context) error
+	// Windows enrolls a Windows device that isn't enrolled yet (#356); nil
+	// where the agent can't.
+	Windows func(ctx context.Context, info *shared.MDMInfo, req Request) (Outcome, error)
 	// Now and Sleep; defaults are the real clock.
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -189,6 +192,18 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 		default:
 			return Outcome{}, fail(ResultOtherMDM, "the device is enrolled with another MDM (%s); it isn't changed", orUnknown(info.ServerURLHost))
 		}
+	}
+
+	// A Windows device (it reports its edition's eligibility) enrolls its own way.
+	if info.Eligible != nil {
+		if e.d.Windows == nil {
+			return Outcome{}, fail(ResultUnsupportedOS, "MDM enrollment of Windows devices isn't available in this agent")
+		}
+		started, err := e.d.Windows(ctx, info, req)
+		if err != nil || started.Code == ResultEnrolled || started.Code == ResultAlreadyEnrolled {
+			return started, err
+		}
+		return e.waitForEnrollment(ctx, host, started), nil
 	}
 
 	method := req.Method

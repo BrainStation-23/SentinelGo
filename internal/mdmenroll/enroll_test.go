@@ -100,6 +100,18 @@ func TestEnroll_AlreadyEnrolledOrOtherMDM(t *testing.T) {
 	}
 }
 
+// A Windows device (eligibility reported) needs the Windows enroller.
+func TestEnroll_WindowsWithoutEnroller(t *testing.T) {
+	yes := true
+	f := &fakeDevice{info: &shared.MDMInfo{Eligible: &yes, EnrollmentType: "none"}}
+	if _, err := New(f.deps()).Enroll(context.Background(), Request{Method: MethodAuto}); outcomeCode(t, err) != ResultUnsupportedOS {
+		t.Errorf("err = %v", err)
+	}
+	if f.fetches+f.renews != 0 {
+		t.Error("a Windows device went down the Mac path")
+	}
+}
+
 func TestEnroll_Unsupported(t *testing.T) {
 	d := (&fakeDevice{}).deps()
 	d.Collect = func(string) *shared.MDMInfo { return nil }

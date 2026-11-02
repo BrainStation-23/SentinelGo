@@ -34,6 +34,10 @@ const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name
 // ADE re-enrollment or a profile presented to the console user (#350).
 const CapabilityMDMEnroll = "mdm_enroll_v1"
 
+// CapabilityWindowsMDMState means the inventory carries the Windows "mdm"
+// block: edition eligibility, MDM enrollments and the OMA-DM identity (#355).
+const CapabilityWindowsMDMState = "windows_mdm_state_v1"
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -61,8 +65,11 @@ func Capabilities() []string {
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)
 	}
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
+	case "windows":
+		caps = append(caps, CapabilityWindowsMDMState)
 	}
 	return caps
 }

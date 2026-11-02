@@ -70,3 +70,15 @@ func TestCapabilities_AppleMDMStateOnMacOnly(t *testing.T) {
 		t.Error("apple_mdm_state_v1 must not be in the static list")
 	}
 }
+
+// windows_mdm_state_v1 is advertised on Windows only (#355).
+func TestCapabilities_WindowsMDMStateOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityWindowsMDMState); got != want {
+			t.Errorf("%s: windows_mdm_state_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}

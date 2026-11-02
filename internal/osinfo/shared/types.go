@@ -764,8 +764,32 @@ type MDMInfo struct {
 	ManagedSettings     []string `json:"managed_settings,omitempty"`
 	ProfilePayloadTypes []string `json:"profile_payload_types,omitempty"`
 	// Grants are permissions the agent holds, typically granted by a profile.
-	Grants      MDMGrants `json:"grants"`
+	Grants MDMGrants `json:"grants"`
+
+	// Windows (#355). The device's domain/Entra join is in identity_join.
+	// Eligible is false on editions and configurations that can't enroll
+	// (IneligibleReason: home_edition, server or policy_blocked).
+	Eligible         *bool  `json:"eligible,omitempty"`
+	IneligibleReason string `json:"ineligible_reason,omitempty"`
+	Edition          string `json:"edition,omitempty"`
+	// Enrollments are the device's active MDM enrollments.
+	Enrollments []MDMEnrollment `json:"enrollments,omitempty"`
+	// OtherMDM is the host (or provider) of an MDM other than ours that the
+	// device is enrolled in, when mdm_host is known.
+	OtherMDM string `json:"other_mdm,omitempty"`
+
 	CollectedAt time.Time `json:"collected_at"`
+}
+
+// MDMEnrollment is one MDM enrollment of a Windows device.
+type MDMEnrollment struct {
+	ID         string `json:"id"` // the enrollment's GUID
+	ProviderID string `json:"provider_id,omitempty"`
+	ServerHost string `json:"server_host,omitempty"`
+	// Type is "mdm_only", "entra_auto" or "other:<n>".
+	Type  string `json:"type"`
+	State string `json:"state"`
+	UPN   string `json:"upn,omitempty"`
 }
 
 // MDMGrants are permissions the agent holds on the device. nil means unknown.
@@ -782,4 +806,8 @@ type MDMIdentity struct {
 	Serial           string `json:"serial,omitempty"`
 	ProvisioningUDID string `json:"provisioning_udid,omitempty"`
 	HardwareUUID     string `json:"hardware_uuid,omitempty"`
+	// Windows: the OMA-DM device ID the MDM client uses (set once enrolled)
+	// and the SMBIOS system UUID.
+	OMADMDeviceID string `json:"omadm_device_id,omitempty"`
+	SMBIOSUUID    string `json:"smbios_uuid,omitempty"`
 }

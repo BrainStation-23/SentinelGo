@@ -69,7 +69,7 @@ func TestMDMEnrollHookInstalled(t *testing.T) {
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
 	_, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{})
-	if runtime.GOOS != "darwin" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
+	if runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
 		t.Errorf("mdm-enroll with the hook installed: %v", err)
 	}
 	_ = mi.Stop()
