@@ -64,6 +64,9 @@ type Policy struct {
 	Match      string     `json:"match"`
 	Detectors  []Detector `json:"detectors"`
 	Exceptions Exceptions `json:"exceptions"`
+	// FileFilters narrows a policy on file channels to some file types and
+	// sizes (contract #326); empty means every file.
+	FileFilters FileFilters `json:"file_filters,omitempty"`
 }
 
 // Detector is one rule of a policy. Pattern applies to custom.regex, Keywords

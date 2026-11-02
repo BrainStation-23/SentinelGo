@@ -159,10 +159,14 @@ func (d *Decider) Handle(ctx context.Context, r Request) {
 	}
 
 	files := c.Modules.Files
+	ext := fileExt(r.Path)
 	for _, p := range pols {
-		matched, findings := evaluate(eng, p, res)
+		matched, findings := evaluate(eng, p, res, ext)
+		typeOK := p.FileFilters.TypeOK(ext, res.DetectedType)
 		switch {
 		case matched:
+		case !typeOK:
+			continue // not a file type this policy covers
 		case filescan.IsUnscannable(res.Status) && files.OnUnscannable != policy.OnFailAllow:
 		case res.Status == filescan.StatusTimeout && files.OnTimeout == policy.OnFailBlock:
 		default:
@@ -173,11 +177,12 @@ func (d *Decider) Handle(ctx context.Context, r Request) {
 	}
 }
 
-// applicable returns the policies for r's channel that no exception rules out.
+// applicable returns the policies for r's channel that no exception or size
+// filter rules out (type filters need the scan, see evaluate).
 func applicable(c *policy.Compiled, r Request) []policy.CompiledPolicy {
 	var out []policy.CompiledPolicy
 	for _, p := range c.For(r.Dest.Channel) {
-		if !excepted(p.Exceptions, r) {
+		if !excepted(p.Exceptions, r) && p.FileFilters.SizeOK(r.Ident.Size) {
 			out = append(out, p)
 		}
 	}
@@ -239,22 +244,34 @@ func TrustedShare(trusted []string, dest Destination) bool {
 }
 
 // evaluate checks a policy against a result: the file's own text, or any one
-// archive entry (an archive matches when one of its files does).
-func evaluate(eng *detect.Engine, p policy.CompiledPolicy, res filescan.Result) (bool, []detect.Finding) {
+// archive entry (an archive matches when one of its files does). A policy's
+// type filter applies to the file and to each entry on its own, so a policy
+// for xlsx files still catches a spreadsheet inside a zip.
+func evaluate(eng *detect.Engine, p policy.CompiledPolicy, res filescan.Result, ext string) (bool, []detect.Finding) {
 	if eng == nil {
 		return false, nil
 	}
 	var used []detect.Finding
 	matched := false
-	if ok, f := eng.Evaluate(p.Match, p.Rules, detect.Result{Findings: res.Findings}); ok {
-		matched, used = true, append(used, f...)
+	if p.FileFilters.TypeOK(ext, res.DetectedType) {
+		if ok, f := eng.Evaluate(p.Match, p.Rules, detect.Result{Findings: res.Findings}); ok {
+			matched, used = true, append(used, f...)
+		}
 	}
 	for _, e := range res.Entries {
+		if !p.FileFilters.TypeOK(fileExt(e.Name), e.DetectedType) {
+			continue
+		}
 		if ok, f := eng.Evaluate(p.Match, p.Rules, detect.Result{Findings: e.Findings}); ok {
 			matched, used = true, append(used, f...)
 		}
 	}
 	return matched, used
+}
+
+// fileExt is a path's extension, lowercase and without the dot.
+func fileExt(path string) string {
+	return strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
 }
 
 // buildEvent records a file event. Audit-only: the action is always
@@ -278,7 +295,7 @@ func buildEvent(c *policy.Compiled, p policy.CompiledPolicy, r Request, res file
 		RepeatCount:   1,
 		File: &events.File{
 			Name:         events.FileName(c.EvidenceMode, r.Path),
-			Ext:          strings.TrimPrefix(strings.ToLower(filepath.Ext(r.Path)), "."),
+			Ext:          fileExt(r.Path),
 			DetectedType: res.DetectedType,
 			Size:         r.Ident.Size,
 			SHA256:       res.SHA256,

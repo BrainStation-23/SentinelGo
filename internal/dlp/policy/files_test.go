@@ -211,3 +211,55 @@ func TestIsFileChannel(t *testing.T) {
 		t.Error("non-file channel accepted")
 	}
 }
+
+func TestFileFilters(t *testing.T) {
+	in := `{"schema_version": 1, "version": "v", "enabled": true, "modules": {"clipboard": {"enabled": true}},
+	  "policies": [
+	    {"id": "a", "name": "a", "channels": ["file.removable"], "action": "monitor",
+	     "detectors": [{"id": "pii.credit_card", "rule_id": "r", "min_count": 1}],
+	     "file_filters": {"types": ["XLSX", ".pdf"], "min_bytes": 10, "max_bytes": 1000}},
+	    {"id": "b", "name": "b", "channels": ["file.removable", "clipboard"], "action": "monitor",
+	     "detectors": [{"id": "pii.credit_card", "rule_id": "r", "min_count": 1}],
+	     "file_filters": {"types": "xlsx"}}]}`
+	b, err := Decode([]byte(in))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	f := b.Policies[0].FileFilters
+	if len(f.Types) != 2 || f.Types[0] != "xlsx" || f.Types[1] != "pdf" || f.MinBytes != 10 || f.MaxBytes != 1000 {
+		t.Errorf("filters %+v", f)
+	}
+	for size, want := range map[int64]bool{9: false, 10: true, 1000: true, 1001: false} {
+		if f.SizeOK(size) != want {
+			t.Errorf("SizeOK(%d) != %v", size, want)
+		}
+	}
+	for _, tc := range []struct {
+		ext, detected string
+		want          bool
+	}{
+		{"xlsx", "", true},
+		{"XLSX", "binary", true},
+		{"jpg", "ooxml.xlsx", true}, // renamed: caught by its content
+		{"pdf", "pdf", true},
+		{"docx", "ooxml.docx", false},
+		{"", "text.utf8", false},
+	} {
+		if got := f.TypeOK(tc.ext, tc.detected); got != tc.want {
+			t.Errorf("TypeOK(%q, %q) = %v", tc.ext, tc.detected, got)
+		}
+	}
+	if !(FileFilters{}).TypeOK("anything", "") || !(FileFilters{}).SizeOK(1<<40) {
+		t.Error("empty filters filter")
+	}
+	// Unreadable filters: the policy applies to every file and is reported;
+	// the clipboard part of the bundle is untouched.
+	bad := b.Policies[1].FileFilters
+	if bad.DecodeError == "" || len(bad.Types) != 0 {
+		t.Errorf("bad filters %+v", bad)
+	}
+	c := Compile(b)
+	if c.Clipboard == nil || len(c.CompileErrors) != 1 || c.CompileErrors[0].RuleID != "b" {
+		t.Errorf("compile: clipboard %v, errors %v", c.Clipboard, c.CompileErrors)
+	}
+}

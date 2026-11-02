@@ -76,6 +76,9 @@ func Compile(b *Bundle) *Compiled {
 		if e := p.Exceptions.FileDecodeError; e != "" {
 			c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: p.ID, Error: e})
 		}
+		if e := p.FileFilters.DecodeError; e != "" {
+			c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: p.ID, Error: e + " (the policy applies to every file)"})
+		}
 		c.Policies = append(c.Policies, cp)
 		if slices.Contains(p.Channels, ChannelClipboard) {
 			clipboardRules = append(clipboardRules, cp.Rules...)

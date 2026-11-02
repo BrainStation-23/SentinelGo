@@ -317,3 +317,46 @@ var (
 	workersOK       = scanworker.Health{Workers: 1}
 	workersDisabled = scanworker.Health{Disabled: true}
 )
+
+// A policy's file_filters narrow it by size (before reading the file) and by
+// type (the file's extension or detected type, and each archive entry's).
+func TestDecider_FileFilters(t *testing.T) {
+	bundleWith := func(filters string) string {
+		return `{"schema_version": 1, "version": "v1", "enabled": true, "evidence_mode": "masked",
+		  "modules": {"files": {"enabled": true, "channels": {"file.removable": true}, "on_unscannable": "monitor"}},
+		  "policies": [{"id": "p1", "name": "Cards", "channels": ["file.removable"], "action": "monitor",
+		    "detectors": [{"id": "pii.credit_card", "rule_id": "r1", "min_count": 1}], "file_filters": ` + filters + `}]}`
+	}
+	match := filescan.Result{Status: filescan.StatusScanned, DetectedType: "ooxml.xlsx", Findings: []detect.Finding{cardFinding()}}
+	for _, tc := range []struct {
+		name, filters string
+		res           filescan.Result
+		path          string
+		events, scans int
+	}{
+		{"too big: not even read", `{"max_bytes": 100}`, match, "", 0, 0},
+		{"too small: not even read", `{"min_bytes": 5000}`, match, "", 0, 0},
+		{"in range", `{"min_bytes": 1000, "max_bytes": 2000}`, match, "", 1, 1},
+		{"type by extension", `{"types": ["xlsx"]}`, match, "", 1, 1},
+		{"renamed, type by content", `{"types": ["xlsx"]}`, match, "/media/alice/KINGSTON/holiday.jpg", 1, 1},
+		{"other type", `{"types": ["pdf"]}`, match, "", 0, 1},
+		{"other type, unscannable", `{"types": ["pdf"]}`, filescan.Result{Status: filescan.Unscannable(filescan.ReasonCorrupt), DetectedType: "ole.doc"}, "/media/x/a.doc", 0, 1},
+		{"entry in a zip", `{"types": ["xlsx"]}`, filescan.Result{Status: filescan.StatusScanned, DetectedType: "archive.zip",
+			Entries: []filescan.Entry{{Name: "q3/cards.xlsx", DetectedType: "ooxml.xlsx", Status: filescan.StatusScanned, Findings: []detect.Finding{cardFinding()}}}}, "/media/x/a.zip", 1, 1},
+		{"entry of another type", `{"types": ["pdf"]}`, filescan.Result{Status: filescan.StatusScanned, DetectedType: "archive.zip",
+			Entries: []filescan.Entry{{Name: "cards.txt", DetectedType: "text.utf8", Status: filescan.StatusScanned, Findings: []detect.Finding{cardFinding()}}}}, "/media/x/a.zip", 0, 1},
+	} {
+		sink := &recordingSink{}
+		sc := &fakeScanner{res: tc.res}
+		d := NewDecider(sc, sink)
+		d.Apply(compile(t, bundleWith(tc.filters)))
+		r := usbRequest()
+		if tc.path != "" {
+			r.Path = tc.path
+		}
+		d.Handle(context.Background(), r)
+		if n := len(sink.events()); n != tc.events || int(sc.calls.Load()) != tc.scans {
+			t.Errorf("%s: %d events, %d scans; want %d, %d", tc.name, n, sc.calls.Load(), tc.events, tc.scans)
+		}
+	}
+}
