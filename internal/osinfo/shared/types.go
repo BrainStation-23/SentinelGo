@@ -757,7 +757,22 @@ type MDMInfo struct {
 	ADEServerHost          string      `json:"ade_server_host,omitempty"`
 	BootstrapTokenEscrowed *bool       `json:"bootstrap_token_escrowed"`
 	Identity               MDMIdentity `json:"identity"`
-	CollectedAt            time.Time   `json:"collected_at"`
+	// ManagedSettings lists the settings an installed configuration profile
+	// enforces ("firewall", "screen_lock", …), so the console stops offering
+	// agent-side switches for them (#353). ProfilePayloadTypes are the raw
+	// payload types of the installed profiles, sorted, de-duplicated.
+	ManagedSettings     []string `json:"managed_settings,omitempty"`
+	ProfilePayloadTypes []string `json:"profile_payload_types,omitempty"`
+	// Grants are permissions the agent holds, typically granted by a profile.
+	Grants      MDMGrants `json:"grants"`
+	CollectedAt time.Time `json:"collected_at"`
+}
+
+// MDMGrants are permissions the agent holds on the device. nil means unknown.
+type MDMGrants struct {
+	// FullDiskAccess is true when the agent can read TCC-protected files,
+	// which on macOS needs Full Disk Access even as root.
+	FullDiskAccess *bool `json:"full_disk_access"`
 }
 
 // MDMIdentity holds the identifiers the backend links an MDM device to an
