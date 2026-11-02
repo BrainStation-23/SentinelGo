@@ -73,8 +73,9 @@ type linuxEnforcer struct {
 	fan      int
 	queue    chan Request
 	kick     chan struct{}
-	failure  string // why the hook couldn't start ("" when it could)
-	tried    bool   // start was attempted at least once (Health is reported from then on)
+	failure  string       // why the hook couldn't start ("" when it could)
+	devices  *deviceState // untrusted device control; the mount loop's, then stopLocked's
+	tried    bool         // start was attempted at least once (Health is reported from then on)
 	lastPool scanworker.Health
 
 	// pool is read by the decide loops, so it is atomic: they must never
@@ -89,7 +90,7 @@ type linuxEnforcer struct {
 
 // New returns the Linux file DLP enforcer.
 func New(o Options) Enforcer {
-	e := &linuxEnforcer{opts: o, fan: -1}
+	e := &linuxEnforcer{opts: o, fan: -1, devices: newDeviceState()}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
@@ -195,6 +196,7 @@ func (e *linuxEnforcer) stopLocked() {
 	}
 	_ = unix.Close(e.fan)
 	e.fan = -1
+	restoreDevices(e.devices) // fail open: nothing stays read-only because of us
 	pool := e.pool.Swap(nil)
 	e.lastPool = pool.Health()
 	e.lastPool.Workers = 0 // stopped below; failures and the crash-loop flag are kept
@@ -215,8 +217,8 @@ func fanotifyFailure(err error) string {
 	}
 }
 
-// mountLoop keeps a mark on every monitored mount: on start, every
-// mountPoll, when /proc/self/mountinfo changes and when kicked.
+// mountLoop keeps a mark on every monitored mount, and untrusted devices
+// read-only when asked: on start, every mountPoll, and when kicked.
 func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan struct{}) {
 	defer e.wg.Done()
 	marked := map[string]Destination{}
@@ -224,7 +226,12 @@ func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan stru
 	t := time.NewTicker(mountPoll)
 	defer t.Stop()
 	for {
-		e.reconcileMarks(fan, marked, failed)
+		off := e.offSwitch()
+		e.localOff.Store(off)
+		c := e.compiled.Load()
+		all := classifiedMounts()
+		e.reconcileMarks(fan, marked, failed, e.monitoredMounts(c, all, off))
+		e.reconcileDevices(c, all, off, e.devices)
 		select {
 		case <-ctx.Done():
 			return
@@ -235,14 +242,8 @@ func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan stru
 }
 
 // reconcileMarks adds marks for new monitored mounts and removes those of
-// mounts that are gone, no longer monitored, or trusted.
-func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, failed map[string]bool) {
-	want := map[string]Destination{}
-	off := e.offSwitch()
-	e.localOff.Store(off)
-	if c := e.compiled.Load(); c != nil && !off {
-		want = e.monitoredMounts(c)
-	}
+// mounts no longer in want.
+func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, failed map[string]bool, want map[string]Destination) {
 	for mp := range marked {
 		if _, ok := want[mp]; !ok {
 			_ = markMount(fan, false, mp)
@@ -277,20 +278,35 @@ func (e *linuxEnforcer) reconcileMarks(fan int, marked map[string]Destination, f
 	e.dests.Store(&list)
 }
 
-// monitoredMounts lists the mounts to watch under c: removable media and
-// network shares whose channel is on, minus trusted devices and shares.
-func (e *linuxEnforcer) monitoredMounts(c *policy.Compiled) map[string]Destination {
+// classifiedMounts lists every mount that is a removable drive or a network
+// share, from the mount table.
+func classifiedMounts() []Destination {
 	f, err := os.Open(mountinfoPath)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 	labels := volumeLabels()
-	files := c.Modules.Files
-	out := map[string]Destination{}
+	var out []Destination
 	for _, m := range parseMountinfo(f) {
-		d, ok := classifyMount(m, labels)
-		if !ok || !files.ChannelEnabled(d.Channel) {
+		if d, ok := classifyMount(m, labels); ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// monitoredMounts lists the mounts to watch under c: removable media and
+// network shares whose channel is on, minus trusted devices and shares; none
+// when scanning after the write is off or the emergency switch is on.
+func (e *linuxEnforcer) monitoredMounts(c *policy.Compiled, all []Destination, off bool) map[string]Destination {
+	out := map[string]Destination{}
+	if c == nil || off || !c.Modules.Files.CopyCorrelation.ScansOnClose() {
+		return out
+	}
+	files := c.Modules.Files
+	for _, d := range all {
+		if !files.ChannelEnabled(d.Channel) {
 			continue
 		}
 		if TrustedDevice(files.TrustedDevices, d.USB) || TrustedShare(files.TrustedShares, d) {
@@ -419,8 +435,9 @@ func (e *linuxEnforcer) decide(ctx context.Context, r Request) {
 // linuxMethods are the copy correlation methods this hook implements ("") or
 // why it can't ("not_on_linux"). Missing ones are not implemented yet.
 var linuxMethods = map[string]string{
-	MethodScanOnClose:  "",
-	MethodOSCopyEvents: "not_on_linux", // macOS's copyfile/clone events
+	MethodScanOnClose:      "",
+	MethodUntrustedDevices: "",
+	MethodOSCopyEvents:     "not_on_linux", // macOS's copyfile/clone events
 }
 
 func (e *linuxEnforcer) CopyCorrelation() map[string]string {
