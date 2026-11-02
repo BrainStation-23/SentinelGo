@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"path"
 	"strings"
 )
@@ -54,9 +55,9 @@ func zipEntryCount(ra io.ReaderAt, size int64) (uint64, bool) {
 		return n, true
 	}
 	// zip64: the locator before the record points at the zip64 record.
-	off := int64(binary.LittleEndian.Uint64(buf[i-20+8:]))
+	off, ok := toInt64(binary.LittleEndian.Uint64(buf[i-20+8:]))
 	rec := make([]byte, 40)
-	if off < 0 || off > size-40 {
+	if !ok || off > size-40 {
 		return 0, false
 	}
 	if _, err := ra.ReadAt(rec, off); err != nil || string(rec[:4]) != "PK\x06\x06" {
@@ -71,10 +72,11 @@ func (st *scanState) openEntry(f *zip.File) (io.ReadCloser, error) {
 	if f.Flags&0x1 != 0 {
 		return nil, errEncrypted
 	}
-	if st.archiveLeft <= 0 || f.UncompressedSize64 > uint64(st.archiveLeft) || f.UncompressedSize64 > uint64(st.s.limits.MaxFileBytes) {
+	size, ok := toInt64(f.UncompressedSize64)
+	if !ok || size > st.archiveLeft || size > st.s.limits.MaxFileBytes {
 		return nil, errTooLarge
 	}
-	if c := f.CompressedSize64; c > 0 && f.UncompressedSize64 > 1<<20 && f.UncompressedSize64/c > uint64(st.s.limits.MaxRatio) {
+	if c, ok := toInt64(f.CompressedSize64); ok && c > 0 && size > 1<<20 && size/c > st.s.limits.MaxRatio {
 		return nil, errTooLarge // zip bomb
 	}
 	rc, err := f.Open()
@@ -86,6 +88,15 @@ func (st *scanState) openEntry(f *zip.File) (io.ReadCloser, error) {
 	}
 	limit := min(st.archiveLeft, st.s.limits.MaxFileBytes)
 	return &budgetReader{st: st, r: ctxReader{st.ctx, rc}, c: rc, left: limit}, nil
+}
+
+// toInt64 converts a size from a zip header, or reports false when it is
+// too big for an int64 (such a header is lying anyway).
+func toInt64(n uint64) (int64, bool) {
+	if n > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(n), true // #nosec G115 -- checked against MaxInt64 above
 }
 
 var (
@@ -271,7 +282,7 @@ func (st *scanState) scanArchive(zr *zip.Reader, depth int, name string) docResu
 			return d
 		}
 		st.entriesLeft--
-		entryName := path.Join(name, f.Name)
+		entryName := path.Join(name, f.Name) // #nosec G305 -- a label for results, never a path anything is written to
 		e := st.scanEntry(f, depth, entryName)
 		if len(e.Findings) > 0 || e.Status != StatusScanned {
 			st.entries = append(st.entries, e)

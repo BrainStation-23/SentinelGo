@@ -2,6 +2,7 @@ package filescan
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"unicode/utf16"
 )
@@ -20,7 +21,7 @@ var (
 func utf16le(s string) []byte {
 	var b []byte
 	for _, u := range utf16.Encode([]rune(s)) {
-		b = append(b, byte(u), byte(u>>8))
+		b = binary.LittleEndian.AppendUint16(b, u)
 	}
 	return b
 }
