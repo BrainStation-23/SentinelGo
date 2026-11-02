@@ -1,0 +1,41 @@
+# File DLP: what it covers and what it doesn't
+
+**File DLP stops accidental leaks: the wrong file copied to a USB stick, a share or an upload. It doesn't stop a determined insider.**
+
+Someone with admin rights, encryption tools, a phone camera or a second operating system can get data out. Read every row below with that in mind: "covered" means the usual, accidental way is caught, not that every way is.
+
+## Where it runs today
+
+| Platform | What runs | Mode |
+|---|---|---|
+| Linux | USB sticks, SD cards and other removable drives; SMB, NFS and sshfs shares (files written there are scanned) | Audit only: events are recorded, nothing is blocked |
+| Any (manual test tool) | `sentinelgo dlp proxy`: uploads to listed sites, through a local HTTPS proxy | Can block, when the policy allows it |
+| Windows, macOS | Not yet (they need a signed driver and Apple's Endpoint Security entitlement) | — |
+
+## Coverage
+
+| What leaves the device | Status | Notes |
+|---|---|---|
+| A renamed file (`.xlsx` saved as `.jpg`) | Covered | The type comes from the file's content, not its name |
+| Password-protected archives, encrypted files, Rights Management-protected Office files | Policy | They can't be read, so they are reported as unscannable; the policy's `on_unscannable` decides (allow, block or monitor) |
+| Split, base64-encoded or otherwise obfuscated content | Accepted | Can't be detected reliably |
+| Images, scanned PDFs, photos of documents | Later (needs OCR) | Scanned IDs and contracts are a real accidental-leak case; text in images isn't read yet |
+| Screenshots, screen recording | Later | A separate channel |
+| Print | Later | A separate channel. Print to PDF saved onto a USB stick is a file copy, so it's covered |
+| Copied text | Covered | The clipboard channel |
+| Files copied in the file manager (Explorer, Finder, Files) | Covered | A file copy |
+| Android phones over MTP ("File transfer") | Later | **Until then:** block MTP devices with a device policy (BrainStation-23/Compliance-OS#576). A phone isn't a drive, so the file hooks don't see it |
+| Bluetooth file transfer | Later | |
+| AirDrop | Later | |
+| WSL (`\\wsl$`, USB passed through with `usbipd`) | Later | **Until then:** block WSL USB passthrough by policy. Linux inside WSL can mount a USB stick itself |
+| Virtual machines (USB passthrough, shared folders) | Later | **Until then:** list the hypervisor's processes as egress apps and block USB passthrough by policy. The device belongs to the guest |
+| Command-line uploads (`scp`, `rsync`, `curl`, `git push`) | Partly | Listed as egress apps; HTTPS content is invisible without the upload proxy |
+| Email clients (Outlook, Thunderbird, Mail) | Partly | Seen as egress apps, but not the recipient: internal and external mail look the same |
+| Booting another operating system, removing the disk | Out of scope | Disk encryption (BitLocker, FileVault, LUKS) is the control |
+| Memory-mapped writes, hard links, symlinks | Covered | Checked when the file is opened; results are tied to the file's identity |
+
+## Review
+
+This list is re-reviewed at every major Windows, macOS and Linux release, since new sharing features can open new paths without notice.
+
+Last review: 2026-11-02 (signed off on BrainStation-23/SentinelGo#338).
