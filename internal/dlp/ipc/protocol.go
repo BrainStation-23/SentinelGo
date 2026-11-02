@@ -46,6 +46,9 @@ const (
 
 	TypeNotify       = "notify"        // service → helper: show a desktop notification
 	TypeNotifyResult = "notify_result" // helper → service: whether it was shown
+
+	TypeOpenProfile       = "open_profile"        // service → helper: present a configuration profile to the user
+	TypeOpenProfileResult = "open_profile_result" // helper → service: whether it was presented
 )
 
 // Notification levels.
@@ -69,6 +72,28 @@ type Message struct {
 	Notify *Notify         `json:"notify,omitempty"`
 	// NotifyResult answers a Notify with the same ID.
 	NotifyResult *NotifyResult `json:"notify_result,omitempty"`
+	OpenProfile  *OpenProfile  `json:"open_profile,omitempty"`
+	// OpenProfileResult answers an OpenProfile with the same ID.
+	OpenProfileResult *OpenProfileResult `json:"open_profile_result,omitempty"`
+}
+
+// OpenProfile asks the helper to present a configuration profile (an MDM
+// enrollment profile, #350) to its user: write it to the user's own files
+// and open it, which registers it for review in System Settings, then show
+// Title/Message as a notification with what to do.
+type OpenProfile struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"` // file name, e.g. "Enrollment.mobileconfig"
+	Data    []byte `json:"data"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// OpenProfileResult says whether a helper presented an OpenProfile. Error is
+// "" when it did.
+type OpenProfileResult struct {
+	ID    string `json:"id"`
+	Error string `json:"error,omitempty"`
 }
 
 // Notify is a desktop notification an admin sends to the signed-in user.

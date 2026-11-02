@@ -16,6 +16,7 @@ import (
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/session"
+	"sentinelgo/internal/mdmenroll"
 )
 
 // DLPSessionCommand is the hidden subcommand the service launches in each
@@ -56,6 +57,8 @@ func RunDLPSession() int {
 		Version:  config.Version,
 		Channels: []channel.Channel{clipboard.New()},
 		Notify:   notify.Show,
+		// mdm-enroll presents the enrollment profile in the user's session (#350).
+		OpenProfile: mdmenroll.OpenProfileForUser,
 	})
 	if err != nil {
 		log.Printf("DLP helper stopped: %v", err)

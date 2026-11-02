@@ -165,6 +165,54 @@ func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
 	return out
 }
 
+// ErrNoHelper is OpenProfile's error when the session has no connected helper.
+var ErrNoHelper = errors.New("no session helper is connected for that session")
+
+// OpenProfile asks the helper of session sessionID to present p to its user
+// and waits for the answer until ctx ends. The profile bytes are never logged.
+func (h *Hub) OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfile) error {
+	if p.ID == "" {
+		p.ID = newNotifyID()
+	}
+	ch := make(chan string, 1)
+	h.mu.Lock()
+	var target *helper
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			target = hp
+			break
+		}
+	}
+	if target != nil {
+		if target.pending == nil {
+			target.pending = map[string]chan string{}
+		}
+		target.pending[p.ID] = ch
+	}
+	h.mu.Unlock()
+	if target == nil {
+		return ErrNoHelper
+	}
+	defer func() {
+		h.mu.Lock()
+		delete(target.pending, p.ID)
+		h.mu.Unlock()
+	}()
+
+	h.send(target, ipc.Message{Type: ipc.TypeOpenProfile, OpenProfile: &p})
+	select {
+	case e := <-ch:
+		if e != "" {
+			return errors.New(e)
+		}
+		return nil
+	case <-target.done:
+		return errors.New("the session helper disconnected")
+	case <-ctx.Done():
+		return errors.New("no answer from the session helper (it may run an older agent)")
+	}
+}
+
 func newNotifyID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
@@ -454,15 +502,12 @@ func (h *Hub) readLoop(hp *helper) {
 			ev.SessionID = hp.id.SessionID
 			h.sink.Emit(ev)
 		case ipc.TypeNotifyResult:
-			if m.NotifyResult == nil {
-				continue
+			if m.NotifyResult != nil {
+				h.answer(hp, m.NotifyResult.ID, m.NotifyResult.Error)
 			}
-			h.mu.Lock()
-			ch := hp.pending[m.NotifyResult.ID]
-			delete(hp.pending, m.NotifyResult.ID)
-			h.mu.Unlock()
-			if ch != nil {
-				ch <- boundError(m.NotifyResult.Error)
+		case ipc.TypeOpenProfileResult:
+			if m.OpenProfileResult != nil {
+				h.answer(hp, m.OpenProfileResult.ID, m.OpenProfileResult.Error)
 			}
 		case ipc.TypeStatus:
 			if m.Status != nil {
@@ -474,6 +519,17 @@ func (h *Hub) readLoop(hp *helper) {
 				h.mu.Unlock()
 			}
 		}
+	}
+}
+
+// answer delivers a helper's result to the request waiting on id, if any.
+func (h *Hub) answer(hp *helper, id, errText string) {
+	h.mu.Lock()
+	ch := hp.pending[id]
+	delete(hp.pending, id)
+	h.mu.Unlock()
+	if ch != nil {
+		ch <- boundError(errText)
 	}
 }
 

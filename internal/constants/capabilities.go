@@ -30,6 +30,10 @@ var AgentCapabilities = []string{
 // never reports it.
 const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name, not a credential
 
+// CapabilityMDMEnroll means the agent runs the mdm-enroll native task:
+// ADE re-enrollment or a profile presented to the console user (#350).
+const CapabilityMDMEnroll = "mdm_enroll_v1"
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -58,7 +62,7 @@ func Capabilities() []string {
 		caps = append(caps, CapabilityScriptPwsh)
 	}
 	if goos == "darwin" {
-		caps = append(caps, CapabilityAppleMDMState)
+		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	}
 	return caps
 }

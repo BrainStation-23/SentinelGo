@@ -19,6 +19,7 @@ import (
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
+	"sentinelgo/internal/mdmenroll"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
@@ -435,6 +436,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	mi.sessions = sup
 	mi.mu.Unlock()
 	native.SetUserNotifier(mi.notifyUser)
+	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if err := m.Start(ctx); err != nil {
@@ -457,6 +459,44 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
 	native.SetDLPPolicySync(mi.dlpSyncNow)
+}
+
+// mdmEnrollHook is the mdm-enroll task (#350): the enroller gets the device
+// enrolled through ADE or by presenting a profile to the console user's
+// session helper.
+func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller {
+	retry := func(ctx context.Context, fn func() error) error {
+		if mi.authSvc == nil {
+			return fn()
+		}
+		return mi.authSvc.DoWithAuthRetry(ctx, cfg, fn)
+	}
+	e := mdmenroll.New(mdmenroll.Deps{
+		OurHost:        func() string { return cfg.MDMHost },
+		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+		ConsoleSession: mdmenroll.ConsoleSession,
+		RenewADE:       mdmenroll.RenewADE,
+		Present: func(ctx context.Context, sessionID string, p ipc.OpenProfile) error {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return session.ErrNoHelper
+			}
+			return sup.OpenProfile(ctx, sessionID, p)
+		},
+	})
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		req, err := mdmenroll.ParseRequest(payload)
+		if err != nil {
+			return "", err
+		}
+		out, err := e.Enroll(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
 }
 
 // dlpSyncNow polls for the DLP policy immediately (native task
@@ -662,6 +702,7 @@ func (mi *MainIntegration) Stop() error {
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
 	native.SetUserNotifier(nil)
+	native.SetMDMEnroller(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}

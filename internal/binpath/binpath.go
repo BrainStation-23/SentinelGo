@@ -54,6 +54,7 @@ var knownPaths = func() map[string][]string {
 		"mdls":            {"/usr/bin/mdls"},
 		"dsconfigad":      {"/usr/sbin/dsconfigad"},
 		"profiles":        {"/usr/bin/profiles"},
+		"open":            {"/usr/bin/open"},
 		// Homebrew's own prefixes: Apple Silicon, then Intel. Neither is a
 		// system directory, but each is fixed, unlike a PATH search.
 		"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},

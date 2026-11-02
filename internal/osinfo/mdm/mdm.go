@@ -37,8 +37,10 @@ func hostOf(s string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-// isOurServer reports whether host is this deployment's MDM host. ourHost may
-// be configured as a bare host name or as a URL.
+// IsOurServer reports whether host (from HostOf) is this deployment's MDM
+// host. ourHost may be configured as a bare host name or as a URL.
+func IsOurServer(host, ourHost string) bool { return isOurServer(host, ourHost) }
+
 func isOurServer(host, ourHost string) bool {
 	ourHost = strings.TrimSpace(ourHost)
 	if host == "" || ourHost == "" {
