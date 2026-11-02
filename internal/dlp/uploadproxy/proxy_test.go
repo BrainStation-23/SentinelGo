@@ -481,3 +481,36 @@ func TestProxy_RefusesLocalTargets(t *testing.T) {
 		}
 	}
 }
+
+// Tunnel targets are vetted before dialling: the port is a number in range
+// and the host resolves to an allowed address, which is what gets dialled.
+func TestVetTarget(t *testing.T) {
+	p := New(Options{})
+	ctx := context.Background()
+	for _, tc := range []struct {
+		host, port, want string
+		ok               bool
+	}{
+		{"93.184.215.14", "443", "93.184.215.14:443", true},
+		{"[2606:2800:21f:cb07:6820:80da:af6b:8b2c]", "443", "[2606:2800:21f:cb07:6820:80da:af6b:8b2c]:443", true},
+		{"10.1.2.3", "8443", "10.1.2.3:8443", true},
+		{"127.0.0.1", "443", "", false},
+		{"::1", "443", "", false},
+		{"169.254.169.254", "80", "", false},
+		{"0.0.0.0", "443", "", false},
+		{"::ffff:127.0.0.1", "443", "", false}, // IPv4-mapped loopback
+		{"localhost", "443", "", false},        // by name
+		{"93.184.215.14", "0", "", false},
+		{"93.184.215.14", "70000", "", false},
+		{"93.184.215.14", "https", "", false},
+	} {
+		got, err := p.vetTarget(ctx, tc.host, tc.port)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("vetTarget(%s, %s) = %q, %v", tc.host, tc.port, got, err)
+		}
+	}
+	local := New(Options{AllowLocalTargets: true})
+	if got, err := local.vetTarget(ctx, "127.0.0.1", "8080"); err != nil || got != "127.0.0.1:8080" {
+		t.Errorf("tests may allow local targets: %q %v", got, err)
+	}
+}

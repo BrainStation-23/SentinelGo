@@ -144,3 +144,16 @@ func TestCapOffsets(t *testing.T) {
 		t.Errorf("offsets %d/%d, count %d", len(r.Findings[0].Offsets), len(r.Entries[0].Findings[0].Offsets), r.Findings[0].Count)
 	}
 }
+
+// A frame over the protocol's limit is refused before it is built.
+func TestWriteMsg_FrameLimit(t *testing.T) {
+	a, child, err := socketPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.c.Close(); _ = child.Close() }()
+	huge := []byte(`"` + strings.Repeat("a", maxFrame) + `"`)
+	if err := a.writeMsg(message{Type: typePolicy, Bundle: huge}, -1); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("oversized frame: %v", err)
+	}
+}
