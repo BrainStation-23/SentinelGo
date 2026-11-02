@@ -20,6 +20,7 @@ import (
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/uploadproxy"
+	"sentinelgo/internal/winsec"
 )
 
 // uploadSpillDir holds upload bodies while they are inspected (config dir).
@@ -127,10 +128,14 @@ func requireLoopback(addr string) error {
 	return nil
 }
 
-// resetDir creates dir (owner only) and empties it of spill files a crash
-// may have left.
+// resetDir creates dir (owner only; on Windows SYSTEM, Administrators and
+// this account, inherited by the spill files) and empties it of spill files
+// a crash may have left.
 func resetDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := winsec.SecurePath(dir); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(dir)

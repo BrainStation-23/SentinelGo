@@ -30,6 +30,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"sentinelgo/internal/winsec"
 )
 
 // CA file names in the agent's config directory.
@@ -82,10 +84,10 @@ func loadOrCreateCA(dir string, now func() time.Time) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writeFileAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := writeFileAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600, true); err != nil {
 		return nil, err
 	}
-	if err := writeFileAtomic(certPath, ca.certPEM, 0o644); err != nil {
+	if err := writeFileAtomic(certPath, ca.certPEM, 0o644, false); err != nil {
 		return nil, err
 	}
 	return ca, nil
@@ -210,8 +212,11 @@ func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
 }
 
 // writeFileAtomic writes data to path with mode, through a temporary file in
-// the same directory, so a crash never leaves a half-written key.
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+// the same directory, so a crash never leaves a half-written key. A secret
+// file is restricted before anything is written to it: mode on Unix, and on
+// Windows (where modes don't apply) an ACL for SYSTEM, Administrators and the
+// service's account only.
+func writeFileAtomic(path string, data []byte, mode os.FileMode, secret bool) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
@@ -221,6 +226,12 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
+	}
+	if secret {
+		if err := winsec.SecurePath(name); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("restrict %s: %w", filepath.Base(path), err)
+		}
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()

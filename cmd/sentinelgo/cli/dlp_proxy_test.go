@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestResetDir(t *testing.T) {
 	if left, _ := os.ReadDir(dir); len(left) != 0 {
 		t.Errorf("left: %v", left)
 	}
-	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
+	if fi, _ := os.Stat(dir); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 { // Windows: an ACL (winsec)
 		t.Errorf("mode %v", fi.Mode())
 	}
 }
