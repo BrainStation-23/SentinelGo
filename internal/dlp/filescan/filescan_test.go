@@ -460,7 +460,7 @@ func TestScan_CFB(t *testing.T) {
 	}{
 		{"password", Unscannable(ReasonPasswordProtected), "ooxml.encrypted", cfbWith("EncryptionInfo", "EncryptedPackage", "StrongEncryptionDataSpace")},
 		{"rights management", Unscannable(ReasonRightsProtected), "ooxml.encrypted", cfbWith("EncryptedPackage", "DRMEncryptedDataSpace")},
-		{"legacy doc", Unscannable(ReasonUnsupportedType), "ole", cfbWith("WordDocument", "1Table")},
+		{"not a parseable compound file", Unscannable(ReasonCorrupt), "ole", cfbWith("WordDocument", "1Table")},
 	} {
 		if res := scanBytes(t, s, tc.data); res.Status != tc.status || res.DetectedType != tc.typ {
 			t.Errorf("%s: %q %q", tc.name, res.Status, res.DetectedType)

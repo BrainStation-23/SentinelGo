@@ -203,7 +203,7 @@ func (st *scanState) scanDoc(ra io.ReaderAt, size int64, depth int, name string)
 	case kindZip:
 		return st.scanZip(ra, size, depth, name)
 	case kindCFB:
-		return st.scanCFB(ra, size)
+		return st.scanCFB(ra, size, depth, name)
 	default: // binary, PDF (no extractor yet), images, executables
 		return docResult{typ: sn.typ, status: Unscannable(ReasonUnsupportedType)}
 	}
