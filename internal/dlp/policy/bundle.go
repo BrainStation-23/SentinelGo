@@ -38,9 +38,10 @@ type Bundle struct {
 	Policies            []Policy `json:"policies"`
 }
 
-// Modules holds the per-channel settings. Only the clipboard exists so far.
+// Modules holds the per-channel settings.
 type Modules struct {
 	Clipboard ClipboardModule `json:"clipboard"`
+	Files     FilesModule     `json:"files"` // contract #326; not enforced yet
 }
 
 // ClipboardModule configures the clipboard channel.
@@ -76,9 +77,16 @@ type Detector struct {
 	CaseSensitive bool     `json:"case_sensitive,omitempty"`
 }
 
-// Exceptions lists what a policy never applies to.
+// Exceptions lists what a policy never applies to. The file fields (#326)
+// are decoded tolerantly, see UnmarshalJSON.
 type Exceptions struct {
-	SourceApps []string `json:"source_apps,omitempty"`
+	SourceApps     []string `json:"source_apps,omitempty"`
+	TrustedDevices []Device `json:"trusted_devices,omitempty"`
+	TrustedShares  []string `json:"trusted_shares,omitempty"`
+	Apps           []App    `json:"apps,omitempty"`
+
+	// FileDecodeError is why the file fields couldn't be read.
+	FileDecodeError string `json:"-"`
 }
 
 // Limits and defaults applied when decoding a bundle.
@@ -128,6 +136,7 @@ func (b *Bundle) normalize() {
 	// The helper scans every copy up to this limit; a bundle can't raise it
 	// past what a desktop session should spend on one copy.
 	b.Modules.Clipboard.MaxScanBytes = min(b.Modules.Clipboard.MaxScanBytes, MaxScanBytesLimit)
+	b.Modules.Files.normalize()
 }
 
 // PollInterval is how often to poll for a new bundle: the bundle's
@@ -141,7 +150,9 @@ func (b *Bundle) PollInterval() time.Duration {
 	return min(max(d, MinPollInterval), MaxPollInterval)
 }
 
-// AnyChannelEnabled reports whether at least one channel module is on.
+// AnyChannelEnabled reports whether at least one channel this agent enforces
+// is on. File channels aren't enforced yet, so a files-only bundle leaves DLP
+// idle instead of starting session helpers with nothing to do.
 func (b *Bundle) AnyChannelEnabled() bool {
 	return b.Modules.Clipboard.Enabled
 }

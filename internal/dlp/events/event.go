@@ -5,7 +5,10 @@
 // the evidence queue (#261).
 package events
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Actions recorded on an event.
 const (
@@ -32,6 +35,70 @@ type Event struct {
 	Truncated     bool      `json:"truncated"`
 	Excerpt       string    `json:"excerpt,omitempty"`
 	RepeatCount   int       `json:"repeat_count"`
+
+	// File channels only (contract #326); nil for the clipboard.
+	File        *File        `json:"file,omitempty"`
+	Destination *Destination `json:"destination,omitempty"`
+	Process     *Process     `json:"process,omitempty"`
+	Scan        *Scan        `json:"scan,omitempty"`
+}
+
+// File is the file a file-channel event is about. Name follows the bundle's
+// evidence mode (see FileName); content and extracted text are never sent.
+type File struct {
+	Name         *string `json:"name"` // null in evidence_mode "none"
+	Ext          string  `json:"ext,omitempty"`
+	DetectedType string  `json:"detected_type,omitempty"` // e.g. "ooxml.xlsx"
+	Size         int64   `json:"size"`
+	SHA256       string  `json:"sha256,omitempty"`
+}
+
+// Destination is where the file was going.
+type Destination struct {
+	Type        string `json:"type"` // removable, network_share, upload, cloud_sync
+	VolumeLabel string `json:"volume_label,omitempty"`
+	USB         *USB   `json:"usb,omitempty"`
+	ShareHost   string `json:"share_host,omitempty"`
+	Host        string `json:"host,omitempty"` // uploads: the host only, never the URL
+}
+
+// USB identifies a removable device.
+type USB struct {
+	VendorID  string `json:"vendor_id,omitempty"`
+	ProductID string `json:"product_id,omitempty"`
+	Serial    string `json:"serial,omitempty"`
+}
+
+// Process is the program that moved the file.
+type Process struct {
+	Name   string `json:"name,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Signer string `json:"signer,omitempty"`
+}
+
+// Scan describes how the verdict was reached.
+type Scan struct {
+	Status        string `json:"status"`         // scanned, truncated, unscannable:<reason>, timeout
+	VerdictSource string `json:"verdict_source"` // scan, cache, correlation
+	DurationMs    int64  `json:"duration_ms"`
+}
+
+// FileName returns what an event may say about a file at path (#341): nothing
+// in evidence mode "none", the full path in "full", and otherwise ("masked")
+// only the base name, so the user-profile part of the path never leaves the
+// device.
+func FileName(evidenceMode, path string) *string {
+	switch evidenceMode {
+	case "none":
+		return nil
+	case "full":
+		return &path
+	}
+	name := path
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	return &name
 }
 
 // SourceApp identifies the application the content came from, when known.
