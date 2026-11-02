@@ -2,6 +2,8 @@ package dlp
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -39,6 +41,10 @@ func (f *fakeFiles) Capabilities() map[string]string {
 }
 
 func (f *fakeFiles) Health() *filedlp.Health { return &filedlp.Health{State: "running", Mounts: 1} }
+
+func (f *fakeFiles) CopyCorrelation() map[string]string {
+	return map[string]string{filedlp.MethodScanOnClose: "supported", filedlp.MethodOSCopyEvents: "unsupported:not_on_linux"}
+}
 
 func (f *fakeFiles) counts() (applied, stops int) {
 	f.mu.Lock()
@@ -123,5 +129,34 @@ func TestStatus_IncludesFiles(t *testing.T) {
 	st, _ = s.status(Snapshot{State: StateEnforcing})
 	if st.Files != nil {
 		t.Error("files block without a hook")
+	}
+}
+
+// copy_correlation travels as an object inside capabilities.
+func TestStatus_CopyCorrelationInCapabilities(t *testing.T) {
+	s := &Syncer{agentVersion: "1"}
+	st, _ := s.status(Snapshot{State: StateEnforcing, FileCapabilities: map[string]string{policy.ChannelFileRemovable: "supported"},
+		CopyCorrelation: map[string]string{"scan_on_close": "supported", "os_copy_events": "unsupported:not_on_linux"}})
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Capabilities map[string]any `json:"capabilities"`
+		State        string         `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	cc, ok := got.Capabilities["copy_correlation"].(map[string]any)
+	if !ok || cc["scan_on_close"] != "supported" || cc["os_copy_events"] != "unsupported:not_on_linux" ||
+		got.Capabilities[policy.ChannelFileRemovable] != "supported" || got.State != "enforcing" {
+		t.Errorf("status %s", raw)
+	}
+	// Without it the status is unchanged.
+	st, _ = s.status(Snapshot{State: StateEnforcing})
+	raw, _ = json.Marshal(st)
+	if strings.Contains(string(raw), "copy_correlation") {
+		t.Errorf("copy_correlation without a hook: %s", raw)
 	}
 }

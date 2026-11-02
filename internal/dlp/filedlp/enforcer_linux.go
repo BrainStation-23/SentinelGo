@@ -91,6 +91,9 @@ type linuxEnforcer struct {
 func New(o Options) Enforcer {
 	e := &linuxEnforcer{opts: o, fan: -1}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
+	if o.ConfigDir != "" {
+		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
+	}
 	empty := []Destination{}
 	e.dests.Store(&empty)
 	return e
@@ -411,6 +414,23 @@ func (e *linuxEnforcer) decide(ctx context.Context, r Request) {
 	dctx, cancel := context.WithTimeout(ctx, policy.MaxScanTimeout*time.Millisecond+10*time.Second)
 	defer cancel()
 	e.decider.Handle(dctx, r)
+}
+
+// linuxMethods are the copy correlation methods this hook implements ("") or
+// why it can't ("not_on_linux"). Missing ones are not implemented yet.
+var linuxMethods = map[string]string{
+	MethodScanOnClose:  "",
+	MethodOSCopyEvents: "not_on_linux", // macOS's copyfile/clone events
+}
+
+func (e *linuxEnforcer) CopyCorrelation() map[string]string {
+	e.mu.Lock()
+	state, workers := e.stateLocked()
+	e.mu.Unlock()
+	if state == stateStopped {
+		state = stateRunning // stopped by the settings, not unable: the method itself works here
+	}
+	return copyCorrelationCapabilities(e.compiled.Load(), linuxMethods, state, workers)
 }
 
 func (e *linuxEnforcer) Capabilities() map[string]string {

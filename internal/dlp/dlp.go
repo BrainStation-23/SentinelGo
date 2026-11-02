@@ -201,6 +201,8 @@ type Snapshot struct {
 	// capability, and the hook's health (nil until it first starts).
 	FileCapabilities map[string]string
 	Files            *filedlp.Health
+	// CopyCorrelation is each copy correlation method's capability.
+	CopyCorrelation map[string]string
 }
 
 // Snapshot returns the current state. Safe for concurrent use.
@@ -220,6 +222,7 @@ func (m *Manager) Snapshot() Snapshot {
 	if m.files != nil {
 		s.FileCapabilities = m.files.Capabilities()
 		s.Files = m.files.Health()
+		s.CopyCorrelation = m.files.CopyCorrelation()
 	}
 	return s
 }

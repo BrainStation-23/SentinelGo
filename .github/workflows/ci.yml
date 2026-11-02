@@ -246,7 +246,7 @@ jobs:
             ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ | tee "$RUNNER_TEMP/root-tests.log"
           # The end-to-end tests skip themselves when they can't run: make
           # sure they really ran here.
-          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestSandbox_Probe; do
+          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestEnforcer_QuarantineEndToEnd TestSandbox_Probe; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/root-tests.log" || { echo "::error::$t did not run as root"; exit 1; }
           done
           tail -n +2 "$RUNNER_TEMP/coverage-root.out" >> coverage.out

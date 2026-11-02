@@ -58,6 +58,9 @@ type FilesModule struct {
 	TrustedShares  []string         `json:"trusted_shares"`
 	BlockMessage   string           `json:"block_message"`
 	WarnMessage    string           `json:"warn_message"`
+	// CopyCorrelation says how the agent links a written file to what it
+	// copies (#334). Absent means today\'s behaviour.
+	CopyCorrelation CopyCorrelation `json:"copy_correlation"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
@@ -137,6 +140,7 @@ func (m *FilesModule) normalize() {
 		m.ScanTimeoutMs = DefaultScanTimeout
 	}
 	m.ScanTimeoutMs = min(max(m.ScanTimeoutMs, MinScanTimeout), MaxScanTimeout)
+	m.CopyCorrelation.normalize()
 	switch m.OnUnscannable {
 	case OnFailBlock, OnFailMonitor:
 	default:
@@ -228,3 +232,78 @@ func (f FileFilters) TypeOK(ext, detectedType string) bool {
 	}
 	return false
 }
+
+// What happens to a file found to violate a policy after it was written
+// (CopyCorrelation.OnCloseViolation).
+const (
+	ViolationRecord     = "record"
+	ViolationQuarantine = "quarantine" // moved to a root-only folder on the device
+	ViolationDelete     = "delete"
+)
+
+// Strict modes for removable devices no policy trusts
+// (CopyCorrelation.UntrustedDevices).
+const (
+	UntrustedAllow       = "allow"
+	UntrustedReadOnly    = "read_only"
+	UntrustedBlockWrites = "block_writes"
+)
+
+// Taint window limits, in seconds.
+const (
+	DefaultTaintWindow = 300
+	MinTaintWindow     = 30
+	MaxTaintWindow     = 3600
+)
+
+// CopyCorrelation is modules.files.copy_correlation (#334, backend
+// Compliance-OS#570). Every default keeps the behaviour from before it.
+type CopyCorrelation struct {
+	ScanOnClose        *bool  `json:"scan_on_close"`        // default true
+	OnCloseViolation   string `json:"on_close_violation"`   // record | quarantine | delete
+	ProcessTaint       bool   `json:"process_taint"`        // default false
+	TaintWindowSeconds int    `json:"taint_window_seconds"` // 30 – 3600, default 300
+	OSCopyEvents       *bool  `json:"os_copy_events"`       // default true (macOS)
+	UntrustedDevices   string `json:"untrusted_devices"`    // allow | read_only | block_writes
+
+	// DecodeError is why the block couldn't be read; the defaults apply.
+	DecodeError string `json:"-"`
+}
+
+// UnmarshalJSON never fails: an unreadable block falls back to the
+// defaults with DecodeError set, so it can't turn file DLP off.
+func (c *CopyCorrelation) UnmarshalJSON(data []byte) error {
+	type plain CopyCorrelation
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		*c = CopyCorrelation{DecodeError: fmt.Sprintf("modules.files.copy_correlation: %v", err)}
+		return nil
+	}
+	*c = CopyCorrelation(p)
+	return nil
+}
+
+func (c *CopyCorrelation) normalize() {
+	switch c.OnCloseViolation {
+	case ViolationQuarantine, ViolationDelete:
+	default:
+		c.OnCloseViolation = ViolationRecord
+	}
+	switch c.UntrustedDevices {
+	case UntrustedReadOnly, UntrustedBlockWrites:
+	default:
+		c.UntrustedDevices = UntrustedAllow
+	}
+	if c.TaintWindowSeconds <= 0 {
+		c.TaintWindowSeconds = DefaultTaintWindow
+	}
+	c.TaintWindowSeconds = min(max(c.TaintWindowSeconds, MinTaintWindow), MaxTaintWindow)
+}
+
+// ScansOnClose reports whether files are scanned after they are written to
+// a monitored destination (the default).
+func (c CopyCorrelation) ScansOnClose() bool { return c.ScanOnClose == nil || *c.ScanOnClose }
+
+// UsesOSCopyEvents reports whether OS copy events are used where the OS has
+// them (the default).
+func (c CopyCorrelation) UsesOSCopyEvents() bool { return c.OSCopyEvents == nil || *c.OSCopyEvents }
