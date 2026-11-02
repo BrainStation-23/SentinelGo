@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/dlp/detect"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 )
@@ -35,6 +36,8 @@ type Status struct {
 	DetectorsSupported []string              `json:"detectors_supported"`
 	CompileErrors      []detect.CompileError `json:"compile_errors"`
 	Sessions           []session.Info        `json:"sessions"`
+	// Files is file DLP's health, on platforms with a file hook (#324).
+	Files *filedlp.Health `json:"files,omitempty"`
 }
 
 // Status size caps, keeping the report well under the server's 64 KB limit.
@@ -190,6 +193,10 @@ func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 		// capability doesn't mean the channel is covered.
 		mergeHelperCapabilities(st.Capabilities, snap.Sessions)
 	}
+	for ch, c := range snap.FileCapabilities {
+		st.Capabilities[ch] = c
+	}
+	st.Files = snap.Files
 	s.mu.Lock()
 	errs := append(append([]detect.CompileError{}, s.syncErrors...), snap.CompileErrors...)
 	s.mu.Unlock()

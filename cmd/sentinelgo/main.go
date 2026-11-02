@@ -17,6 +17,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == cli.DLPSessionCommand {
 		os.Exit(cli.RunDLPSession())
 	}
+	// A file DLP scan worker: started by the service, sandboxed, no config.
+	if len(os.Args) > 1 && os.Args[1] == cli.DLPScanCommand {
+		os.Exit(cli.RunDLPScan())
+	}
 	// `sentinelgo dlp status|test`: diagnostics from the cached policy.
 	if len(os.Args) > 1 && os.Args[1] == cli.DLPCommand {
 		os.Exit(cli.RunDLP(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))

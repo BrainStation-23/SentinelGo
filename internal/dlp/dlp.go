@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"sentinelgo/internal/dlp/detect"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 )
@@ -36,7 +37,8 @@ const (
 	StateDisabledServer State = "disabled_server"
 	// StateIdle: DLP is on but every channel module is switched off.
 	StateIdle State = "idle"
-	// StateEnforcing: helpers run and enforce the bundle.
+	// StateEnforcing: helpers run and enforce the bundle, and/or file DLP
+	// monitors its channels.
 	StateEnforcing State = "enforcing"
 )
 
@@ -69,6 +71,7 @@ type Manager struct {
 	localEnabled bool
 	source       BundleSource
 	sup          session.Supervisor
+	files        filedlp.Enforcer // nil where file DLP has no hook
 
 	mu       sync.Mutex
 	ctx      context.Context
@@ -128,9 +131,13 @@ func (m *Manager) Apply(b *policy.Bundle) {
 	}
 }
 
-// applyLocked drives the supervisor to match the current state. m.mu is held.
+// applyLocked drives the supervisor and file DLP to match the current state.
+// m.mu is held.
 func (m *Manager) applyLocked() {
 	next := Decide(m.localEnabled, m.bundle)
+	if next == StateIdle && m.files != nil && m.files.Wants(m.bundle.Modules.Files) {
+		next = StateEnforcing // only file channels are on
+	}
 	if next != m.state {
 		log.Printf("DLP: state %s -> %s", m.state, next)
 	}
@@ -143,11 +150,29 @@ func (m *Manager) applyLocked() {
 				log.Printf("DLP: rule %s skipped: %s", ce.RuleID, ce.Error)
 			}
 		}
-		m.sup.Apply(m.ctx, m.compiled)
+		if m.bundle.AnyChannelEnabled() {
+			m.sup.Apply(m.ctx, m.compiled)
+		} else {
+			m.sup.Stop() // files only: no clipboard to watch
+		}
+		if m.files != nil {
+			m.files.Apply(m.ctx, m.compiled) // stops itself when no file channel is on
+		}
 		return
 	}
 	m.compiled = nil
 	m.sup.Stop()
+	if m.files != nil {
+		m.files.Stop()
+	}
+}
+
+// SetFiles gives the Manager this platform's file DLP enforcer. Call it
+// before Start; nil (no hook here) is allowed.
+func (m *Manager) SetFiles(e filedlp.Enforcer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.files = e
 }
 
 // Stop stops every helper. Later Apply calls only record the bundle.
@@ -161,6 +186,9 @@ func (m *Manager) Stop() {
 	m.started = false
 	m.compiled = nil
 	m.sup.Stop()
+	if m.files != nil {
+		m.files.Stop()
+	}
 }
 
 // Snapshot is what the Manager has applied, for status reports.
@@ -169,6 +197,10 @@ type Snapshot struct {
 	Version       string // of the last-known bundle; "" when none
 	CompileErrors []detect.CompileError
 	Sessions      []session.Info
+	// File DLP, where this platform has a hook: each enabled file channel's
+	// capability, and the hook's health (nil until it first starts).
+	FileCapabilities map[string]string
+	Files            *filedlp.Health
 }
 
 // Snapshot returns the current state. Safe for concurrent use.
@@ -184,6 +216,10 @@ func (m *Manager) Snapshot() Snapshot {
 	}
 	if m.started {
 		s.Sessions = m.sup.Sessions()
+	}
+	if m.files != nil {
+		s.FileCapabilities = m.files.Capabilities()
+		s.Files = m.files.Health()
 	}
 	return s
 }
