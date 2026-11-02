@@ -174,3 +174,57 @@ func (e *Exceptions) UnmarshalJSON(data []byte) error {
 	e.TrustedDevices, e.TrustedShares, e.Apps = f.TrustedDevices, f.TrustedShares, f.Apps
 	return nil
 }
+
+// FileFilters narrows a file-channel policy: Types are lowercase extensions
+// or detected types (e.g. "xlsx", "ooxml.xlsx", "pdf"), sizes are in bytes.
+// Zero values don't filter.
+type FileFilters struct {
+	Types    []string `json:"types,omitempty"`
+	MinBytes int64    `json:"min_bytes,omitempty"`
+	MaxBytes int64    `json:"max_bytes,omitempty"`
+
+	// DecodeError is why the filters couldn't be read; the policy then
+	// applies to every file (a bad filter must not silence a policy).
+	DecodeError string `json:"-"`
+}
+
+// UnmarshalJSON never fails: unreadable filters are dropped with
+// DecodeError set, so they can't reject a bundle the clipboard depends on.
+func (f *FileFilters) UnmarshalJSON(data []byte) error {
+	type plain FileFilters
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		*f = FileFilters{DecodeError: fmt.Sprintf("file_filters: %v", err)}
+		return nil
+	}
+	*f = FileFilters(p)
+	for i, t := range f.Types {
+		f.Types[i] = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(t), "."))
+	}
+	return nil
+}
+
+// SizeOK reports whether a file of size bytes passes the size filters.
+func (f FileFilters) SizeOK(size int64) bool {
+	return size >= f.MinBytes && (f.MaxBytes <= 0 || size <= f.MaxBytes)
+}
+
+// TypeOK reports whether a file passes the type filter, by its extension
+// (without the dot) or its detected type: "xlsx" matches a .xlsx file and,
+// by content, a renamed one detected as "ooxml.xlsx".
+func (f FileFilters) TypeOK(ext, detectedType string) bool {
+	if len(f.Types) == 0 {
+		return true
+	}
+	ext = strings.ToLower(ext)
+	last := detectedType
+	if i := strings.LastIndexByte(detectedType, '.'); i >= 0 {
+		last = detectedType[i+1:]
+	}
+	for _, t := range f.Types {
+		if t != "" && (t == ext || t == detectedType || t == last) {
+			return true
+		}
+	}
+	return false
+}
