@@ -26,7 +26,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
   - It extracts text from plain text (UTF-8, UTF-16 with or without a byte order mark, Latin-1), CSV, JSON, XML, Word, Excel and PowerPoint files, OpenDocument and RTF. It also reads Microsoft sensitivity label names.
   - It scans the text in chunks that overlap, so a match across a chunk boundary is neither missed nor counted twice.
   - It opens zip archives entry by entry, with limits on depth, number of entries, total size and compression ratio against zip bombs.
-  - Files it can't read are reported as `unscannable`, with a reason (`password_protected`, `rights_protected`, `too_large`, `unsupported_type`, `corrupt`), instead of being treated as clean. PDF and legacy `.doc`/`.xls` have no text extractor yet and are reported as `unsupported_type`.
+  - Files it can't read are reported as `unscannable`, with a reason (`password_protected`, `rights_protected`, `too_large`, `unsupported_type`, `corrupt`), instead of being treated as clean. PDF, Excel 5/95 and Outlook `.msg` files have no text extractor yet and are reported as `unsupported_type`.
+  - Legacy Office files are read too: Word, Excel and PowerPoint 97–2003 (`.doc`, `.xls` including number and formula cells, `.ppt`), each recognised as password-protected when it is. Files embedded in Office documents (other documents and OLE packages) are scanned as entries; an embedded object that can't be read, such as an equation, doesn't make the document unscannable.
   - A bounded verdict cache is keyed by the file's identity, size, times and policy version.
 
   File events gain `file`, `destination`, `process` and `scan` fields. In `masked` evidence mode only the file name is sent, never its path (#341). A test makes sure the scanner never logs, prints or opens files.

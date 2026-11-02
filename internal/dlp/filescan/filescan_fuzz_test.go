@@ -23,6 +23,10 @@ func FuzzScan(f *testing.F) {
 	f.Add([]byte(`{\rtf1 {\fonttbl x} card \'41\u65? TOPSECRET\par}`))
 	f.Add(cfbWith("EncryptedPackage"))
 	f.Add([]byte("%PDF-1.4"))
+	f.Add(buildCFB(f, wordDoc("Card "+testCard+"\r", "TOPSECRET", 0)...))
+	f.Add(buildCFB(f, [2]string{"Workbook", workbook()}))
+	f.Add(buildCFB(f, [2]string{"PowerPoint Document", powerPoint()}))
+	f.Add(buildCFB(f, [2]string{"\x01Ole10Native", ole10Native("a.txt", []byte("TOPSECRET"))}))
 	eng := testEngine(f)
 	lim := testLimits()
 	lim.MaxFileBytes, lim.MaxTextBytes, lim.Timeout = 1<<20, 64<<10, 2*time.Second

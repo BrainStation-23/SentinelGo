@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -27,7 +28,7 @@ func (st *scanState) scanZip(ra io.ReaderAt, size int64, depth int, name string)
 	}
 	switch {
 	case files["[Content_Types].xml"] != nil:
-		return st.scanOOXML(zr, files)
+		return st.scanOOXML(zr, files, depth, name)
 	case isODF(files["mimetype"]):
 		return st.scanODF(zr, files)
 	default:
@@ -174,7 +175,7 @@ func ooxmlType(files map[string]*zip.File) string {
 
 // scanOOXML extracts the text parts of a docx, xlsx or pptx, plus its
 // sensitivity labels. Embedded files (word/embeddings) aren't opened yet.
-func (st *scanState) scanOOXML(zr *zip.Reader, files map[string]*zip.File) docResult {
+func (st *scanState) scanOOXML(zr *zip.Reader, files map[string]*zip.File, depth int, name string) docResult {
 	typ := ooxmlType(files)
 	var labels []string
 	if f := files["docProps/custom.xml"]; f != nil {
@@ -199,7 +200,44 @@ func (st *scanState) scanOOXML(zr *zip.Reader, files map[string]*zip.File) docRe
 	}
 	d := st.finishDoc(typ, sink, st.ctx.Err())
 	d.status, d.labels = worse(d.status, status), labels
+	st.scanEmbedded(zr, depth, name)
 	return d
+}
+
+// embeddedDirs hold the files embedded in an Office document (other
+// documents, OLE objects and packages).
+var embeddedDirs = []string{"word/embeddings/", "xl/embeddings/", "ppt/embeddings/"}
+
+// scanEmbedded scans a document's embedded files as entries. One with
+// findings, or protected by a password or Rights Management, is recorded
+// (and counts towards the document's status). One that can't be read for
+// another reason, an equation or a drawing, is left out: it would otherwise
+// make everyday documents unscannable.
+func (st *scanState) scanEmbedded(zr *zip.Reader, depth int, name string) {
+	if depth+1 >= st.s.limits.MaxDepth {
+		return
+	}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || !slices.ContainsFunc(embeddedDirs, func(d string) bool { return strings.HasPrefix(f.Name, d) }) {
+			continue
+		}
+		if st.ctx.Err() != nil || st.entriesLeft <= 0 || st.textLeft <= 0 {
+			return
+		}
+		st.entriesLeft--
+		e := st.scanEntry(f, depth, path.Join(name, f.Name)) // #nosec G305 -- a label for results, never a path anything is written to
+		protected := e.Status == Unscannable(ReasonPasswordProtected) || e.Status == Unscannable(ReasonRightsProtected) ||
+			e.Status == Unscannable(ReasonEncrypted)
+		switch {
+		case len(e.Findings) > 0:
+			if !protected && e.Status != StatusScanned && e.Status != StatusTruncated {
+				e.Status = StatusScanned // what was found counts; the unreadable rest doesn't
+			}
+			st.entries = append(st.entries, e)
+		case protected:
+			st.entries = append(st.entries, e)
+		}
+	}
 }
 
 func (st *scanState) extractEntry(f *zip.File, sink *textSink) error {

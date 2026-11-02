@@ -7,11 +7,10 @@ import (
 	"unicode/utf16"
 )
 
-// OLE compound files hold legacy Office documents (.doc, .xls, .ppt, .msg),
-// which have no extractor yet, and also encrypted Office Open XML files: a
-// password or Rights Management protected .docx/.xlsx/.pptx is a compound
-// file with an "EncryptedPackage" stream. Stream names are stored in UTF-16,
-// so they are found by searching the file, without parsing the format.
+// Encrypted Office Open XML files are OLE compound files with an
+// "EncryptedPackage" stream (and "DRMEncrypted…" data spaces for Rights
+// Management). When a compound file doesn't parse, these stream names, stored
+// in UTF-16, are still found by searching the file.
 
 var (
 	cfbEncryptedPackage = utf16le("EncryptedPackage")
@@ -24,22 +23,6 @@ func utf16le(s string) []byte {
 		b = binary.LittleEndian.AppendUint16(b, u)
 	}
 	return b
-}
-
-// scanCFB reports a compound file as rights protected, password protected, or
-// an unsupported legacy format.
-func (st *scanState) scanCFB(ra io.ReaderAt, size int64) docResult {
-	enc, drm, err := cfbMarkers(st, ra, size)
-	switch {
-	case err != nil:
-		return docResult{typ: "ole", status: statusFor(st.ctx, err)}
-	case enc && drm:
-		return docResult{typ: "ooxml.encrypted", status: Unscannable(ReasonRightsProtected)}
-	case enc:
-		return docResult{typ: "ooxml.encrypted", status: Unscannable(ReasonPasswordProtected)}
-	default:
-		return docResult{typ: "ole", status: Unscannable(ReasonUnsupportedType)}
-	}
 }
 
 // cfbMarkers searches ra for the encryption stream names, reading in blocks
