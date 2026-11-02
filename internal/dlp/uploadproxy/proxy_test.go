@@ -130,6 +130,8 @@ func newFixture(t *testing.T, up *upstream, bundleJSON string, upstreamRoots *x5
 		InScope:       func(host, _ string) bool { return host == "127.0.0.1" },
 		Inspector:     NewInspector(d, spill),
 		UpstreamRoots: upstreamRoots,
+		// The test sites run on 127.0.0.1.
+		AllowLocalTargets: true,
 	})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -436,6 +438,46 @@ func TestNoInsecureSkipVerify(t *testing.T) {
 		}
 		if bytes.Contains(b, []byte("InsecureSkipVerify")) {
 			t.Errorf("%s mentions InsecureSkipVerify", name)
+		}
+	}
+}
+
+// By default the proxy refuses to connect a client to loopback, link-local
+// (cloud metadata) or unspecified addresses, by name or by number, both for
+// tunnels and for inspected requests.
+func TestProxy_RefusesLocalTargets(t *testing.T) {
+	up := newUpstream(t, true)
+	f := newFixture(t, up, bundle(false, "allow"), nil)
+	f.proxy = New(Options{CA: f.ca, InScope: f.proxy.opts.InScope, Inspector: f.proxy.opts.Inspector, UpstreamRoots: f.proxy.opts.UpstreamRoots})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() { _ = f.proxy.Serve(l) }()
+	f.client.Transport.(*http.Transport).Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: l.Addr().String()})
+
+	// Inspected (in scope): the request is refused, nothing reaches the site.
+	if resp, _ := post(t, f, up.srv.URL+"/upload", strings.NewReader("hello"), "text/plain"); resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("in scope: %d", resp.StatusCode)
+	}
+	// Tunnelled (out of scope), by name: CONNECT itself is refused.
+	f.proxy.opts.InScope = func(string, string) bool { return false }
+	port := up.srv.Listener.Addr().(*net.TCPAddr).Port
+	if _, err := f.client.Get(fmt.Sprintf("https://localhost:%d/", port)); err == nil {
+		t.Error("tunnel to localhost allowed")
+	}
+	if len(up.received()) != 0 {
+		t.Errorf("the local site was reached %d times", len(up.received()))
+	}
+	for _, addr := range []string{"127.0.0.1:80", "[::1]:443", "169.254.169.254:80", "0.0.0.0:443", "[fe80::1]:443", "224.0.0.1:80"} {
+		if err := guardDial("tcp", addr, nil); err == nil {
+			t.Errorf("%s allowed", addr)
+		}
+	}
+	for _, addr := range []string{"10.1.2.3:443", "192.168.1.10:443", "93.184.215.14:443", "[2606:2800:21f:cb07:6820:80da:af6b:8b2c]:443"} {
+		if err := guardDial("tcp", addr, nil); err != nil {
+			t.Errorf("%s refused: %v", addr, err)
 		}
 	}
 }
