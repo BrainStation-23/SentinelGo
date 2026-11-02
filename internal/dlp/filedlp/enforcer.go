@@ -95,14 +95,16 @@ func channelCapabilities(c *policy.Compiled, supported map[string]bool, state st
 	return out
 }
 
-// wants reports whether m enables one of the supported channels, with a
-// method this hook has turned on (scanning after the write, so far).
+// wants reports whether m enables one of the supported channels with a
+// method this hook has on: scanning after the write, or (removable drives)
+// the untrusted device mode.
 func wants(m policy.FilesModule, supported map[string]bool) bool {
-	if !m.CopyCorrelation.ScansOnClose() {
-		return false
-	}
+	cc := m.CopyCorrelation
 	for ch := range supported {
-		if m.ChannelEnabled(ch) {
+		if !m.ChannelEnabled(ch) {
+			continue
+		}
+		if cc.ScansOnClose() || ch == policy.ChannelFileRemovable && cc.UntrustedDevices != policy.UntrustedAllow {
 			return true
 		}
 	}
