@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"slices"
+	"sync"
 
 	"sentinelgo/internal/dlp/detect"
 )
@@ -26,7 +27,18 @@ type Compiled struct {
 	// CompileErrors lists the rules (or, with a policy id, the policies) that
 	// were skipped. Everything else stays active.
 	CompileErrors []detect.CompileError
+
+	// fileRules feed the file engine, built on first use by FilesEngine so
+	// session helpers (which only run the clipboard) never pay for it.
+	fileRules []detect.Rule
+	filesOnce sync.Once
+	files     *detect.Engine
+	filesErrs []detect.CompileError
 }
+
+// FileChunkBytes is how much extracted file text the file engine scans at a
+// time (internal/dlp/filescan streams longer text through it in chunks).
+const FileChunkBytes = 1 << 20
 
 // CompiledPolicy is one policy ready to evaluate against a scan.
 type CompiledPolicy struct {
@@ -45,6 +57,12 @@ func Compile(b *Bundle) *Compiled {
 		EvidenceMode: b.EvidenceMode,
 		Modules:      b.Modules,
 	}
+	if e := b.Modules.Files.DecodeError; e != "" {
+		c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: "modules.files", Error: e})
+	}
+	if e := b.Modules.Files.CopyCorrelation.DecodeError; e != "" {
+		c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: "modules.files.copy_correlation", Error: e + " (defaults apply)"})
+	}
 	var clipboardRules []detect.Rule
 	for _, p := range b.Policies {
 		if err := validatePolicy(p); err != nil {
@@ -58,9 +76,18 @@ func Compile(b *Bundle) *Compiled {
 				Pattern: d.Pattern, Keywords: d.Keywords, CaseSensitive: d.CaseSensitive,
 			})
 		}
+		if e := p.Exceptions.FileDecodeError; e != "" {
+			c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: p.ID, Error: e})
+		}
+		if e := p.FileFilters.DecodeError; e != "" {
+			c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: p.ID, Error: e + " (the policy applies to every file)"})
+		}
 		c.Policies = append(c.Policies, cp)
 		if slices.Contains(p.Channels, ChannelClipboard) {
 			clipboardRules = append(clipboardRules, cp.Rules...)
+		}
+		if slices.ContainsFunc(p.Channels, IsFileChannel) {
+			c.fileRules = append(c.fileRules, cp.Rules...)
 		}
 	}
 	if len(clipboardRules) > 0 {
@@ -81,18 +108,33 @@ func validatePolicy(p Policy) error {
 	return nil
 }
 
+// FilesEngine returns the engine for the file channels' policies, scanning
+// FileChunkBytes at a time, and the rules it skipped. It is nil when no policy
+// applies to a file channel. Safe for concurrent use.
+func (c *Compiled) FilesEngine() (*detect.Engine, []detect.CompileError) {
+	c.filesOnce.Do(func() {
+		if len(c.fileRules) > 0 {
+			c.files, c.filesErrs = detect.New(c.fileRules, FileChunkBytes)
+		}
+	})
+	return c.files, c.filesErrs
+}
+
 // ChannelEnabled reports whether the module for channel is switched on. An
 // unknown channel is off.
 func (c *Compiled) ChannelEnabled(channel string) bool {
-	switch channel {
-	case ChannelClipboard:
+	switch {
+	case channel == ChannelClipboard:
 		return c.Modules.Clipboard.Enabled
+	case IsFileChannel(channel):
+		return c.Modules.Files.ChannelEnabled(channel)
 	default:
 		return false
 	}
 }
 
-// AnyChannelEnabled reports whether at least one known channel is switched on.
+// AnyChannelEnabled reports whether at least one channel this agent enforces
+// is switched on (file channels aren't enforced yet).
 func (c *Compiled) AnyChannelEnabled() bool {
 	return c.ChannelEnabled(ChannelClipboard)
 }

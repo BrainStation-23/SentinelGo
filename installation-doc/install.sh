@@ -480,6 +480,8 @@ uninstall_service() {
             systemctl disable "$SERVICE_NAME"
             rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
             systemctl daemon-reload
+            # The account the service creates for its file DLP scan workers.
+            userdel sentinelgo-scan 2>/dev/null || true
             ;;
         macos)
             launchctl bootout system "$LAUNCHD_PLIST_PATH" 2>/dev/null || true
