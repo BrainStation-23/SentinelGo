@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"sentinelgo/internal/sanitize"
@@ -32,6 +34,9 @@ type Options struct {
 	UpstreamRoots *x509.CertPool
 	// DialTimeout bounds connecting to a server (default 15 s).
 	DialTimeout time.Duration
+	// AllowLocalTargets lets clients reach loopback and link-local
+	// addresses through the proxy. Off except in tests: see guardDial.
+	AllowLocalTargets bool
 }
 
 // Stats are the proxy's counters.
@@ -62,6 +67,9 @@ func New(o Options) *Proxy {
 		o.InScope = func(string, string) bool { return false }
 	}
 	d := &net.Dialer{Timeout: o.DialTimeout, KeepAlive: 30 * time.Second}
+	if !o.AllowLocalTargets {
+		d.Control = guardDial
+	}
 	return &Proxy{
 		opts:   o,
 		dialer: d,
@@ -152,6 +160,28 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	p.intercepted.Add(1)
 	p.serveDecrypted(conn, host, target)
+}
+
+// errLocalTarget refuses a connection the proxy must not make for a client.
+var errLocalTarget = errors.New("refusing to connect to a loopback, link-local or unspecified address")
+
+// guardDial runs on every connection the proxy makes (tunnels and inspected
+// requests) with the address actually being dialled, after DNS: the proxy
+// runs as root, so it must not let a local client reach what that client
+// couldn't reach itself (root-only firewall rules, a link-local metadata
+// service). Loopback, link-local, unspecified and multicast addresses are
+// refused; private ranges stay allowed (intranet upload destinations).
+func guardDial(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return errLocalTarget
+	}
+	return nil
 }
 
 // tunnel copies bytes both ways until either side closes. buffered holds
