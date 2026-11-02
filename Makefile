@@ -46,13 +46,13 @@ export CGO_ENABLED=0
 
 all: windows linux macos
 
+# The build links the committed cmd/sentinelgo/resource_windows.syso (icon +
+# manifest; its version fields are empty, so it doesn't change per release).
+# Don't run go generate here: release CI has no goversioninfo, and regenerating
+# would rewrite a committed file mid-build. Use `make generate` after changing
+# assets/resource.json or the icon, and commit the result.
 windows:
-	GOOS=windows GOARCH=amd64 go generate ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
-
-# NOTE: go generate in the windows target re-runs goversioninfo to refresh
-# resource_windows.syso (icon + version metadata). Requires goversioninfo:
-#   go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.4.1
 
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/linux/sentinelgo-linux-amd64 ./cmd/sentinelgo
