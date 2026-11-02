@@ -70,3 +70,32 @@ func TestCapabilities_AppleMDMStateOnMacOnly(t *testing.T) {
 		t.Error("apple_mdm_state_v1 must not be in the static list")
 	}
 }
+
+// windows_mdm_state_v1 is advertised on Windows only (#355).
+func TestCapabilities_WindowsMDMStateOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityWindowsMDMState); got != want {
+			t.Errorf("%s: windows_mdm_state_v1 advertised = %v, want %v", os, got, want)
+		}
+		if got := slices.Contains(Capabilities(), CapabilityMDMSync); got != want {
+			t.Errorf("%s: mdm_sync_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}
+
+// mdm-enroll runs on macOS and Windows; mdm-unenroll on Windows (#356).
+func TestCapabilities_MDMTasks(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string][2]bool{"darwin": {true, false}, "windows": {true, true}, "linux": {false, false}} {
+		goos = os
+		caps := Capabilities()
+		enroll, unenroll := slices.Contains(caps, CapabilityMDMEnroll), slices.Contains(caps, CapabilityMDMUnenroll)
+		if enroll != want[0] || unenroll != want[1] {
+			t.Errorf("%s: enroll/unenroll = %v/%v, want %v", os, enroll, unenroll, want)
+		}
+	}
+}

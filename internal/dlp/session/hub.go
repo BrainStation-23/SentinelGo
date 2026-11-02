@@ -174,6 +174,21 @@ func (h *Hub) OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfi
 	if p.ID == "" {
 		p.ID = newNotifyID()
 	}
+	return h.askSession(ctx, sessionID, p.ID, ipc.Message{Type: ipc.TypeOpenProfile, OpenProfile: &p})
+}
+
+// OpenURL asks the helper of session sessionID to open u for its user (an
+// MDM enrollment link, #356) and waits for the answer until ctx ends.
+func (h *Hub) OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) error {
+	if u.ID == "" {
+		u.ID = newNotifyID()
+	}
+	return h.askSession(ctx, sessionID, u.ID, ipc.Message{Type: ipc.TypeOpenURL, OpenURL: &u})
+}
+
+// askSession sends m to the helper of one session and waits for the result
+// with the given id.
+func (h *Hub) askSession(ctx context.Context, sessionID, id string, m ipc.Message) error {
 	ch := make(chan string, 1)
 	h.mu.Lock()
 	var target *helper
@@ -187,7 +202,7 @@ func (h *Hub) OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfi
 		if target.pending == nil {
 			target.pending = map[string]chan string{}
 		}
-		target.pending[p.ID] = ch
+		target.pending[id] = ch
 	}
 	h.mu.Unlock()
 	if target == nil {
@@ -195,11 +210,11 @@ func (h *Hub) OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfi
 	}
 	defer func() {
 		h.mu.Lock()
-		delete(target.pending, p.ID)
+		delete(target.pending, id)
 		h.mu.Unlock()
 	}()
 
-	h.send(target, ipc.Message{Type: ipc.TypeOpenProfile, OpenProfile: &p})
+	h.send(target, m)
 	select {
 	case e := <-ch:
 		if e != "" {
@@ -508,6 +523,10 @@ func (h *Hub) readLoop(hp *helper) {
 		case ipc.TypeOpenProfileResult:
 			if m.OpenProfileResult != nil {
 				h.answer(hp, m.OpenProfileResult.ID, m.OpenProfileResult.Error)
+			}
+		case ipc.TypeOpenURLResult:
+			if m.OpenURLResult != nil {
+				h.answer(hp, m.OpenURLResult.ID, m.OpenURLResult.Error)
 			}
 		case ipc.TypeStatus:
 			if m.Status != nil {

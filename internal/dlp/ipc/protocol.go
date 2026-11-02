@@ -49,6 +49,9 @@ const (
 
 	TypeOpenProfile       = "open_profile"        // service → helper: present a configuration profile to the user
 	TypeOpenProfileResult = "open_profile_result" // helper → service: whether it was presented
+
+	TypeOpenURL       = "open_url"        // service → helper: open an enrollment link for the user
+	TypeOpenURLResult = "open_url_result" // helper → service: whether it was opened
 )
 
 // Notification levels.
@@ -75,6 +78,19 @@ type Message struct {
 	OpenProfile  *OpenProfile  `json:"open_profile,omitempty"`
 	// OpenProfileResult answers an OpenProfile with the same ID.
 	OpenProfileResult *OpenProfileResult `json:"open_profile_result,omitempty"`
+	OpenURL           *OpenURL           `json:"open_url,omitempty"`
+	// OpenURLResult answers an OpenURL with the same ID.
+	OpenURLResult *OpenProfileResult `json:"open_url_result,omitempty"`
+}
+
+// OpenURL asks the helper to open an MDM enrollment link (Windows'
+// ms-device-enrollment: URI, #356) for its user, then show Title/Message.
+// Helpers open only that scheme.
+type OpenURL struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
 }
 
 // OpenProfile asks the helper to present a configuration profile (an MDM

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,9 @@ type HelperOptions struct {
 	// OpenProfile presents a configuration profile to the user (#350); nil
 	// means this platform can't.
 	OpenProfile func(name string, data []byte) error
+	// OpenURL opens an MDM enrollment link for the user (#356); nil means
+	// this platform can't.
+	OpenURL func(url string) error
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -172,6 +176,10 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		case ipc.TypeOpenProfile:
 			if m.OpenProfile != nil {
 				go r.openProfile(*m.OpenProfile)
+			}
+		case ipc.TypeOpenURL:
+			if m.OpenURL != nil {
+				go r.openURL(*m.OpenURL)
 			}
 		}
 	}
@@ -334,6 +342,32 @@ func (r *helperRuntime) openProfile(p ipc.OpenProfile) {
 		}
 	}
 	r.send(ipc.Message{Type: ipc.TypeOpenProfileResult, OpenProfileResult: res})
+}
+
+// enrollmentScheme is the only kind of link a helper opens: Windows' MDM
+// enrollment, which starts Settings > Access work or school.
+const enrollmentScheme = "ms-device-enrollment:"
+
+// openURL opens an MDM enrollment link for this helper's user, then tells
+// them what to do.
+func (r *helperRuntime) openURL(u ipc.OpenURL) {
+	res := &ipc.OpenProfileResult{ID: u.ID}
+	switch {
+	case !strings.HasPrefix(strings.ToLower(u.URL), enrollmentScheme):
+		res.Error = "the helper opens MDM enrollment links only"
+	case r.o.OpenURL == nil:
+		res.Error = "this helper can't open enrollment links on this platform"
+	default:
+		if err := r.o.OpenURL(u.URL); err != nil {
+			log.Printf("Session helper: enrollment link %s not opened: %v", u.ID, err)
+			res.Error = err.Error()
+		} else if r.o.Notify != nil && u.Title != "" {
+			if err := r.o.Notify(u.Title, u.Message, ipc.LevelWarning); err != nil {
+				log.Printf("Session helper: link %s opened; instructions not shown: %v", u.ID, err)
+			}
+		}
+	}
+	r.send(ipc.Message{Type: ipc.TypeOpenURLResult, OpenURLResult: res})
 }
 
 func (r *helperRuntime) stopChannels() {

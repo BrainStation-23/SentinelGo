@@ -61,6 +61,10 @@ func (f *fakeSessions) OpenProfile(context.Context, string, ipc.OpenProfile) err
 	return session.ErrNoHelper
 }
 
+func (f *fakeSessions) OpenURL(context.Context, string, ipc.OpenURL) error {
+	return session.ErrNoHelper
+}
+
 // The service installs the mdm-enroll hook with the helpers and removes it
 // at Stop (#350). Here the device has no MDM collector, so the hook answers
 // unsupported_os rather than "unavailable".
@@ -69,7 +73,7 @@ func TestMDMEnrollHookInstalled(t *testing.T) {
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
 	_, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{})
-	if runtime.GOOS != "darwin" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
+	if runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
 		t.Errorf("mdm-enroll with the hook installed: %v", err)
 	}
 	_ = mi.Stop()

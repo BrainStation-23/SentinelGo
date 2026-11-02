@@ -67,3 +67,24 @@ func TestProfileFetcher_NotDeployed(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestWindowsEnrollmentFetcher(t *testing.T) {
+	answer := map[string]string{"discovery_url": "https://mdm.example.com/EnrollmentServer/Discovery.svc", "upn": "alice@corp.com", "access_token": "tok"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(answer)
+	}))
+	defer srv.Close()
+	client := func() *supabase.Client { return supabase.New(srv.URL, "anon", func() string { return "t" }) }
+	got, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background())
+	if err != nil || got.UPN != "alice@corp.com" || got.AccessToken != "tok" {
+		t.Fatalf("got %+v err %v", got, err)
+	}
+	answer["discovery_url"] = "http://mdm.example.com/x"
+	if _, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background()); err == nil {
+		t.Error("an http discovery URL was accepted")
+	}
+	answer["discovery_url"], answer["access_token"] = "https://mdm.example.com/x", ""
+	if _, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background()); err == nil {
+		t.Error("an answer without a token was accepted")
+	}
+}

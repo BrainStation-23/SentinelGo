@@ -30,9 +30,22 @@ var AgentCapabilities = []string{
 // never reports it.
 const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name, not a credential
 
-// CapabilityMDMEnroll means the agent runs the mdm-enroll native task:
-// ADE re-enrollment or a profile presented to the console user (#350).
+// CapabilityMDMEnroll means the agent runs the mdm-enroll native task: on
+// macOS ADE re-enrollment or a profile presented to the console user (#350),
+// on Windows silent enrollment (#356).
 const CapabilityMDMEnroll = "mdm_enroll_v1"
+
+// CapabilityWindowsMDMState means the inventory carries the Windows "mdm"
+// block: edition eligibility, MDM enrollments and the OMA-DM identity (#355).
+const CapabilityWindowsMDMState = "windows_mdm_state_v1"
+
+// CapabilityMDMSync means the agent runs the mdm-sync native task: start an
+// MDM session now, standing in for push (#357).
+const CapabilityMDMSync = "mdm_sync_v1"
+
+// CapabilityMDMUnenroll means the agent runs the mdm-unenroll native task:
+// remove this deployment's MDM enrollment (#356).
+const CapabilityMDMUnenroll = "mdm_unenroll_v1"
 
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
@@ -61,8 +74,11 @@ func Capabilities() []string {
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)
 	}
-	if goos == "darwin" {
+	switch goos {
+	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
+	case "windows":
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll)
 	}
 	return caps
 }

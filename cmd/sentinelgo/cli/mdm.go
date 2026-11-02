@@ -63,11 +63,33 @@ func printMDM(w io.Writer, info *shared.MDMInfo) {
 		p("MDM state isn't collected on %s yet.", runtime.GOOS)
 		return
 	}
+	if info.Eligible != nil {
+		eligible := yesNo(*info.Eligible)
+		if info.IneligibleReason != "" {
+			eligible += " (" + info.IneligibleReason + ")"
+		}
+		p("Edition:           %s", orDash(info.Edition))
+		p("MDM eligible:      %s", eligible)
+	}
 	p("Enrolled:          %s", yesNo(info.Enrolled))
 	if info.Enrolled {
 		p("  type:            %s", info.EnrollmentType)
-		p("  user approved:   %s", yesNo(info.UserApproved))
+		if info.Eligible == nil { // user approval is an Apple concept
+			p("  user approved:   %s", yesNo(info.UserApproved))
+		}
 		p("  server:          %s (this deployment's MDM: %s)", orDash(info.ServerURLHost), yesNo(info.IsOurServer))
+	}
+	if info.OtherMDM != "" {
+		p("Other MDM:         %s", info.OtherMDM)
+	}
+	for _, e := range info.Enrollments {
+		p("  enrollment %s: %s, %s, %s", e.ID, orDash(e.ServerHost), e.Type, e.State)
+	}
+	if info.Eligible != nil { // Windows: the Apple-only fields below don't apply
+		p("Managed settings:  %s", orDash(strings.Join(info.ManagedSettings, ", ")))
+		p("OMA-DM device ID:  %s", orDash(info.Identity.OMADMDeviceID))
+		p("SMBIOS UUID:       %s", orDash(info.Identity.SMBIOSUUID))
+		return
 	}
 	p("Supervised:        %s", tri(info.Supervised))
 	ade := tri(info.ADEAssigned)
