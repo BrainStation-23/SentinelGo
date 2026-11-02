@@ -218,8 +218,8 @@ func guardDial(_, address string, _ syscall.RawConn) error {
 // allowedIP reports whether the proxy may connect a client to ip: not
 // loopback, link-local, unspecified or multicast.
 func allowedIP(ip net.IP) bool {
-	return !(ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
+	return !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() &&
+		!ip.IsInterfaceLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
 }
 
 // tunnel copies bytes both ways until either side closes. buffered holds
