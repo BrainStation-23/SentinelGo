@@ -777,6 +777,10 @@ type MDMInfo struct {
 	// OtherMDM is the host (or provider) of an MDM other than ours that the
 	// device is enrolled in, when mdm_host is known.
 	OtherMDM string `json:"other_mdm,omitempty"`
+	// MDMPolicyAreas are the Policy CSP areas (e.g. "Autoplay", "DeviceLock")
+	// with a setting an MDM enrollment currently enforces (#359); the mapped
+	// setting names are in ManagedSettings.
+	MDMPolicyAreas []string `json:"mdm_policy_areas,omitempty"`
 
 	CollectedAt time.Time `json:"collected_at"`
 }

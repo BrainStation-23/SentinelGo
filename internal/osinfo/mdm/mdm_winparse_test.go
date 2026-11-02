@@ -1,6 +1,7 @@
 package mdm
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -28,6 +29,31 @@ func TestBuildWindowsInfo_NotEnrolled(t *testing.T) {
 	}
 	if info.Identity.SMBIOSUUID != "65474863-fe40-43e7-0b55-c87f546c7139" {
 		t.Errorf("smbios uuid %q", info.Identity.SMBIOSUUID)
+	}
+}
+
+// Only policies whose winning provider is an MDM enrollment count; the
+// provisioning ("knobs") policies every PC has don't (#359).
+func TestBuildWindowsInfo_ManagedSettings(t *testing.T) {
+	yes := true
+	ours := winEnrollment{id: "AAAAAAAA-0000-0000-0000-000000000001", discoveryURL: "https://mdm.example.com/d", typ: 6, state: 1}
+	policies := []winPolicy{
+		{area: "knobs", name: "Power/Controls/EnergyEstimationEnabled", winningProvider: "1e05dd5d-a022-46c5-963c-b20de341170f"},
+		{area: "Autoplay", name: "TurnOffAutoPlay", winningProvider: "aaaaaaaa-0000-0000-0000-000000000001"},
+		{area: "DeviceLock", name: "MaxInactivityTimeDeviceLock", winningProvider: "{AAAAAAAA-0000-0000-0000-000000000001}"},
+		{area: "LocalPoliciesSecurityOptions", name: "InteractiveLogon_MachineInactivityLimit", winningProvider: "aaaaaaaa-0000-0000-0000-000000000001"},
+		{area: "Experience", name: "AllowCortana", winningProvider: "aaaaaaaa-0000-0000-0000-000000000001"},
+	}
+	info := buildWindowsInfo(winFacts{registered: &yes, enrollments: append(unenrolledPC, ours), policies: policies}, "mdm.example.com", time.Unix(0, 0))
+	if !slices.Equal(info.ManagedSettings, []string{"autoplay", "screen_lock"}) {
+		t.Errorf("managed settings = %v", info.ManagedSettings)
+	}
+	if !slices.Equal(info.MDMPolicyAreas, []string{"Autoplay", "DeviceLock", "Experience", "LocalPoliciesSecurityOptions"}) {
+		t.Errorf("policy areas = %v", info.MDMPolicyAreas)
+	}
+	// Not enrolled: nothing is MDM-managed, whatever PolicyManager holds.
+	if info := buildWindowsInfo(winFacts{enrollments: unenrolledPC, policies: policies}, "", time.Unix(0, 0)); info.ManagedSettings != nil || info.MDMPolicyAreas != nil {
+		t.Errorf("unenrolled: %v %v", info.ManagedSettings, info.MDMPolicyAreas)
 	}
 }
 

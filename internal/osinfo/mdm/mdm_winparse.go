@@ -4,6 +4,7 @@ package mdm
 // constraint so its tests run on every platform.
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,8 +29,15 @@ type winEnrollment struct {
 	state        uint64
 }
 
+// winPolicy is one effective policy under PolicyManager\current\device:
+// its area, name and the GUID of the enrollment that set it.
+type winPolicy struct {
+	area, name, winningProvider string
+}
+
 // winFacts is what the Windows collector reads.
 type winFacts struct {
+	policies         []winPolicy
 	editionID        string // e.g. Professional, Enterprise, Core (Home), ServerStandard
 	installationType string // Client, Server, Server Core
 	allowed          *bool  // IsManagementRegistrationAllowed
@@ -103,6 +111,7 @@ func buildWindowsInfo(f winFacts, ourHost string, now time.Time) *shared.MDMInfo
 		})
 	}
 	info.Enrolled = len(mdmEnrollments) > 0 || (f.registered != nil && *f.registered)
+	info.MDMPolicyAreas, info.ManagedSettings = mdmManaged(f.policies, mdmEnrollments)
 	if !info.Enrolled {
 		return info
 	}
@@ -125,4 +134,43 @@ func buildWindowsInfo(f winFacts, ourHost string, now time.Time) *shared.MDMInfo
 		}
 	}
 	return info
+}
+
+// settingsByArea maps a Policy CSP area to the console setting it covers.
+var settingsByArea = map[string]string{
+	"autoplay":                     "autoplay",
+	"devicelock":                   "screen_lock",
+	"localpoliciessecurityoptions": "screen_lock", // InteractiveLogon_MachineInactivityLimit
+	"storage":                      "removable_media",
+	"deviceinstallation":           "removable_media",
+	"defender":                     "defender",
+	"update":                       "software_update",
+	"bitlocker":                    "bitlocker",
+}
+
+// mdmManaged returns the policy areas, and the settings they cover, where
+// the effective policy was set by one of the MDM enrollments. Policies set
+// by provisioning or local providers (present on every PC) don't count.
+func mdmManaged(policies []winPolicy, mdmEnrollments []winEnrollment) (areas, settings []string) {
+	ids := map[string]bool{}
+	for _, e := range mdmEnrollments {
+		ids[strings.ToLower(strings.Trim(e.id, "{}"))] = true
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	for _, p := range policies {
+		if !ids[strings.ToLower(strings.Trim(p.winningProvider, "{}"))] {
+			continue
+		}
+		if !slices.Contains(areas, p.area) {
+			areas = append(areas, p.area)
+		}
+		if s, ok := settingsByArea[strings.ToLower(p.area)]; ok && !slices.Contains(settings, s) {
+			settings = append(settings, s)
+		}
+	}
+	slices.Sort(areas)
+	slices.Sort(settings)
+	return areas, settings
 }

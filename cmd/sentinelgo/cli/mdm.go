@@ -86,6 +86,7 @@ func printMDM(w io.Writer, info *shared.MDMInfo) {
 		p("  enrollment %s: %s, %s, %s", e.ID, orDash(e.ServerHost), e.Type, e.State)
 	}
 	if info.Eligible != nil { // Windows: the Apple-only fields below don't apply
+		p("Managed settings:  %s", orDash(strings.Join(info.ManagedSettings, ", ")))
 		p("OMA-DM device ID:  %s", orDash(info.Identity.OMADMDeviceID))
 		p("SMBIOS UUID:       %s", orDash(info.Identity.SMBIOSUUID))
 		return

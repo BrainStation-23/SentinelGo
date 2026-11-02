@@ -1,6 +1,7 @@
 package mdm
 
 import (
+	"strings"
 	"time"
 	"unsafe"
 
@@ -26,6 +27,7 @@ var readWinFacts = func() winFacts {
 		omadmDeviceID:    regString(`SOFTWARE\Microsoft\Provisioning\OMADM\MDMDeviceID`, "DeviceClientId"),
 		smbiosUUID:       regString(`SYSTEM\HardwareConfig`, "LastConfig"),
 		enrollments:      readEnrollments(),
+		policies:         readPolicies(),
 	}
 	f.allowed = registrationAllowed()
 	f.registered = deviceRegistered()
@@ -75,6 +77,40 @@ func readEnrollments() []winEnrollment {
 		e.state, _, _ = k.GetIntegerValue("EnrollmentState")
 		_ = k.Close()
 		out = append(out, e)
+	}
+	return out
+}
+
+// readPolicies lists the effective device policies and who set them:
+// PolicyManager\current\device\<Area> holds <Policy>_WinningProvider
+// values with the GUID of the winning enrollment.
+func readPolicies() []winPolicy {
+	root, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\PolicyManager\current\device`, regRead)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = root.Close() }()
+	areas, err := root.ReadSubKeyNames(-1)
+	if err != nil {
+		return nil
+	}
+	var out []winPolicy
+	for _, area := range areas {
+		k, err := registry.OpenKey(root, area, regRead)
+		if err != nil {
+			continue
+		}
+		names, _ := k.ReadValueNames(-1)
+		for _, n := range names {
+			policy, ok := strings.CutSuffix(n, "_WinningProvider")
+			if !ok {
+				continue
+			}
+			if winner, _, err := k.GetStringValue(n); err == nil {
+				out = append(out, winPolicy{area: area, name: policy, winningProvider: winner})
+			}
+		}
+		_ = k.Close()
 	}
 	return out
 }
