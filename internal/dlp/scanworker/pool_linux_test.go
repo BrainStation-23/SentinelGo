@@ -49,6 +49,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// requireSandbox skips tests that run real workers in a cgo build (the CI
+// race step): the sandbox needs AllThreadsSyscall, which cgo builds lack, and
+// a worker rightly refuses to run without its sandbox. Releases never use cgo.
+func requireSandbox(t *testing.T) {
+	t.Helper()
+	if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_GETPID, 0, 0, 0); e == syscall.ENOTSUP {
+		t.Skip("cgo build (-race): workers can't sandbox themselves here")
+	}
+}
+
 func landlockAvailable() bool {
 	_, err := landlock()
 	return err == nil
@@ -61,6 +71,7 @@ const bundle = `{"schema_version":1,"version":"v1","enabled":true,
 
 func newPool(t *testing.T, mode string, workers int) *Pool {
 	t.Helper()
+	requireSandbox(t)
 	p := NewPool(Options{Exe: testExe(t), Args: []string{"-test.run=^$"}, Workers: workers, Env: []string{workerEnv + "=" + mode}})
 	p.SetPolicy([]byte(bundle))
 	t.Cleanup(p.Stop)
@@ -172,6 +183,7 @@ func TestPool_Stop(t *testing.T) {
 // The sandbox really applies: a worker can't open files by path (with
 // Landlock) or write files.
 func TestSandbox_Probe(t *testing.T) {
+	requireSandbox(t)
 	p := NewPool(Options{Exe: testExe(t), Args: []string{"-test.run=^$"}, Workers: 1, Env: []string{workerEnv + "=probe"}})
 	c, child, err := socketPair()
 	if err != nil {
@@ -207,5 +219,30 @@ func TestPool_CancelledScan(t *testing.T) {
 	res := p.Scan(ctx, f, size, time.Minute)
 	if res.Status != filescan.StatusTimeout || time.Since(start) > 3*time.Second {
 		t.Errorf("status %q after %v", res.Status, time.Since(start))
+	}
+}
+
+// Scans waiting for a worker aren't left waiting when starting one fails.
+func TestPool_WaitersWokenOnFailure(t *testing.T) {
+	p := NewPool(Options{Exe: "/nonexistent/sentinelgo", Workers: 1})
+	p.SetPolicy([]byte(bundle))
+	defer p.Stop()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, size := tempFile(t, "x")
+			if res := p.Scan(context.Background(), f, size, time.Second); res.Status != filescan.Unscannable(ReasonWorkerFailed) {
+				t.Errorf("status %q", res.Status)
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scans left waiting after workers failed to start")
 	}
 }

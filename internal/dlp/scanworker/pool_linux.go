@@ -56,6 +56,9 @@ type Pool struct {
 	total    int
 	sandbox  string
 	idle     chan *worker
+	// changed is closed (and replaced) whenever a worker slot frees up, so
+	// scans waiting for a worker try again instead of waiting forever.
+	changed chan struct{}
 }
 
 type worker struct {
@@ -74,7 +77,7 @@ func NewPool(o Options) *Pool {
 	if len(o.Args) == 0 {
 		o.Args = []string{Command}
 	}
-	return &Pool{opts: o, all: map[*worker]struct{}{}, idle: make(chan *worker, o.Workers)}
+	return &Pool{opts: o, all: map[*worker]struct{}{}, idle: make(chan *worker, o.Workers), changed: make(chan struct{})}
 }
 
 // SetPolicy sets the bundle workers scan with; each worker gets it before
@@ -165,41 +168,53 @@ func (p *Pool) scanIn(ctx context.Context, w *worker, f *os.File, size int64, ti
 }
 
 // acquire returns an idle worker, starting one if fewer than the pool size
-// are running.
+// are running. When none is free it waits for one, or for a slot to free up
+// (a worker died or failed to start), or for ctx.
 func (p *Pool) acquire(ctx context.Context) (*worker, error) {
-	select {
-	case w := <-p.idle:
-		return w, nil
-	default:
-	}
-	p.mu.Lock()
-	switch {
-	case p.stopped:
-		p.mu.Unlock()
-		return nil, errors.New("scanworker: pool stopped")
-	case p.disabled:
-		p.mu.Unlock()
-		return nil, errors.New("scanworker: disabled after repeated failures")
-	case p.live < p.opts.Workers:
-		p.live++
-		p.mu.Unlock()
-		w, err := p.spawn()
-		if err != nil {
-			p.mu.Lock()
-			p.live--
-			p.failLocked(err)
-			p.mu.Unlock()
-			return nil, err
+	for {
+		select {
+		case w := <-p.idle:
+			return w, nil
+		default:
 		}
-		return w, nil
+		p.mu.Lock()
+		switch {
+		case p.stopped:
+			p.mu.Unlock()
+			return nil, errors.New("scanworker: pool stopped")
+		case p.disabled:
+			p.mu.Unlock()
+			return nil, errors.New("scanworker: disabled after repeated failures")
+		case p.live < p.opts.Workers:
+			p.live++
+			p.mu.Unlock()
+			w, err := p.spawn()
+			if err != nil {
+				p.mu.Lock()
+				p.live--
+				p.failLocked(err)
+				p.signalLocked()
+				p.mu.Unlock()
+				return nil, err
+			}
+			return w, nil
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		select {
+		case w := <-p.idle:
+			return w, nil
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	p.mu.Unlock()
-	select {
-	case w := <-p.idle:
-		return w, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+}
+
+// signalLocked wakes the scans waiting in acquire. p.mu is held.
+func (p *Pool) signalLocked() {
+	close(p.changed)
+	p.changed = make(chan struct{})
 }
 
 func (p *Pool) release(w *worker) {
@@ -225,6 +240,7 @@ func (p *Pool) discard(w *worker, failed bool) {
 	if failed {
 		p.failLocked(errors.New("worker failed"))
 	}
+	p.signalLocked()
 }
 
 // failLocked records a failure and disables the pool on a crash loop.
@@ -361,6 +377,7 @@ func (p *Pool) Stop() {
 	}
 	p.all = map[*worker]struct{}{}
 	p.live = 0
+	p.signalLocked()
 	p.mu.Unlock()
 	for _, w := range workers {
 		w.kill()

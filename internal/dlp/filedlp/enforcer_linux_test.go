@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -56,6 +57,9 @@ func fakeStick(t *testing.T, workerMode string) string {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root: mounts a tmpfs and uses fanotify")
+	}
+	if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_GETPID, 0, 0, 0); e == syscall.ENOTSUP {
+		t.Skip("cgo build (-race): workers can't sandbox themselves here")
 	}
 	stick := t.TempDir()
 	if err := unix.Mount("tmpfs", stick, "tmpfs", 0, "size=16m,mode=0777"); err != nil {
