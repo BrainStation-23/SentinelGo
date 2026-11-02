@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
@@ -441,6 +443,14 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
+	if cfg.DLPEnabled {
+		// File DLP (Linux so far): runs in the service, scans in sandboxed
+		// workers started from this binary. Off until a bundle enables a file
+		// channel.
+		if exe, err := os.Executable(); err == nil {
+			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path)}))
+		}
+	}
 	if err := m.Start(ctx); err != nil {
 		log.Printf("Warning: DLP failed to start: %v", err)
 		return
