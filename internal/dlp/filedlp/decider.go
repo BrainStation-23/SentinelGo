@@ -11,6 +11,7 @@ package filedlp
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -92,9 +93,10 @@ type Decider struct {
 	sink    channel.EventSink
 	cache   *filescan.Cache
 
-	mu       sync.Mutex
-	compiled *policy.Compiled
-	engine   *detect.Engine
+	mu        sync.Mutex
+	compiled  *policy.Compiled
+	engine    *detect.Engine
+	remediate func(r Request, action string) error
 
 	scans, cached, emitted, timeouts, unscannable atomic.Uint64
 }
@@ -114,6 +116,16 @@ func (d *Decider) Apply(c *policy.Compiled) {
 	d.mu.Lock()
 	d.compiled, d.engine = c, eng
 	d.mu.Unlock()
+}
+
+// SetRemediator gives the decider what quarantines or deletes a file found
+// to violate a policy after it was written (on_close_violation). action is
+// policy.ViolationQuarantine or policy.ViolationDelete. Without one, such
+// files are only recorded.
+func (d *Decider) SetRemediator(fn func(r Request, action string) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.remediate = fn
 }
 
 // Files returns the files module of the policy in force (zero when none).
@@ -156,7 +168,7 @@ func (d *Decider) Handle(ctx context.Context, r Request) { d.Decide(ctx, r, fals
 // was done: blocked, or monitored.
 func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict {
 	d.mu.Lock()
-	c, eng := d.compiled, d.engine
+	c, eng, remediate := d.compiled, d.engine, d.remediate
 	d.mu.Unlock()
 	if c == nil || !c.ChannelEnabled(r.Dest.Channel) || r.Ident.Size <= 0 {
 		return Verdict{}
@@ -195,6 +207,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 	mayBlock := canBlock && !files.IsAuditOnly()
 	ext := fileExt(r.Path)
 	var v Verdict
+	after := afterWrite{r: r, files: files, remediate: remediate}
 	for _, p := range pols {
 		matched, findings := evaluate(eng, p, res, ext)
 		typeOK := p.FileFilters.TypeOK(ext, res.DetectedType)
@@ -212,14 +225,62 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 			continue
 		}
 		ev := buildEvent(c, p, r, res, findings, source)
-		if block && mayBlock {
+		switch {
+		case block && mayBlock:
 			ev.Action = events.ActionBlocked
 			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, findings)}
+		case block && canBlock:
+			ev.WouldHave = events.ActionBlocked // audit-only
+		case block:
+			ev.Action, ev.WouldHave = after.handle()
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}
 	return v
+}
+
+// afterWrite applies on_close_violation to a file found to violate a policy
+// after it was written (a hook that can't block). It acts once per file,
+// however many policies it violates.
+type afterWrite struct {
+	r         Request
+	files     policy.FilesModule
+	remediate func(Request, string) error
+
+	done              bool
+	action, wouldHave string
+}
+
+// handle returns the event's action and would_have.
+func (a *afterWrite) handle() (string, string) {
+	if a.done {
+		return a.action, a.wouldHave
+	}
+	a.done = true
+	a.action = events.ActionMonitored
+	mode := a.files.CopyCorrelation.OnCloseViolation
+	var did string
+	switch mode {
+	case policy.ViolationQuarantine:
+		did = events.ActionQuarantined
+	case policy.ViolationDelete:
+		did = events.ActionDeleted
+	default:
+		return a.action, "" // record
+	}
+	switch {
+	case a.files.IsAuditOnly():
+		a.wouldHave = did
+	case a.remediate == nil:
+	default:
+		if err := a.remediate(a.r, mode); err != nil {
+			log.Printf("DLP: could not %s a file that violates a policy: %v", mode, err)
+		} else {
+			a.action = did
+		}
+	}
+	return a.action, a.wouldHave
 }
 
 // defaultFileBlockMessage is used when the bundle has none.

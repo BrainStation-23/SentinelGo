@@ -60,6 +60,9 @@ func Compile(b *Bundle) *Compiled {
 	if e := b.Modules.Files.DecodeError; e != "" {
 		c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: "modules.files", Error: e})
 	}
+	if e := b.Modules.Files.CopyCorrelation.DecodeError; e != "" {
+		c.CompileErrors = append(c.CompileErrors, detect.CompileError{RuleID: "modules.files.copy_correlation", Error: e + " (defaults apply)"})
+	}
 	var clipboardRules []detect.Rule
 	for _, p := range b.Policies {
 		if err := validatePolicy(p); err != nil {

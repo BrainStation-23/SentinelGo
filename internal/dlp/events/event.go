@@ -15,6 +15,10 @@ const (
 	ActionMonitored = "monitored"
 	ActionWarned    = "warned"
 	ActionBlocked   = "blocked"
+	// File channels: a file found to violate a policy after it was written
+	// was moved to the device's quarantine folder, or deleted.
+	ActionQuarantined = "quarantined"
+	ActionDeleted     = "deleted"
 )
 
 // Event is one flagged copy (or other channel action).
@@ -41,6 +45,19 @@ type Event struct {
 	Destination *Destination `json:"destination,omitempty"`
 	Process     *Process     `json:"process,omitempty"`
 	Scan        *Scan        `json:"scan,omitempty"`
+	// WouldHave is what audit-only stopped the agent doing (quarantined,
+	// deleted, blocked); only with action monitored.
+	WouldHave string `json:"would_have,omitempty"`
+	// Correlation is set when the verdict came from another file (copy
+	// correlation, #334), not from scanning this one.
+	Correlation *Correlation `json:"correlation,omitempty"`
+}
+
+// Correlation links a file event to the source file its verdict came from.
+type Correlation struct {
+	Method       string  `json:"method"` // taint | os_copy
+	SourceSHA256 string  `json:"source_sha256,omitempty"`
+	SourceName   *string `json:"source_name,omitempty"` // by the evidence mode, like File.Name
 }
 
 // File is the file a file-channel event is about. Name follows the bundle's

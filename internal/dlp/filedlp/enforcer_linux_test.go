@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/scanworker"
 )
@@ -199,5 +200,38 @@ func TestEnforcer_StopDuringScan(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Stop hung while a scan was in flight")
+	}
+}
+
+// End to end: a file found to violate a block policy after it was written
+// is quarantined: off the stick, into the root-only folder, and the event
+// says so. Root only (run in a privileged container or VM).
+func TestEnforcer_QuarantineEndToEnd(t *testing.T) {
+	stick := fakeStick(t, "serve")
+	cfgDir := t.TempDir()
+	sink := &recordingSink{}
+	e := New(Options{Sink: sink, Exe: testExe(t), ConfigDir: cfgDir})
+	bundle := strings.NewReplacer(`"action": "monitor"`, `"action": "block"`,
+		`"channels": {"file.removable": true}}`, `"channels": {"file.removable": true}, "audit_only": false, "copy_correlation": {"on_close_violation": "quarantine"}}`).Replace(enforcerBundle)
+	e.Apply(context.Background(), compile(t, bundle))
+	t.Cleanup(e.Stop)
+	if h := e.Health(); h == nil || h.State != stateRunning {
+		t.Skipf("fanotify not available here: %+v", h)
+	}
+	eventually(t, "the stick to be watched", func() bool { return e.Health().Mounts == 1 })
+	writeAs(t, stick, "secret.txt", "a TOPSECRET plan")
+	eventually(t, "the event", func() bool { return len(sink.events()) == 1 })
+	if ev := sink.events()[0]; ev.Action != events.ActionQuarantined {
+		t.Fatalf("action %q", ev.Action)
+	}
+	if _, err := os.Stat(filepath.Join(stick, "secret.txt")); !os.IsNotExist(err) {
+		t.Errorf("still on the stick: %v", err)
+	}
+	q, _ := os.ReadDir(filepath.Join(cfgDir, QuarantineDir))
+	if len(q) != 1 || !strings.HasSuffix(q[0].Name(), "-secret.txt") {
+		t.Errorf("quarantine folder %v", q)
+	}
+	if cc := e.CopyCorrelation(); cc[MethodScanOnClose] != "supported" || cc[MethodOSCopyEvents] != "unsupported:not_on_linux" {
+		t.Errorf("copy correlation %v", cc)
 	}
 }

@@ -22,6 +22,9 @@ type Enforcer interface {
 	// Capabilities reports each enabled file channel's capability
 	// ("supported" / "unsupported:<reason>"); nil when the files module is off.
 	Capabilities() map[string]string
+	// CopyCorrelation reports what each copy correlation method can do here
+	// (capabilities.copy_correlation); nil when the files module is off.
+	CopyCorrelation() map[string]string
 	// Health reports the hook's state and counters; nil when never started.
 	Health() *Health
 }
@@ -92,12 +95,46 @@ func channelCapabilities(c *policy.Compiled, supported map[string]bool, state st
 	return out
 }
 
-// wants reports whether m enables one of the supported channels.
+// wants reports whether m enables one of the supported channels, with a
+// method this hook has turned on (scanning after the write, so far).
 func wants(m policy.FilesModule, supported map[string]bool) bool {
+	if !m.CopyCorrelation.ScansOnClose() {
+		return false
+	}
 	for ch := range supported {
 		if m.ChannelEnabled(ch) {
 			return true
 		}
 	}
 	return false
+}
+
+// Copy correlation methods, as reported in capabilities.copy_correlation.
+const (
+	MethodScanOnClose      = "scan_on_close"
+	MethodProcessTaint     = "process_taint"
+	MethodOSCopyEvents     = "os_copy_events"
+	MethodUntrustedDevices = "untrusted_devices"
+)
+
+// copyCorrelationCapabilities builds CopyCorrelation from the methods this
+// hook implements (methods maps a method to "" when it does, or to why it
+// can't) and the hook's state. Methods not in the map aren't implemented yet.
+func copyCorrelationCapabilities(c *policy.Compiled, methods map[string]string, state string, workers scanworker.Health) map[string]string {
+	if c == nil || !c.Modules.Files.Enabled || c.Modules.Files.DecodeError != "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, m := range []string{MethodScanOnClose, MethodProcessTaint, MethodOSCopyEvents, MethodUntrustedDevices} {
+		reason, ok := methods[m]
+		switch {
+		case !ok:
+			out[m] = "unsupported:not_implemented"
+		case reason != "":
+			out[m] = "unsupported:" + reason
+		default:
+			out[m] = capability(state, workers)
+		}
+	}
+	return out
 }

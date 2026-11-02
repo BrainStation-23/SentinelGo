@@ -263,3 +263,39 @@ func TestFileFilters(t *testing.T) {
 		t.Errorf("compile: clipboard %v, errors %v", c.Clipboard, c.CompileErrors)
 	}
 }
+
+func TestCopyCorrelation(t *testing.T) {
+	decode := func(cc string) FilesModule {
+		t.Helper()
+		b, err := Decode([]byte(`{"schema_version": 1, "version": "v", "modules": {"files": {"enabled": true` + cc + `}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b.Modules.Files
+	}
+	// Absent: today's behaviour.
+	d := decode("").CopyCorrelation
+	if !d.ScansOnClose() || d.OnCloseViolation != ViolationRecord || d.ProcessTaint || d.TaintWindowSeconds != DefaultTaintWindow ||
+		!d.UsesOSCopyEvents() || d.UntrustedDevices != UntrustedAllow || d.DecodeError != "" {
+		t.Errorf("defaults %+v", d)
+	}
+	c := decode(`, "copy_correlation": {"scan_on_close": false, "on_close_violation": "quarantine", "process_taint": true,
+	  "taint_window_seconds": 99999, "os_copy_events": false, "untrusted_devices": "read_only"}`).CopyCorrelation
+	if c.ScansOnClose() || c.OnCloseViolation != ViolationQuarantine || !c.ProcessTaint || c.TaintWindowSeconds != MaxTaintWindow ||
+		c.UsesOSCopyEvents() || c.UntrustedDevices != UntrustedReadOnly {
+		t.Errorf("set %+v", c)
+	}
+	if c := decode(`, "copy_correlation": {"on_close_violation": "shred", "untrusted_devices": "nuke", "taint_window_seconds": 1}`).CopyCorrelation; c.OnCloseViolation != ViolationRecord ||
+		c.UntrustedDevices != UntrustedAllow || c.TaintWindowSeconds != MinTaintWindow {
+		t.Errorf("unknown values %+v", c)
+	}
+	// Unreadable: defaults, reported, and the files module stays on.
+	m := decode(`, "channels": {"file.removable": true}, "copy_correlation": {"scan_on_close": "yes"}`)
+	if !m.Enabled || m.DecodeError != "" || m.CopyCorrelation.DecodeError == "" || !m.CopyCorrelation.ScansOnClose() {
+		t.Errorf("bad block: %+v", m)
+	}
+	b, _ := Decode([]byte(`{"schema_version": 1, "version": "v", "modules": {"files": {"enabled": true, "copy_correlation": []}}}`))
+	if ce := Compile(b).CompileErrors; len(ce) != 1 || ce[0].RuleID != "modules.files.copy_correlation" {
+		t.Errorf("compile errors %v", ce)
+	}
+}

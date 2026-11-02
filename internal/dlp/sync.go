@@ -38,6 +38,28 @@ type Status struct {
 	Sessions           []session.Info        `json:"sessions"`
 	// Files is file DLP's health, on platforms with a file hook (#324).
 	Files *filedlp.Health `json:"files,omitempty"`
+	// CopyCorrelation is sent inside capabilities, as
+	// capabilities.copy_correlation (see MarshalJSON).
+	CopyCorrelation map[string]string `json:"-"`
+}
+
+// MarshalJSON adds copy_correlation, an object, to the capabilities object
+// (the backend's contract, Compliance-OS#570), whose other values are
+// strings.
+func (s Status) MarshalJSON() ([]byte, error) {
+	type plain Status
+	if len(s.CopyCorrelation) == 0 {
+		return json.Marshal(plain(s))
+	}
+	caps := make(map[string]any, len(s.Capabilities)+1)
+	for k, v := range s.Capabilities {
+		caps[k] = v
+	}
+	caps["copy_correlation"] = s.CopyCorrelation
+	return json.Marshal(struct {
+		plain
+		Capabilities map[string]any `json:"capabilities"`
+	}{plain(s), caps})
 }
 
 // Status size caps, keeping the report well under the server's 64 KB limit.
@@ -197,6 +219,7 @@ func (s *Syncer) status(snap Snapshot) (*Status, [32]byte) {
 		st.Capabilities[ch] = c
 	}
 	st.Files = snap.Files
+	st.CopyCorrelation = snap.CopyCorrelation
 	s.mu.Lock()
 	errs := append(append([]detect.CompileError{}, s.syncErrors...), snap.CompileErrors...)
 	s.mu.Unlock()

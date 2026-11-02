@@ -2,6 +2,7 @@ package filedlp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -410,5 +411,109 @@ func TestDecider_DecideVerdict(t *testing.T) {
 	}
 	if d := NewDecider(&fakeScanner{}, &recordingSink{}); d.Files().Enabled {
 		t.Error("files module without a policy")
+	}
+}
+
+// on_close_violation: what happens to a file found to violate a policy
+// after it was written (the Linux monitor can't block).
+func TestDecider_OnCloseViolation(t *testing.T) {
+	bundleWith := func(auditOnly bool, mode, action string, policies int) string {
+		var pols []string
+		for i := 0; i < policies; i++ {
+			pols = append(pols, fmt.Sprintf(`{"id": "p%d", "name": "Cards", "channels": ["file.removable"], "action": %q,
+			  "detectors": [{"id": "pii.credit_card", "rule_id": "r1", "min_count": 1}]}`, i, action))
+		}
+		return fmt.Sprintf(`{"schema_version": 1, "version": "v1", "enabled": true,
+		  "modules": {"files": {"enabled": true, "channels": {"file.removable": true}, "audit_only": %v,
+		    "copy_correlation": {"on_close_violation": %q}}},
+		  "policies": [%s]}`, auditOnly, mode, strings.Join(pols, ","))
+	}
+	match := filescan.Result{Status: filescan.StatusScanned, Findings: []detect.Finding{cardFinding()}}
+	for _, tc := range []struct {
+		name                  string
+		auditOnly             bool
+		mode, action          string
+		policies              int
+		remedyErr             error
+		wantAction, wantWould string
+		wantRemedies          int
+	}{
+		{"record", false, "record", "block", 1, nil, events.ActionMonitored, "", 0},
+		{"quarantine", false, "quarantine", "block", 1, nil, events.ActionQuarantined, "", 1},
+		{"delete", false, "delete", "block", 1, nil, events.ActionDeleted, "", 1},
+		{"delete, audit only", true, "delete", "block", 1, nil, events.ActionMonitored, events.ActionDeleted, 0},
+		{"quarantine, audit only", true, "quarantine", "block", 1, nil, events.ActionMonitored, events.ActionQuarantined, 0},
+		{"remedy fails", false, "delete", "block", 1, errors.New("read-only"), events.ActionMonitored, "", 1},
+		{"monitor policy never touches the file", false, "delete", "monitor", 1, nil, events.ActionMonitored, "", 0},
+		{"two policies, one action", false, "delete", "block", 2, nil, events.ActionDeleted, "", 1},
+	} {
+		sink := &recordingSink{}
+		d := NewDecider(&fakeScanner{res: match}, sink)
+		remedies := 0
+		d.SetRemediator(func(r Request, action string) error {
+			remedies++
+			if action != tc.mode {
+				t.Errorf("%s: remedy %q", tc.name, action)
+			}
+			return tc.remedyErr
+		})
+		d.Apply(compile(t, bundleWith(tc.auditOnly, tc.mode, tc.action, tc.policies)))
+		if v := d.Decide(context.Background(), usbRequest(), false); v.Block {
+			t.Errorf("%s: an after-write hook blocked", tc.name)
+		}
+		evs := sink.events()
+		if len(evs) != tc.policies || remedies != tc.wantRemedies {
+			t.Errorf("%s: %d events, %d remedies", tc.name, len(evs), remedies)
+			continue
+		}
+		for _, ev := range evs {
+			if ev.Action != tc.wantAction || ev.WouldHave != tc.wantWould {
+				t.Errorf("%s: action %q would_have %q", tc.name, ev.Action, ev.WouldHave)
+			}
+		}
+	}
+	// Without a remediator a violation is only recorded.
+	sink := &recordingSink{}
+	d := NewDecider(&fakeScanner{res: match}, sink)
+	d.Apply(compile(t, bundleWith(false, "delete", "block", 1)))
+	d.Handle(context.Background(), usbRequest())
+	if evs := sink.events(); len(evs) != 1 || evs[0].Action != events.ActionMonitored {
+		t.Errorf("no remediator: %+v", evs)
+	}
+}
+
+// A hook that can block but is audit-only records what it would have done.
+func TestDecider_WouldHaveBlocked(t *testing.T) {
+	sink := &recordingSink{}
+	d := NewDecider(&fakeScanner{res: filescan.Result{Status: filescan.StatusScanned, Findings: []detect.Finding{cardFinding()}}}, sink)
+	d.Apply(compile(t, testBundle("masked", `"enabled": true, "channels": {"file.removable": true}, "audit_only": true`, "")))
+	if v := d.Decide(context.Background(), usbRequest(), true); v.Block {
+		t.Error("blocked while audit-only")
+	}
+	if evs := sink.events(); len(evs) != 1 || evs[0].Action != events.ActionMonitored || evs[0].WouldHave != events.ActionBlocked {
+		t.Errorf("events %+v", evs)
+	}
+}
+
+func TestCopyCorrelationCapabilities(t *testing.T) {
+	c := compile(t, testBundle("masked", "", ""))
+	got := copyCorrelationCapabilities(c, map[string]string{MethodScanOnClose: "", MethodOSCopyEvents: "not_on_linux"}, stateRunning, workersOK)
+	want := map[string]string{MethodScanOnClose: "supported", MethodOSCopyEvents: "unsupported:not_on_linux",
+		MethodProcessTaint: "unsupported:not_implemented", MethodUntrustedDevices: "unsupported:not_implemented"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	if got := copyCorrelationCapabilities(c, map[string]string{MethodScanOnClose: ""}, "unavailable:not_permitted", workersOK); got[MethodScanOnClose] != "unsupported:not_permitted" {
+		t.Errorf("unavailable hook: %v", got)
+	}
+	if copyCorrelationCapabilities(compile(t, testBundle("masked", `"enabled": false`, "")), nil, stateRunning, workersOK) != nil {
+		t.Error("reported with the files module off")
+	}
+	// scan_on_close off: the monitor isn't wanted.
+	off := compile(t, testBundle("masked", `"enabled": true, "channels": {"file.removable": true}, "copy_correlation": {"scan_on_close": false}`, ""))
+	if wants(off.Modules.Files, map[string]bool{policy.ChannelFileRemovable: true}) {
+		t.Error("wanted with scan_on_close off")
 	}
 }
