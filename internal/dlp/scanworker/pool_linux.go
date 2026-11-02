@@ -329,6 +329,7 @@ func (p *Pool) command(child *os.File) (*exec.Cmd, error) {
 	cmd.Dir = "/"
 	attr := &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	if os.Geteuid() == 0 {
+		ensureScanAccount()
 		uid, gid, err := unprivilegedIDs()
 		if err != nil {
 			return nil, err

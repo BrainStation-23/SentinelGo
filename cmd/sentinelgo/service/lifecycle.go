@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal"
 	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/dlp/session"
 )
 
@@ -75,11 +76,15 @@ func HandleInstall(svc AgentService) {
 }
 
 // cleanupDLPHelpers removes the DLP session helper definitions (LaunchAgent,
-// systemd user unit, XDG autostart). The service removes them when it stops
-// cleanly; this covers an abrupt exit before uninstall.
+// systemd user unit, XDG autostart) and, on Linux, the file DLP scan workers'
+// account. The service removes the helpers when it stops cleanly; this covers
+// an abrupt exit before uninstall.
 func cleanupDLPHelpers() {
 	if err := session.CleanupHelpers(); err != nil {
 		log.Printf("Warning: failed to remove DLP session helpers: %v", err)
+	}
+	if err := scanworker.RemoveScanAccount(); err != nil {
+		log.Printf("Warning: failed to remove the DLP scan account: %v", err)
 	}
 }
 
