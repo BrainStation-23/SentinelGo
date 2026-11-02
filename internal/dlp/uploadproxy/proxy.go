@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +56,7 @@ type Proxy struct {
 	opts      Options
 	transport *http.Transport
 	dialer    *net.Dialer
+	resolver  *net.Resolver
 
 	tunnelled, intercepted, inspected, blocked, errs atomic.Uint64
 }
@@ -71,8 +74,9 @@ func New(o Options) *Proxy {
 		d.Control = guardDial
 	}
 	return &Proxy{
-		opts:   o,
-		dialer: d,
+		opts:     o,
+		dialer:   d,
+		resolver: net.DefaultResolver,
 		transport: &http.Transport{
 			Proxy:               nil, // never chain to an environment proxy: no loops
 			DialContext:         d.DialContext,
@@ -133,7 +137,13 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	var upstream net.Conn
 	if !intercept {
 		// Connect first, so a refused connection is a proper error reply.
-		if upstream, err = p.dialer.DialContext(r.Context(), "tcp", target); err != nil {
+		// The tunnel goes to an address vetted here, never to the client's
+		// string as given.
+		addr, err := p.vetTarget(r.Context(), host, port)
+		if err == nil {
+			upstream, err = p.dialer.DialContext(r.Context(), "tcp", addr)
+		}
+		if err != nil {
 			p.errs.Add(1)
 			http.Error(w, "can't reach "+host, http.StatusBadGateway)
 			return
@@ -162,6 +172,29 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	p.serveDecrypted(conn, host, target)
 }
 
+// vetTarget turns a client's host and port into the address to dial: the
+// port must be a number from 1 to 65535, and the host is resolved here, its
+// addresses checked with allowedIP, and the first allowed one returned as an
+// IP literal. guardDial checks the dialled address again.
+func (p *Proxy) vetTarget(ctx context.Context, host, port string) (string, error) {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", errors.New("bad port")
+	}
+	var ips []netip.Addr
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		ips = []netip.Addr{ip}
+	} else if ips, err = p.resolver.LookupNetIP(ctx, "ip", host); err != nil {
+		return "", err
+	}
+	for _, ip := range ips {
+		if p.opts.AllowLocalTargets || allowedIP(net.IP(ip.Unmap().AsSlice())) {
+			return net.JoinHostPort(ip.Unmap().String(), strconv.Itoa(n)), nil
+		}
+	}
+	return "", errLocalTarget
+}
+
 // errLocalTarget refuses a connection the proxy must not make for a client.
 var errLocalTarget = errors.New("refusing to connect to a loopback, link-local or unspecified address")
 
@@ -176,12 +209,17 @@ func guardDial(_, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return err
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+	if ip := net.ParseIP(host); ip == nil || !allowedIP(ip) {
 		return errLocalTarget
 	}
 	return nil
+}
+
+// allowedIP reports whether the proxy may connect a client to ip: not
+// loopback, link-local, unspecified or multicast.
+func allowedIP(ip net.IP) bool {
+	return !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() &&
+		!ip.IsInterfaceLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
 }
 
 // tunnel copies bytes both ways until either side closes. buffered holds

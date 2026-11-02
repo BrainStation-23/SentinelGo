@@ -37,6 +37,7 @@ type message struct {
 const (
 	maxFrameToWorker   = 9 << 20
 	maxFrameFromWorker = 8 << 20
+	maxFrame           = maxFrameToWorker // the larger of the two: no frame is sent bigger
 	// maxOffsets caps match offsets per finding in a result (the count is
 	// kept), so a file full of e-mail addresses can't make a huge reply.
 	maxOffsets = 10000
@@ -69,8 +70,13 @@ func (c conn) writeMsg(m message, fd int) error {
 	if err != nil {
 		return err
 	}
+	// The receiver refuses frames over its limit anyway; refusing them here
+	// too bounds this allocation and the length prefix.
+	if len(body) > maxFrame {
+		return fmt.Errorf("scanworker: frame of %d bytes over the %d-byte limit", len(body), maxFrame)
+	}
 	frame := make([]byte, 4, 4+len(body))
-	binary.BigEndian.PutUint32(frame, uint32(len(body))) // #nosec G115 -- frames are capped far below 4 GB
+	binary.BigEndian.PutUint32(frame, uint32(len(body))) // #nosec G115 -- at most maxFrame, far below 4 GB
 	frame = append(frame, body...)
 	var oob []byte
 	if fd >= 0 {
