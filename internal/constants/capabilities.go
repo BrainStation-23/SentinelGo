@@ -21,6 +21,7 @@ var AgentCapabilities = []string{
 	"users_inventory_v2",    // built-in accounts, local_admin_members, signed_in_users, … (#223)
 	"exposure_scope_v1",     // risky_services[].remote_scope, remote_addresses, on_public_address (#251)
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
+	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on
@@ -29,11 +30,35 @@ var AgentCapabilities = []string{
 // never reports it.
 const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name, not a credential
 
+// CapabilityMDMEnroll means the agent runs the mdm-enroll native task: on
+// macOS ADE re-enrollment or a profile presented to the console user (#350),
+// on Windows silent enrollment (#356).
+const CapabilityMDMEnroll = "mdm_enroll_v1"
+
+// CapabilityWindowsMDMState means the inventory carries the Windows "mdm"
+// block: edition eligibility, MDM enrollments and the OMA-DM identity (#355).
+const CapabilityWindowsMDMState = "windows_mdm_state_v1"
+
+// CapabilityMDMSync means the agent runs the mdm-sync native task: start an
+// MDM session now, standing in for push (#357).
+const CapabilityMDMSync = "mdm_sync_v1"
+
+// CapabilityMDMUnenroll means the agent runs the mdm-unenroll native task:
+// remove this deployment's MDM enrollment (#356).
+const CapabilityMDMUnenroll = "mdm_unenroll_v1"
+
+// CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
+// enrollment state, ADE assignment and the provisioning UDID (#349).
+const CapabilityAppleMDMState = "apple_mdm_state_v1"
+
+// goos is runtime.GOOS; a var so tests can check other platforms' lists.
+var goos = runtime.GOOS
+
 // pwshInstalled reports whether the task executor can find pwsh. It uses the
 // same strict lookup as the executor, so the capability is never advertised
 // for a pwsh the executor would not run. A var so tests can stub it.
 var pwshInstalled = func() bool {
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		return false
 	}
 	_, ok := binpath.Lookup("pwsh")
@@ -48,6 +73,12 @@ func Capabilities() []string {
 	caps := append([]string{}, AgentCapabilities...)
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)
+	}
+	switch goos {
+	case "darwin":
+		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
+	case "windows":
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll)
 	}
 	return caps
 }

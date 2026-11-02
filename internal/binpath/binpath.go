@@ -53,6 +53,8 @@ var knownPaths = func() map[string][]string {
 		"tmutil":          {"/usr/bin/tmutil"},
 		"mdls":            {"/usr/bin/mdls"},
 		"dsconfigad":      {"/usr/sbin/dsconfigad"},
+		"profiles":        {"/usr/bin/profiles"},
+		"open":            {"/usr/bin/open"},
 		// Homebrew's own prefixes: Apple Silicon, then Intel. Neither is a
 		// system directory, but each is fixed, unlike a PATH search.
 		"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
@@ -119,6 +121,9 @@ var knownPaths = func() map[string][]string {
 		"sc.exe":     {filepath.Join(sys32, "sc.exe")},
 		"secedit":    {filepath.Join(sys32, "secedit.exe")},
 		"dsregcmd":   {filepath.Join(sys32, "dsregcmd.exe")},
+		// MDM client: starts an OMA-DM session for an enrollment (#357).
+		"deviceenroller": {filepath.Join(sys32, "deviceenroller.exe")},
+		"schtasks":       {filepath.Join(sys32, "schtasks.exe")},
 
 		// shutdown exists on all three OSes, at different paths.
 		"shutdown": {"/sbin/shutdown", "/usr/sbin/shutdown", filepath.Join(sys32, "shutdown.exe")},

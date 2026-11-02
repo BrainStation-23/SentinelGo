@@ -21,6 +21,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == cli.DLPCommand {
 		os.Exit(cli.RunDLP(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
+	// `sentinelgo enroll`: save a first-boot enrollment token (installers).
+	if len(os.Args) > 1 && os.Args[1] == cli.EnrollCommand {
+		os.Exit(cli.RunEnroll(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+	// `sentinelgo mdm status`: the device's MDM state, for support.
+	if len(os.Args) > 1 && os.Args[1] == cli.MDMCommand {
+		os.Exit(cli.RunMDM(os.Args[2:], os.Stdout, os.Stderr))
+	}
 
 	f := parseFlags()
 

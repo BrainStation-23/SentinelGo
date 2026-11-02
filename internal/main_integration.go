@@ -7,6 +7,7 @@ import (
 	"log"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -18,6 +19,7 @@ import (
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/logging"
+	"sentinelgo/internal/mdmenroll"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
@@ -73,6 +75,9 @@ type MainIntegration struct {
 	dlpManager        *dlp.Manager
 	dlpSyncer         *dlp.Syncer
 	dlpEvents         *store.DLPEventStore
+	// mu protects sessions against concurrent access between notifyUser
+	// (which reads it) and Stop (which nils it).
+	mu sync.Mutex
 	// sessions runs a helper in each user session whenever the agent runs:
 	// DLP enforces through it, and notify-user shows notifications with it.
 	sessions session.Service
@@ -427,8 +432,13 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	// the signed-in user; DLP only sets their policy.
 	sup := newSessions(sink)
 	sup.Apply(ctx, nil)
+	mi.mu.Lock()
 	mi.sessions = sup
+	mi.mu.Unlock()
 	native.SetUserNotifier(mi.notifyUser)
+	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
+	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
+	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if err := m.Start(ctx); err != nil {
@@ -453,6 +463,84 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	native.SetDLPPolicySync(mi.dlpSyncNow)
 }
 
+// mdmEnrollHook is the mdm-enroll task (#350): the enroller gets the device
+// enrolled through ADE or by presenting a profile to the console user's
+// session helper.
+func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller {
+	retry := func(ctx context.Context, fn func() error) error {
+		if mi.authSvc == nil {
+			return fn()
+		}
+		return mi.authSvc.DoWithAuthRetry(ctx, cfg, fn)
+	}
+	e := mdmenroll.New(mdmenroll.Deps{
+		OurHost:        func() string { return cfg.MDMHost },
+		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+		ConsoleSession: mdmenroll.ConsoleSession,
+		RenewADE:       mdmenroll.RenewADE,
+		FetchWindowsEnrollment: mdmenroll.WindowsEnrollmentFetcher(
+			func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+		RegisterWindows: mdmenroll.RegisterWindows,
+		PresentURL: func(ctx context.Context, sessionID string, u ipc.OpenURL) error {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return session.ErrNoHelper
+			}
+			return sup.OpenURL(ctx, sessionID, u)
+		},
+		Present: func(ctx context.Context, sessionID string, p ipc.OpenProfile) error {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return session.ErrNoHelper
+			}
+			return sup.OpenProfile(ctx, sessionID, p)
+		},
+	})
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		req, err := mdmenroll.ParseRequest(payload)
+		if err != nil {
+			return "", err
+		}
+		out, err := e.Enroll(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
+}
+
+// mdmSyncHook is the mdm-sync task (#357): start an MDM session for our
+// enrollment now.
+func (mi *MainIntegration) mdmSyncHook(cfg *config.Config) native.MDMSyncer {
+	s := mdmenroll.NewSyncer(func() string { return cfg.MDMHost })
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		host, _ := payload["mdm_host"].(string)
+		out, err := s.Sync(ctx, host)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
+}
+
+// mdmUnenrollHook is the mdm-unenroll task (#356): remove this
+// deployment's enrollment when the console asks.
+func (mi *MainIntegration) mdmUnenrollHook(cfg *config.Config) native.MDMUnenroller {
+	u := mdmenroll.NewUnenroller(func() string { return cfg.MDMHost })
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		host, _ := payload["mdm_host"].(string)
+		out, err := u.Unenroll(ctx, host)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
+}
+
 // dlpSyncNow polls for the DLP policy immediately (native task
 // dlp_sync_policy, "push policy now") and reports what is applied.
 func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state string, err error) {
@@ -469,18 +557,34 @@ func (mi *MainIntegration) dlpSyncNow(ctx context.Context) (version, state strin
 // notifyUser is the notify-user hook: it shows n in every session with a
 // connected helper, and lists the signed-in users it couldn't reach.
 func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotification) ([]native.NotifyResult, []string) {
+	mi.mu.Lock()
 	sup := mi.sessions
+	mi.mu.Unlock()
 	if sup == nil {
 		return nil, nil
 	}
+
+	notifyResults := sup.Notify(ctx, ipc.Notify{Title: n.Title, Message: n.Message, Level: n.Level})
+
+	// Build an explicit set of sessions that answered (by user and session ID)
+	// so we don't rely on Capabilities != nil as a proxy for "connected".
+	answered := make(map[string]bool, len(notifyResults))
 	var results []native.NotifyResult
-	for _, r := range sup.Notify(ctx, ipc.Notify{Title: n.Title, Message: n.Message, Level: n.Level}) {
+	for _, r := range notifyResults {
 		results = append(results, native.NotifyResult{User: r.User, Err: r.Err})
+		answered[r.User] = true
+		if r.SessionID != "" {
+			answered[r.SessionID] = true
+		}
 	}
+
+	// Sessions() includes both connected helpers (already in answered) and
+	// sessions whose helper hasn't connected yet (starting, failed, etc.).
+	// Only report those that did not answer as unreached.
 	var unreached []string
 	for _, in := range sup.Sessions() {
-		if in.Capabilities != nil {
-			continue // a connected helper (it reported its capabilities)
+		if answered[in.User] || (in.SessionID != "" && answered[in.SessionID]) {
+			continue
 		}
 		why := in.State
 		if in.LastError != "" {
@@ -640,12 +744,18 @@ func (mi *MainIntegration) Stop() error {
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
 	native.SetUserNotifier(nil)
+	native.SetMDMEnroller(nil)
+	native.SetMDMSyncer(nil)
+	native.SetMDMUnenroller(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}
-	if mi.sessions != nil {
-		mi.sessions.Stop()
-		mi.sessions = nil
+	mi.mu.Lock()
+	sup := mi.sessions
+	mi.sessions = nil
+	mi.mu.Unlock()
+	if sup != nil {
+		sup.Stop()
 	}
 	if mi.dlpEvents != nil {
 		if err := mi.dlpEvents.Close(); err != nil {

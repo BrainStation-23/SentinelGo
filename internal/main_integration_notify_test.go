@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,31 @@ func (f *fakeSessions) Notify(_ context.Context, n ipc.Notify) []session.NotifyR
 	defer f.mu.Unlock()
 	f.notified = append(f.notified, n)
 	return f.results
+}
+
+func (f *fakeSessions) OpenProfile(context.Context, string, ipc.OpenProfile) error {
+	return session.ErrNoHelper
+}
+
+func (f *fakeSessions) OpenURL(context.Context, string, ipc.OpenURL) error {
+	return session.ErrNoHelper
+}
+
+// The service installs the mdm-enroll hook with the helpers and removes it
+// at Stop (#350). Here the device has no MDM collector, so the hook answers
+// unsupported_os rather than "unavailable".
+func TestMDMEnrollHookInstalled(t *testing.T) {
+	cfg := miTestConfig(t)
+	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
+	mi.startDLP(context.Background())
+	_, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{})
+	if runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
+		t.Errorf("mdm-enroll with the hook installed: %v", err)
+	}
+	_ = mi.Stop()
+	if _, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Errorf("mdm-enroll after Stop: %v", err)
+	}
 }
 
 // The helpers run, and notify-user reaches them, whatever DLP's state: off

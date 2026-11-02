@@ -46,6 +46,12 @@ const (
 
 	TypeNotify       = "notify"        // service → helper: show a desktop notification
 	TypeNotifyResult = "notify_result" // helper → service: whether it was shown
+
+	TypeOpenProfile       = "open_profile"        // service → helper: present a configuration profile to the user
+	TypeOpenProfileResult = "open_profile_result" // helper → service: whether it was presented
+
+	TypeOpenURL       = "open_url"        // service → helper: open an enrollment link for the user
+	TypeOpenURLResult = "open_url_result" // helper → service: whether it was opened
 )
 
 // Notification levels.
@@ -69,6 +75,41 @@ type Message struct {
 	Notify *Notify         `json:"notify,omitempty"`
 	// NotifyResult answers a Notify with the same ID.
 	NotifyResult *NotifyResult `json:"notify_result,omitempty"`
+	OpenProfile  *OpenProfile  `json:"open_profile,omitempty"`
+	// OpenProfileResult answers an OpenProfile with the same ID.
+	OpenProfileResult *OpenProfileResult `json:"open_profile_result,omitempty"`
+	OpenURL           *OpenURL           `json:"open_url,omitempty"`
+	// OpenURLResult answers an OpenURL with the same ID.
+	OpenURLResult *OpenProfileResult `json:"open_url_result,omitempty"`
+}
+
+// OpenURL asks the helper to open an MDM enrollment link (Windows'
+// ms-device-enrollment: URI, #356) for its user, then show Title/Message.
+// Helpers open only that scheme.
+type OpenURL struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// OpenProfile asks the helper to present a configuration profile (an MDM
+// enrollment profile, #350) to its user: write it to the user's own files
+// and open it, which registers it for review in System Settings, then show
+// Title/Message as a notification with what to do.
+type OpenProfile struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"` // file name, e.g. "Enrollment.mobileconfig"
+	Data    []byte `json:"data"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// OpenProfileResult says whether a helper presented an OpenProfile. Error is
+// "" when it did.
+type OpenProfileResult struct {
+	ID    string `json:"id"`
+	Error string `json:"error,omitempty"`
 }
 
 // Notify is a desktop notification an admin sends to the signed-in user.

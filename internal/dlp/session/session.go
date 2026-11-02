@@ -50,6 +50,11 @@ type Service interface {
 	// Notify shows n in every session with a connected helper and returns
 	// each one's answer.
 	Notify(ctx context.Context, n ipc.Notify) []NotifyResult
+	// OpenProfile presents p to the user of one session (its SessionID) and
+	// waits for the helper's answer.
+	OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfile) error
+	// OpenURL opens an MDM enrollment link for the user of one session.
+	OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) error
 }
 
 // PolicyOnly lets DLP's Manager set the policy on s without owning the

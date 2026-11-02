@@ -30,6 +30,8 @@ const (
 		"detectors":[{"id":"pii.credit_card","rule_id":"r1","min_count":1}],"exceptions":{"source_apps":["KeePassXC"]}}`
 	monitorFalcon = `{"id":"p-mon","name":"Falcon","severity":"low","channels":["clipboard"],"action":"monitor","match":"any",
 		"detectors":[{"id":"custom.keywords","rule_id":"r2","keywords":["falcon"]}]}`
+	warnEmails = `{"id":"p-warn","name":"Warn emails","severity":"medium","channels":["clipboard"],"action":"warn","match":"any",
+		"detectors":[{"id":"pii.email","rule_id":"r3","min_count":1}]}`
 )
 
 var now = time.Unix(1_700_000_000, 0)
@@ -59,6 +61,52 @@ func TestDecide_MonitorOnly(t *testing.T) {
 	d := Decide(p, "project falcon kickoff", events.SourceApp{}, now)
 	if d.Block || len(d.Events) != 1 || d.Events[0].Action != events.ActionMonitored || d.Events[0].Severity != "low" {
 		t.Errorf("decision = %+v", d)
+	}
+}
+
+// A warn policy keeps the content and tells the user; other matching monitor
+// policies still record "monitored".
+func TestDecide_Warn(t *testing.T) {
+	p := compile(t, warnEmails+","+monitorFalcon)
+	d := Decide(p, "mail jane@example.com about falcon", events.SourceApp{}, now)
+	if d.Block || !d.Warn || d.Message != "" {
+		t.Fatalf("decision = %+v, want warn without a placeholder", d)
+	}
+	if d.Notify != "SentinelOps: you copied email. This was allowed and logged." {
+		t.Errorf("default warn notify = %q", d.Notify)
+	}
+	got := map[string]string{}
+	for _, ev := range d.Events {
+		got[ev.PolicyID] = ev.Action
+	}
+	if got["p-warn"] != events.ActionWarned || got["p-mon"] != events.ActionMonitored || len(got) != 2 {
+		t.Errorf("event actions = %v", got)
+	}
+	if strings.Contains(d.Notify, "jane@example.com") {
+		t.Error("notification carries the matched value")
+	}
+
+	p.Modules.Clipboard.WarnMessage = "Heads up: {{detector}}"
+	if d := Decide(p, "jane@example.com", events.SourceApp{}, now); d.Notify != "Heads up: email" {
+		t.Errorf("custom warn notify = %q", d.Notify)
+	}
+}
+
+// Block wins over warn: the copy is replaced, every event records the block
+// and the user gets the block notification, not the warning.
+func TestDecide_BlockBeatsWarn(t *testing.T) {
+	p := compile(t, warnEmails+","+blockCards)
+	d := Decide(p, "jane@example.com 4111 1111 1111 1111", events.SourceApp{}, now)
+	if !d.Block || d.Warn {
+		t.Fatalf("decision = %+v, want block only", d)
+	}
+	for _, ev := range d.Events {
+		if ev.Action != events.ActionBlocked {
+			t.Errorf("event %s = %s, want blocked", ev.PolicyID, ev.Action)
+		}
+	}
+	if !strings.Contains(d.Notify, "blocked") {
+		t.Errorf("notify = %q, want the block notification", d.Notify)
 	}
 }
 

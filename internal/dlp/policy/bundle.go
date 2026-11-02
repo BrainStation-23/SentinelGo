@@ -16,6 +16,7 @@ const SchemaVersion = 1
 // Action modes for a policy.
 const (
 	ActionMonitor = "monitor" // record evidence only
+	ActionWarn    = "warn"    // keep the content, tell the user and record evidence
 	ActionBlock   = "block"   // replace the content and record evidence
 )
 
@@ -49,6 +50,7 @@ type ClipboardModule struct {
 	IgnoreConcealed bool   `json:"ignore_concealed"`
 	BlockMessage    string `json:"block_message"`
 	NotifyMessage   string `json:"notify_message"`
+	WarnMessage     string `json:"warn_message"` // the notification for a warned copy
 }
 
 // Policy is one admin-defined policy.

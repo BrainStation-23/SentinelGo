@@ -117,6 +117,10 @@ type Config struct {
 	// DLPEnabled is the device-local DLP kill switch. false turns DLP off on this
 	// device whatever the server-side policy says (for troubleshooting).
 	DLPEnabled bool `json:"dlp_enabled"`
+	// MDMHost is this deployment's MDM hostname, e.g. "mdm.example.com".
+	// The inventory compares it with the MDM a device is enrolled in, to tell
+	// our MDM from another one. Empty until the backend provides it.
+	MDMHost string `json:"mdm_host,omitempty"`
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
