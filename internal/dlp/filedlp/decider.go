@@ -72,6 +72,9 @@ type Request struct {
 	// NoCache skips the verdict cache: for inputs whose identity is reused
 	// (an upload's spill file is deleted after the scan, its inode recycled).
 	NoCache bool
+	// Sources are the files the writing process read just before, newest
+	// first (process taint); empty when taint is off.
+	Sources []SourceRef
 }
 
 // Stats are the decider's counters.
@@ -81,6 +84,7 @@ type Stats struct {
 	Events      uint64 `json:"events"`
 	Timeouts    uint64 `json:"timeouts"`
 	Unscannable uint64 `json:"unscannable"`
+	Correlated  uint64 `json:"correlated"` // verdicts taken from a source file (process taint)
 }
 
 // cacheSize is how many scan results the decider keeps.
@@ -93,12 +97,13 @@ type Decider struct {
 	sink    channel.EventSink
 	cache   *filescan.Cache
 
-	mu        sync.Mutex
-	compiled  *policy.Compiled
-	engine    *detect.Engine
-	remediate func(r Request, action string) error
+	mu         sync.Mutex
+	compiled   *policy.Compiled
+	engine     *detect.Engine
+	remediate  func(r Request, action string) error
+	openSource func(SourceRef) (*os.File, Identity, error)
 
-	scans, cached, emitted, timeouts, unscannable atomic.Uint64
+	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
 }
 
 // NewDecider returns a Decider that scans with s and records events to sink.
@@ -128,6 +133,15 @@ func (d *Decider) SetRemediator(fn func(r Request, action string) error) {
 	d.remediate = fn
 }
 
+// SetSourceOpener gives the decider what reopens a file a process read
+// (process taint): it must open src read-only, check it is still the same
+// file and return its identity.
+func (d *Decider) SetSourceOpener(fn func(src SourceRef) (*os.File, Identity, error)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.openSource = fn
+}
+
 // Files returns the files module of the policy in force (zero when none).
 func (d *Decider) Files() policy.FilesModule {
 	d.mu.Lock()
@@ -144,7 +158,7 @@ func (d *Decider) Invalidate(id Identity) { d.cache.InvalidateFile(fileID(id)) }
 // Stats returns the counters.
 func (d *Decider) Stats() Stats {
 	return Stats{Scans: d.scans.Load(), Cached: d.cached.Load(), Events: d.emitted.Load(),
-		Timeouts: d.timeouts.Load(), Unscannable: d.unscannable.Load()}
+		Timeouts: d.timeouts.Load(), Unscannable: d.unscannable.Load(), Correlated: d.correlated.Load()}
 }
 
 func fileID(id Identity) string {
@@ -206,38 +220,119 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 	files := c.Modules.Files
 	mayBlock := canBlock && !files.IsAuditOnly()
 	ext := fileExt(r.Path)
-	var v Verdict
 	after := afterWrite{r: r, files: files, remediate: remediate}
+
+	// Outcomes for the written file itself.
+	var outs []outcome
+	anyMatch := false
 	for _, p := range pols {
 		matched, findings := evaluate(eng, p, res, ext)
 		typeOK := p.FileFilters.TypeOK(ext, res.DetectedType)
-		block := false
+		o := outcome{p: p, findings: findings}
 		switch {
 		case matched:
-			block = p.Action == policy.ActionBlock
+			o.block = p.Action == policy.ActionBlock
+			anyMatch = true
 		case !typeOK:
 			continue // not a file type this policy covers
 		case filescan.IsUnscannable(res.Status) && files.OnUnscannable != policy.OnFailAllow:
-			block = files.OnUnscannable == policy.OnFailBlock
+			o.block = files.OnUnscannable == policy.OnFailBlock
 		case res.Status == filescan.StatusTimeout && files.OnTimeout == policy.OnFailBlock:
-			block = true
+			o.block = true
 		default:
 			continue
 		}
-		ev := buildEvent(c, p, r, res, findings, source)
+		outs = append(outs, o)
+	}
+
+	// Process taint: a written file that couldn't be judged on its own
+	// (unreadable, or an archive) is judged by what its writer read just
+	// before. Only after the write: a hook that holds the operation has the
+	// file itself.
+	var corr *events.Correlation
+	if !anyMatch && !canBlock && files.CopyCorrelation.ProcessTaint && needsCorrelation(res) && len(r.Sources) > 0 {
+		if cOuts, cRef := d.correlate(ctx, c, eng, pols, r); len(cOuts) > 0 {
+			outs, corr, source = cOuts, cRef, "correlation"
+		}
+	}
+
+	var v Verdict
+	for _, o := range outs {
+		ev := buildEvent(c, o.p, r, res, o.findings, source)
+		ev.Correlation = corr
 		switch {
-		case block && mayBlock:
+		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
-			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, findings)}
-		case block && canBlock:
+			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, o.findings)}
+		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
-		case block:
+		case o.block:
 			ev.Action, ev.WouldHave = after.handle()
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}
 	return v
+}
+
+// outcome is what one policy says about a file.
+type outcome struct {
+	p        policy.CompiledPolicy
+	findings []detect.Finding
+	block    bool
+}
+
+// needsCorrelation reports whether a written file can't be judged on its
+// own: it couldn't be read, or it's an archive (which a process may have
+// built from sensitive files, e.g. encrypted on the fly). A readable file
+// that matched nothing is clean as written, so its writer's earlier reads
+// are not held against it.
+func needsCorrelation(res filescan.Result) bool {
+	return filescan.IsUnscannable(res.Status) || res.Status == filescan.StatusTimeout ||
+		strings.HasPrefix(res.DetectedType, "archive.")
+}
+
+// correlate checks the files r's writer read before the write, newest first,
+// and returns the policies the first matching one violates, with the link
+// to it. Sources are reopened (and checked to be the same file) by the
+// source opener and scanned like any file, through the cache.
+func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect.Engine, pols []policy.CompiledPolicy, r Request) ([]outcome, *events.Correlation) {
+	d.mu.Lock()
+	open := d.openSource
+	d.mu.Unlock()
+	if open == nil {
+		return nil, nil
+	}
+	timeout := time.Duration(c.Modules.Files.ScanTimeoutMs) * time.Millisecond
+	for _, src := range r.Sources {
+		f, ident, err := open(src)
+		if err != nil {
+			continue
+		}
+		key := filescan.CacheKey{FileID: fileID(ident), Size: ident.Size, ModTime: ident.ModTime, ChangeTime: ident.ChangeTime, PolicyVersion: c.Version}
+		res, ok := d.cache.Get(key)
+		if !ok {
+			res = d.scanner.Scan(ctx, f, ident.Size, timeout)
+			d.scans.Add(1)
+			d.cache.Put(key, res)
+		}
+		_ = f.Close()
+		ext := fileExt(src.Path)
+		var outs []outcome
+		for _, p := range pols {
+			if !p.FileFilters.SizeOK(ident.Size) {
+				continue
+			}
+			if matched, findings := evaluate(eng, p, res, ext); matched {
+				outs = append(outs, outcome{p: p, findings: findings, block: p.Action == policy.ActionBlock})
+			}
+		}
+		if len(outs) > 0 {
+			d.correlated.Add(1)
+			return outs, &events.Correlation{Method: "taint", SourceSHA256: res.SHA256, SourceName: events.FileName(c.EvidenceMode, src.Path)}
+		}
+	}
+	return nil, nil
 }
 
 // afterWrite applies on_close_violation to a file found to violate a policy

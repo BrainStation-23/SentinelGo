@@ -50,6 +50,10 @@ type Health struct {
 	Unreadable uint64            `json:"unreadable"` // events without a readable file
 	Stats      Stats             `json:"stats"`
 	Workers    scanworker.Health `json:"workers"`
+	// Process taint: processes tracked, and opens lost to its queue
+	// overflowing (it has its own queue, so destination events never are).
+	TaintProcesses int    `json:"taint_processes,omitempty"`
+	TaintOverflows uint64 `json:"taint_overflows,omitempty"`
 }
 
 // Hook states.

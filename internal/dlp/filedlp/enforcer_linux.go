@@ -73,9 +73,10 @@ type linuxEnforcer struct {
 	fan      int
 	queue    chan Request
 	kick     chan struct{}
-	failure  string       // why the hook couldn't start ("" when it could)
-	devices  *deviceState // untrusted device control; the mount loop's, then stopLocked's
-	tried    bool         // start was attempted at least once (Health is reported from then on)
+	failure  string                    // why the hook couldn't start ("" when it could)
+	devices  *deviceState              // untrusted device control; the mount loop's, then stopLocked's
+	taint    atomic.Pointer[taintHook] // process taint; nil when its group couldn't open
+	tried    bool                      // start was attempted at least once (Health is reported from then on)
 	lastPool scanworker.Health
 
 	// pool is read by the decide loops, so it is atomic: they must never
@@ -92,6 +93,7 @@ type linuxEnforcer struct {
 func New(o Options) Enforcer {
 	e := &linuxEnforcer{opts: o, fan: -1, devices: newDeviceState()}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
+	e.decider.SetSourceOpener(openSource)
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}
@@ -196,6 +198,7 @@ func (e *linuxEnforcer) stopLocked() {
 	}
 	_ = unix.Close(e.fan)
 	e.fan = -1
+	e.stopTaint()
 	restoreDevices(e.devices) // fail open: nothing stays read-only because of us
 	pool := e.pool.Swap(nil)
 	e.lastPool = pool.Health()
@@ -230,7 +233,9 @@ func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan stru
 		e.localOff.Store(off)
 		c := e.compiled.Load()
 		all := classifiedMounts()
-		e.reconcileMarks(fan, marked, failed, e.monitoredMounts(c, all, off))
+		watch := e.monitoredMounts(c, all, off)
+		e.reconcileMarks(fan, marked, failed, watch)
+		e.reconcileTaint(ctx, c, len(watch) > 0)
 		e.reconcileDevices(c, all, off, e.devices)
 		select {
 		case <-ctx.Done():
@@ -427,6 +432,7 @@ func (e *linuxEnforcer) decide(ctx context.Context, r Request) {
 		r.Proc.User = userName(r.Proc.UID)
 	}
 	e.decider.Invalidate(r.Ident) // written again: older versions are stale
+	r.Sources = e.taintSources(e.compiled.Load(), r.Proc.PID)
 	dctx, cancel := context.WithTimeout(ctx, policy.MaxScanTimeout*time.Millisecond+10*time.Second)
 	defer cancel()
 	e.decider.Handle(dctx, r)
@@ -437,6 +443,7 @@ func (e *linuxEnforcer) decide(ctx context.Context, r Request) {
 var linuxMethods = map[string]string{
 	MethodScanOnClose:      "",
 	MethodUntrustedDevices: "",
+	MethodProcessTaint:     "",
 	MethodOSCopyEvents:     "not_on_linux", // macOS's copyfile/clone events
 }
 
@@ -483,6 +490,13 @@ func (e *linuxEnforcer) Health() *Health {
 	if !tried {
 		return nil
 	}
-	return &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
+	h := &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
 		Unreadable: e.unreadable.Load(), Stats: e.decider.Stats(), Workers: workers}
+	if t := e.taint.Load(); t != nil {
+		t.mu.Lock()
+		h.TaintOverflows = t.overflows
+		t.mu.Unlock()
+		h.TaintProcesses = t.store.len()
+	}
+	return h
 }
