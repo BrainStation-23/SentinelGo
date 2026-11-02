@@ -438,6 +438,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	native.SetUserNotifier(mi.notifyUser)
 	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
 	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
+	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if err := m.Start(ctx); err != nil {
@@ -477,6 +478,18 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
 		ConsoleSession: mdmenroll.ConsoleSession,
 		RenewADE:       mdmenroll.RenewADE,
+		FetchWindowsEnrollment: mdmenroll.WindowsEnrollmentFetcher(
+			func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+		RegisterWindows: mdmenroll.RegisterWindows,
+		PresentURL: func(ctx context.Context, sessionID string, u ipc.OpenURL) error {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return session.ErrNoHelper
+			}
+			return sup.OpenURL(ctx, sessionID, u)
+		},
 		Present: func(ctx context.Context, sessionID string, p ipc.OpenProfile) error {
 			mi.mu.Lock()
 			sup := mi.sessions
@@ -507,6 +520,20 @@ func (mi *MainIntegration) mdmSyncHook(cfg *config.Config) native.MDMSyncer {
 	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
 		host, _ := payload["mdm_host"].(string)
 		out, err := s.Sync(ctx, host)
+		if err != nil {
+			return "", err
+		}
+		return out.String(), nil
+	}
+}
+
+// mdmUnenrollHook is the mdm-unenroll task (#356): remove this
+// deployment's enrollment when the console asks.
+func (mi *MainIntegration) mdmUnenrollHook(cfg *config.Config) native.MDMUnenroller {
+	u := mdmenroll.NewUnenroller(func() string { return cfg.MDMHost })
+	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
+		host, _ := payload["mdm_host"].(string)
+		out, err := u.Unenroll(ctx, host)
 		if err != nil {
 			return "", err
 		}
@@ -719,6 +746,7 @@ func (mi *MainIntegration) Stop() error {
 	native.SetUserNotifier(nil)
 	native.SetMDMEnroller(nil)
 	native.SetMDMSyncer(nil)
+	native.SetMDMUnenroller(nil)
 	if mi.dlpManager != nil {
 		mi.dlpManager.Stop()
 	}

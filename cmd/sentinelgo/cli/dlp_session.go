@@ -59,6 +59,8 @@ func RunDLPSession() int {
 		Notify:   notify.Show,
 		// mdm-enroll presents the enrollment profile in the user's session (#350).
 		OpenProfile: mdmenroll.OpenProfileForUser,
+		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
+		OpenURL: mdmenroll.OpenURLForUser,
 	})
 	if err != nil {
 		log.Printf("DLP helper stopped: %v", err)

@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ const (
 	ResultProfilePresented = "profile_presented"
 	ResultEnrolled         = "enrolled"
 
+	ResultLinkPresented = "link_presented" // Windows: the enrollment link opened in the user's session
+
+	ResultIneligible     = "ineligible" // Windows Home, Server, or blocked by policy
 	ResultOtherMDM       = "other_mdm"
 	ResultUnsupportedOS  = "unsupported_os"
 	ResultNoConsoleUser  = "no_console_user"
@@ -114,9 +118,14 @@ type Deps struct {
 	ConsoleSession func() (Session, bool)
 	// RenewADE runs `profiles renew -type enrollment`.
 	RenewADE func(ctx context.Context) error
-	// Windows enrolls a Windows device that isn't enrolled yet (#356); nil
-	// where the agent can't.
-	Windows func(ctx context.Context, info *shared.MDMInfo, req Request) (Outcome, error)
+	// Windows (#356). FetchWindowsEnrollment gets the discovery URL, UPN and
+	// single-use access token from the backend; RegisterWindows enrolls
+	// silently (RegisterDeviceWithManagement); PresentURL opens the
+	// ms-device-enrollment: link in a user's session when that fails. nil
+	// RegisterWindows means this platform can't.
+	FetchWindowsEnrollment func(ctx context.Context) (WindowsEnrollment, error)
+	RegisterWindows        func(upn, discoveryURL, accessToken string) error
+	PresentURL             func(ctx context.Context, sessionID string, u ipc.OpenURL) error
 	// Now and Sleep; defaults are the real clock.
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -196,11 +205,8 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 
 	// A Windows device (it reports its edition's eligibility) enrolls its own way.
 	if info.Eligible != nil {
-		if e.d.Windows == nil {
-			return Outcome{}, fail(ResultUnsupportedOS, "MDM enrollment of Windows devices isn't available in this agent")
-		}
-		started, err := e.d.Windows(ctx, info, req)
-		if err != nil || started.Code == ResultEnrolled || started.Code == ResultAlreadyEnrolled {
+		started, err := e.enrollWindows(ctx, info, host)
+		if err != nil || started.Code == ResultEnrolled {
 			return started, err
 		}
 		return e.waitForEnrollment(ctx, host, started), nil
@@ -224,6 +230,65 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 		return started, err
 	}
 	return e.waitForEnrollment(ctx, host, started), nil
+}
+
+// enrollWindows enrolls a Windows device silently, as SYSTEM, with a token
+// from the backend; if that fails, it opens the enrollment link for the
+// console user so they can finish in Settings.
+func (e *Enroller) enrollWindows(ctx context.Context, info *shared.MDMInfo, host string) (Outcome, error) {
+	if e.d.RegisterWindows == nil || e.d.FetchWindowsEnrollment == nil {
+		return Outcome{}, fail(ResultUnsupportedOS, "MDM enrollment of Windows devices isn't available on this platform")
+	}
+	if !*info.Eligible {
+		return Outcome{}, fail(ResultIneligible, "this device can't enroll in MDM (%s)", info.IneligibleReason)
+	}
+	if host == "" {
+		return Outcome{}, fail(ResultMDMHostUnknown, "mdm_host isn't set, so the agent can't confirm the enrollment")
+	}
+	creds, err := e.d.FetchWindowsEnrollment(ctx)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("mdm-enroll: getting the enrollment token: %w", err)
+	}
+	regErr := e.d.RegisterWindows(creds.UPN, creds.DiscoveryURL, creds.AccessToken)
+	if regErr == nil {
+		if after := e.d.Collect(host); after != nil && after.Enrolled && after.IsOurServer {
+			return Outcome{ResultEnrolled, "enrolled silently with " + after.ServerURLHost}, nil
+		}
+		return Outcome{ResultEnrolled, "enrollment registered; the device reports it at its first MDM session"}, nil
+	}
+
+	// Fall back to the user: open the enrollment link in their session.
+	sess, ok := e.consoleSession()
+	if !ok || e.d.PresentURL == nil {
+		return Outcome{}, fmt.Errorf("mdm-enroll: silent enrollment failed: %w", regErr)
+	}
+	link := enrollmentLink(creds.UPN, creds.DiscoveryURL)
+	if err := e.d.PresentURL(ctx, sess.ID, ipc.OpenURL{URL: link, Title: windowsTitle, Message: windowsMessage}); err != nil {
+		return Outcome{}, fmt.Errorf("mdm-enroll: silent enrollment failed (%v), and the enrollment link couldn't be opened for %s: %w", regErr, sess.User, err)
+	}
+	return Outcome{ResultLinkPresented, fmt.Sprintf("silent enrollment failed (%v); opened the enrollment link in %s's session", regErr, sess.User)}, nil
+}
+
+func (e *Enroller) consoleSession() (Session, bool) {
+	if e.d.ConsoleSession == nil {
+		return Session{}, false
+	}
+	return e.d.ConsoleSession()
+}
+
+const (
+	windowsTitle   = "Enroll this PC in device management"
+	windowsMessage = "Settings opened to connect this PC to your organization's device management. Sign in with your work account to finish."
+)
+
+// enrollmentLink is the ms-device-enrollment: URI that opens Settings'
+// "Enroll only in device management" with the user and server filled in.
+func enrollmentLink(upn, discoveryURL string) string {
+	q := url.Values{}
+	q.Set("mode", "mdm")
+	q.Set("username", upn)
+	q.Set("servername", discoveryURL)
+	return "ms-device-enrollment:?" + q.Encode()
 }
 
 func (e *Enroller) startADE(ctx context.Context, info *shared.MDMInfo, host string) (Outcome, error) {

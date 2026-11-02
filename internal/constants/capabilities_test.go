@@ -85,3 +85,17 @@ func TestCapabilities_WindowsMDMStateOnWindowsOnly(t *testing.T) {
 		}
 	}
 }
+
+// mdm-enroll runs on macOS and Windows; mdm-unenroll on Windows (#356).
+func TestCapabilities_MDMTasks(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string][2]bool{"darwin": {true, false}, "windows": {true, true}, "linux": {false, false}} {
+		goos = os
+		caps := Capabilities()
+		enroll, unenroll := slices.Contains(caps, CapabilityMDMEnroll), slices.Contains(caps, CapabilityMDMUnenroll)
+		if enroll != want[0] || unenroll != want[1] {
+			t.Errorf("%s: enroll/unenroll = %v/%v, want %v", os, enroll, unenroll, want)
+		}
+	}
+}

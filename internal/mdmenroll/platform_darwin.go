@@ -92,3 +92,12 @@ var OpenProfileForUser = func(name string, data []byte) error {
 	}
 	return nil
 }
+
+// OpenURLForUser is nil: enrollment links are Windows'.
+var OpenURLForUser func(url string) error
+
+// RegisterWindows and UnregisterWindows are Windows'.
+var (
+	RegisterWindows   func(upn, discoveryURL, accessToken string) error
+	UnregisterWindows func(enrollmentID string) error
+)
