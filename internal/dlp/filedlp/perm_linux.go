@@ -47,9 +47,11 @@ const (
 	permReplyLen   = 8 // sizeof(struct fanotify_response)
 )
 
-// permStallAfter is the read loop's silence that trips the watchdog (a var
-// for tests).
-var permStallAfter = 5 * time.Second
+// permStallAfter is the read loop's silence that trips the watchdog, in
+// nanoseconds; atomic so tests can change it while a watchdog runs.
+var permStallAfter atomic.Int64
+
+func init() { permStallAfter.Store(int64(5 * time.Second)) }
 
 // Test seams for the permission group.
 var (
@@ -224,7 +226,7 @@ func (h *permHook) watchdog(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		if time.Since(time.Unix(0, h.beat.Load())) > permStallAfter {
+		if time.Since(time.Unix(0, h.beat.Load())) > time.Duration(permStallAfter.Load()) {
 			log.Printf("DLP: file blocking: the event loop stalled; allowing everything and turning blocking off")
 			h.tripped.Store(true)
 			h.gate.stop()

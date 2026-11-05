@@ -151,11 +151,11 @@ func TestEnforcer_StopReleasesHeldOpens(t *testing.T) {
 func TestEnforcer_WatchdogFailsOpen(t *testing.T) {
 	stick, home, e, _ := startBlockingEnforcer(t, blockBundleE2E)
 	eventually(t, "file blocking to start", func() bool { b := e.Health().Blocking; return b != nil && b.State == stateRunning })
-	old := permStallAfter
-	permStallAfter = time.Nanosecond // every check now looks like a stall
-	t.Cleanup(func() { permStallAfter = old })
+	old := permStallAfter.Load()
+	permStallAfter.Store(1) // every check now looks like a stall
+	t.Cleanup(func() { permStallAfter.Store(old) })
 	eventually(t, "the watchdog", func() bool { return e.Health().Blocking.State == blockingWatchdog })
-	permStallAfter = old
+	permStallAfter.Store(old)
 	secret := filepath.Join(home, "plan.txt")
 	if err := os.WriteFile(secret, []byte("the TOPSECRET plan"), 0o644); err != nil {
 		t.Fatal(err)

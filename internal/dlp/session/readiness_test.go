@@ -86,8 +86,7 @@ func TestHelperReportsReadiness(t *testing.T) {
 		t.Fatalf("no helper: %v", err)
 	}
 
-	// read again just before showing: no wait for the next minute
-	channelRecheck = time.Hour
+	// read again just before showing
 	rd.set("dnd")
 	res = hub.Notify(context.Background(), ipc.Notify{Title: "t", Message: "m"})
 	if len(res) != 1 || res[0].Err != "" || res[0].Readiness != "dnd" {
