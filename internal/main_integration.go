@@ -17,6 +17,7 @@ import (
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
+	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
@@ -25,6 +26,7 @@ import (
 	"sentinelgo/internal/mdmenroll"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/scheduler"
+	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
 	dlpsvc "sentinelgo/internal/service/dlp"
 	servicessvc "sentinelgo/internal/service/services"
@@ -448,6 +450,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	mi.sessions = sup
 	mi.mu.Unlock()
 	native.SetUserNotifier(mi.notifyUser)
+	agentsvc.SetSessionsSource(func() []agentsvc.SessionReport { return sessionReports(sup.Sessions()) })
 	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
 	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
 	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
@@ -458,7 +461,8 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {
-			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path)}))
+			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+				Notifier: sessionNotifier{sup}}))
 		}
 	}
 	if err := m.Start(ctx); err != nil {
@@ -591,7 +595,11 @@ func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotif
 	answered := make(map[string]bool, len(notifyResults))
 	var results []native.NotifyResult
 	for _, r := range notifyResults {
-		results = append(results, native.NotifyResult{User: r.User, Err: r.Err})
+		user := r.User
+		if r.Err == "" && r.Readiness == notify.ReadyDND {
+			user += " (Do Not Disturb: kept in the notification center)"
+		}
+		results = append(results, native.NotifyResult{User: user, Err: r.Err})
 		answered[r.User] = true
 		if r.SessionID != "" {
 			answered[r.SessionID] = true
@@ -614,6 +622,35 @@ func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotif
 	}
 	log.Printf("notify-user: %d session(s) answered, %d not reached", len(results), len(unreached))
 	return results, unreached
+}
+
+// sessionNotifier lets file DLP tell the user of one session why a file was
+// blocked (#336), through that session's helper.
+type sessionNotifier struct{ s session.Service }
+
+func (n sessionNotifier) SessionReadiness(sessionID string) (string, bool) {
+	return n.s.SessionReadiness(sessionID)
+}
+
+func (n sessionNotifier) NotifySession(ctx context.Context, sessionID, title, body string) error {
+	return n.s.NotifySession(ctx, sessionID, ipc.Notify{Title: title, Message: body, Level: ipc.LevelWarning})
+}
+
+// maxReportedSessions bounds the sessions in one inventory upload, as in the
+// DLP status.
+const maxReportedSessions = 100
+
+// sessionReports turns the helpers' state into the inventory's sessions
+// (#323), so a device with DLP off still reports notification readiness.
+func sessionReports(in []session.Info) []agentsvc.SessionReport {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]agentsvc.SessionReport, 0, min(len(in), maxReportedSessions))
+	for _, s := range in[:min(len(in), maxReportedSessions)] {
+		out = append(out, agentsvc.SessionReport{User: s.User, State: s.State, SessionID: s.SessionID, Capabilities: s.Capabilities})
+	}
+	return out
 }
 
 // discardEvents is the event sink when the evidence queue is unavailable.
@@ -765,6 +802,7 @@ func (mi *MainIntegration) Stop() error {
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
 	native.SetUserNotifier(nil)
+	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)
 	native.SetMDMSyncer(nil)
 	native.SetMDMUnenroller(nil)

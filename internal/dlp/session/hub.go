@@ -115,6 +115,10 @@ type NotifyResult struct {
 	User      string
 	SessionID string
 	Err       string // "" when the notification was shown
+	// Readiness is the session's notification readiness when it answered
+	// (#323): "dnd" means shown into the notification center; "" when the
+	// helper doesn't report it.
+	Readiness string
 }
 
 // Notify asks every connected helper to show n and waits for each answer
@@ -159,6 +163,9 @@ func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
 		case <-ctx.Done():
 			r.Err = "no answer from the session helper (it may run an older agent)"
 		}
+		h.mu.Lock()
+		r.Readiness = w.hp.caps[CapNotifications]
+		h.mu.Unlock()
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
@@ -184,6 +191,29 @@ func (h *Hub) OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) erro
 		u.ID = newNotifyID()
 	}
 	return h.askSession(ctx, sessionID, u.ID, ipc.Message{Type: ipc.TypeOpenURL, OpenURL: &u})
+}
+
+// NotifySession shows n to the user of one session (a DLP block or warning
+// for the user whose process caused it) and waits for the answer until ctx
+// ends. The text is never logged.
+func (h *Hub) NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error {
+	if n.ID == "" {
+		n.ID = newNotifyID()
+	}
+	return h.askSession(ctx, sessionID, n.ID, ipc.Message{Type: ipc.TypeNotify, Notify: &n})
+}
+
+// SessionReadiness reports the notification readiness of the helper of one
+// session; ok is false when no helper is connected for it.
+func (h *Hub) SessionReadiness(sessionID string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			return hp.caps[CapNotifications], true
+		}
+	}
+	return "", false
 }
 
 // askSession sends m to the helper of one session and waits for the result

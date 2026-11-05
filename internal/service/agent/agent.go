@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -49,6 +50,11 @@ type AgentUpdatePayload struct {
 	// PowerTelemetry covers the time since the last successful upload
 	// (#198); left out until a sampling interval has completed.
 	PowerTelemetry *shared.PowerTelemetry `json:"power_telemetry,omitempty"`
+	// Sessions are the signed-in users' session helpers with their
+	// capabilities, including notification readiness (#323). The DLP status
+	// carries them too, but it isn't sent while DLP is off. Left out when
+	// the agent runs no session helpers.
+	Sessions []SessionReport `json:"sessions,omitempty"`
 	// AdminGrants are the time-limited admin grants the agent enforces on
 	// the device (#388), so the console can see an expiry enforced offline.
 	// Left out when there are none.
@@ -61,6 +67,28 @@ type AgentUpdatePayload struct {
 	// identity_join (#223), at the top level next to local_users. A list
 	// that couldn't be read is sent as null.
 	shared.UserIdentity
+}
+
+// SessionReport is one session helper, as the DLP status reports it:
+// sessions[].capabilities.notifications is the readiness the console reads
+// (contract Compliance-OS#623).
+type SessionReport struct {
+	User         string            `json:"user"`
+	State        string            `json:"state"`
+	SessionID    string            `json:"session_id,omitempty"`
+	Capabilities map[string]string `json:"capabilities,omitempty"`
+}
+
+var sessionsSource atomic.Pointer[func() []SessionReport]
+
+// SetSessionsSource installs (or with nil removes) what fills the
+// inventory's sessions.
+func SetSessionsSource(f func() []SessionReport) {
+	if f == nil {
+		sessionsSource.Store(nil)
+		return
+	}
+	sessionsSource.Store(&f)
 }
 
 // AgentService handles agent-related database operations.
@@ -78,6 +106,9 @@ func NewAgentService() *AgentService {
 // UpdateAgentInfo updates agent information via the agent_enqueue_inventory RPC.
 func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *shared.SystemInfo) error {
 	payload := buildPayload(sysInfo)
+	if f := sessionsSource.Load(); f != nil {
+		payload.Sessions = (*f)()
+	}
 	if cfg != nil && cfg.Path != "" {
 		payload.AdminGrants = localadmin.Report(localadmin.StorePath(filepath.Dir(cfg.Path)), time.Now())
 	}

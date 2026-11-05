@@ -34,6 +34,9 @@ type Options struct {
 	Sink      channel.EventSink
 	Exe       string // the agent binary, run as scan workers
 	ConfigDir string // holds the local emergency switch, see OffSwitchFile
+	// Notifier tells the user whose process caused a block, removal or
+	// warning (#336); nil tells nobody.
+	Notifier UserNotifier
 }
 
 // OffSwitchFile, when it exists in the config directory, turns file DLP off
@@ -54,6 +57,9 @@ type Health struct {
 	// overflowing (it has its own queue, so destination events never are).
 	TaintProcesses int    `json:"taint_processes,omitempty"`
 	TaintOverflows uint64 `json:"taint_overflows,omitempty"`
+	// Blocking is the permission hook that holds file creation while the
+	// agent decides (Linux, #333); nil where there is none.
+	Blocking *BlockingHealth `json:"blocking,omitempty"`
 }
 
 // Hook states.

@@ -268,6 +268,9 @@ func mergeHelperCapabilities(caps map[string]string, sessions []session.Info) {
 	reported := map[string]string{}
 	for _, s := range sessions {
 		for ch, c := range s.Capabilities {
+			if ch == session.CapNotifications {
+				continue // per user, never a device capability (#323)
+			}
 			if prev, ok := reported[ch]; !ok || (prev != "supported" && c == "supported") {
 				reported[ch] = c
 			}
