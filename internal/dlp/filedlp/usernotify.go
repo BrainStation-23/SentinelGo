@@ -97,19 +97,8 @@ func (s *notices) report(r Request, kind, sha string, findings []detect.Finding,
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sha != "" {
-		k := r.Proc.UID + "|" + r.Dest.Channel + "|" + sha
-		if t, ok := s.seen[k]; ok && now.Sub(t) < noticeDedup {
-			return true // told already; this is a retry
-		}
-		s.seen[k] = now
-		if len(s.seen) > 4096 {
-			for k, t := range s.seen {
-				if now.Sub(t) >= noticeDedup {
-					delete(s.seen, k)
-				}
-			}
-		}
+	if sha != "" && s.retryLocked(r.Proc.UID+"|"+r.Dest.Channel+"|"+sha, now) {
+		return true // told already; this is a retry
 	}
 	key := noticeKey{uid: r.Proc.UID, kind: kind, dest: destLabel(r.Dest)}
 	b := s.pending[key]
@@ -124,6 +113,23 @@ func (s *notices) report(r Request, kind, sha string, findings []detect.Finding,
 		b.detectors[f.DetectorID] = true
 	}
 	return true
+}
+
+// retryLocked reports whether this file was told about within noticeDedup,
+// and records it.
+func (s *notices) retryLocked(k string, now time.Time) bool {
+	if t, ok := s.seen[k]; ok && now.Sub(t) < noticeDedup {
+		return true
+	}
+	s.seen[k] = now
+	if len(s.seen) > 4096 {
+		for k, t := range s.seen {
+			if now.Sub(t) >= noticeDedup {
+				delete(s.seen, k)
+			}
+		}
+	}
+	return false
 }
 
 func (s *notices) flush(key noticeKey) {

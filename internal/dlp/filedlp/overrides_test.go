@@ -121,3 +121,34 @@ func TestExceptions_Release(t *testing.T) {
 		}
 	}
 }
+
+// A pending block can be looked up by its own user only, for an exception
+// request; overrides left today count down.
+func TestOverride_PendingAndRemaining(t *testing.T) {
+	d, _ := overrideDecider(t, overrideBundle(`, "override_daily_limit": 2`))
+	r := usbRequest()
+	r.Proc.UID = "1000"
+	v := d.Decide(context.Background(), r, true)
+	if ev, sha, ok := d.Blocked(v.EventID, "1000"); !ok || sha != "aa11" || ev.EventID != v.EventID {
+		t.Fatalf("Blocked: %v %q", ok, sha)
+	}
+	if _, _, ok := d.Blocked(v.EventID, "1001"); ok {
+		t.Fatal("another user's block")
+	}
+	if n := d.overrides.remaining("1000", 2); n != 2 {
+		t.Fatalf("remaining %d", n)
+	}
+	if err := d.Override(v.EventID, "1000", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.overrides.remaining("1000", 2); n != 1 {
+		t.Fatalf("remaining after one %d", n)
+	}
+	if _, _, ok := d.Blocked(v.EventID, "1000"); ok {
+		t.Fatal("an overridden block is still pending")
+	}
+	var none *overrides
+	if none.allowed("1000", "file.removable", "aa11") {
+		t.Fatal("nil store allowed")
+	}
+}

@@ -94,11 +94,12 @@ func RunHelper(ctx context.Context, o HelperOptions) error {
 		r.refreshReadiness()
 		// The watcher ends with the helper, whether ctx ends or the service
 		// says stop: it must not outlive RunHelper.
-		wctx, cancel := context.WithCancel(ctx)
 		var wg sync.WaitGroup
+		defer wg.Wait() // runs after cancel (defers run last first)
+		wctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 		wg.Add(1)
 		go func() { defer wg.Done(); r.watchReadiness(wctx) }()
-		defer func() { cancel(); wg.Wait() }()
 	}
 	for attempt, untrusted := 0, 0; ; {
 		if ctx.Err() != nil {
@@ -179,30 +180,37 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		if err != nil {
 			return false, nil // lost the service: keep enforcing, reconnect
 		}
-		switch m.Type {
-		case ipc.TypeStop:
+		if m.Type == ipc.TypeStop {
 			log.Printf("DLP helper: service asked to stop")
 			return true, nil
-		case ipc.TypePolicy:
-			r.apply(ctx, m.Policy)
-		case ipc.TypeClear:
-			r.clear()
-		case ipc.TypeNotify:
-			if m.Notify != nil {
-				go r.notify(*m.Notify)
-			}
-		case ipc.TypeOpenProfile:
-			if m.OpenProfile != nil {
-				go r.openProfile(*m.OpenProfile)
-			}
-		case ipc.TypeOpenURL:
-			if m.OpenURL != nil {
-				go r.openURL(*m.OpenURL)
-			}
-		case ipc.TypeAskOverride:
-			if m.AskOverride != nil {
-				go r.askOverride(ctx, *m.AskOverride)
-			}
+		}
+		r.dispatch(ctx, m)
+	}
+}
+
+// dispatch handles one message from the service; slow ones (anything that
+// waits for the user) run in their own goroutine.
+func (r *helperRuntime) dispatch(ctx context.Context, m ipc.Message) {
+	switch m.Type {
+	case ipc.TypePolicy:
+		r.apply(ctx, m.Policy)
+	case ipc.TypeClear:
+		r.clear()
+	case ipc.TypeNotify:
+		if m.Notify != nil {
+			go r.notify(*m.Notify)
+		}
+	case ipc.TypeOpenProfile:
+		if m.OpenProfile != nil {
+			go r.openProfile(*m.OpenProfile)
+		}
+	case ipc.TypeOpenURL:
+		if m.OpenURL != nil {
+			go r.openURL(*m.OpenURL)
+		}
+	case ipc.TypeAskOverride:
+		if m.AskOverride != nil {
+			go r.askOverride(ctx, *m.AskOverride)
 		}
 	}
 }

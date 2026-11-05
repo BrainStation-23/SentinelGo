@@ -16,6 +16,9 @@ import (
 	"sentinelgo/internal/dlp/events"
 )
 
+// dayLayout keys the daily override counts.
+const dayLayout = "2006-01-02"
+
 // overrideAllowFor is how long an override lets the same file through.
 const overrideAllowFor = 10 * time.Minute
 
@@ -102,27 +105,13 @@ func (o *overrides) override(eventID, uid, reason string) (events.Event, error) 
 	if !ok || p.uid != uid || now.Sub(p.at) > pendingKeep {
 		return events.Event{}, ErrOverrideUnknown
 	}
-	day := uid + "|" + now.Format("2006-01-02")
+	day := uid + "|" + now.Format(dayLayout)
 	if o.daily[day] >= p.limit {
 		return events.Event{}, ErrOverrideLimit
 	}
 	o.daily[day]++
-	if len(o.daily) > 4096 {
-		today := now.Format("2006-01-02")
-		for k := range o.daily {
-			if !strings.HasSuffix(k, today) {
-				delete(o.daily, k)
-			}
-		}
-	}
 	delete(o.pending, eventID)
-	if len(o.grants) >= maxOverrideGrants {
-		for k, until := range o.grants {
-			if !now.Before(until) {
-				delete(o.grants, k)
-			}
-		}
-	}
+	o.pruneLocked(now)
 	o.grants[grantKey(uid, p.ev.Channel, p.sha)] = now.Add(overrideAllowFor)
 
 	ev := p.ev
@@ -135,11 +124,30 @@ func (o *overrides) override(eventID, uid, reason string) (events.Event, error) 
 	return ev, nil
 }
 
+// pruneLocked drops past days' counts and expired grants once they pile up.
+func (o *overrides) pruneLocked(now time.Time) {
+	if len(o.daily) > 4096 {
+		today := now.Format(dayLayout)
+		for k := range o.daily {
+			if !strings.HasSuffix(k, today) {
+				delete(o.daily, k)
+			}
+		}
+	}
+	if len(o.grants) >= maxOverrideGrants {
+		for k, until := range o.grants {
+			if !now.Before(until) {
+				delete(o.grants, k)
+			}
+		}
+	}
+}
+
 // remaining is how many overrides uid may still make today.
 func (o *overrides) remaining(uid string, limit int) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return max(limit-o.daily[uid+"|"+o.now().Format("2006-01-02")], 0)
+	return max(limit-o.daily[uid+"|"+o.now().Format(dayLayout)], 0)
 }
 
 // pendingFor returns a pending block's event (for an exception request).

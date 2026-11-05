@@ -45,3 +45,17 @@ func TestRequestException(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestException_ServerError(t *testing.T) {
+	fake := supabasetest.New(t)
+	fake.Handle(http.MethodPost, "/rest/v1/rpc/agent_request_dlp_exception", supabasetest.Response{Status: 400, Body: `{"code":"22023","message":"invalid request: at most 50 pending"}`})
+	err := newService(fake).RequestException(context.Background(), ExceptionRequest{PolicyID: "p1",
+		File: ExceptionFile{SHA256: strings.Repeat("ab", 32)}, Justification: "x"})
+	if err == nil {
+		t.Fatal("server error swallowed")
+	}
+	big := ExceptionRequest{PolicyID: strings.Repeat("p", 9000), File: ExceptionFile{SHA256: strings.Repeat("ab", 32)}, Justification: "x"}
+	if err := newService(fake).RequestException(context.Background(), big); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversized: %v", err)
+	}
+}

@@ -114,27 +114,8 @@ func (d *Decider) ask(ev events.Event, r Request, v Verdict, sha string, limit i
 			log.Printf("DLP: block_override dialog not shown: %v", err)
 			return
 		}
-		var result string
-		switch choice {
-		case choiceOverride:
-			if err := d.Override(ev.EventID, r.Proc.UID, reason); err != nil {
-				result = "Not allowed: " + err.Error() + "."
-			} else {
-				result = fmt.Sprintf("You can copy %q now. It is allowed for %d minutes, and your reason was recorded.", name, int(overrideAllowFor/time.Minute))
-			}
-		case choiceRequest:
-			req := ExceptionRequest{PolicyID: ev.PolicyID, Channel: ev.Channel, EventID: ev.EventID, User: ev.User,
-				SHA256: sha, Justification: reason}
-			if ev.File != nil {
-				req.FileName = ev.File.Name
-			}
-			if err := request(ctx, req); err != nil {
-				log.Printf("DLP: exception request not sent: %v", err)
-				result = "Your request couldn't be sent. Try again later, or contact IT."
-			} else {
-				result = "Your request was sent to IT. You'll be able to copy the file once it is approved."
-			}
-		default:
+		result := d.answer(ctx, ev, r.Proc.UID, name, sha, choice, reason, request)
+		if result == "" {
 			return
 		}
 		nctx, ncancel := context.WithTimeout(context.Background(), noticeSendTimeout)
@@ -144,6 +125,31 @@ func (d *Decider) ask(ev events.Event, r Request, v Verdict, sha string, limit i
 		}
 	}()
 	return true
+}
+
+// answer acts on the user's choice and returns what to tell them ("" for
+// cancel).
+func (d *Decider) answer(ctx context.Context, ev events.Event, uid, name, sha, choice, reason string,
+	request func(context.Context, ExceptionRequest) error) string {
+	switch choice {
+	case choiceOverride:
+		if err := d.Override(ev.EventID, uid, reason); err != nil {
+			return "Not allowed: " + err.Error() + "."
+		}
+		return fmt.Sprintf("You can copy %q now. It is allowed for %d minutes, and your reason was recorded.", name, int(overrideAllowFor/time.Minute))
+	case choiceRequest:
+		req := ExceptionRequest{PolicyID: ev.PolicyID, Channel: ev.Channel, EventID: ev.EventID, User: ev.User,
+			SHA256: sha, Justification: reason}
+		if ev.File != nil {
+			req.FileName = ev.File.Name
+		}
+		if err := request(ctx, req); err != nil {
+			log.Printf("DLP: exception request not sent: %v", err)
+			return "Your request couldn't be sent. Try again later, or contact IT."
+		}
+		return "Your request was sent to IT. You'll be able to copy the file once it is approved."
+	}
+	return ""
 }
 
 // tellBlock asks about an overridable block, else queues a notification.
