@@ -49,9 +49,9 @@ type overrides struct {
 	now func() time.Time
 
 	mu      sync.Mutex
-	grants  map[string]time.Time      // uid|channel|sha → until
-	daily   map[string]int            // uid|YYYY-MM-DD → overrides
-	pending map[string]*pendingBlock  // blocked event id → block
+	grants  map[string]time.Time     // uid|channel|sha → until
+	daily   map[string]int           // uid|YYYY-MM-DD → overrides
+	pending map[string]*pendingBlock // blocked event id → block
 }
 
 func newOverrides() *overrides {
