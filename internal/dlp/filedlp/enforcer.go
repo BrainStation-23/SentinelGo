@@ -35,9 +35,18 @@ type Options struct {
 	Exe       string // the agent binary, run as scan workers
 	ConfigDir string // holds the local emergency switch, see OffSwitchFile
 	// Notifier tells the user whose process caused a block, removal or
-	// warning (#336); nil tells nobody.
+	// warning (#336); nil tells nobody. When it is also an Asker, a
+	// block_override block opens the override dialog.
 	Notifier UserNotifier
+	// RequestException sends an exception request to the backend; nil
+	// means the dialog doesn't offer one.
+	RequestException func(context.Context, ExceptionRequest) error
 }
+
+// CapabilityBlockOverride tells the backend this agent asks for a reason on
+// a block_override block (Compliance-OS#581); without it the backend sends
+// such policies as block.
+const CapabilityBlockOverride = "dlp_block_override_v1"
 
 // OffSwitchFile, when it exists in the config directory, turns file DLP off
 // on this device without the backend (support's emergency switch, #329):

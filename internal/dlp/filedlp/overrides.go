@@ -135,6 +135,13 @@ func (o *overrides) override(eventID, uid, reason string) (events.Event, error) 
 	return ev, nil
 }
 
+// remaining is how many overrides uid may still make today.
+func (o *overrides) remaining(uid string, limit int) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return max(limit-o.daily[uid+"|"+o.now().Format("2006-01-02")], 0)
+}
+
 // pendingFor returns a pending block's event (for an exception request).
 func (o *overrides) pendingFor(eventID, uid string) (pendingBlock, bool) {
 	o.mu.Lock()

@@ -105,6 +105,9 @@ type Decider struct {
 	openSource func(SourceRef) (*os.File, Identity, error)
 	notices    *notices
 	overrides  *overrides
+	asking     asking
+
+	requestException func(context.Context, ExceptionRequest) error
 
 	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
 }
@@ -344,7 +347,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
 			v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
-			d.tell(&ev, r, noticeBlocked, v, o.findings)
+			d.tellBlock(&ev, r, v, res.SHA256, files.DailyOverrides(), o.findings)
 		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
 		case o.block:
@@ -458,7 +461,7 @@ func (d *Decider) DecideBySources(ctx context.Context, r Request, method string)
 		ev.Correlation = corr
 		ev.Action = events.ActionBlocked
 		v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
-		d.tell(&ev, r, noticeBlocked, v, o.findings)
+		d.tellBlock(&ev, r, v, res.SHA256, c.Modules.Files.DailyOverrides(), o.findings)
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}
