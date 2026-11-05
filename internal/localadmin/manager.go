@@ -382,7 +382,7 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 // Report reads a store's grants for the inventory, without removed ones
 // older than keepRemoved. nil when there are none.
 func Report(path string, now time.Time) []GrantReport {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- the grant store in the agent's own config directory (StorePath), never user input
 	if err != nil {
 		return nil
 	}
