@@ -23,6 +23,8 @@ func FuzzScan(f *testing.F) {
 	f.Add([]byte(`{\rtf1 {\fonttbl x} card \'41\u65? TOPSECRET\par}`))
 	f.Add(cfbWith("EncryptedPackage"))
 	f.Add([]byte("%PDF-1.4"))
+	f.Add(simplePDF("BT /F1 12 Tf ("+testCard+") Tj [(TOP)-300(SECRET)] TJ ET", true))
+	f.Add(simplePDF("BT /F1 12 Tf <0013001400150016> Tj ET", false))
 	f.Add(buildCFB(f, wordDoc("Card "+testCard+"\r", "TOPSECRET", 0)...))
 	f.Add(buildCFB(f, [2]string{"Workbook", workbook()}))
 	f.Add(buildCFB(f, [2]string{"PowerPoint Document", powerPoint()}))

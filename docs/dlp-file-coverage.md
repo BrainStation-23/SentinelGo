@@ -19,7 +19,8 @@ Someone with admin rights, encryption tools, a phone camera or a second operatin
 | A renamed file (`.xlsx` saved as `.jpg`) | Covered | The type comes from the file's content, not its name |
 | Password-protected archives, encrypted files, Rights Management-protected Office files | Policy | They can't be read, so they are reported as unscannable; the policy's `on_unscannable` decides (allow, block or monitor) |
 | Split, base64-encoded or otherwise obfuscated content | Accepted | Can't be detected reliably |
-| Images, scanned PDFs, photos of documents | Later (needs OCR) | Scanned IDs and contracts are a real accidental-leak case; text in images isn't read yet |
+| PDFs with text (exported from Word, browsers, most tools) | Covered | The text of each page is read; an encrypted PDF is reported as unscannable, and text in a font the agent can't map to Unicode makes the result `truncated`, never clean |
+| Images, scanned PDFs, photos of documents | Later (needs OCR) | Scanned IDs and contracts are a real accidental-leak case; text in images isn't read yet. A PDF with no text is reported as unscannable (`unsupported_type`), so `on_unscannable` decides |
 | Screenshots, screen recording | Later | A separate channel |
 | Print | Later | A separate channel. Print to PDF saved onto a USB stick is a file copy, so it's covered |
 | Copied text | Covered | The clipboard channel |

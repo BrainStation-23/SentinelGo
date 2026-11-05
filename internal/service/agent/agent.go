@@ -24,7 +24,7 @@ type AgentUpdatePayload struct {
 	CPUInfo          interface{} `json:"cpu_info"`
 	SerialNumber     string      `json:"serial_number"`
 	HardwareModel    string      `json:"hardware_model"`
-	LocalUsers       interface{} `json:"local_users"`
+	LocalUsers       interface{} `json:"local_users,omitempty"`
 	BatteryCondition string      `json:"battery_condition,omitempty"`
 	RAMS             interface{} `json:"rams,omitempty"`
 	Display          interface{} `json:"display,omitempty"`
@@ -99,41 +99,7 @@ func NewAgentService() *AgentService {
 
 // UpdateAgentInfo updates agent information via the agent_enqueue_inventory RPC.
 func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, sysInfo *shared.SystemInfo) error {
-	firmware := map[string]interface{}{
-		"type":    sysInfo.FirmwareType,
-		"vendor":  sysInfo.FirmwareVendor,
-		"version": sysInfo.FirmwareVersion,
-	}
-	payload := AgentUpdatePayload{
-		Status:           "active",
-		Hostname:         sysInfo.Hostname,
-		ComputerName:     sysInfo.Hostname,
-		CPUInfo:          sysInfo.CPUInfoDetailed,
-		SerialNumber:     sysInfo.SerialNumber,
-		HardwareModel:    sysInfo.HardwareModel,
-		BatteryCondition: sysInfo.BatteryCondition,
-		RAMS:             sysInfo.RAMs,
-		LocalUsers:       sysInfo.LocalUsers,
-		Display:          sysInfo.Displays,
-		AgentVersion:     sysInfo.AgentVersion,
-		FQDN:             sysInfo.FQDN,
-		ChassisType:      sysInfo.ChassisType,
-		KernelVersion:    sysInfo.KernelVersion,
-		GPUs:             sysInfo.GPUs,
-		Disks:            sysInfo.Disks,
-		Firmware:         firmware,
-		TPMVersion:       sysInfo.TPMVersion,
-		NetworkAdapters:  sysInfo.NetworkAdapters,
-		Peripherals:      sysInfo.Peripherals,
-		AudioDevices:     sysInfo.AudioDevices,
-		Printers:         sysInfo.Printers,
-		OSInformation:    sysInfo.OSInformation,
-		SecurityInfo:     sysInfo.SecurityInfo,
-		MDM:              sysInfo.MDM,
-		PowerTelemetry:   sysInfo.PowerTelemetry,
-		Capabilities:     constants.Capabilities(),
-		UserIdentity:     sysInfo.UserIdentity,
-	}
+	payload := buildPayload(sysInfo)
 	if f := sessionsSource.Load(); f != nil {
 		payload.Sessions = (*f)()
 	}
@@ -144,4 +110,57 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 	c := supabase.FromConfig(cfg, supabase.WithHTTPClient(s.client))
 	params := map[string]interface{}{"payload": payload}
 	return rpcutil.PostEnqueue(ctx, c, "agent_enqueue_inventory", params, "inventory")
+}
+
+// listOrOmit returns s as an interface, or a nil interface when s is nil.
+// A nil slice stored in an interface{} field is a typed nil that omitempty
+// does not drop, so it would be sent as JSON null, which the server reads
+// as "the device has no value" (#387). A nil slice means the collector
+// failed or timed out: leave the key out so the server keeps the last good
+// value. An empty, non-nil slice (collection ran, found nothing) is still
+// sent as [].
+func listOrOmit[T any](s []T) interface{} {
+	if s == nil {
+		return nil
+	}
+	return s
+}
+
+// buildPayload maps the collected system info to the inventory payload.
+func buildPayload(sysInfo *shared.SystemInfo) AgentUpdatePayload {
+	firmware := map[string]interface{}{
+		"type":    sysInfo.FirmwareType,
+		"vendor":  sysInfo.FirmwareVendor,
+		"version": sysInfo.FirmwareVersion,
+	}
+	return AgentUpdatePayload{
+		Status:           "active",
+		Hostname:         sysInfo.Hostname,
+		ComputerName:     sysInfo.Hostname,
+		CPUInfo:          sysInfo.CPUInfoDetailed,
+		SerialNumber:     sysInfo.SerialNumber,
+		HardwareModel:    sysInfo.HardwareModel,
+		BatteryCondition: sysInfo.BatteryCondition,
+		RAMS:             sysInfo.RAMs,
+		LocalUsers:       listOrOmit(sysInfo.LocalUsers),
+		Display:          listOrOmit(sysInfo.Displays),
+		AgentVersion:     sysInfo.AgentVersion,
+		FQDN:             sysInfo.FQDN,
+		ChassisType:      sysInfo.ChassisType,
+		KernelVersion:    sysInfo.KernelVersion,
+		GPUs:             listOrOmit(sysInfo.GPUs),
+		Disks:            listOrOmit(sysInfo.Disks),
+		Firmware:         firmware,
+		TPMVersion:       sysInfo.TPMVersion,
+		NetworkAdapters:  listOrOmit(sysInfo.NetworkAdapters),
+		Peripherals:      listOrOmit(sysInfo.Peripherals),
+		AudioDevices:     listOrOmit(sysInfo.AudioDevices),
+		Printers:         listOrOmit(sysInfo.Printers),
+		OSInformation:    sysInfo.OSInformation,
+		SecurityInfo:     sysInfo.SecurityInfo,
+		MDM:              sysInfo.MDM,
+		PowerTelemetry:   sysInfo.PowerTelemetry,
+		Capabilities:     constants.Capabilities(),
+		UserIdentity:     sysInfo.UserIdentity,
+	}
 }
