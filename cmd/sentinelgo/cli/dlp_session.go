@@ -53,10 +53,11 @@ func RunDLPSession() int {
 		defer release()
 	}
 	err = session.RunHelper(ctx, session.HelperOptions{
-		Addr:     ipc.DefaultAddress,
-		Version:  config.Version,
-		Channels: []channel.Channel{clipboard.New()},
-		Notify:   notify.Show,
+		Addr:      ipc.DefaultAddress,
+		Version:   config.Version,
+		Channels:  []channel.Channel{clipboard.New()},
+		Notify:    notify.Show,
+		Readiness: notify.Readiness,
 		// mdm-enroll presents the enrollment profile in the user's session (#350).
 		OpenProfile: mdmenroll.OpenProfileForUser,
 		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).

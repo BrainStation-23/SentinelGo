@@ -28,6 +28,11 @@ type Supervisor interface {
 	Sessions() []Info
 }
 
+// CapNotifications is the per-session capability key for notification
+// readiness (#323, contract Compliance-OS#623). It describes one user, so it
+// is never rolled up to the device's channel capabilities.
+const CapNotifications = "notifications"
+
 // Info is one session helper's state, as reported to the backend.
 type Info struct {
 	User      string `json:"user"`

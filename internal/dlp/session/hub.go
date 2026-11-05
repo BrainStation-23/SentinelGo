@@ -115,6 +115,10 @@ type NotifyResult struct {
 	User      string
 	SessionID string
 	Err       string // "" when the notification was shown
+	// Readiness is the session's notification readiness when it answered
+	// (#323): "dnd" means shown into the notification center; "" when the
+	// helper doesn't report it.
+	Readiness string
 }
 
 // Notify asks every connected helper to show n and waits for each answer
@@ -159,6 +163,9 @@ func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
 		case <-ctx.Done():
 			r.Err = "no answer from the session helper (it may run an older agent)"
 		}
+		h.mu.Lock()
+		r.Readiness = w.hp.caps[CapNotifications]
+		h.mu.Unlock()
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
