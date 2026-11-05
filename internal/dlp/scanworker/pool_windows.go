@@ -2,6 +2,10 @@ package scanworker
 
 // Windows workers (#328). The service starts each worker sandboxed:
 //
+//   - in an AppContainer with no capabilities: no network at all (loopback
+//     included), and no file, registry or object access beyond what is
+//     granted to app packages (system files) or to this container (the
+//     worker's own executable);
 //   - a restricted copy of the service's token: every privilege removed,
 //     Administrators deny-only, and (level 0) restricting SIDs Everyone,
 //     Users, Authenticated Users and RESTRICTED, so the worker can open only
@@ -10,9 +14,11 @@ package scanworker
 //   - a Job object: one process (no children), a memory limit, killed when
 //     the service's handle closes, and no UI.
 //
-// A worker that can't start at level 0 (an install directory Users can't
-// read, say) is started at level 1: the same without restricting SIDs. The
-// level reached is reported in Health.Sandbox.
+// A worker that can't start at the strictest level drops to the next: level
+// 0 is all of the above; level 1 the same without the AppContainer (an older
+// Windows, or an executable whose ACL can't be changed); level 2 also
+// without restricting SIDs (an install directory Users can't read, say).
+// The level reached is reported in Health.Sandbox.
 //
 // The file goes to the worker as a read-only handle duplicated into its
 // process: it never opens a path.
@@ -21,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -30,8 +37,9 @@ import (
 
 // Sandbox levels.
 const (
-	levelRestricted = iota // restricted token, low integrity, job
-	levelLowIL             // low integrity, job
+	levelAppContainer = iota // AppContainer, restricted token, low integrity, job
+	levelRestricted          // restricted token, low integrity, job
+	levelLowIL               // low integrity, job
 	levelCount
 )
 
@@ -39,16 +47,49 @@ const (
 	workerMemoryLimit = 1 << 30
 	// fileGenericRead is FILE_GENERIC_READ: the only access the worker gets.
 	fileGenericRead = 0x00120089
+	// fileGenericExecuteRead is FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, how
+	// a read-and-execute entry is stored once mapped.
+	fileGenericExecuteRead = 0x001200a9
 	// disableMaxPrivilege is CreateRestrictedToken's DISABLE_MAX_PRIVILEGE.
 	disableMaxPrivilege = 0x1
 	jobUILimitAll       = 0xFF // every JOB_OBJECT_UILIMIT_* flag
+	// appContainerName names the workers' AppContainer; its SID is derived
+	// from the name, so it is the same on every start.
+	appContainerName = "SentinelGo.DLP.ScanWorker"
+	// attrSecurityCapabilities is PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES.
+	attrSecurityCapabilities = 0x00020009
+	// exeAccess is what the container needs on the worker's executable.
+	exeAccess = windows.GENERIC_READ | windows.GENERIC_EXECUTE
 )
 
-var procCreateRestrictedToken = windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateRestrictedToken")
+var (
+	procCreateRestrictedToken     = windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateRestrictedToken")
+	userenv                       = windows.NewLazySystemDLL("userenv.dll")
+	procCreateAppContainerProfile = userenv.NewProc("CreateAppContainerProfile")
+	procDeriveAppContainerSid     = userenv.NewProc("DeriveAppContainerSidFromAppContainerName")
+)
+
+// hresultAlreadyExists is HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS).
+const hresultAlreadyExists = 0x800700b7
+
+// securityCapabilities is SECURITY_CAPABILITIES: the AppContainer a process
+// starts in and its capabilities (none: no network, no libraries).
+type securityCapabilities struct {
+	AppContainerSid *windows.SID
+	Capabilities    *windows.SIDAndAttributes
+	CapabilityCount uint32
+	Reserved        uint32
+}
 
 // poolOS keeps the sandbox level workers start at: it drops a level when a
-// worker can't start at the stricter one, and stays there.
-type poolOS struct{ level int }
+// worker can't start at the stricter one, and stays there. The AppContainer
+// is set up once per pool.
+type poolOS struct {
+	level   int
+	acOnce  sync.Once
+	acSID   *windows.SID
+	acError error
+}
 
 // workerProc is a Windows worker's process and its job.
 type workerProc struct {
@@ -80,6 +121,14 @@ func (p *Pool) spawn() (*worker, error) {
 }
 
 func (p *Pool) spawnAt(level int) (*worker, string, error) {
+	var caps *securityCapabilities
+	if level == levelAppContainer {
+		sid, err := p.appContainer()
+		if err != nil {
+			return nil, "", fmt.Errorf("AppContainer: %w", err)
+		}
+		caps = &securityCapabilities{AppContainerSid: sid}
+	}
 	token, err := sandboxToken(level)
 	if err != nil {
 		return nil, "", fmt.Errorf("sandbox token: %w", err)
@@ -99,7 +148,7 @@ func (p *Pool) spawnAt(level int) (*worker, string, error) {
 	_ = windows.SetHandleInformation(inW, windows.HANDLE_FLAG_INHERIT, 0)
 	_ = windows.SetHandleInformation(outR, windows.HANDLE_FLAG_INHERIT, 0)
 
-	pi, job, err := p.startSuspended(token, inR, outW)
+	pi, job, err := p.startSuspended(token, caps, inR, outW)
 	closeHandles(inR, outW) // the worker has its own copies
 	if err != nil {
 		closeHandles(inW, outR)
@@ -121,9 +170,10 @@ func (p *Pool) spawnAt(level int) (*worker, string, error) {
 	return w, desc, nil
 }
 
-// startSuspended creates the worker suspended, puts it in its job, then
-// lets it run; it inherits only stdin and stdout.
-func (p *Pool) startSuspended(token windows.Token, stdin, stdout windows.Handle) (windows.ProcessInformation, windows.Handle, error) {
+// startSuspended creates the worker suspended (in caps' AppContainer when
+// caps isn't nil), puts it in its job, then lets it run; it inherits only
+// stdin and stdout.
+func (p *Pool) startSuspended(token windows.Token, caps *securityCapabilities, stdin, stdout windows.Handle) (windows.ProcessInformation, windows.Handle, error) {
 	var pi windows.ProcessInformation
 	exe, err := windows.UTF16PtrFromString(p.opts.Exe)
 	if err != nil {
@@ -145,16 +195,31 @@ func (p *Pool) startSuspended(token windows.Token, stdin, stdout windows.Handle)
 	if err != nil {
 		return pi, 0, err
 	}
-	env := envBlock(append([]string{"SystemRoot=" + root}, p.opts.Env...))
+	vars := []string{"SystemRoot=" + root}
+	if caps != nil {
+		// Windows points the container's TEMP and LOCALAPPDATA at its own
+		// folder in the profile, and fails to start it without these.
+		for _, k := range []string{"USERPROFILE", "LOCALAPPDATA"} {
+			if v := os.Getenv(k); v != "" {
+				vars = append(vars, k+"="+v)
+			}
+		}
+	}
+	env := envBlock(append(vars, p.opts.Env...))
 
 	inherit := []windows.Handle{stdin, stdout}
-	attrs, err := windows.NewProcThreadAttributeList(1)
+	attrs, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
 		return pi, 0, err
 	}
 	defer attrs.Delete()
 	if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&inherit[0]), uintptr(len(inherit))*unsafe.Sizeof(inherit[0])); err != nil { // #nosec G103 -- the handle list the attribute takes
 		return pi, 0, err
+	}
+	if caps != nil {
+		if err := attrs.Update(attrSecurityCapabilities, unsafe.Pointer(caps), unsafe.Sizeof(*caps)); err != nil { // #nosec G103 -- SECURITY_CAPABILITIES for the attribute
+			return pi, 0, err
+		}
 	}
 	si := windows.StartupInfoEx{
 		StartupInfo: windows.StartupInfo{
@@ -202,6 +267,87 @@ func envBlock(vars []string) []uint16 {
 	return append(b, 0)
 }
 
+// appContainer returns the workers' AppContainer SID, once it can run the
+// worker's executable.
+func (p *Pool) appContainer() (*windows.SID, error) {
+	p.osState.acOnce.Do(func() {
+		sid, err := appContainerSID(appContainerName)
+		if err == nil {
+			err = grantAccess(p.opts.Exe, sid, exeAccess)
+		}
+		p.osState.acSID, p.osState.acError = sid, err
+	})
+	return p.osState.acSID, p.osState.acError
+}
+
+// appContainerSID creates the AppContainer's profile if it doesn't exist
+// yet (Windows needs it to start a process in the container) and returns
+// its SID.
+func appContainerSID(name string) (*windows.SID, error) {
+	n, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := procCreateAppContainerProfile.Find(); err != nil {
+		return nil, err // before Windows 8
+	}
+	var sid *windows.SID
+	hr, _, _ := procCreateAppContainerProfile.Call(uintptr(unsafe.Pointer(n)), uintptr(unsafe.Pointer(n)), uintptr(unsafe.Pointer(n)), // #nosec G103 -- name, display name, description
+		0, 0, uintptr(unsafe.Pointer(&sid))) // #nosec G103 -- out-parameter
+	if uint32(hr) == hresultAlreadyExists { // #nosec G115 -- an HRESULT
+		hr, _, _ = procDeriveAppContainerSid.Call(uintptr(unsafe.Pointer(n)), uintptr(unsafe.Pointer(&sid))) // #nosec G103 -- in and out parameters
+	}
+	if hr != 0 {
+		return nil, fmt.Errorf("AppContainer profile: HRESULT %#x", hr)
+	}
+	defer func() { _ = windows.FreeSid(sid) }()
+	return sid.Copy()
+}
+
+// grantAccess makes sure the file's DACL grants sid this access, adding an
+// entry only when one is missing (so the file isn't rewritten each start).
+func grantAccess(path string, sid *windows.SID, access windows.ACCESS_MASK) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	if aclGrants(dacl, sid, access) {
+		return nil
+	}
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: access, AccessMode: windows.GRANT_ACCESS, Inheritance: windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_UNKNOWN,
+			TrusteeValue: windows.TrusteeValueFromSID(sid)},
+	}}, dacl)
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+}
+
+// aclGrants reports whether an allow entry for sid in acl holds all of
+// access (generic rights as they are stored, before mapping).
+func aclGrants(acl *windows.ACL, sid *windows.SID, access windows.ACCESS_MASK) bool {
+	if acl == nil {
+		return true // a NULL DACL grants everything
+	}
+	for i := uint32(0); i < uint32(acl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(acl, i, &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart)) // #nosec G103 -- the SID follows the ACE header
+		if aceSID.Equals(sid) && (ace.Mask&access == access || ace.Mask&fileGenericExecuteRead == fileGenericExecuteRead) {
+			return true
+		}
+	}
+	return false
+}
+
 // sandboxToken makes the worker's primary token from the service's.
 func sandboxToken(level int) (windows.Token, error) {
 	var self windows.Token
@@ -217,7 +363,7 @@ func sandboxToken(level int) (windows.Token, error) {
 	}
 	disable := []windows.SIDAndAttributes{{Sid: admins}}
 	var restrict []windows.SIDAndAttributes
-	if level == levelRestricted {
+	if level <= levelRestricted {
 		for _, k := range []windows.WELL_KNOWN_SID_TYPE{windows.WinWorldSid, windows.WinBuiltinUsersSid,
 			windows.WinAuthenticatedUserSid, windows.WinRestrictedCodeSid} {
 			sid, err := windows.CreateWellKnownSid(k)
@@ -240,7 +386,7 @@ func sandboxToken(level int) (windows.Token, error) {
 	if r == 0 {
 		return 0, fmt.Errorf("CreateRestrictedToken: %w", callErr)
 	}
-	if level == levelRestricted {
+	if level <= levelRestricted {
 		if err := setDefaultDACL(self, tok); err != nil {
 			_ = tok.Close()
 			return 0, fmt.Errorf("default DACL: %w", err)
@@ -265,8 +411,9 @@ type tokenDefaultDACL struct{ DefaultDacl *windows.ACL }
 
 // setDefaultDACL gives the objects the worker creates (its own process and
 // threads among them) a DACL that passes the restricted access check too:
-// the user, SYSTEM and RESTRICTED get full access. Without it the Go runtime
-// can't open its own threads and the worker dies at start.
+// the user, SYSTEM and RESTRICTED get full access, and app packages too (an
+// AppContainer's access check needs an entry for its package). Without it
+// the Go runtime can't open its own threads and the worker dies at start.
 func setDefaultDACL(self, tok windows.Token) error {
 	user, err := self.GetTokenUser()
 	if err != nil {
@@ -280,8 +427,12 @@ func setDefaultDACL(self, tok windows.Token) error {
 	if err != nil {
 		return err
 	}
+	packages, err := windows.CreateWellKnownSid(windows.WinBuiltinAnyPackageSid)
+	if err != nil {
+		return err
+	}
 	var entries []windows.EXPLICIT_ACCESS
-	for _, sid := range []*windows.SID{user.User.Sid, system, restricted} {
+	for _, sid := range []*windows.SID{user.User.Sid, system, restricted, packages} {
 		entries = append(entries, windows.EXPLICIT_ACCESS{
 			AccessPermissions: windows.GENERIC_ALL,
 			AccessMode:        windows.GRANT_ACCESS,
