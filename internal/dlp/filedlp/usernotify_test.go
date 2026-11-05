@@ -56,7 +56,7 @@ func TestNotices_AggregateAndDedup(t *testing.T) {
 	for i, sha := range []string{"a", "b", "c", "a"} {
 		r.Path = "/media/alice/KINGSTON/f" + string(rune('0'+i)) + ".xlsx"
 		r.Proc.UID = "1000"
-		if !s.report(r, noticeBlocked, sha, f, "SentinelOps blocked this file: pii.credit_card") {
+		if !s.report(r, noticeBlocked, sha, f, Verdict{Message: "SentinelOps blocked this file: pii.credit_card"}) {
 			t.Fatal("not told")
 		}
 	}
@@ -78,7 +78,7 @@ func TestNotices_WhoCanBeTold(t *testing.T) {
 	r := usbRequest()
 	for uid, want := range map[string]bool{"1000": false, "1001": true, "1002": false, "": false} {
 		r.Proc.UID = uid
-		if got := s.report(r, noticeWarned, "x"+uid, nil, ""); got != want {
+		if got := s.report(r, noticeWarned, "x"+uid, nil, Verdict{}); got != want {
 			t.Errorf("uid %q: told %v, want %v", uid, got, want)
 		}
 	}
@@ -87,7 +87,7 @@ func TestNotices_WhoCanBeTold(t *testing.T) {
 		t.Fatalf("%d notifications", n)
 	}
 	var none *notices
-	if none.report(r, noticeBlocked, "", nil, "") {
+	if none.report(r, noticeBlocked, "", nil, Verdict{}) {
 		t.Fatal("nil notices told someone")
 	}
 }

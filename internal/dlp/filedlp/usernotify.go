@@ -85,7 +85,8 @@ func destLabel(d Destination) string {
 
 // report queues a notice for r's user and returns whether that user can be
 // told: their session has a helper and notifications reach them.
-func (s *notices) report(r Request, kind, sha string, findings []detect.Finding, message string) bool {
+func (s *notices) report(r Request, kind, sha string, findings []detect.Finding, v Verdict) bool {
+	message := v.Message
 	if s == nil || s.n == nil || r.Proc.UID == "" {
 		return false
 	}

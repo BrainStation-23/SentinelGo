@@ -14,7 +14,10 @@ import (
 const (
 	ActionMonitored = "monitored"
 	ActionWarned    = "warned"
-	ActionBlocked   = "blocked"
+	// ActionOverridden: a file blocked by a block_override policy, sent
+	// anyway after the user gave a reason (Override.Justification).
+	ActionOverridden = "overridden"
+	ActionBlocked    = "blocked"
 	// File channels: a file found to violate a policy after it was written
 	// was moved to the device's quarantine folder, or deleted.
 	ActionQuarantined = "quarantined"
@@ -56,6 +59,14 @@ type Event struct {
 	// them, no session helper runs in their session, or the process isn't
 	// theirs. Nil for events that tell nobody (monitored).
 	UserNotified *bool `json:"user_notified,omitempty"`
+	// Override is the user's reason for an overridden event (1–1000
+	// characters). It is personal data: never logged.
+	Override *Override `json:"override,omitempty"`
+}
+
+// Override is what the user gave to go ahead with a blocked file.
+type Override struct {
+	Justification string `json:"justification"`
 }
 
 // Correlation links a file event to the source file its verdict came from.

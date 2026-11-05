@@ -104,13 +104,14 @@ type Decider struct {
 	remediate  func(r Request, action string) error
 	openSource func(SourceRef) (*os.File, Identity, error)
 	notices    *notices
+	overrides  *overrides
 
 	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
 }
 
 // NewDecider returns a Decider that scans with s and records events to sink.
 func NewDecider(s Scanner, sink channel.EventSink) *Decider {
-	return &Decider{scanner: s, sink: sink, cache: filescan.NewCache(cacheSize)}
+	return &Decider{scanner: s, sink: sink, cache: filescan.NewCache(cacheSize), overrides: newOverrides()}
 }
 
 // Apply switches to c (nil: decide nothing). Cached results of an older
@@ -158,7 +159,7 @@ func (d *Decider) SetUserNotifier(n UserNotifier) {
 
 // tell queues a notice for an event's user and records whether they could be
 // told.
-func (d *Decider) tell(ev *events.Event, r Request, kind, message string, findings []detect.Finding) {
+func (d *Decider) tell(ev *events.Event, r Request, kind string, v Verdict, findings []detect.Finding) {
 	d.mu.Lock()
 	n := d.notices
 	d.mu.Unlock()
@@ -166,7 +167,7 @@ func (d *Decider) tell(ev *events.Event, r Request, kind, message string, findin
 	if ev.File != nil {
 		sha = ev.File.SHA256
 	}
-	told := n.report(r, kind, sha, findings, message)
+	told := n.report(r, kind, sha, findings, v)
 	ev.UserNotified = &told
 }
 
@@ -197,6 +198,57 @@ func fileID(id Identity) string {
 type Verdict struct {
 	Block   bool
 	Message string // the files module's block message, for the user
+	// Overridable is set when the block came from a block_override policy:
+	// its user may go ahead with a reason (EventID names the block).
+	Overridable bool
+	EventID     string
+}
+
+// released reports whether a block by p is lifted for this file and user:
+// an approved exception (modules.files.exceptions), or, for block_override,
+// an override the user made a moment ago.
+func (d *Decider) released(c *policy.Compiled, p policy.CompiledPolicy, r Request, sha string) bool {
+	now := time.Now()
+	for _, e := range c.Modules.Files.Exceptions {
+		if e.Allows(p.ID, r.Dest.Channel, sha, r.Proc.User, now) {
+			return true
+		}
+	}
+	return p.Action == policy.ActionBlockOverride && d.overrides.allowed(r.Proc.UID, r.Dest.Channel, sha)
+}
+
+// blocked records a block's verdict, and keeps a block_override block so its
+// user can override it.
+func (d *Decider) blocked(c *policy.Compiled, p policy.CompiledPolicy, ev events.Event, r Request, sha string, findings []detect.Finding) Verdict {
+	v := Verdict{Block: true, Message: blockMessage(c.Modules.Files.BlockMessage, findings), EventID: ev.EventID}
+	if p.Action == policy.ActionBlockOverride && r.Proc.UID != "" && sha != "" {
+		if limit := c.Modules.Files.DailyOverrides(); limit > 0 {
+			v.Overridable = true
+			d.overrides.remember(ev, r.Proc.UID, sha, limit)
+		}
+	}
+	return v
+}
+
+// Override lets the file of a block_override block through for its user,
+// with their reason, and records an "overridden" event. uid must be the
+// blocked process's user: only their own session helper can ask. The reason
+// is never logged.
+func (d *Decider) Override(eventID, uid, reason string) error {
+	ev, err := d.overrides.override(eventID, uid, reason)
+	if err != nil {
+		return err
+	}
+	d.sink.Emit(ev)
+	d.emitted.Add(1)
+	return nil
+}
+
+// Blocked returns a block_override block still open for its user (for an
+// exception request): the event, and the blocked file's hash.
+func (d *Decider) Blocked(eventID, uid string) (events.Event, string, bool) {
+	p, ok := d.overrides.pendingFor(eventID, uid)
+	return p.ev, p.sha, ok
 }
 
 // Handle decides one file event and records any evidence, for hooks that
@@ -259,7 +311,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		o := outcome{p: p, findings: findings}
 		switch {
 		case matched:
-			o.block = p.Action == policy.ActionBlock
+			o.block = p.Blocks() && !d.released(c, p, r, res.SHA256)
 			anyMatch = true
 		case !typeOK:
 			continue // not a file type this policy covers
@@ -291,17 +343,17 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		switch {
 		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
-			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, o.findings)}
-			d.tell(&ev, r, noticeBlocked, v.Message, o.findings)
+			v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
+			d.tell(&ev, r, noticeBlocked, v, o.findings)
 		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
 		case o.block:
 			ev.Action, ev.WouldHave = after.handle()
 			if ev.Action == events.ActionQuarantined || ev.Action == events.ActionDeleted {
-				d.tell(&ev, r, noticeRemoved, "", o.findings)
+				d.tell(&ev, r, noticeRemoved, Verdict{}, o.findings)
 			}
 		case o.p.Action == policy.ActionWarn && len(o.findings) > 0:
-			d.tell(&ev, r, noticeWarned, "", o.findings)
+			d.tell(&ev, r, noticeWarned, Verdict{}, o.findings)
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
@@ -358,7 +410,7 @@ func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect
 				continue
 			}
 			if matched, findings := evaluate(eng, p, res, ext); matched {
-				outs = append(outs, outcome{p: p, findings: findings, block: p.Action == policy.ActionBlock})
+				outs = append(outs, outcome{p: p, findings: findings, block: p.Blocks() && !d.released(c, p, r, res.SHA256)})
 			}
 		}
 		if len(outs) > 0 {
@@ -389,7 +441,7 @@ func (d *Decider) DecideBySources(ctx context.Context, r Request, method string)
 	}
 	var pols []policy.CompiledPolicy
 	for _, p := range c.For(r.Dest.Channel) {
-		if p.Action == policy.ActionBlock && !excepted(p.Exceptions, r) {
+		if p.Blocks() && !excepted(p.Exceptions, r) {
 			pols = append(pols, p)
 		}
 	}
@@ -405,8 +457,8 @@ func (d *Decider) DecideBySources(ctx context.Context, r Request, method string)
 		ev := buildEvent(c, o.p, r, res, o.findings, "correlation")
 		ev.Correlation = corr
 		ev.Action = events.ActionBlocked
-		v = Verdict{Block: true, Message: blockMessage(c.Modules.Files.BlockMessage, o.findings)}
-		d.tell(&ev, r, noticeBlocked, v.Message, o.findings)
+		v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
+		d.tell(&ev, r, noticeBlocked, v, o.findings)
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}
