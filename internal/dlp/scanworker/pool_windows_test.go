@@ -2,7 +2,9 @@ package scanworker
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 
 	"sentinelgo/internal/dlp/filescan"
 )
@@ -57,6 +62,12 @@ func probe() string {
 	}
 	if err := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe"), "/c", "exit", "0").Run(); err == nil {
 		failed = append(failed, "child_process")
+	}
+	if addr := os.Getenv("SG_PROBE_ADDR"); addr != "" {
+		if c, err := net.DialTimeout("tcp", addr, 3*time.Second); err == nil {
+			_ = c.Close()
+			failed = append(failed, "network")
+		}
 	}
 	if len(failed) == 0 {
 		return "ok"
@@ -151,7 +162,7 @@ func TestWindowsPool_Scan(t *testing.T) {
 		t.Fatalf("result %+v", res)
 	}
 	h := p.Health()
-	if h.Workers != 1 || h.Sandbox != "low_integrity,restricted_token,job" {
+	if h.Workers != 1 || h.Sandbox != "appcontainer,low_integrity,restricted_token,job" {
 		t.Fatalf("health %+v", h)
 	}
 	// the same worker serves the next file
@@ -163,8 +174,22 @@ func TestWindowsPool_Scan(t *testing.T) {
 }
 
 // From inside a worker: no reading the user's files by path, no writing, no
-// child processes.
+// child processes, no network (a listener on loopback here).
 func TestWindowsPool_Sandbox(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
 	profileFile := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(profileFile, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -174,13 +199,88 @@ func TestWindowsPool_Sandbox(t *testing.T) {
 		t.Skip(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(writable) })
-	p := newTestPool(t, "probe", "SG_PROBE_FILE="+profileFile, "SG_PROBE_DIR="+writable)
+	p := newTestPool(t, "probe", "SG_PROBE_FILE="+profileFile, "SG_PROBE_DIR="+writable, "SG_PROBE_ADDR="+ln.Addr().String())
 	f, size := secretFile(t, "x")
 	if res := p.Scan(context.Background(), f, size, 10*time.Second); res.Status != filescan.StatusScanned {
 		t.Fatalf("scan %+v", res)
 	}
-	if h := p.Health(); !strings.HasSuffix(h.Sandbox, ",probe=ok,job") {
+	if h := p.Health(); h.Sandbox != "appcontainer,low_integrity,restricted_token,probe=ok,job" {
 		t.Fatalf("sandbox probe: %q", h.Sandbox)
+	}
+}
+
+// Without the AppContainer (it can't start) the next level is used: the
+// same token, still no files or children, but the network is open.
+func TestWindowsPool_FallsBackWithoutAppContainer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			_ = c.Close()
+		}
+	}()
+	p := newTestPool(t, "probe", "SG_PROBE_ADDR="+ln.Addr().String())
+	p.osState.acOnce.Do(func() { p.osState.acError = errors.New("no AppContainer here") })
+	f, size := secretFile(t, "x")
+	if res := p.Scan(context.Background(), f, size, 10*time.Second); res.Status != filescan.StatusScanned {
+		t.Fatalf("scan %+v", res)
+	}
+	if h := p.Health(); h.Sandbox != "low_integrity,restricted_token,probe=network,job" {
+		t.Fatalf("health %q", h.Sandbox)
+	}
+}
+
+// The executable's entry for the container is added once, and kept.
+func TestGrantAccess(t *testing.T) {
+	sid, err := appContainerSID(appContainerName)
+	if err != nil {
+		t.Skip(err)
+	}
+	path := filepath.Join(t.TempDir(), "w.exe")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dacl := func() *windows.ACL {
+		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acl, _, err := sd.DACL()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return acl
+	}
+	if aclGrants(dacl(), sid, exeAccess) {
+		t.Fatal("granted before")
+	}
+	for i := 0; i < 2; i++ {
+		if err := grantAccess(path, sid, exeAccess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acl := dacl()
+	if !aclGrants(acl, sid, exeAccess) {
+		t.Fatal("not granted")
+	}
+	n := 0
+	for i := uint32(0); i < uint32(acl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(acl, i, &ace) == nil && (*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(sid) { // #nosec G103 -- test
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d entries for the container", n)
+	}
+	if !aclGrants(nil, sid, exeAccess) {
+		t.Fatal("a NULL DACL grants everything")
+	}
+	if err := grantAccess(filepath.Join(t.TempDir(), "missing.exe"), sid, exeAccess); err == nil {
+		t.Fatal("missing file")
 	}
 }
 

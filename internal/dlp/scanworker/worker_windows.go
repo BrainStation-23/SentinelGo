@@ -10,8 +10,8 @@ import (
 )
 
 // Serve is `sentinelgo dlp-scan` on Windows. The service starts the worker
-// already sandboxed (pool_windows.go): a restricted, low-integrity token in
-// a Job object. The worker checks it really is low integrity and refuses to
+// already sandboxed (pool_windows.go): an AppContainer and a restricted,
+// low-integrity token in a Job object. The worker checks it really is low integrity and refuses to
 // run otherwise, then serves scans on stdin/stdout. It never opens a path:
 // files arrive as handles.
 func Serve() error {
@@ -22,8 +22,12 @@ func Serve() error {
 	return serve(newPipeConn(os.Stdin, os.Stdout, true), desc)
 }
 
-// lowIntegrityRID is SECURITY_MANDATORY_LOW_RID.
-const lowIntegrityRID = 0x1000
+const (
+	// lowIntegrityRID is SECURITY_MANDATORY_LOW_RID.
+	lowIntegrityRID = 0x1000
+	// tokenIsAppContainer is the TokenIsAppContainer information class.
+	tokenIsAppContainer = 29
+)
 
 var procIsTokenRestricted = windows.NewLazySystemDLL("advapi32.dll").NewProc("IsTokenRestricted")
 
@@ -47,6 +51,10 @@ func checkSandbox() (string, error) {
 		return "", errors.New("refusing to scan outside the sandbox: not low integrity")
 	}
 	parts := []string{"low_integrity"}
+	var isAC uint32
+	if err := windows.GetTokenInformation(tok, tokenIsAppContainer, (*byte)(unsafe.Pointer(&isAC)), 4, &n); err == nil && isAC != 0 { // #nosec G103 -- a DWORD out-parameter
+		parts = append([]string{"appcontainer"}, parts...)
+	}
 	if r, _, _ := procIsTokenRestricted.Call(uintptr(tok)); r != 0 {
 		parts = append(parts, "restricted_token")
 	}

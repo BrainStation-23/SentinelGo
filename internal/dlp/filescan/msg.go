@@ -4,13 +4,15 @@ package filescan
 // are streams named __substg1.0_<tag><type>, with recipients and attachments
 // in child storages. The text read is the subject, the sender and recipient
 // names and addresses, and the body (plain text, else the HTML body without
-// its markup). Each attachment is scanned as an entry, as zip entries are,
+// its markup, else the compressed RTF body decompressed and read as RTF). Each attachment is scanned as an entry, as zip entries are,
 // and an attached message is read the same way, one level deeper. An S/MIME
 // encrypted message is unscannable:encrypted.
 
 import (
 	"bytes"
+	"errors"
 	"html"
+	"io"
 	"path"
 	"regexp"
 	"strings"
@@ -115,7 +117,7 @@ func (st *scanState) scanMSG(f *cfbFile, idx, depth int, name string) docResult 
 }
 
 // msgText writes the message's text; partial is true when its only body is
-// compressed RTF, which isn't read.
+// compressed RTF that can't be decompressed.
 func (st *scanState) msgText(f *cfbFile, m map[string]int, sink *textSink) (partial bool, err error) {
 	write := func(s string) error {
 		if s = strings.TrimSpace(s); s == "" {
@@ -146,8 +148,11 @@ func (st *scanState) msgText(f *cfbFile, m map[string]int, sink *textSink) (part
 			}
 		}
 	}
-	_, rtf := m[msgProp+msgTagRTFBody+msgTypeBinary]
-	partial = !hasBody && rtf
+	if i, ok := m[msgProp+msgTagRTFBody+msgTypeBinary]; ok && !hasBody {
+		if partial, err = st.msgRTFBody(f, i, sink); err != nil {
+			return partial, err
+		}
+	}
 	for name, i := range m {
 		if !strings.HasPrefix(name, msgRecipPrefix) {
 			continue
@@ -164,6 +169,27 @@ func (st *scanState) msgText(f *cfbFile, m map[string]int, sink *textSink) (part
 		}
 	}
 	return partial, nil
+}
+
+// msgRTFBody writes the text of a compressed RTF body; partial is true when
+// it is corrupt (whatever decoded before the damage is still scanned).
+func (st *scanState) msgRTFBody(f *cfbFile, i int, sink *textSink) (partial bool, err error) {
+	b, err := f.read(f.entries[i])
+	if err != nil {
+		return false, err
+	}
+	r, err := newLZFuReader(b)
+	if err != nil {
+		return true, nil
+	}
+	err = extractRTF(r, sink)
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, errCorrupt) {
+		return true, nil
+	}
+	if err == nil {
+		err = sink.WriteString("\n")
+	}
+	return false, err
 }
 
 // msgAttachments scans each attachment as an entry: its data as a file, or
