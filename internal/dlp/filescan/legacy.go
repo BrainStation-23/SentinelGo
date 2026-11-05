@@ -44,9 +44,11 @@ func (st *scanState) scanCFB(ra io.ReaderAt, size int64, depth int, name string)
 	case has(top, "Package"), has(top, "\x01Ole10Native"):
 		return st.scanOLEPackage(f, top, depth, name)
 	case has(top, "Book"):
-		return docResult{typ: "ole.xls5", status: Unscannable(ReasonUnsupportedType)} // Excel 5/95
+		typ, extract = "ole.xls5", extractXLS5 // Excel 5/95
+	case isMSG(top):
+		return st.scanMSG(f, 0, depth, name)
 	default:
-		return docResult{typ: "ole", status: Unscannable(ReasonUnsupportedType)} // .msg, .vsd, …
+		return docResult{typ: "ole", status: Unscannable(ReasonUnsupportedType)} // .vsd, …
 	}
 	sink := newSink(st)
 	err = extract(f, top, sink)
@@ -266,6 +268,7 @@ const (
 	xlsMulRK    = 0x00BD
 	xlsFormula  = 0x0006
 	xlsString   = 0x0207
+	xlsRString  = 0x00D6 // BIFF5: a text cell with formatting runs
 )
 
 type biffRecord struct {
@@ -295,6 +298,36 @@ func extractXLS(f *cfbFile, top map[string]cfbEntry, sink *textSink) error {
 	if err != nil {
 		return err
 	}
+	return extractBIFF(wb, readXLString, sink)
+}
+
+// extractXLS5 reads an Excel 5/95 workbook (BIFF5, the "Book" stream): the
+// same records as BIFF8 with 8-bit strings, RSTRING cells and no shared
+// string table.
+func extractXLS5(f *cfbFile, top map[string]cfbEntry, sink *textSink) error {
+	wb, err := f.read(top["Book"])
+	if err != nil {
+		return err
+	}
+	return extractBIFF(wb, readBIFF5String, sink)
+}
+
+// readBIFF5String reads a BIFF5 string: a 2-byte length, then 8-bit
+// characters (the workbook's code page; read as Windows-1252).
+func readBIFF5String(b []byte) (string, int, bool) {
+	if len(b) < 2 {
+		return "", 0, false
+	}
+	n := int(binary.LittleEndian.Uint16(b))
+	if 2+n > len(b) {
+		return "", 0, false
+	}
+	return decodeCP1252(b[2 : 2+n]), 2 + n, true
+}
+
+// extractBIFF reads the text and numbers of a BIFF stream; readString reads
+// the version's inline strings.
+func extractBIFF(wb []byte, readString func([]byte) (string, int, bool), sink *textSink) error {
 	recs := biffRecords(wb)
 	var sb strings.Builder
 	flush := func() error {
@@ -327,16 +360,16 @@ func extractXLS(f *cfbFile, top map[string]cfbEntry, sink *textSink) error {
 			if err := readSST(parts, func(s string) error { sb.WriteString(s); sb.WriteByte('\n'); return flush() }); err != nil {
 				return err
 			}
-		case xlsLabel:
+		case xlsLabel, xlsRString:
 			if len(r.data) > 6 {
-				if s, _, ok := readXLString(r.data[6:]); ok {
+				if s, _, ok := readString(r.data[6:]); ok {
 					if err := cell(s); err != nil {
 						return err
 					}
 				}
 			}
 		case xlsString:
-			if s, _, ok := readXLString(r.data); ok {
+			if s, _, ok := readString(r.data); ok {
 				if err := cell(s); err != nil {
 					return err
 				}

@@ -9,7 +9,7 @@ Someone with admin rights, encryption tools, a phone camera or a second operatin
 | Platform | What runs | Mode |
 |---|---|---|
 | Linux | USB sticks, SD cards and other removable drives; SMB, NFS and sshfs shares (files written there are scanned) | Audit only by default. With a `block` policy and audit-only off, copies by copy programs (`cp`, `rsync`, file managers) are refused before anything is written; other writes are judged after the write (`on_close_violation`) |
-| Any (manual test tool) | `sentinelgo dlp proxy`: uploads to listed sites, through a local HTTPS proxy | Can block, when the policy allows it |
+| Any (manual test tool) | `sentinelgo dlp proxy`: uploads to listed sites, through a local HTTPS proxy (on Linux as root and on Windows, uploads are parsed in sandboxed workers) | Can block, when the policy allows it |
 | Windows, macOS | Not yet (they need a signed driver and Apple's Endpoint Security entitlement) | — |
 
 ## Coverage
