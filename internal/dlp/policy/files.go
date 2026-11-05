@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // File DLP channels (contract #326). No agent enforces them yet: they are
@@ -61,10 +62,52 @@ type FilesModule struct {
 	// CopyCorrelation says how the agent links a written file to what it
 	// copies (#334). Absent means today\'s behaviour.
 	CopyCorrelation CopyCorrelation `json:"copy_correlation"`
+	// OverrideDailyLimit caps the overrides (block_override with a reason)
+	// one user may make per day on this device: nil means the default (10),
+	// 0 means none. Compliance-OS#581.
+	OverrideDailyLimit *int `json:"override_daily_limit"`
+	// Exceptions are the admin-approved exceptions for this device: a
+	// matching file passes the policy until expires_at.
+	Exceptions []FileException `json:"exceptions"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
 	DecodeError string `json:"-"`
+}
+
+// Override limits.
+const (
+	DefaultOverrideDailyLimit = 10
+	MaxOverrideDailyLimit     = 1000
+	maxFileExceptions         = 1000
+)
+
+// FileException is one approved exception (Compliance-OS#581): files of
+// PolicyID on Channel pass, only the file with SHA256 when set, only for User
+// when set, until ExpiresAt. Device and group scopes are resolved by the
+// server.
+type FileException struct {
+	ID        string    `json:"id"`
+	PolicyID  string    `json:"policy_id"`
+	Channel   string    `json:"channel"`
+	SHA256    string    `json:"sha256,omitempty"`
+	User      string    `json:"user,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Allows reports whether e lets a file through at now.
+func (e FileException) Allows(policyID, channel, sha256, user string, now time.Time) bool {
+	return e.PolicyID == policyID && (e.Channel == "" || e.Channel == channel) &&
+		(e.SHA256 == "" || strings.EqualFold(e.SHA256, sha256)) &&
+		(e.User == "" || strings.EqualFold(e.User, user)) && now.Before(e.ExpiresAt)
+}
+
+// DailyOverrides is how many overrides a user may make per day.
+func (m *FilesModule) DailyOverrides() int {
+	if m.OverrideDailyLimit == nil {
+		return DefaultOverrideDailyLimit
+	}
+	return min(max(*m.OverrideDailyLimit, 0), MaxOverrideDailyLimit)
 }
 
 // App identifies an application by signer, bundle id or path; never by
@@ -141,6 +184,9 @@ func (m *FilesModule) normalize() {
 	}
 	m.ScanTimeoutMs = min(max(m.ScanTimeoutMs, MinScanTimeout), MaxScanTimeout)
 	m.CopyCorrelation.normalize()
+	if len(m.Exceptions) > maxFileExceptions {
+		m.Exceptions = m.Exceptions[:maxFileExceptions]
+	}
 	switch m.OnUnscannable {
 	case OnFailBlock, OnFailMonitor:
 	default:
