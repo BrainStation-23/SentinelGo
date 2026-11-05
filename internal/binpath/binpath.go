@@ -44,6 +44,7 @@ var knownPaths = func() map[string][]string {
 		"defaults":        {"/usr/bin/defaults"},
 		"diskutil":        {"/usr/sbin/diskutil"},
 		"dscl":            {"/usr/bin/dscl"},
+		"dseditgroup":     {"/usr/sbin/dseditgroup"},
 		"ioreg":           {"/usr/sbin/ioreg"},
 		"plutil":          {"/usr/bin/plutil"},
 		"pmset":           {"/usr/bin/pmset"},
@@ -94,6 +95,7 @@ var knownPaths = func() map[string][]string {
 		"runuser":          {"/usr/sbin/runuser", "/sbin/runuser", "/usr/bin/runuser"},
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
 		"getent":           {"/usr/bin/getent", "/bin/getent"},
+		"gpasswd":          {"/usr/bin/gpasswd", "/usr/sbin/gpasswd", "/bin/gpasswd"},
 		"realm":            {"/usr/sbin/realm", "/sbin/realm"},
 		"sshd":             {"/usr/sbin/sshd", "/sbin/sshd"},
 

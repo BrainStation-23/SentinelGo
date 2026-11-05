@@ -25,8 +25,9 @@ import (
 // mounts of removable media and network shares): the kernel reports a file
 // after it was written and closed, and never waits for us. A slow, stuck or
 // crashed agent therefore can't hang anything; at worst events are dropped
-// (and counted). This is what makes audit-only safe to run; blocking needs
-// permission events and the fail-safes of #329.
+// (and counted). Blocking is a separate permission group with its own
+// fail-safes (perm_linux.go, permgate.go), running only while a policy
+// enforces block.
 
 // linuxChannels are the file channels this hook monitors.
 var linuxChannels = map[string]bool{policy.ChannelFileRemovable: true, policy.ChannelFileNetworkShare: true}
@@ -87,6 +88,11 @@ type linuxEnforcer struct {
 	localOff atomic.Bool
 
 	dropped, overflows, unreadable atomic.Uint64
+
+	// The permission hook (blocking): owned by the mount loop.
+	perm        atomic.Pointer[permHook]
+	permFailure atomic.Pointer[string] // why blocking is off for good (until restart)
+	lastPerm    atomic.Pointer[PermStats]
 }
 
 // New returns the Linux file DLP enforcer.
@@ -94,6 +100,9 @@ func New(o Options) Enforcer {
 	e := &linuxEnforcer{opts: o, fan: -1, devices: newDeviceState()}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
 	e.decider.SetSourceOpener(openSource)
+	if o.Notifier != nil {
+		e.decider.SetUserNotifier(o.Notifier)
+	}
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}
@@ -156,6 +165,7 @@ func (e *linuxEnforcer) startLocked() {
 		return
 	}
 	e.failure = ""
+	e.permFailure.Store(nil) // a restart gives blocking another chance
 	ctx, cancel := context.WithCancel(context.Background())
 	e.fan, e.cancel, e.running = fan, cancel, true
 	e.queue = make(chan Request, queueSize)
@@ -187,6 +197,7 @@ func (e *linuxEnforcer) stopLocked() {
 	e.running = false
 	e.cancel()
 	e.wg.Wait()
+	e.stopPerm() // after the mount loop: it owns the hook
 	for {
 		select {
 		case r := <-e.queue:
@@ -235,6 +246,7 @@ func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan stru
 		all := classifiedMounts()
 		watch := e.monitoredMounts(c, all, off)
 		e.reconcileMarks(fan, marked, failed, watch)
+		e.reconcilePerm(c, off)
 		e.reconcileTaint(ctx, c, len(watch) > 0)
 		e.reconcileDevices(c, all, off, e.devices)
 		select {
@@ -498,5 +510,6 @@ func (e *linuxEnforcer) Health() *Health {
 		t.mu.Unlock()
 		h.TaintProcesses = t.store.len()
 	}
+	h.Blocking = e.blockingHealth()
 	return h
 }

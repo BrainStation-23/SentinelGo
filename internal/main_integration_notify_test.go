@@ -57,6 +57,12 @@ func (f *fakeSessions) Notify(_ context.Context, n ipc.Notify) []session.NotifyR
 	return f.results
 }
 
+func (f *fakeSessions) NotifySession(context.Context, string, ipc.Notify) error {
+	return session.ErrNoHelper
+}
+
+func (f *fakeSessions) SessionReadiness(string) (string, bool) { return "", false }
+
 func (f *fakeSessions) OpenProfile(context.Context, string, ipc.OpenProfile) error {
 	return session.ErrNoHelper
 }
