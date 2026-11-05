@@ -83,7 +83,7 @@ func Show(ctx context.Context, a Ask) (Answer, error) {
 			return Answer{}, err
 		}
 		choice := kdialogChoice(code)
-		if !(a.CanOverride && a.CanRequest) {
+		if !a.CanOverride || !a.CanRequest {
 			switch {
 			case code != 0:
 				choice = ChoiceCancel
