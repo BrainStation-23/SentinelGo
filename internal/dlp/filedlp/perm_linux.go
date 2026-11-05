@@ -43,7 +43,7 @@ const (
 	permMaxPending = 64               // opens held at once; more are allowed at once
 	permMaxWait    = 10 * time.Second // the longest an open is held
 	permMinWait    = 200 * time.Millisecond
-	permReplyLen   = 8               // sizeof(struct fanotify_response)
+	permReplyLen   = 8 // sizeof(struct fanotify_response)
 )
 
 // permStallAfter is the read loop's silence that trips the watchdog (a var
