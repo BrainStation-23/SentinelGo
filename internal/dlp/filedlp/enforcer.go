@@ -54,6 +54,9 @@ type Health struct {
 	// overflowing (it has its own queue, so destination events never are).
 	TaintProcesses int    `json:"taint_processes,omitempty"`
 	TaintOverflows uint64 `json:"taint_overflows,omitempty"`
+	// Blocking is the permission hook that holds file creation while the
+	// agent decides (Linux, #333); nil where there is none.
+	Blocking *BlockingHealth `json:"blocking,omitempty"`
 }
 
 // Hook states.

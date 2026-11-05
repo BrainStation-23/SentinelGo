@@ -3,10 +3,11 @@
 // that produces events (fanotify on Linux, later a minifilter and an Endpoint
 // Security extension) is separate; the Decider doesn't know which one fed it.
 //
-// This phase is audit-only: files are scanned after they were written to a
-// monitored destination, and matches are recorded as "monitored" events.
-// Nothing is blocked, whatever a policy's action says (blocking needs the
-// permission hooks and fail-safes of #329, and audit data first).
+// Files are scanned after they were written to a monitored destination
+// (Handle), and matches are recorded as events; on_close_violation decides
+// what happens to the written file. Where a permission hook can hold the
+// creation of a file (Linux, #333), DecideBySources judges it before
+// anything is written, by the files its writer has open, and can refuse it.
 package filedlp
 
 import (
@@ -251,7 +252,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 	// file itself.
 	var corr *events.Correlation
 	if !anyMatch && !canBlock && files.CopyCorrelation.ProcessTaint && needsCorrelation(res) && len(r.Sources) > 0 {
-		if cOuts, cRef := d.correlate(ctx, c, eng, pols, r); len(cOuts) > 0 {
+		if cOuts, cRef, _ := d.correlate(ctx, c, eng, pols, r, "taint"); len(cOuts) > 0 {
 			outs, corr, source = cOuts, cRef, "correlation"
 		}
 	}
@@ -296,12 +297,12 @@ func needsCorrelation(res filescan.Result) bool {
 // and returns the policies the first matching one violates, with the link
 // to it. Sources are reopened (and checked to be the same file) by the
 // source opener and scanned like any file, through the cache.
-func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect.Engine, pols []policy.CompiledPolicy, r Request) ([]outcome, *events.Correlation) {
+func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect.Engine, pols []policy.CompiledPolicy, r Request, method string) ([]outcome, *events.Correlation, filescan.Result) {
 	d.mu.Lock()
 	open := d.openSource
 	d.mu.Unlock()
 	if open == nil {
-		return nil, nil
+		return nil, nil, filescan.Result{}
 	}
 	timeout := time.Duration(c.Modules.Files.ScanTimeoutMs) * time.Millisecond
 	for _, src := range r.Sources {
@@ -329,10 +330,53 @@ func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect
 		}
 		if len(outs) > 0 {
 			d.correlated.Add(1)
-			return outs, &events.Correlation{Method: "taint", SourceSHA256: res.SHA256, SourceName: events.FileName(c.EvidenceMode, src.Path)}
+			return outs, &events.Correlation{Method: method, SourceSHA256: res.SHA256, SourceName: events.FileName(c.EvidenceMode, src.Path)}, res
 		}
 	}
-	return nil, nil
+	return nil, nil, filescan.Result{}
+}
+
+// Correlation methods for DecideBySources.
+const (
+	MethodOpenFile = "open_file" // a file the writer has open while it creates the destination file
+)
+
+// DecideBySources decides a file being created at a destination before
+// anything is written to it (a permission hook that holds the open), by the
+// files its writer has open or read just before (r.Sources, newest first).
+// It blocks only when the files module isn't audit-only and a source matches
+// a block policy. Only a block is recorded: an allowed copy is recorded by
+// the after-write path when the file is closed, so it isn't counted twice.
+func (d *Decider) DecideBySources(ctx context.Context, r Request, method string) Verdict {
+	d.mu.Lock()
+	c, eng := d.compiled, d.engine
+	d.mu.Unlock()
+	if c == nil || !c.ChannelEnabled(r.Dest.Channel) || len(r.Sources) == 0 || c.Modules.Files.IsAuditOnly() {
+		return Verdict{}
+	}
+	var pols []policy.CompiledPolicy
+	for _, p := range c.For(r.Dest.Channel) {
+		if p.Action == policy.ActionBlock && !excepted(p.Exceptions, r) {
+			pols = append(pols, p)
+		}
+	}
+	if len(pols) == 0 {
+		return Verdict{}
+	}
+	outs, corr, res := d.correlate(ctx, c, eng, pols, r, method)
+	var v Verdict
+	for _, o := range outs {
+		if !o.block {
+			continue
+		}
+		ev := buildEvent(c, o.p, r, res, o.findings, "correlation")
+		ev.Correlation = corr
+		ev.Action = events.ActionBlocked
+		v = Verdict{Block: true, Message: blockMessage(c.Modules.Files.BlockMessage, o.findings)}
+		d.sink.Emit(ev)
+		d.emitted.Add(1)
+	}
+	return v
 }
 
 // afterWrite applies on_close_violation to a file found to violate a policy
