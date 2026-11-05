@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.6] - 2026-11-05
+
 ### Added
 
 - Windows: file DLP parses files in sandboxed worker processes, as on Linux (#328). Each `sentinelgo dlp-scan` worker starts in an AppContainer with no capabilities, so it has no network access (loopback included) and can open only what app packages may (system files) and its own executable; with a restricted copy of the agent's token: every privilege removed, Administrators deny-only, and only what Everyone, Users and Authenticated Users may open (system files, not users' profiles); at low integrity, so it can't write to normal locations; in a Job object that allows one process, caps memory at 1 GB, has no UI, and dies when the agent does. The file reaches the worker as a read-only handle the agent duplicates into it, so the worker never opens a path. Where a worker can't start in the AppContainer (it needs Windows 8 or later, and the agent adds an entry for the container to its executable's permissions), it starts without it, and where it can't start with the restricted token, at low integrity in its job; the status's `files.workers.sandbox` says which (`appcontainer,low_integrity,restricted_token,job`, `low_integrity,restricted_token,job` or `low_integrity,job`). A worker that hangs is killed at the scan deadline. The upload proxy (`sentinelgo dlp proxy`) on Windows now scans uploads in these workers instead of in its own process.
@@ -551,7 +553,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.5...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.6...HEAD
+[v4.0.6]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.5...v4.0.6
 [v4.0.5]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.4...v4.0.5
 [v4.0.4]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.3...v4.0.4
 [v4.0.3]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.2...v4.0.3
