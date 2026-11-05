@@ -2,10 +2,12 @@ package filedlp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -165,4 +167,54 @@ func TestEnforcer_WatchdogFailsOpen(t *testing.T) {
 	if e.Health().Blocking.State != blockingWatchdog {
 		t.Fatal("blocking restarted without a restart of the hook")
 	}
+}
+
+// The cost of blocking (#340): run with SENTINELGO_PERM_COST=1 as root.
+// Copies many small clean files to the stick with cp (judged: a copy
+// program) and writes as many from a shell (answered at once), with the
+// permission group running and without it, and reports wall and agent CPU
+// time per open.
+func TestPermCost(t *testing.T) {
+	if os.Getenv("SENTINELGO_PERM_COST") == "" {
+		t.Skip("set SENTINELGO_PERM_COST=1 (root) to measure")
+	}
+	stick, home, e, _ := startBlockingEnforcer(t, blockBundleE2E)
+	eventually(t, "file blocking to start", func() bool { b := e.Health().Blocking; return b != nil && b.State == stateRunning })
+	const files = 500
+	for i := 0; i < files; i++ {
+		if err := os.WriteFile(filepath.Join(home, fmt.Sprintf("f%04d.txt", i)), []byte("lunch at noon"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(script string) (time.Duration, time.Duration) {
+		_ = os.RemoveAll(filepath.Join(stick, "out"))
+		if err := os.Mkdir(filepath.Join(stick, "out"), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		var before, after syscall.Rusage
+		_ = syscall.Getrusage(syscall.RUSAGE_SELF, &before)
+		start := time.Now()
+		if out, err := exec.Command("/bin/sh", "-c", script, "sh", home, filepath.Join(stick, "out")).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		wall := time.Since(start)
+		_ = syscall.Getrusage(syscall.RUSAGE_SELF, &after)
+		return wall, time.Duration(after.Utime.Nano() + after.Stime.Nano() - before.Utime.Nano() - before.Stime.Nano())
+	}
+	cpEach := `for f in "$1"/f*; do /bin/cp "$f" "$2"/; done`
+	shEach := `for f in "$1"/f*; do printf x > "$2/$(basename "$f")"; done`
+	cpOnWall, cpOnCPU := run(cpEach)
+	shOnWall, shOnCPU := run(shEach)
+	st := e.Health().Blocking
+	off := filepath.Join(e.opts.ConfigDir, OffSwitchFile)
+	if err := os.WriteFile(off, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "file blocking to stop", func() bool { return e.Health().Blocking.State == blockingOff })
+	cpOffWall, _ := run(cpEach)
+	shOffWall, _ := run(shEach)
+	t.Logf("%d files. cp (judged): %v with blocking, %v without; agent CPU %v (%v per file). shell (allowed at once): %v with, %v without; agent CPU %v. allowed %d, denied %d, timeouts %d, overloaded %d",
+		files, cpOnWall.Round(time.Millisecond), cpOffWall.Round(time.Millisecond), cpOnCPU.Round(time.Millisecond), (cpOnCPU / files).Round(time.Microsecond),
+		shOnWall.Round(time.Millisecond), shOffWall.Round(time.Millisecond), shOnCPU.Round(time.Millisecond),
+		st.Allowed, st.Denied, st.Timeouts, st.Overloaded)
 }

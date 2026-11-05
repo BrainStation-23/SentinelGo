@@ -29,6 +29,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -271,6 +272,13 @@ func (h *permHook) handle(fd, pid, self int) {
 	e := h.e
 	c := e.compiled.Load()
 	if pid == self || e.localOff.Load() || c == nil {
+		h.gate.allowNow(fd)
+		return
+	}
+	// Only copy programs are judged (#337: antivirus, indexers, thumbnailers
+	// and backup daemons never wait on us). Their identity comes from procfs,
+	// which never blocks, so this is decided here without a round trip.
+	if exe, err := os.Readlink(procRoot + "/" + strconv.Itoa(pid) + "/exe"); err != nil || !isCopyProgram(Process{Exe: strings.TrimSuffix(exe, " (deleted)")}) {
 		h.gate.allowNow(fd)
 		return
 	}
