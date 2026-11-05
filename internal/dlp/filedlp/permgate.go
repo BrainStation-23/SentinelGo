@@ -169,3 +169,5 @@ func (g *permGate) stats() PermStats {
 	return PermStats{Allowed: g.allowed.Load(), Denied: g.denied.Load(), Timeouts: g.timeouts.Load(),
 		TimeoutDenied: g.timeoutDenied.Load(), Overloaded: g.overld.Load(), Pending: g.pending.Load()}
 }
+
+func ptrTo[T any](v T) *T { return &v }

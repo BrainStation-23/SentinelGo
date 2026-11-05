@@ -58,6 +58,12 @@ type Service interface {
 	// OpenProfile presents p to the user of one session (its SessionID) and
 	// waits for the helper's answer.
 	OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfile) error
+	// NotifySession shows n to the user of one session and waits for the
+	// helper's answer (ErrNoHelper when none is connected).
+	NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error
+	// SessionReadiness is the notification readiness the helper of a session
+	// reports (#323); ok is false when no helper is connected there.
+	SessionReadiness(sessionID string) (state string, ok bool)
 	// OpenURL opens an MDM enrollment link for the user of one session.
 	OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) error
 }

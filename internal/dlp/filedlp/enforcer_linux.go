@@ -100,6 +100,9 @@ func New(o Options) Enforcer {
 	e := &linuxEnforcer{opts: o, fan: -1, devices: newDeviceState()}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
 	e.decider.SetSourceOpener(openSource)
+	if o.Notifier != nil {
+		e.decider.SetUserNotifier(o.Notifier)
+	}
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}

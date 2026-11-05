@@ -103,6 +103,7 @@ type Decider struct {
 	engine     *detect.Engine
 	remediate  func(r Request, action string) error
 	openSource func(SourceRef) (*os.File, Identity, error)
+	notices    *notices
 
 	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
 }
@@ -141,6 +142,32 @@ func (d *Decider) SetSourceOpener(fn func(src SourceRef) (*os.File, Identity, er
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.openSource = fn
+}
+
+// SetUserNotifier makes blocks, removals and warnings tell the user whose
+// process caused them (#336); nil tells nobody.
+func (d *Decider) SetUserNotifier(n UserNotifier) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n == nil {
+		d.notices = nil
+		return
+	}
+	d.notices = newNotices(n)
+}
+
+// tell queues a notice for an event's user and records whether they could be
+// told.
+func (d *Decider) tell(ev *events.Event, r Request, kind, message string, findings []detect.Finding) {
+	d.mu.Lock()
+	n := d.notices
+	d.mu.Unlock()
+	sha := ""
+	if ev.File != nil {
+		sha = ev.File.SHA256
+	}
+	told := n.report(r, kind, sha, findings, message)
+	ev.UserNotified = &told
 }
 
 // Files returns the files module of the policy in force (zero when none).
@@ -265,10 +292,16 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
 			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, o.findings)}
+			d.tell(&ev, r, noticeBlocked, v.Message, o.findings)
 		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
 		case o.block:
 			ev.Action, ev.WouldHave = after.handle()
+			if ev.Action == events.ActionQuarantined || ev.Action == events.ActionDeleted {
+				d.tell(&ev, r, noticeRemoved, "", o.findings)
+			}
+		case o.p.Action == policy.ActionWarn && len(o.findings) > 0:
+			d.tell(&ev, r, noticeWarned, "", o.findings)
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
@@ -373,6 +406,7 @@ func (d *Decider) DecideBySources(ctx context.Context, r Request, method string)
 		ev.Correlation = corr
 		ev.Action = events.ActionBlocked
 		v = Verdict{Block: true, Message: blockMessage(c.Modules.Files.BlockMessage, o.findings)}
+		d.tell(&ev, r, noticeBlocked, v.Message, o.findings)
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
 	}

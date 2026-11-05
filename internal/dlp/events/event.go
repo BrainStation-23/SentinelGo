@@ -51,6 +51,11 @@ type Event struct {
 	// Correlation is set when the verdict came from another file (copy
 	// correlation, #334), not from scanning this one.
 	Correlation *Correlation `json:"correlation,omitempty"`
+	// UserNotified says whether the user whose process caused a block or
+	// warning could be told (#336): false when notifications are off for
+	// them, no session helper runs in their session, or the process isn't
+	// theirs. Nil for events that tell nobody (monitored).
+	UserNotified *bool `json:"user_notified,omitempty"`
 }
 
 // Correlation links a file event to the source file its verdict came from.

@@ -206,8 +206,6 @@ func (e *linuxEnforcer) stopPerm() {
 	log.Printf("DLP: file blocking stopped")
 }
 
-func ptrTo[T any](v T) *T { return &v }
-
 func (h *permHook) close() {
 	h.closeOnce.Do(func() { _ = unix.Close(h.fan) })
 }

@@ -70,6 +70,22 @@ func TestHelperReportsReadiness(t *testing.T) {
 		t.Fatalf("hidden notification = %+v", res)
 	}
 
+	// one session: its readiness, and a notification to it alone (#336)
+	sid := hub.Sessions()[0].SessionID
+	if st, ok := hub.SessionReadiness(sid); !ok || st != "disabled:app" {
+		t.Fatalf("SessionReadiness = %q %v", st, ok)
+	}
+	if _, ok := hub.SessionReadiness("no-such-session"); ok {
+		t.Fatal("readiness for a session without a helper")
+	}
+	rd.set("supported")
+	if err := hub.NotifySession(context.Background(), sid, ipc.Notify{Title: "Blocked", Message: "m", Level: ipc.LevelWarning}); err != nil {
+		t.Fatalf("NotifySession: %v", err)
+	}
+	if err := hub.NotifySession(context.Background(), "no-such-session", ipc.Notify{Title: "t", Message: "m"}); err != ErrNoHelper {
+		t.Fatalf("no helper: %v", err)
+	}
+
 	// read again just before showing: no wait for the next minute
 	channelRecheck = time.Hour
 	rd.set("dnd")

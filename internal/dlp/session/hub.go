@@ -193,6 +193,29 @@ func (h *Hub) OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) erro
 	return h.askSession(ctx, sessionID, u.ID, ipc.Message{Type: ipc.TypeOpenURL, OpenURL: &u})
 }
 
+// NotifySession shows n to the user of one session (a DLP block or warning
+// for the user whose process caused it) and waits for the answer until ctx
+// ends. The text is never logged.
+func (h *Hub) NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error {
+	if n.ID == "" {
+		n.ID = newNotifyID()
+	}
+	return h.askSession(ctx, sessionID, n.ID, ipc.Message{Type: ipc.TypeNotify, Notify: &n})
+}
+
+// SessionReadiness reports the notification readiness of the helper of one
+// session; ok is false when no helper is connected for it.
+func (h *Hub) SessionReadiness(sessionID string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			return hp.caps[CapNotifications], true
+		}
+	}
+	return "", false
+}
+
 // askSession sends m to the helper of one session and waits for the result
 // with the given id.
 func (h *Hub) askSession(ctx context.Context, sessionID, id string, m ipc.Message) error {

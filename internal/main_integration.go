@@ -451,7 +451,8 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {
-			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path)}))
+			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+				Notifier: sessionNotifier{sup}}))
 		}
 	}
 	if err := m.Start(ctx); err != nil {
@@ -611,6 +612,18 @@ func (mi *MainIntegration) notifyUser(ctx context.Context, n native.DesktopNotif
 	}
 	log.Printf("notify-user: %d session(s) answered, %d not reached", len(results), len(unreached))
 	return results, unreached
+}
+
+// sessionNotifier lets file DLP tell the user of one session why a file was
+// blocked (#336), through that session's helper.
+type sessionNotifier struct{ s session.Service }
+
+func (n sessionNotifier) SessionReadiness(sessionID string) (string, bool) {
+	return n.s.SessionReadiness(sessionID)
+}
+
+func (n sessionNotifier) NotifySession(ctx context.Context, sessionID, title, body string) error {
+	return n.s.NotifySession(ctx, sessionID, ipc.Notify{Title: title, Message: body, Level: ipc.LevelWarning})
 }
 
 // maxReportedSessions bounds the sessions in one inventory upload, as in the
