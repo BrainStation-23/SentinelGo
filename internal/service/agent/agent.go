@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/constants"
 	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/localadmin"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/supabase"
@@ -53,6 +55,10 @@ type AgentUpdatePayload struct {
 	// carries them too, but it isn't sent while DLP is off. Left out when
 	// the agent runs no session helpers.
 	Sessions []SessionReport `json:"sessions,omitempty"`
+	// AdminGrants are the time-limited admin grants the agent enforces on
+	// the device (#388), so the console can see an expiry enforced offline.
+	// Left out when there are none.
+	AdminGrants []localadmin.GrantReport `json:"admin_grants,omitempty"`
 	// Capabilities lists the task features this agent supports (contract
 	// v1 §6). Always sent, even empty, so the backend can tell "none" from
 	// an agent too old to report them.
@@ -102,6 +108,9 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 	payload := buildPayload(sysInfo)
 	if f := sessionsSource.Load(); f != nil {
 		payload.Sessions = (*f)()
+	}
+	if cfg != nil && cfg.Path != "" {
+		payload.AdminGrants = localadmin.Report(localadmin.StorePath(filepath.Dir(cfg.Path)), time.Now())
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
