@@ -33,6 +33,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == cli.MDMCommand {
 		os.Exit(cli.RunMDM(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	// `sentinelgo local-admin expire <grant_id>`: the backup OS task that
+	// ends a time-limited admin grant if the service isn't running (#388).
+	if len(os.Args) > 1 && os.Args[1] == cli.LocalAdminCommand {
+		os.Exit(cli.RunLocalAdmin(os.Args[2:], os.Stdout, os.Stderr))
+	}
 
 	f := parseFlags()
 
