@@ -73,6 +73,7 @@ type linuxEnforcer struct {
 	wg       sync.WaitGroup
 	fan      int
 	queue    chan Request
+	held     chan Request // temp-named files waiting for their rename (rename_linux.go)
 	kick     chan struct{}
 	failure  string                    // why the hook couldn't start ("" when it could)
 	devices  *deviceState              // untrusted device control; the mount loop's, then stopLocked's
@@ -172,6 +173,7 @@ func (e *linuxEnforcer) startLocked() {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.fan, e.cancel, e.running = fan, cancel, true
 	e.queue = make(chan Request, queueSize)
+	e.held = make(chan Request, maxHeld)
 	e.kick = make(chan struct{}, 1)
 	pool := scanworker.NewPool(scanworker.Options{Exe: e.opts.Exe, Env: workerEnv})
 	if c := e.compiled.Load(); c != nil {
@@ -182,9 +184,10 @@ func (e *linuxEnforcer) startLocked() {
 	e.pool.Store(pool)
 	empty := []Destination{}
 	e.dests.Store(&empty)
-	e.wg.Add(2 + decideWorkers)
+	e.wg.Add(3 + decideWorkers)
 	go e.mountLoop(ctx, fan, e.kick)
-	go e.readLoop(ctx, fan, e.queue)
+	go e.readLoop(ctx, fan, e.queue, e.held)
+	go e.renameLoop(ctx, e.held, e.queue)
 	for i := 0; i < decideWorkers; i++ {
 		go e.decideLoop(ctx, e.queue)
 	}
@@ -201,14 +204,15 @@ func (e *linuxEnforcer) stopLocked() {
 	e.cancel()
 	e.wg.Wait()
 	e.stopPerm() // after the mount loop: it owns the hook
-	for {
-		select {
-		case r := <-e.queue:
-			_ = r.File.Close()
-			continue
-		default:
+	for _, q := range []chan Request{e.queue, e.held} {
+		for drained := false; !drained; {
+			select {
+			case r := <-q:
+				_ = r.File.Close()
+			default:
+				drained = true
+			}
 		}
-		break
 	}
 	_ = unix.Close(e.fan)
 	e.fan = -1
@@ -347,7 +351,7 @@ func (e *linuxEnforcer) offSwitch() bool {
 
 // readLoop reads fanotify events and queues them; it never blocks on the
 // queue (a full queue drops the event and counts it).
-func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue chan<- Request) {
+func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue, held chan<- Request) {
 	defer e.wg.Done()
 	buf := make([]byte, 64<<10)
 	self := os.Getpid()
@@ -369,12 +373,14 @@ func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue chan<- Requ
 			fd := int(int32(binary.NativeEndian.Uint32(buf[off+16:])))  // #nosec G115 -- the kernel's signed fd
 			pid := int(int32(binary.NativeEndian.Uint32(buf[off+20:]))) // #nosec G115 -- the kernel's signed pid
 			off += evLen
-			e.handleEvent(mask, fd, pid, self, queue)
+			e.handleEvent(mask, fd, pid, self, queue, held)
 		}
 	}
 }
 
-func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue chan<- Request) {
+// handleEvent turns an event into a request: queued for the decide loops,
+// or held first when its name looks like a save's temp file.
+func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue, held chan<- Request) {
 	if mask&unix.FAN_Q_OVERFLOW != 0 {
 		e.overflows.Add(1)
 	}
@@ -401,12 +407,10 @@ func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue chan<-
 		return
 	}
 	r := Request{File: f, Path: path, Dest: dest, Proc: processInfo(pid), At: time.Now()}
-	select {
-	case queue <- r:
-	default:
-		_ = f.Close()
-		e.dropped.Add(1)
+	if isTempName(filepath.Base(strings.TrimSuffix(path, deletedSuffix))) && hold(r, held) {
+		return
 	}
+	e.enqueue(r, queue)
 }
 
 // destinationOf maps a path to the innermost marked mount containing it.
