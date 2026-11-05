@@ -1,3 +1,5 @@
+//go:build linux || windows
+
 package scanworker
 
 // The service <-> worker protocol, the same on every OS: frames of a 4-byte

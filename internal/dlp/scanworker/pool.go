@@ -59,9 +59,8 @@ type Pool struct {
 	// changed is closed (and replaced) whenever a worker slot frees up, so
 	// scans waiting for a worker try again instead of waiting forever.
 	changed chan struct{}
-	// level is the sandbox level workers start at (Windows: it drops a level
-	// when a worker can't start at the stricter one).
-	level int
+	// osState is what the OS's spawn keeps between workers.
+	osState poolOS
 }
 
 type worker struct {

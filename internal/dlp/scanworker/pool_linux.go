@@ -15,6 +15,10 @@ import (
 // service runs as root.
 var unprivilegedUsers = []string{"sentinelgo-scan", "nobody"}
 
+// poolOS remembers that workers can't get a network namespace here, so
+// later workers don't try again.
+type poolOS struct{ noNetns bool }
+
 // workerProc is a Linux worker's process.
 type workerProc struct{ cmd *exec.Cmd }
 
@@ -30,6 +34,11 @@ func (p *Pool) spawn() (*worker, error) {
 		_ = c.c.Close()
 		return nil, err
 	}
+	p.mu.Lock()
+	if p.osState.noNetns {
+		cmd.SysProcAttr.Cloneflags = 0
+	}
+	p.mu.Unlock()
 	err = cmd.Start()
 	if errors.Is(err, syscall.EPERM) && cmd.SysProcAttr.Cloneflags != 0 {
 		// Not allowed to create a network namespace (a container without
@@ -39,6 +48,11 @@ func (p *Pool) spawn() (*worker, error) {
 		if err == nil {
 			cmd.SysProcAttr.Cloneflags = 0
 			err = cmd.Start()
+		}
+		if err == nil {
+			p.mu.Lock()
+			p.osState.noNetns = true
+			p.mu.Unlock()
 		}
 	}
 	if err != nil {
