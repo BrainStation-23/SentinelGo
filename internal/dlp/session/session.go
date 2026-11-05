@@ -28,6 +28,11 @@ type Supervisor interface {
 	Sessions() []Info
 }
 
+// CapNotifications is the per-session capability key for notification
+// readiness (#323, contract Compliance-OS#623). It describes one user, so it
+// is never rolled up to the device's channel capabilities.
+const CapNotifications = "notifications"
+
 // Info is one session helper's state, as reported to the backend.
 type Info struct {
 	User      string `json:"user"`
@@ -53,6 +58,15 @@ type Service interface {
 	// OpenProfile presents p to the user of one session (its SessionID) and
 	// waits for the helper's answer.
 	OpenProfile(ctx context.Context, sessionID string, p ipc.OpenProfile) error
+	// NotifySession shows n to the user of one session and waits for the
+	// helper's answer (ErrNoHelper when none is connected).
+	NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error
+	// AskOverride asks the user of one session what to do about a file a
+	// block_override policy blocked, and waits for their answer.
+	AskOverride(ctx context.Context, sessionID string, a ipc.AskOverride) (ipc.OverrideAnswer, error)
+	// SessionReadiness is the notification readiness the helper of a session
+	// reports (#323); ok is false when no helper is connected there.
+	SessionReadiness(sessionID string) (state string, ok bool)
 	// OpenURL opens an MDM enrollment link for the user of one session.
 	OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) error
 }

@@ -257,6 +257,29 @@ func (f *cfbFile) children(i int) []cfbEntry {
 	return out
 }
 
+// childMap returns the direct children of storage i by name, with their
+// entry indexes (to walk into child storages).
+func (f *cfbFile) childMap(i int) map[string]int {
+	m := map[string]int{}
+	if i < 0 || i >= len(f.entries) {
+		return m
+	}
+	stack := []uint32{f.entries[i].child}
+	seen := map[uint32]bool{}
+	for len(stack) > 0 && len(seen) <= len(f.entries) {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == cfbNoStream || int(n) >= len(f.entries) || seen[n] {
+			continue
+		}
+		seen[n] = true
+		e := f.entries[n]
+		m[e.name] = int(n)
+		stack = append(stack, e.left, e.right)
+	}
+	return m
+}
+
 // top returns the root's direct children by name.
 func (f *cfbFile) top() map[string]cfbEntry {
 	m := map[string]cfbEntry{}

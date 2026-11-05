@@ -46,7 +46,20 @@ func buildCFB(t testing.TB, streams ...[2]string) []byte {
 			starts[i] = uint32(len(bigs) - 1) // fixed up below
 		}
 	}
-	nDir := (1 + len(streams) + 3) / 4
+	// Names with "/" live in storages, created from the paths.
+	var storages []string
+	seenStorage := map[string]bool{}
+	for _, st := range streams {
+		parts := strings.Split(st[0], "/")
+		for k := 1; k < len(parts); k++ {
+			p := strings.Join(parts[:k], "/")
+			if !seenStorage[p] {
+				seenStorage[p] = true
+				storages = append(storages, p)
+			}
+		}
+	}
+	nDir := (1 + len(storages) + len(streams) + 3) / 4
 	sectorsOf := func(n int) int { return (n + sec - 1) / sec }
 	nMiniFAT := sectorsOf(len(miniFAT) * 4)
 	nMiniStream := sectorsOf(len(miniData))
@@ -112,18 +125,49 @@ func buildCFB(t testing.TB, streams ...[2]string) []byte {
 		le.PutUint64(b[0x78:], size)
 		return b
 	}
-	var dir []byte
-	firstChild := uint32(cfbNoStream)
-	if len(streams) > 0 {
-		firstChild = 1
+	// Directory: the root, the storages, then the streams. Each storage's
+	// children are chained through their right siblings.
+	type dnode struct {
+		name     string
+		typ      byte
+		start    uint32
+		size     uint64
+		children []int
 	}
-	dir = append(dir, entry("Root Entry", cfbTypeRoot, firstChild, cfbNoStream, miniStreamStart, uint64(len(miniData)))...)
-	for i, s := range streams {
-		right := uint32(cfbNoStream)
-		if i+1 < len(streams) {
-			right = uint32(i + 2)
+	nodes := []dnode{{name: "Root Entry", typ: cfbTypeRoot, start: miniStreamStart, size: uint64(len(miniData))}}
+	index := map[string]int{"": 0}
+	parentOf := func(p string) int {
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			return index[p[:i]]
 		}
-		dir = append(dir, entry(s[0], cfbTypeStream, cfbNoStream, right, starts[i], uint64(len(s[1])))...)
+		return 0
+	}
+	baseOf := func(p string) string { return p[strings.LastIndex(p, "/")+1:] }
+	for _, st := range storages {
+		index[st] = len(nodes)
+		nodes[parentOf(st)].children = append(nodes[parentOf(st)].children, len(nodes))
+		nodes = append(nodes, dnode{name: baseOf(st), typ: cfbTypeStorage, start: cfbEndOfChain})
+	}
+	for i, st := range streams {
+		nodes[parentOf(st[0])].children = append(nodes[parentOf(st[0])].children, len(nodes))
+		nodes = append(nodes, dnode{name: baseOf(st[0]), typ: cfbTypeStream, start: starts[i], size: uint64(len(st[1]))})
+	}
+	right := make([]uint32, len(nodes))
+	for i := range right {
+		right[i] = cfbNoStream
+	}
+	var dir []byte
+	for _, n := range nodes {
+		for k := 0; k+1 < len(n.children); k++ {
+			right[n.children[k]] = uint32(n.children[k+1])
+		}
+	}
+	for i, n := range nodes {
+		child := uint32(cfbNoStream)
+		if len(n.children) > 0 {
+			child = uint32(n.children[0])
+		}
+		dir = append(dir, entry(n.name, n.typ, child, right[i], n.start, n.size)...)
 	}
 	pad := func(b []byte) []byte { return append(b, make([]byte, (sec-len(b)%sec)%sec)...) }
 
@@ -326,8 +370,8 @@ func TestScan_LegacyOffice(t *testing.T) {
 		{"ppt encrypted", "ole.ppt", Unscannable(ReasonPasswordProtected), buildCFB(t, [2]string{"PowerPoint Document", powerPoint(pptRecord(0x000F, pptCryptSess10, nil))}), 0, 0},
 		{"encrypted ooxml", "ooxml.encrypted", Unscannable(ReasonPasswordProtected), buildCFB(t, [2]string{"EncryptionInfo", "x"}, [2]string{"EncryptedPackage", "y"}), 0, 0},
 		{"rights managed ooxml", "ooxml.encrypted", Unscannable(ReasonRightsProtected), buildCFB(t, [2]string{"EncryptedPackage", "y"}, [2]string{"DRMEncryptedDataSpace", "z"}), 0, 0},
-		{"excel 5", "ole.xls5", Unscannable(ReasonUnsupportedType), buildCFB(t, [2]string{"Book", "x"}), 0, 0},
-		{"outlook msg", "ole", Unscannable(ReasonUnsupportedType), buildCFB(t, [2]string{"__properties_version1.0", "x"}), 0, 0},
+		{"excel 5, empty", "ole.xls5", StatusScanned, buildCFB(t, [2]string{"Book", "x"}), 0, 0},
+		{"compound file of another kind", "ole", Unscannable(ReasonUnsupportedType), buildCFB(t, [2]string{"__properties_version1.0", "x"}), 0, 0},
 		{"ole package", "ole.package/text.utf8", StatusScanned, buildCFB(t, [2]string{"\x01Ole10Native", ole10Native("keys.txt", []byte("TOPSECRET"))}), 0, 1},
 		{"ole package stream", "ole.package/ooxml.docx", StatusScanned, buildCFB(t, [2]string{"Package", string(docx(t, `<w:p><w:r><w:t>`+testCard+`</w:t></w:r></w:p>`))}), 1, 0},
 	} {

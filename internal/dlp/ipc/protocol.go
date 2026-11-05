@@ -52,6 +52,9 @@ const (
 
 	TypeOpenURL       = "open_url"        // service → helper: open an enrollment link for the user
 	TypeOpenURLResult = "open_url_result" // helper → service: whether it was opened
+
+	TypeAskOverride    = "ask_override"    // service → helper: a file was blocked; ask the user what to do (#336)
+	TypeOverrideAnswer = "override_answer" // helper → service: the user's choice and reason
 )
 
 // Notification levels.
@@ -81,6 +84,29 @@ type Message struct {
 	OpenURL           *OpenURL           `json:"open_url,omitempty"`
 	// OpenURLResult answers an OpenURL with the same ID.
 	OpenURLResult *OpenProfileResult `json:"open_url_result,omitempty"`
+	AskOverride   *AskOverride       `json:"ask_override,omitempty"`
+	// OverrideAnswer answers an AskOverride with the same ID.
+	OverrideAnswer *OverrideAnswer `json:"override_answer,omitempty"`
+}
+
+// AskOverride asks the user what to do about a file blocked by a
+// block_override policy: go ahead with a reason, request an exception, or
+// leave it (#336).
+type AskOverride struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Message     string `json:"message"`
+	CanOverride bool   `json:"can_override"`
+	CanRequest  bool   `json:"can_request"`
+}
+
+// OverrideAnswer is the user's choice ("override", "request" or "cancel")
+// and reason. The reason is personal data: never logged.
+type OverrideAnswer struct {
+	ID     string `json:"id"`
+	Choice string `json:"choice"`
+	Reason string `json:"reason,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // OpenURL asks the helper to open an MDM enrollment link (Windows'

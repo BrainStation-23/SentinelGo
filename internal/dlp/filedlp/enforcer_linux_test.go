@@ -166,15 +166,15 @@ func TestEnforcer_IgnoresOwnWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = r.Close()
-	e.handleEvent(unix.FAN_CLOSE_WRITE, fd, os.Getpid(), os.Getpid(), queue)
+	e.handleEvent(unix.FAN_CLOSE_WRITE, fd, os.Getpid(), os.Getpid(), queue, nil)
 	if len(queue) != 0 {
 		t.Error("own write queued")
 	}
 	if err := unix.Close(fd); err == nil {
 		t.Error("event descriptor left open")
 	}
-	e.handleEvent(unix.FAN_Q_OVERFLOW, -1, 0, os.Getpid(), queue)
-	e.handleEvent(unix.FAN_CLOSE_WRITE, -1, 7, os.Getpid(), queue)
+	e.handleEvent(unix.FAN_Q_OVERFLOW, -1, 0, os.Getpid(), queue, nil)
+	e.handleEvent(unix.FAN_CLOSE_WRITE, -1, 7, os.Getpid(), queue, nil)
 	if e.overflows.Load() != 1 || e.unreadable.Load() != 1 {
 		t.Errorf("overflows %d unreadable %d", e.overflows.Load(), e.unreadable.Load())
 	}

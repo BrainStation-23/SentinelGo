@@ -351,3 +351,13 @@ func TestMergeHelperCapabilities(t *testing.T) {
 		t.Errorf("caps = %v", caps)
 	}
 }
+
+// Notification readiness is per user: it never becomes a device capability.
+func TestMergeHelperCapabilities_SkipsNotifications(t *testing.T) {
+	caps := map[string]string{}
+	mergeHelperCapabilities(caps, []session.Info{{User: "a", Capabilities: map[string]string{session.CapNotifications: "supported"}},
+		{User: "b", Capabilities: map[string]string{session.CapNotifications: "disabled:app"}}})
+	if _, ok := caps[session.CapNotifications]; ok {
+		t.Fatalf("caps = %v", caps)
+	}
+}

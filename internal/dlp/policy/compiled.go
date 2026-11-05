@@ -99,7 +99,7 @@ func Compile(b *Bundle) *Compiled {
 }
 
 func validatePolicy(p Policy) error {
-	if p.Action != ActionMonitor && p.Action != ActionWarn && p.Action != ActionBlock {
+	if p.Action != ActionMonitor && p.Action != ActionWarn && p.Action != ActionBlock && p.Action != ActionBlockOverride {
 		return fmt.Errorf("policy %q: unknown action %q", p.Name, p.Action)
 	}
 	if p.Match != "" && p.Match != detect.MatchAny && p.Match != detect.MatchAll {

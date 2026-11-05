@@ -15,6 +15,7 @@ import (
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/ipc"
+	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/policy"
 )
 
@@ -59,6 +60,12 @@ type HelperOptions struct {
 	// OpenURL opens an MDM enrollment link for the user (#356); nil means
 	// this platform can't.
 	OpenURL func(url string) error
+	// Readiness reads whether a notification can reach this user (#323,
+	// notify.Readiness); nil means it isn't reported.
+	Readiness func() (state, detail string)
+	// AskOverride shows the block_override dialog (#336, prompt.Show); nil
+	// means this helper can't, and answers cancel.
+	AskOverride func(ctx context.Context, a ipc.AskOverride) (choice, reason string, err error)
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -83,6 +90,17 @@ func RunHelper(ctx context.Context, o HelperOptions) error {
 	}
 	r := &helperRuntime{o: o}
 	defer r.stopChannels()
+	if o.Readiness != nil {
+		r.refreshReadiness()
+		// The watcher ends with the helper, whether ctx ends or the service
+		// says stop: it must not outlive RunHelper.
+		var wg sync.WaitGroup
+		defer wg.Wait() // runs after cancel (defers run last first)
+		wctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		wg.Add(1)
+		go func() { defer wg.Done(); r.watchReadiness(wctx) }()
+	}
 	for attempt, untrusted := 0, 0; ; {
 		if ctx.Err() != nil {
 			return nil
@@ -119,6 +137,7 @@ type helperRuntime struct {
 	version string          // applied bundle version
 	running map[string]bool // channels whose Run is active
 	sent    string          // the last status sent, to skip repeats
+	ready   string          // notification readiness, "" when not read
 
 	chCancel context.CancelFunc
 	chWG     sync.WaitGroup
@@ -161,26 +180,37 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		if err != nil {
 			return false, nil // lost the service: keep enforcing, reconnect
 		}
-		switch m.Type {
-		case ipc.TypeStop:
+		if m.Type == ipc.TypeStop {
 			log.Printf("DLP helper: service asked to stop")
 			return true, nil
-		case ipc.TypePolicy:
-			r.apply(ctx, m.Policy)
-		case ipc.TypeClear:
-			r.clear()
-		case ipc.TypeNotify:
-			if m.Notify != nil {
-				go r.notify(*m.Notify)
-			}
-		case ipc.TypeOpenProfile:
-			if m.OpenProfile != nil {
-				go r.openProfile(*m.OpenProfile)
-			}
-		case ipc.TypeOpenURL:
-			if m.OpenURL != nil {
-				go r.openURL(*m.OpenURL)
-			}
+		}
+		r.dispatch(ctx, m)
+	}
+}
+
+// dispatch handles one message from the service; slow ones (anything that
+// waits for the user) run in their own goroutine.
+func (r *helperRuntime) dispatch(ctx context.Context, m ipc.Message) {
+	switch m.Type {
+	case ipc.TypePolicy:
+		r.apply(ctx, m.Policy)
+	case ipc.TypeClear:
+		r.clear()
+	case ipc.TypeNotify:
+		if m.Notify != nil {
+			go r.notify(*m.Notify)
+		}
+	case ipc.TypeOpenProfile:
+		if m.OpenProfile != nil {
+			go r.openProfile(*m.OpenProfile)
+		}
+	case ipc.TypeOpenURL:
+		if m.OpenURL != nil {
+			go r.openURL(*m.OpenURL)
+		}
+	case ipc.TypeAskOverride:
+		if m.AskOverride != nil {
+			go r.askOverride(ctx, *m.AskOverride)
 		}
 	}
 }
@@ -190,7 +220,42 @@ func (r *helperRuntime) capabilities() map[string]string {
 	for _, ch := range r.o.Channels {
 		caps[ch.Name()] = ch.Supported().String()
 	}
+	r.mu.Lock()
+	if r.ready != "" {
+		caps[CapNotifications] = r.ready
+	}
+	r.mu.Unlock()
 	return caps
+}
+
+// refreshReadiness reads notification readiness and reports whether it
+// changed.
+func (r *helperRuntime) refreshReadiness() bool {
+	if r.o.Readiness == nil {
+		return false
+	}
+	state, _ := r.o.Readiness()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := state != r.ready
+	r.ready = state
+	return changed
+}
+
+// watchReadiness re-reads readiness every channelRecheck, and tells the
+// service when it changed (a user turning notifications off shows up within
+// a minute, with or without a DLP policy).
+func (r *helperRuntime) watchReadiness(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(channelRecheck):
+		}
+		if r.refreshReadiness() {
+			r.sendStatus(false)
+		}
+	}
 }
 
 // apply enforces a new bundle; one that turns DLP off stops the channels.
@@ -318,13 +383,47 @@ func (r *helperRuntime) clear() {
 // text is never logged; the error carries the tool and exit status only.
 func (r *helperRuntime) notify(n ipc.Notify) {
 	res := &ipc.NotifyResult{ID: n.ID}
+	// Read readiness just before showing, and tell the service first, so
+	// the result it records matches what the user can see.
+	if r.refreshReadiness() {
+		r.sendStatus(false)
+	}
+	r.mu.Lock()
+	ready := r.ready
+	r.mu.Unlock()
 	if r.o.Notify == nil {
 		res.Error = "this helper can't show notifications"
 	} else if err := r.o.Notify(n.Title, n.Message, n.Level); err != nil {
 		log.Printf("Session helper: notification %s failed: %v", n.ID, err)
 		res.Error = err.Error()
+	} else if !notify.Shows(ready) {
+		// The tool exits 0 even when the OS hides the notification.
+		res.Error = "notifications are off for this user (" + ready + ")"
 	}
 	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
+}
+
+// askOverrideWait bounds how long a block_override dialog stays open.
+const askOverrideWait = 10 * time.Minute
+
+// askOverride shows the block_override dialog and answers with the user's
+// choice. The reason is never logged.
+func (r *helperRuntime) askOverride(ctx context.Context, a ipc.AskOverride) {
+	ans := &ipc.OverrideAnswer{ID: a.ID, Choice: "cancel"}
+	if r.o.AskOverride == nil {
+		ans.Error = "this helper can't ask"
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, askOverrideWait)
+		choice, reason, err := r.o.AskOverride(ctx, a)
+		cancel()
+		if err != nil {
+			log.Printf("Session helper: override dialog %s failed: %v", a.ID, err)
+			ans.Error = err.Error()
+		} else {
+			ans.Choice, ans.Reason = choice, reason
+		}
+	}
+	r.send(ipc.Message{Type: ipc.TypeOverrideAnswer, OverrideAnswer: ans})
 }
 
 // openProfile presents a configuration profile to this helper's user, then

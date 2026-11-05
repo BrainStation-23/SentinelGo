@@ -50,7 +50,8 @@ all: windows linux macos
 # manifest; its version fields are empty, so it doesn't change per release).
 # Don't run go generate here: release CI has no goversioninfo, and regenerating
 # would rewrite a committed file mid-build. Use `make generate` after changing
-# assets/resource.json or the icon, and commit the result.
+# assets/resource.json, the icon or assets/sentinelgo.exe.manifest, and commit
+# the result.
 windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/windows/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
 

@@ -59,7 +59,8 @@ type helper struct {
 	out   chan ipc.Message  // drained by the helper's writer goroutine
 	done  chan struct{}     // closed when the connection is finished
 
-	pending map[string]chan string // notify id -> its result (guarded by Hub.mu)
+	pending map[string]chan string             // notify id -> its result (guarded by Hub.mu)
+	asks    map[string]chan ipc.OverrideAnswer // ask id -> the user's answer (guarded by Hub.mu)
 }
 
 // helperOutbox is how many messages may wait for a helper. A helper that
@@ -115,6 +116,10 @@ type NotifyResult struct {
 	User      string
 	SessionID string
 	Err       string // "" when the notification was shown
+	// Readiness is the session's notification readiness when it answered
+	// (#323): "dnd" means shown into the notification center; "" when the
+	// helper doesn't report it.
+	Readiness string
 }
 
 // Notify asks every connected helper to show n and waits for each answer
@@ -159,6 +164,9 @@ func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
 		case <-ctx.Done():
 			r.Err = "no answer from the session helper (it may run an older agent)"
 		}
+		h.mu.Lock()
+		r.Readiness = w.hp.caps[CapNotifications]
+		h.mu.Unlock()
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
@@ -184,6 +192,73 @@ func (h *Hub) OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) erro
 		u.ID = newNotifyID()
 	}
 	return h.askSession(ctx, sessionID, u.ID, ipc.Message{Type: ipc.TypeOpenURL, OpenURL: &u})
+}
+
+// NotifySession shows n to the user of one session (a DLP block or warning
+// for the user whose process caused it) and waits for the answer until ctx
+// ends. The text is never logged.
+func (h *Hub) NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error {
+	if n.ID == "" {
+		n.ID = newNotifyID()
+	}
+	return h.askSession(ctx, sessionID, n.ID, ipc.Message{Type: ipc.TypeNotify, Notify: &n})
+}
+
+// AskOverride asks the user of one session what to do about a blocked file
+// and waits for their answer until ctx ends (a dialog waits for the user).
+func (h *Hub) AskOverride(ctx context.Context, sessionID string, a ipc.AskOverride) (ipc.OverrideAnswer, error) {
+	if a.ID == "" {
+		a.ID = newNotifyID()
+	}
+	ch := make(chan ipc.OverrideAnswer, 1)
+	h.mu.Lock()
+	var target *helper
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			target = hp
+			break
+		}
+	}
+	if target != nil {
+		if target.asks == nil {
+			target.asks = map[string]chan ipc.OverrideAnswer{}
+		}
+		target.asks[a.ID] = ch
+	}
+	h.mu.Unlock()
+	if target == nil {
+		return ipc.OverrideAnswer{}, ErrNoHelper
+	}
+	defer func() {
+		h.mu.Lock()
+		delete(target.asks, a.ID)
+		h.mu.Unlock()
+	}()
+	h.send(target, ipc.Message{Type: ipc.TypeAskOverride, AskOverride: &a})
+	select {
+	case ans := <-ch:
+		if ans.Error != "" {
+			return ans, errors.New(ans.Error)
+		}
+		return ans, nil
+	case <-target.done:
+		return ipc.OverrideAnswer{}, errors.New("the session helper disconnected")
+	case <-ctx.Done():
+		return ipc.OverrideAnswer{}, errors.New("no answer from the session helper")
+	}
+}
+
+// SessionReadiness reports the notification readiness of the helper of one
+// session; ok is false when no helper is connected for it.
+func (h *Hub) SessionReadiness(sessionID string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			return hp.caps[CapNotifications], true
+		}
+	}
+	return "", false
 }
 
 // askSession sends m to the helper of one session and waits for the result
@@ -527,6 +602,18 @@ func (h *Hub) readLoop(hp *helper) {
 		case ipc.TypeOpenURLResult:
 			if m.OpenURLResult != nil {
 				h.answer(hp, m.OpenURLResult.ID, m.OpenURLResult.Error)
+			}
+		case ipc.TypeOverrideAnswer:
+			if a := m.OverrideAnswer; a != nil {
+				h.mu.Lock()
+				ch := hp.asks[a.ID]
+				h.mu.Unlock()
+				if ch != nil {
+					select {
+					case ch <- *a:
+					default:
+					}
+				}
 			}
 		case ipc.TypeStatus:
 			if m.Status != nil {

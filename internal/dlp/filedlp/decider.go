@@ -3,10 +3,11 @@
 // that produces events (fanotify on Linux, later a minifilter and an Endpoint
 // Security extension) is separate; the Decider doesn't know which one fed it.
 //
-// This phase is audit-only: files are scanned after they were written to a
-// monitored destination, and matches are recorded as "monitored" events.
-// Nothing is blocked, whatever a policy's action says (blocking needs the
-// permission hooks and fail-safes of #329, and audit data first).
+// Files are scanned after they were written to a monitored destination
+// (Handle), and matches are recorded as events; on_close_violation decides
+// what happens to the written file. Where a permission hook can hold the
+// creation of a file (Linux, #333), DecideBySources judges it before
+// anything is written, by the files its writer has open, and can refuse it.
 package filedlp
 
 import (
@@ -102,13 +103,18 @@ type Decider struct {
 	engine     *detect.Engine
 	remediate  func(r Request, action string) error
 	openSource func(SourceRef) (*os.File, Identity, error)
+	notices    *notices
+	overrides  *overrides
+	asking     asking
+
+	requestException func(context.Context, ExceptionRequest) error
 
 	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
 }
 
 // NewDecider returns a Decider that scans with s and records events to sink.
 func NewDecider(s Scanner, sink channel.EventSink) *Decider {
-	return &Decider{scanner: s, sink: sink, cache: filescan.NewCache(cacheSize)}
+	return &Decider{scanner: s, sink: sink, cache: filescan.NewCache(cacheSize), overrides: newOverrides()}
 }
 
 // Apply switches to c (nil: decide nothing). Cached results of an older
@@ -142,6 +148,32 @@ func (d *Decider) SetSourceOpener(fn func(src SourceRef) (*os.File, Identity, er
 	d.openSource = fn
 }
 
+// SetUserNotifier makes blocks, removals and warnings tell the user whose
+// process caused them (#336); nil tells nobody.
+func (d *Decider) SetUserNotifier(n UserNotifier) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n == nil {
+		d.notices = nil
+		return
+	}
+	d.notices = newNotices(n)
+}
+
+// tell queues a notice for an event's user and records whether they could be
+// told.
+func (d *Decider) tell(ev *events.Event, r Request, kind string, v Verdict, findings []detect.Finding) {
+	d.mu.Lock()
+	n := d.notices
+	d.mu.Unlock()
+	sha := ""
+	if ev.File != nil {
+		sha = ev.File.SHA256
+	}
+	told := n.report(r, kind, sha, findings, v)
+	ev.UserNotified = &told
+}
+
 // Files returns the files module of the policy in force (zero when none).
 func (d *Decider) Files() policy.FilesModule {
 	d.mu.Lock()
@@ -169,6 +201,57 @@ func fileID(id Identity) string {
 type Verdict struct {
 	Block   bool
 	Message string // the files module's block message, for the user
+	// Overridable is set when the block came from a block_override policy:
+	// its user may go ahead with a reason (EventID names the block).
+	Overridable bool
+	EventID     string
+}
+
+// released reports whether a block by p is lifted for this file and user:
+// an approved exception (modules.files.exceptions), or, for block_override,
+// an override the user made a moment ago.
+func (d *Decider) released(c *policy.Compiled, p policy.CompiledPolicy, r Request, sha string) bool {
+	now := time.Now()
+	for _, e := range c.Modules.Files.Exceptions {
+		if e.Allows(p.ID, r.Dest.Channel, sha, r.Proc.User, now) {
+			return true
+		}
+	}
+	return p.Action == policy.ActionBlockOverride && d.overrides.allowed(r.Proc.UID, r.Dest.Channel, sha)
+}
+
+// blocked records a block's verdict, and keeps a block_override block so its
+// user can override it.
+func (d *Decider) blocked(c *policy.Compiled, p policy.CompiledPolicy, ev events.Event, r Request, sha string, findings []detect.Finding) Verdict {
+	v := Verdict{Block: true, Message: blockMessage(c.Modules.Files.BlockMessage, findings), EventID: ev.EventID}
+	if p.Action == policy.ActionBlockOverride && r.Proc.UID != "" && sha != "" {
+		if limit := c.Modules.Files.DailyOverrides(); limit > 0 {
+			v.Overridable = true
+			d.overrides.remember(ev, r.Proc.UID, sha, limit)
+		}
+	}
+	return v
+}
+
+// Override lets the file of a block_override block through for its user,
+// with their reason, and records an "overridden" event. uid must be the
+// blocked process's user: only their own session helper can ask. The reason
+// is never logged.
+func (d *Decider) Override(eventID, uid, reason string) error {
+	ev, err := d.overrides.override(eventID, uid, reason)
+	if err != nil {
+		return err
+	}
+	d.sink.Emit(ev)
+	d.emitted.Add(1)
+	return nil
+}
+
+// Blocked returns a block_override block still open for its user (for an
+// exception request): the event, and the blocked file's hash.
+func (d *Decider) Blocked(eventID, uid string) (events.Event, string, bool) {
+	p, ok := d.overrides.pendingFor(eventID, uid)
+	return p.ev, p.sha, ok
 }
 
 // Handle decides one file event and records any evidence, for hooks that
@@ -231,7 +314,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		o := outcome{p: p, findings: findings}
 		switch {
 		case matched:
-			o.block = p.Action == policy.ActionBlock
+			o.block = p.Blocks() && !d.released(c, p, r, res.SHA256)
 			anyMatch = true
 		case !typeOK:
 			continue // not a file type this policy covers
@@ -251,7 +334,7 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 	// file itself.
 	var corr *events.Correlation
 	if !anyMatch && !canBlock && files.CopyCorrelation.ProcessTaint && needsCorrelation(res) && len(r.Sources) > 0 {
-		if cOuts, cRef := d.correlate(ctx, c, eng, pols, r); len(cOuts) > 0 {
+		if cOuts, cRef, _ := d.correlate(ctx, c, eng, pols, r, "taint"); len(cOuts) > 0 {
 			outs, corr, source = cOuts, cRef, "correlation"
 		}
 	}
@@ -263,11 +346,17 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		switch {
 		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
-			v = Verdict{Block: true, Message: blockMessage(files.BlockMessage, o.findings)}
+			v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
+			d.tellBlock(&ev, r, v, res.SHA256, files.DailyOverrides(), o.findings)
 		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
 		case o.block:
 			ev.Action, ev.WouldHave = after.handle()
+			if ev.Action == events.ActionQuarantined || ev.Action == events.ActionDeleted {
+				d.tell(&ev, r, noticeRemoved, Verdict{}, o.findings)
+			}
+		case o.p.Action == policy.ActionWarn && len(o.findings) > 0:
+			d.tell(&ev, r, noticeWarned, Verdict{}, o.findings)
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
@@ -296,12 +385,12 @@ func needsCorrelation(res filescan.Result) bool {
 // and returns the policies the first matching one violates, with the link
 // to it. Sources are reopened (and checked to be the same file) by the
 // source opener and scanned like any file, through the cache.
-func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect.Engine, pols []policy.CompiledPolicy, r Request) ([]outcome, *events.Correlation) {
+func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect.Engine, pols []policy.CompiledPolicy, r Request, method string) ([]outcome, *events.Correlation, filescan.Result) {
 	d.mu.Lock()
 	open := d.openSource
 	d.mu.Unlock()
 	if open == nil {
-		return nil, nil
+		return nil, nil, filescan.Result{}
 	}
 	timeout := time.Duration(c.Modules.Files.ScanTimeoutMs) * time.Millisecond
 	for _, src := range r.Sources {
@@ -324,15 +413,59 @@ func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect
 				continue
 			}
 			if matched, findings := evaluate(eng, p, res, ext); matched {
-				outs = append(outs, outcome{p: p, findings: findings, block: p.Action == policy.ActionBlock})
+				outs = append(outs, outcome{p: p, findings: findings, block: p.Blocks() && !d.released(c, p, r, res.SHA256)})
 			}
 		}
 		if len(outs) > 0 {
 			d.correlated.Add(1)
-			return outs, &events.Correlation{Method: "taint", SourceSHA256: res.SHA256, SourceName: events.FileName(c.EvidenceMode, src.Path)}
+			return outs, &events.Correlation{Method: method, SourceSHA256: res.SHA256, SourceName: events.FileName(c.EvidenceMode, src.Path)}, res
 		}
 	}
-	return nil, nil
+	return nil, nil, filescan.Result{}
+}
+
+// Correlation methods for DecideBySources.
+const (
+	MethodOpenFile = "open_file" // a file the writer has open while it creates the destination file
+)
+
+// DecideBySources decides a file being created at a destination before
+// anything is written to it (a permission hook that holds the open), by the
+// files its writer has open or read just before (r.Sources, newest first).
+// It blocks only when the files module isn't audit-only and a source matches
+// a block policy. Only a block is recorded: an allowed copy is recorded by
+// the after-write path when the file is closed, so it isn't counted twice.
+func (d *Decider) DecideBySources(ctx context.Context, r Request, method string) Verdict {
+	d.mu.Lock()
+	c, eng := d.compiled, d.engine
+	d.mu.Unlock()
+	if c == nil || !c.ChannelEnabled(r.Dest.Channel) || len(r.Sources) == 0 || c.Modules.Files.IsAuditOnly() {
+		return Verdict{}
+	}
+	var pols []policy.CompiledPolicy
+	for _, p := range c.For(r.Dest.Channel) {
+		if p.Blocks() && !excepted(p.Exceptions, r) {
+			pols = append(pols, p)
+		}
+	}
+	if len(pols) == 0 {
+		return Verdict{}
+	}
+	outs, corr, res := d.correlate(ctx, c, eng, pols, r, method)
+	var v Verdict
+	for _, o := range outs {
+		if !o.block {
+			continue
+		}
+		ev := buildEvent(c, o.p, r, res, o.findings, "correlation")
+		ev.Correlation = corr
+		ev.Action = events.ActionBlocked
+		v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
+		d.tellBlock(&ev, r, v, res.SHA256, c.Modules.Files.DailyOverrides(), o.findings)
+		d.sink.Emit(ev)
+		d.emitted.Add(1)
+	}
+	return v
 }
 
 // afterWrite applies on_close_violation to a file found to violate a policy

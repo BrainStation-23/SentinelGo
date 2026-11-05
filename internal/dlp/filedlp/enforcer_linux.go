@@ -25,8 +25,9 @@ import (
 // mounts of removable media and network shares): the kernel reports a file
 // after it was written and closed, and never waits for us. A slow, stuck or
 // crashed agent therefore can't hang anything; at worst events are dropped
-// (and counted). This is what makes audit-only safe to run; blocking needs
-// permission events and the fail-safes of #329.
+// (and counted). Blocking is a separate permission group with its own
+// fail-safes (perm_linux.go, permgate.go), running only while a policy
+// enforces block.
 
 // linuxChannels are the file channels this hook monitors.
 var linuxChannels = map[string]bool{policy.ChannelFileRemovable: true, policy.ChannelFileNetworkShare: true}
@@ -72,6 +73,7 @@ type linuxEnforcer struct {
 	wg       sync.WaitGroup
 	fan      int
 	queue    chan Request
+	held     chan Request // temp-named files waiting for their rename (rename_linux.go)
 	kick     chan struct{}
 	failure  string                    // why the hook couldn't start ("" when it could)
 	devices  *deviceState              // untrusted device control; the mount loop's, then stopLocked's
@@ -87,6 +89,11 @@ type linuxEnforcer struct {
 	localOff atomic.Bool
 
 	dropped, overflows, unreadable atomic.Uint64
+
+	// The permission hook (blocking): owned by the mount loop.
+	perm        atomic.Pointer[permHook]
+	permFailure atomic.Pointer[string] // why blocking is off for good (until restart)
+	lastPerm    atomic.Pointer[PermStats]
 }
 
 // New returns the Linux file DLP enforcer.
@@ -94,6 +101,12 @@ func New(o Options) Enforcer {
 	e := &linuxEnforcer{opts: o, fan: -1, devices: newDeviceState()}
 	e.decider = NewDecider(poolScanner{e}, o.Sink)
 	e.decider.SetSourceOpener(openSource)
+	if o.Notifier != nil {
+		e.decider.SetUserNotifier(o.Notifier)
+	}
+	if o.RequestException != nil {
+		e.decider.SetExceptionRequester(o.RequestException)
+	}
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}
@@ -156,9 +169,11 @@ func (e *linuxEnforcer) startLocked() {
 		return
 	}
 	e.failure = ""
+	e.permFailure.Store(nil) // a restart gives blocking another chance
 	ctx, cancel := context.WithCancel(context.Background())
 	e.fan, e.cancel, e.running = fan, cancel, true
 	e.queue = make(chan Request, queueSize)
+	e.held = make(chan Request, maxHeld)
 	e.kick = make(chan struct{}, 1)
 	pool := scanworker.NewPool(scanworker.Options{Exe: e.opts.Exe, Env: workerEnv})
 	if c := e.compiled.Load(); c != nil {
@@ -169,9 +184,10 @@ func (e *linuxEnforcer) startLocked() {
 	e.pool.Store(pool)
 	empty := []Destination{}
 	e.dests.Store(&empty)
-	e.wg.Add(2 + decideWorkers)
+	e.wg.Add(3 + decideWorkers)
 	go e.mountLoop(ctx, fan, e.kick)
-	go e.readLoop(ctx, fan, e.queue)
+	go e.readLoop(ctx, fan, e.queue, e.held)
+	go e.renameLoop(ctx, e.held, e.queue)
 	for i := 0; i < decideWorkers; i++ {
 		go e.decideLoop(ctx, e.queue)
 	}
@@ -187,14 +203,16 @@ func (e *linuxEnforcer) stopLocked() {
 	e.running = false
 	e.cancel()
 	e.wg.Wait()
-	for {
-		select {
-		case r := <-e.queue:
-			_ = r.File.Close()
-			continue
-		default:
+	e.stopPerm() // after the mount loop: it owns the hook
+	for _, q := range []chan Request{e.queue, e.held} {
+		for drained := false; !drained; {
+			select {
+			case r := <-q:
+				_ = r.File.Close()
+			default:
+				drained = true
+			}
 		}
-		break
 	}
 	_ = unix.Close(e.fan)
 	e.fan = -1
@@ -235,6 +253,7 @@ func (e *linuxEnforcer) mountLoop(ctx context.Context, fan int, kick <-chan stru
 		all := classifiedMounts()
 		watch := e.monitoredMounts(c, all, off)
 		e.reconcileMarks(fan, marked, failed, watch)
+		e.reconcilePerm(c, off)
 		e.reconcileTaint(ctx, c, len(watch) > 0)
 		e.reconcileDevices(c, all, off, e.devices)
 		select {
@@ -332,7 +351,7 @@ func (e *linuxEnforcer) offSwitch() bool {
 
 // readLoop reads fanotify events and queues them; it never blocks on the
 // queue (a full queue drops the event and counts it).
-func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue chan<- Request) {
+func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue, held chan<- Request) {
 	defer e.wg.Done()
 	buf := make([]byte, 64<<10)
 	self := os.Getpid()
@@ -354,12 +373,14 @@ func (e *linuxEnforcer) readLoop(ctx context.Context, fan int, queue chan<- Requ
 			fd := int(int32(binary.NativeEndian.Uint32(buf[off+16:])))  // #nosec G115 -- the kernel's signed fd
 			pid := int(int32(binary.NativeEndian.Uint32(buf[off+20:]))) // #nosec G115 -- the kernel's signed pid
 			off += evLen
-			e.handleEvent(mask, fd, pid, self, queue)
+			e.handleEvent(mask, fd, pid, self, queue, held)
 		}
 	}
 }
 
-func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue chan<- Request) {
+// handleEvent turns an event into a request: queued for the decide loops,
+// or held first when its name looks like a save's temp file.
+func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue, held chan<- Request) {
 	if mask&unix.FAN_Q_OVERFLOW != 0 {
 		e.overflows.Add(1)
 	}
@@ -386,12 +407,10 @@ func (e *linuxEnforcer) handleEvent(mask uint64, fd, pid, self int, queue chan<-
 		return
 	}
 	r := Request{File: f, Path: path, Dest: dest, Proc: processInfo(pid), At: time.Now()}
-	select {
-	case queue <- r:
-	default:
-		_ = f.Close()
-		e.dropped.Add(1)
+	if isTempName(filepath.Base(strings.TrimSuffix(path, deletedSuffix))) && hold(r, held) {
+		return
 	}
+	e.enqueue(r, queue)
 }
 
 // destinationOf maps a path to the innermost marked mount containing it.
@@ -461,7 +480,12 @@ func (e *linuxEnforcer) Capabilities() map[string]string {
 	e.mu.Lock()
 	state, workers := e.stateLocked()
 	e.mu.Unlock()
-	return channelCapabilities(e.compiled.Load(), linuxChannels, state, workers)
+	caps := channelCapabilities(e.compiled.Load(), linuxChannels, state, workers)
+	if state == stateRunning && len(caps) > 0 && e.opts.Notifier != nil {
+		// a block_override block can ask its user for a reason (#336)
+		caps[CapabilityBlockOverride] = "supported"
+	}
+	return caps
 }
 
 // stateLocked is the hook's state and the workers' health. e.mu is held.
@@ -498,5 +522,6 @@ func (e *linuxEnforcer) Health() *Health {
 		t.mu.Unlock()
 		h.TaintProcesses = t.store.len()
 	}
+	h.Blocking = e.blockingHealth()
 	return h
 }

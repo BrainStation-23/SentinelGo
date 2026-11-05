@@ -11,7 +11,9 @@
 // Before reading anything the worker sandboxes itself (Linux): no new
 // privileges, no file writes, no files by path (Landlock), no network (a new
 // network namespace, and Landlock where the kernel supports it), and it runs
-// as an unprivileged user. Only Linux runs workers so far.
+// as an unprivileged user. On Windows the service starts the worker with a
+// restricted, low-integrity token in a Job object, and hands it files as
+// duplicated read-only handles (pool_windows.go).
 package scanworker
 
 import "errors"
@@ -22,8 +24,8 @@ const Command = "dlp-scan"
 // ReasonWorkerFailed is the unscannable reason when no worker could scan.
 const ReasonWorkerFailed = "worker_failed"
 
-// ErrUnsupported is returned where workers can't run (not Linux).
-var ErrUnsupported = errors.New("scan workers are only supported on Linux")
+// ErrUnsupported is returned where workers can't run (not Linux or Windows).
+var ErrUnsupported = errors.New("scan workers are only supported on Linux and Windows")
 
 // Health is the pool's state for the status report.
 type Health struct {
