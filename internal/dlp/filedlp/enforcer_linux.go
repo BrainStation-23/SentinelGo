@@ -103,6 +103,9 @@ func New(o Options) Enforcer {
 	if o.Notifier != nil {
 		e.decider.SetUserNotifier(o.Notifier)
 	}
+	if o.RequestException != nil {
+		e.decider.SetExceptionRequester(o.RequestException)
+	}
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}
@@ -473,7 +476,12 @@ func (e *linuxEnforcer) Capabilities() map[string]string {
 	e.mu.Lock()
 	state, workers := e.stateLocked()
 	e.mu.Unlock()
-	return channelCapabilities(e.compiled.Load(), linuxChannels, state, workers)
+	caps := channelCapabilities(e.compiled.Load(), linuxChannels, state, workers)
+	if state == stateRunning && len(caps) > 0 && e.opts.Notifier != nil {
+		// a block_override block can ask its user for a reason (#336)
+		caps[CapabilityBlockOverride] = "supported"
+	}
+	return caps
 }
 
 // stateLocked is the hook's state and the workers' health. e.mu is held.

@@ -57,7 +57,7 @@ func Decide(p *policy.Compiled, text string, src events.SourceApp, now time.Time
 		}
 		action := events.ActionMonitored
 		switch pol.Action {
-		case policy.ActionBlock:
+		case policy.ActionBlock, policy.ActionBlockOverride: // no override on the clipboard
 			action = events.ActionBlocked
 			d.Block = true
 			if blockFinding == nil {

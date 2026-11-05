@@ -61,6 +61,9 @@ type Service interface {
 	// NotifySession shows n to the user of one session and waits for the
 	// helper's answer (ErrNoHelper when none is connected).
 	NotifySession(ctx context.Context, sessionID string, n ipc.Notify) error
+	// AskOverride asks the user of one session what to do about a file a
+	// block_override policy blocked, and waits for their answer.
+	AskOverride(ctx context.Context, sessionID string, a ipc.AskOverride) (ipc.OverrideAnswer, error)
 	// SessionReadiness is the notification readiness the helper of a session
 	// reports (#323); ok is false when no helper is connected there.
 	SessionReadiness(sessionID string) (state string, ok bool)

@@ -42,6 +42,12 @@ Someone with admin rights, encryption tools, a phone camera or a second operatin
 - **Never held:** antivirus, indexers, thumbnailers and backup daemons. Backups to a USB drive with `rsync` are a copy: list backup drives as trusted devices.
 - **Fails open:** a slow scan (past `scan_timeout_ms`, at most 10 seconds), a flood of opens, a crash or a stalled event loop all end in "allow", counted in the status (`files.blocking`). The emergency switch `dlp-files-off` in the config directory turns blocking off within seconds.
 
+## Overrides and exceptions
+
+- A `block_override` policy blocks, then asks the user in a dialog: continue with a reason, request an exception, or cancel. A reason lets that file through for that user for 10 minutes and is recorded as an `overridden` event; a user gets `override_daily_limit` overrides a day.
+- An exception request goes to IT with the reason; once approved, it reaches the device in `modules.files.exceptions` and the file passes until the exception expires. A file edited after approval has a new hash and is checked again.
+- Linux needs `zenity` or `kdialog` for the dialog; without one, the user gets the block notification only.
+
 ## When the user isn't told
 
 A blocked or removed file shows the user a desktop notification, unless notifications don't reach them. The event's `user_notified` is then `false`, and the session's `notifications` capability says why:

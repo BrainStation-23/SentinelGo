@@ -462,7 +462,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// channel.
 		if exe, err := os.Executable(); err == nil {
 			m.SetFiles(filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				Notifier: sessionNotifier{sup}}))
+				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)}))
 		}
 	}
 	if err := m.Start(ctx); err != nil {
@@ -634,6 +634,25 @@ func (n sessionNotifier) SessionReadiness(sessionID string) (string, bool) {
 
 func (n sessionNotifier) NotifySession(ctx context.Context, sessionID, title, body string) error {
 	return n.s.NotifySession(ctx, sessionID, ipc.Notify{Title: title, Message: body, Level: ipc.LevelWarning})
+}
+
+func (n sessionNotifier) AskOverride(ctx context.Context, sessionID, title, message string, canOverride, canRequest bool) (string, string, error) {
+	ans, err := n.s.AskOverride(ctx, sessionID, ipc.AskOverride{Title: title, Message: message, CanOverride: canOverride, CanRequest: canRequest})
+	return ans.Choice, ans.Reason, err
+}
+
+// exceptionRequester sends a user's exception request (#336) through
+// agent_request_dlp_exception, recovering an expired session once.
+func (mi *MainIntegration) exceptionRequester(cfg *config.Config, s *dlpsvc.Service) func(context.Context, filedlp.ExceptionRequest) error {
+	return func(ctx context.Context, r filedlp.ExceptionRequest) error {
+		req := dlpsvc.ExceptionRequest{PolicyID: r.PolicyID, Channel: r.Channel, EventID: r.EventID, User: r.User,
+			File: dlpsvc.ExceptionFile{SHA256: r.SHA256, Name: r.FileName}, Justification: r.Justification}
+		send := func() error { return s.RequestException(ctx, req) }
+		if mi.authSvc == nil {
+			return send()
+		}
+		return mi.authSvc.DoWithAuthRetry(ctx, cfg, send)
+	}
 }
 
 // maxReportedSessions bounds the sessions in one inventory upload, as in the

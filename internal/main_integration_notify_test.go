@@ -63,6 +63,10 @@ func (f *fakeSessions) NotifySession(context.Context, string, ipc.Notify) error 
 
 func (f *fakeSessions) SessionReadiness(string) (string, bool) { return "", false }
 
+func (f *fakeSessions) AskOverride(context.Context, string, ipc.AskOverride) (ipc.OverrideAnswer, error) {
+	return ipc.OverrideAnswer{}, session.ErrNoHelper
+}
+
 func (f *fakeSessions) OpenProfile(context.Context, string, ipc.OpenProfile) error {
 	return session.ErrNoHelper
 }

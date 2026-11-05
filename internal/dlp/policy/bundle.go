@@ -18,7 +18,15 @@ const (
 	ActionMonitor = "monitor" // record evidence only
 	ActionWarn    = "warn"    // keep the content, tell the user and record evidence
 	ActionBlock   = "block"   // replace the content and record evidence
+	// ActionBlockOverride blocks, but the user may go ahead with a reason
+	// (file channels, Compliance-OS#581). The backend sends it only to agents
+	// reporting dlp_block_override_v1; on the clipboard it is a block.
+	ActionBlockOverride = "block_override"
 )
+
+// Blocks reports whether a policy's action stops the content (block, or
+// block_override until the user gives a reason).
+func (p Policy) Blocks() bool { return p.Action == ActionBlock || p.Action == ActionBlockOverride }
 
 // Evidence modes for the whole bundle.
 const (
