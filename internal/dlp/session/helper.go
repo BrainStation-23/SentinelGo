@@ -89,7 +89,13 @@ func RunHelper(ctx context.Context, o HelperOptions) error {
 	defer r.stopChannels()
 	if o.Readiness != nil {
 		r.refreshReadiness()
-		go r.watchReadiness(ctx)
+		// The watcher ends with the helper, whether ctx ends or the service
+		// says stop: it must not outlive RunHelper.
+		wctx, cancel := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); r.watchReadiness(wctx) }()
+		defer func() { cancel(); wg.Wait() }()
 	}
 	for attempt, untrusted := 0, 0; ; {
 		if ctx.Err() != nil {
