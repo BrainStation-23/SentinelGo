@@ -63,6 +63,9 @@ type HelperOptions struct {
 	// Readiness reads whether a notification can reach this user (#323,
 	// notify.Readiness); nil means it isn't reported.
 	Readiness func() (state, detail string)
+	// AskOverride shows the block_override dialog (#336, prompt.Show); nil
+	// means this helper can't, and answers cancel.
+	AskOverride func(ctx context.Context, a ipc.AskOverride) (choice, reason string, err error)
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -189,6 +192,10 @@ func (r *helperRuntime) connectOnce(ctx context.Context) (stop bool, err error) 
 		case ipc.TypeOpenURL:
 			if m.OpenURL != nil {
 				go r.openURL(*m.OpenURL)
+			}
+		case ipc.TypeAskOverride:
+			if m.AskOverride != nil {
+				go r.askOverride(ctx, *m.AskOverride)
 			}
 		}
 	}
@@ -380,6 +387,29 @@ func (r *helperRuntime) notify(n ipc.Notify) {
 		res.Error = "notifications are off for this user (" + ready + ")"
 	}
 	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
+}
+
+// askOverrideWait bounds how long a block_override dialog stays open.
+const askOverrideWait = 10 * time.Minute
+
+// askOverride shows the block_override dialog and answers with the user's
+// choice. The reason is never logged.
+func (r *helperRuntime) askOverride(ctx context.Context, a ipc.AskOverride) {
+	ans := &ipc.OverrideAnswer{ID: a.ID, Choice: "cancel"}
+	if r.o.AskOverride == nil {
+		ans.Error = "this helper can't ask"
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, askOverrideWait)
+		choice, reason, err := r.o.AskOverride(ctx, a)
+		cancel()
+		if err != nil {
+			log.Printf("Session helper: override dialog %s failed: %v", a.ID, err)
+			ans.Error = err.Error()
+		} else {
+			ans.Choice, ans.Reason = choice, reason
+		}
+	}
+	r.send(ipc.Message{Type: ipc.TypeOverrideAnswer, OverrideAnswer: ans})
 }
 
 // openProfile presents a configuration profile to this helper's user, then

@@ -15,6 +15,7 @@ import (
 	"sentinelgo/internal/dlp/channel/clipboard"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
+	"sentinelgo/internal/dlp/prompt"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/mdmenroll"
 )
@@ -58,6 +59,10 @@ func RunDLPSession() int {
 		Channels:  []channel.Channel{clipboard.New()},
 		Notify:    notify.Show,
 		Readiness: notify.Readiness,
+		AskOverride: func(ctx context.Context, a ipc.AskOverride) (string, string, error) {
+			ans, err := prompt.Show(ctx, prompt.Ask{Title: a.Title, Message: a.Message, CanOverride: a.CanOverride, CanRequest: a.CanRequest})
+			return ans.Choice, ans.Reason, err
+		},
 		// mdm-enroll presents the enrollment profile in the user's session (#350).
 		OpenProfile: mdmenroll.OpenProfileForUser,
 		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).

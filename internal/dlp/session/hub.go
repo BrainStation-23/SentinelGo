@@ -59,7 +59,8 @@ type helper struct {
 	out   chan ipc.Message  // drained by the helper's writer goroutine
 	done  chan struct{}     // closed when the connection is finished
 
-	pending map[string]chan string // notify id -> its result (guarded by Hub.mu)
+	pending map[string]chan string             // notify id -> its result (guarded by Hub.mu)
+	asks    map[string]chan ipc.OverrideAnswer // ask id -> the user's answer (guarded by Hub.mu)
 }
 
 // helperOutbox is how many messages may wait for a helper. A helper that
@@ -201,6 +202,50 @@ func (h *Hub) NotifySession(ctx context.Context, sessionID string, n ipc.Notify)
 		n.ID = newNotifyID()
 	}
 	return h.askSession(ctx, sessionID, n.ID, ipc.Message{Type: ipc.TypeNotify, Notify: &n})
+}
+
+// AskOverride asks the user of one session what to do about a blocked file
+// and waits for their answer until ctx ends (a dialog waits for the user).
+func (h *Hub) AskOverride(ctx context.Context, sessionID string, a ipc.AskOverride) (ipc.OverrideAnswer, error) {
+	if a.ID == "" {
+		a.ID = newNotifyID()
+	}
+	ch := make(chan ipc.OverrideAnswer, 1)
+	h.mu.Lock()
+	var target *helper
+	for hp := range h.helpers {
+		if hp.id.SessionID == sessionID {
+			target = hp
+			break
+		}
+	}
+	if target != nil {
+		if target.asks == nil {
+			target.asks = map[string]chan ipc.OverrideAnswer{}
+		}
+		target.asks[a.ID] = ch
+	}
+	h.mu.Unlock()
+	if target == nil {
+		return ipc.OverrideAnswer{}, ErrNoHelper
+	}
+	defer func() {
+		h.mu.Lock()
+		delete(target.asks, a.ID)
+		h.mu.Unlock()
+	}()
+	h.send(target, ipc.Message{Type: ipc.TypeAskOverride, AskOverride: &a})
+	select {
+	case ans := <-ch:
+		if ans.Error != "" {
+			return ans, errors.New(ans.Error)
+		}
+		return ans, nil
+	case <-target.done:
+		return ipc.OverrideAnswer{}, errors.New("the session helper disconnected")
+	case <-ctx.Done():
+		return ipc.OverrideAnswer{}, errors.New("no answer from the session helper")
+	}
 }
 
 // SessionReadiness reports the notification readiness of the helper of one
@@ -557,6 +602,18 @@ func (h *Hub) readLoop(hp *helper) {
 		case ipc.TypeOpenURLResult:
 			if m.OpenURLResult != nil {
 				h.answer(hp, m.OpenURLResult.ID, m.OpenURLResult.Error)
+			}
+		case ipc.TypeOverrideAnswer:
+			if a := m.OverrideAnswer; a != nil {
+				h.mu.Lock()
+				ch := hp.asks[a.ID]
+				h.mu.Unlock()
+				if ch != nil {
+					select {
+					case ch <- *a:
+					default:
+					}
+				}
 			}
 		case ipc.TypeStatus:
 			if m.Status != nil {
