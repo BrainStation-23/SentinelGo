@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Local administrator rights run natively, and a time-limited grant ends on the device even when it's offline (#388; backend Compliance-OS#715). The agent now handles the console's `local-admin-add` and `local-admin-remove` commands itself (older agents keep running the commands' scripts) and reports capability `local_admin_v1`. It behaves like the scripts: the Administrators group by SID on Windows (falling back to `net localgroup` for `AzureAD\` names), `admin` with `dseditgroup` on macOS, `sudo`/`wheel` with `gpasswd` on Linux; the same matching (local `bob` is never `CONTOSO\bob`); the same refusals (the built-in Administrator, system accounts, root, the agent's own account, the last enabled administrator); and the same one-line JSON result. Windows sign-out uses the Remote Desktop Services API rather than parsing `quser`.
+  - **Offline expiry:** an add with `expires_at` is recorded in `local_admin_grants.json` in the config directory (locked down like `config.json`), and the service removes the rights at that time without the server, checking every 15 seconds and at start, so a deadline missed while the agent was down or the device asleep is handled at once. Setting the clock back doesn't extend a grant (the latest time seen and the process's monotonic clock both count), and a clock that reads earlier than the grant's start removes it. A failed removal is retried with backoff. A time-limited grant on someone who is already an administrator is refused, since its end would take away standing rights.
+  - **Backup if the agent is stopped:** each grant also gets a one-shot OS task that runs `sentinelgo local-admin expire <grant_id>` at the end time: Task Scheduler as SYSTEM (run late if missed), a LaunchDaemon, or a systemd timer with `Persistent=true`. It's removed when the grant ends.
+  - The inventory gains `admin_grants` (`grant_id`, `member`, `expires_at`, `state`: `active`/`removed`/`failed`, `removed_at`, `error`); removed grants are kept 7 days. `sentinelgo local-admin status` prints them.
+  - The server doesn't send `expires_at` yet, so until it does the native commands add and remove like the scripts.
+
 ## [v4.0.5] - 2026-11-02
 
 ### Added

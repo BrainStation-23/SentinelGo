@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/constants"
 	"sentinelgo/internal/httpx"
+	"sentinelgo/internal/localadmin"
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/supabase"
@@ -47,6 +49,10 @@ type AgentUpdatePayload struct {
 	// PowerTelemetry covers the time since the last successful upload
 	// (#198); left out until a sampling interval has completed.
 	PowerTelemetry *shared.PowerTelemetry `json:"power_telemetry,omitempty"`
+	// AdminGrants are the time-limited admin grants the agent enforces on
+	// the device (#388), so the console can see an expiry enforced offline.
+	// Left out when there are none.
+	AdminGrants []localadmin.GrantReport `json:"admin_grants,omitempty"`
 	// Capabilities lists the task features this agent supports (contract
 	// v1 §6). Always sent, even empty, so the backend can tell "none" from
 	// an agent too old to report them.
@@ -105,6 +111,9 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 		PowerTelemetry:   sysInfo.PowerTelemetry,
 		Capabilities:     constants.Capabilities(),
 		UserIdentity:     sysInfo.UserIdentity,
+	}
+	if cfg != nil && cfg.Path != "" {
+		payload.AdminGrants = localadmin.Report(localadmin.StorePath(filepath.Dir(cfg.Path)), time.Now())
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)

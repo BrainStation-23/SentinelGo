@@ -20,6 +20,7 @@ import (
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/emergencylog"
+	"sentinelgo/internal/localadmin"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/mdmenroll"
 	"sentinelgo/internal/sanitize"
@@ -72,11 +73,17 @@ type MainIntegration struct {
 	// to stop and join Run before the task store is closed.
 	taskManagerCancel context.CancelFunc
 	taskManagerDone   chan struct{}
-	servicesStore     *store.ServicesStore
-	softwareStore     *store.SoftwareStore
-	dlpManager        *dlp.Manager
-	dlpSyncer         *dlp.Syncer
-	dlpEvents         *store.DLPEventStore
+
+	// localAdminCancel stops the local admin expiry loop (#388);
+	// localAdminDone is closed when it returns.
+	localAdminCancel context.CancelFunc
+	localAdminDone   chan struct{}
+
+	servicesStore *store.ServicesStore
+	softwareStore *store.SoftwareStore
+	dlpManager    *dlp.Manager
+	dlpSyncer     *dlp.Syncer
+	dlpEvents     *store.DLPEventStore
 	// mu protects sessions against concurrent access between notifyUser
 	// (which reads it) and Stop (which nils it).
 	mu sync.Mutex
@@ -153,6 +160,9 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 
 	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
+
+	// 7b. End time-limited admin grants on time, without the server (#388).
+	mi.startLocalAdminExpiry(ctx)
 
 	// 8. Start the task scheduler.
 	if err := mi.scheduler.Start(mi.cfg, mi.authSvc); err != nil {
@@ -750,6 +760,7 @@ func (mi *MainIntegration) Stop() error {
 
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
+	mi.stopLocalAdminExpiry()
 
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
@@ -797,6 +808,44 @@ func (mi *MainIntegration) Stop() error {
 
 	log.Printf("SentinelGo main integration stopped")
 	return nil
+}
+
+// localAdminCheckInterval is how often time-limited admin grants are
+// checked. Each check reads a small file; removal runs only when one is due.
+const localAdminCheckInterval = 15 * time.Second
+
+// startLocalAdminExpiry runs the local admin expiry loop: a grant whose end
+// time passed (also while the agent was down or the device asleep) loses its
+// rights on the device, offline (#388).
+func (mi *MainIntegration) startLocalAdminExpiry(ctx context.Context) {
+	if mi.cfg.Path == "" {
+		return
+	}
+	m, err := localadmin.ForConfigDir(filepath.Dir(mi.cfg.Path))
+	if err != nil {
+		log.Printf("Local admin expiry not started: %v", err)
+		return
+	}
+	lctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	mi.localAdminCancel, mi.localAdminDone = cancel, done
+	go func() {
+		defer close(done)
+		m.Run(lctx, localAdminCheckInterval)
+	}()
+}
+
+func (mi *MainIntegration) stopLocalAdminExpiry() {
+	if mi.localAdminCancel == nil {
+		return
+	}
+	mi.localAdminCancel()
+	select {
+	case <-mi.localAdminDone:
+	case <-time.After(taskManagerStopTimeout):
+		log.Printf("Warning: local admin expiry did not stop within %v", taskManagerStopTimeout)
+	}
+	mi.localAdminCancel = nil
 }
 
 // stopTaskManager cancels the TaskManager's Run goroutine, waits (bounded by
