@@ -70,6 +70,30 @@ func BenchmarkScan_UTF16_1M(b *testing.B) {
 func BenchmarkScan_Docx1M(b *testing.B)      { benchScan(b, benchDocx(b, 1<<20)) }
 func BenchmarkScan_XLSX50kRows(b *testing.B) { benchScan(b, benchXLSX(b, 50000)) }
 func BenchmarkScan_Zip100Files(b *testing.B) { benchScan(b, benchZip(b, 100, 10<<10)) }
+func BenchmarkScan_PDF100Pages(b *testing.B) { benchScan(b, benchPDF(100, 4<<10)) }
+
+// benchPDF is a PDF of pages pages, each a Flate content stream showing
+// about each bytes of text, one line per Tj.
+func benchPDF(pages, each int) []byte {
+	p := newPDF().obj(1, "<< /Type /Catalog /Pages 2 0 R >>")
+	var kids strings.Builder
+	for i := 0; i < pages; i++ {
+		fmt.Fprintf(&kids, "%d 0 R ", 10+2*i)
+	}
+	p.obj(2, "<< /Type /Pages /Count "+fmt.Sprint(pages)+" /Kids ["+kids.String()+"] /Resources << /Font << /F1 3 0 R >> >> >>")
+	p.obj(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	for i := 0; i < pages; i++ {
+		var c strings.Builder
+		c.WriteString("BT /F1 10 Tf 72 720 Td 12 TL\n")
+		for _, line := range strings.Split(benchText(each), "\n") {
+			fmt.Fprintf(&c, "(%s) '\n", line)
+		}
+		c.WriteString("ET")
+		p.obj(10+2*i, fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Contents %d 0 R >>", 11+2*i))
+		p.stream(11+2*i, "", []byte(c.String()), true)
+	}
+	return p.bytes("/Root 1 0 R")
+}
 
 func benchZip(b *testing.B, n, each int) []byte {
 	var es [][2]string

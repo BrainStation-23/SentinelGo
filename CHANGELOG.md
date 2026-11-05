@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- File DLP: PDF files are now read (#327). The scan engine extracts the text of a PDF's pages, including objects packed in object streams (how Word and most tools save PDFs), Flate, ASCII85 and ASCIIHex streams, and fonts with a ToUnicode map (so text in embedded subset fonts, such as Calibri saved from Word, comes out as text). A damaged file still gives what it can, since objects are read in order without the cross-reference table. What it can't read is reported, never passed off as clean: an encrypted PDF is `unscannable:encrypted`, a PDF with no text at all (a scanned image; OCR is still out of scope) is `unscannable:unsupported_type`, and text in a font without a Unicode map, or a stream it can't decode, makes the result `truncated`. Decompression shares the archive limits (budget and compression ratio) against bombs. No new dependency.
+
+### Fixed
+
+- Inventory: a list the agent failed to collect (disks, GPUs, network adapters, peripherals, audio devices, printers, displays, local users) is now left out of the upload instead of being sent as `null`, so the console keeps the last good value (#387; console side Compliance-OS#641). A list that was collected and is empty is still sent as `[]`.
+
 ## [v4.0.5] - 2026-11-02
 
 ### Added
