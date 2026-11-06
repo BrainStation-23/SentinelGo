@@ -377,8 +377,7 @@ install_launchd_service() {
     <key>ProgramArguments</key>
     <array>
         <string>$INSTALL_DIR/$BINARY_NAME</string>
-        <string>-run</string>
-        <string>--config</string>
+        <string>-config</string>
         <string>$CONFIG_DIR/config.json</string>
     </array>
     <key>RunAtLoad</key>

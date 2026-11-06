@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"runtime"
 	"syscall"
 
-	"sentinelgo/internal"
 	"sentinelgo/internal/binpath"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/scanworker"
@@ -115,55 +113,48 @@ func HandleUninstall(svc AgentService) {
 	}
 }
 
-// RunForeground runs the agent in console/foreground mode, guarded by a process
-// lock, until an interrupt signal is received. When the lock can't be taken it
-// returns the error without starting; StartExitCode maps it to an exit code.
-func RunForeground(cfg *config.Config) error {
-	version := config.Version
-	lf, err := acquireProcessLock()
-	if err != nil {
-		log.Printf("Not starting: %v", err)
-		fmt.Printf("Error: %v\n", err)
-		return err
-	}
-	defer func() {
-		if err := lf.Release(); err != nil {
-			log.Printf("Warning: Failed to release lock: %v", err)
-		}
-	}()
-
-	fmt.Printf("Started SentinelGo v%s in foreground mode\n", version)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+// RunForeground runs the agent in console/foreground mode until an interrupt
+// signal is received. It goes through the same Program.Start/Stop path as the
+// service, so first-boot enrollment (#351) and its retry loop run here too:
+// LaunchDaemons and systemd units written before #399 start the agent with
+// -run. When the start fails (the process lock is held, the config is
+// invalid, ...) it returns the error without waiting; StartExitCode maps it to
+// an exit code.
+func RunForeground(prg *Program) error {
+	fmt.Printf("Starting SentinelGo v%s in foreground mode\n", config.Version)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
-	mainIntegration := internal.NewMainIntegration(cfg)
-
-	go func() {
-		if err := mainIntegration.Start(ctx); err != nil {
-			log.Printf("Main integration stopped with error: %v", err)
-		}
-	}()
-
-	<-sigChan
-	fmt.Println("\nReceived shutdown signal, stopping...")
-	cancel()
-	if err := mainIntegration.Stop(); err != nil {
-		log.Printf("Warning: Failed to stop main integration: %v", err)
+	if err := runUntilSignal(prg, sigChan); err != nil {
+		log.Printf("Not starting: %v", err)
+		fmt.Printf("Error: %v\n", err)
+		return err
 	}
 	fmt.Println("SentinelGo stopped")
 	return nil
 }
 
-// RunAsService hands control to the platform service manager.
+// runUntilSignal starts prg, waits for a signal on sig, then stops it. A
+// failed start returns at once, so a supervisor (launchd KeepAlive, systemd)
+// sees the process exit and restarts it instead of it idling without an agent.
+func runUntilSignal(prg *Program, sig <-chan os.Signal) error {
+	if err := prg.Start(nil); err != nil {
+		return err
+	}
+	<-sig
+	return prg.Stop(nil)
+}
+
+// RunAsService hands control to the platform service manager. A failed run
+// exits with StartExitCode, never 0, so launchd and systemd record the failure
+// and apply their restart policy.
 func RunAsService(svc AgentService) {
 	if err := svc.Run(); err != nil {
-		if err := logger.Errorf("Service failed: %v", err); err != nil {
-			log.Printf("Warning: failed to log service error: %v", err)
+		if lerr := logger.Errorf("Service failed: %v", err); lerr != nil {
+			log.Printf("Warning: failed to log service error: %v", lerr)
 		}
+		os.Exit(int(StartExitCode(err)))
 	}
 }

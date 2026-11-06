@@ -19,7 +19,27 @@ func createLaunchdPlist() error {
 		version = "unknown"
 	}
 
-	plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	// #nosec G301 - /Library/LaunchDaemons is a system directory with standard permissions
+	if err := os.MkdirAll("/Library/LaunchDaemons", 0755); err != nil {
+		return fmt.Errorf("create LaunchDaemons directory: %w", err)
+	}
+
+	// #nosec G306 - LaunchDaemon plist files need to be readable by launchd
+	if err := os.WriteFile(launchdPlistPath, []byte(launchdPlist(version)), 0644); err != nil {
+		return fmt.Errorf("write plist file: %w", err)
+	}
+
+	fmt.Println("Created launchd plist: /Library/LaunchDaemons/com.sentinelgo.agent.plist")
+	return nil
+}
+
+// launchdPlist is the LaunchDaemon definition. It starts the agent in service
+// mode (no -run), the same Program.Start path the Windows service and systemd
+// unit use, so first-boot enrollment runs on a generic package (#399).
+// installation-doc/install.sh and the pkg postinstall (#352) write the same
+// arguments.
+func launchdPlist(version string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -28,8 +48,7 @@ func createLaunchdPlist() error {
     <key>ProgramArguments</key>
     <array>
         <string>/opt/sentinelgo/sentinelgo</string>
-        <string>-run</string>
-        <string>--config</string>
+        <string>-config</string>
         <string>/opt/sentinelgo/.sentinelgo/config.json</string>
     </array>
     <key>RunAtLoad</key>
@@ -48,19 +67,6 @@ func createLaunchdPlist() error {
     <string>SentinelGo Agent v%s - Cross-platform system monitoring</string>
 </dict>
 </plist>`, version)
-
-	// #nosec G301 - /Library/LaunchDaemons is a system directory with standard permissions
-	if err := os.MkdirAll("/Library/LaunchDaemons", 0755); err != nil {
-		return fmt.Errorf("create LaunchDaemons directory: %w", err)
-	}
-
-	// #nosec G306 - LaunchDaemon plist files need to be readable by launchd
-	if err := os.WriteFile(launchdPlistPath, []byte(plistContent), 0644); err != nil {
-		return fmt.Errorf("write plist file: %w", err)
-	}
-
-	fmt.Println("Created launchd plist: /Library/LaunchDaemons/com.sentinelgo.agent.plist")
-	return nil
 }
 
 func loadLaunchdService() error {

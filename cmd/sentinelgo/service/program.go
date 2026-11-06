@@ -17,6 +17,7 @@ import (
 	"sentinelgo/internal/enrollment"
 	"sentinelgo/internal/lockfile"
 	mdmpkg "sentinelgo/internal/osinfo/mdm"
+	"sentinelgo/internal/osinfo/shared"
 	systempkg "sentinelgo/internal/osinfo/system"
 	"sentinelgo/internal/sanitize"
 )
@@ -97,14 +98,7 @@ var (
 	enroll = enrollment.Enroll
 	// enrollIdentity is what the backend checks the token against.
 	enrollIdentity = func() enrollment.Identity {
-		id := enrollment.Identity{Serial: systempkg.GetSerialNumber()}
-		if info := mdmpkg.Collect(""); info != nil {
-			id.ProvisioningUDID = info.Identity.ProvisioningUDID
-			if info.Identity.Serial != "" {
-				id.Serial = info.Identity.Serial
-			}
-		}
-		return id
+		return identityFromMDM(systempkg.GetSerialNumber(), mdmpkg.Collect(""))
 	}
 	// enrollRetry is the wait before enrollment attempt n+1 (n >= 1).
 	enrollRetry = func(n int) time.Duration {
@@ -116,6 +110,24 @@ var (
 	// service manager restarts it instead of it running without an agent.
 	exitProcess = os.Exit
 )
+
+// identityFromMDM builds the enrollment identity from the system serial and
+// the same MDM collector the inventory's mdm.identity uses: the provisioning
+// UDID on macOS, the OMA-DM DeviceID and SMBIOS UUID on Windows (#398). The
+// collector leaves fields it doesn't have on an OS empty.
+func identityFromMDM(serial string, info *shared.MDMInfo) enrollment.Identity {
+	id := enrollment.Identity{Serial: serial}
+	if info == nil {
+		return id
+	}
+	id.ProvisioningUDID = info.Identity.ProvisioningUDID
+	id.OMADMDeviceID = info.Identity.OMADMDeviceID
+	id.SMBIOSUUID = info.Identity.SMBIOSUUID
+	if info.Identity.Serial != "" {
+		id.Serial = info.Identity.Serial
+	}
+	return id
+}
 
 // NewProgram constructs a Program for the given config.
 func NewProgram(cfg *config.Config) *Program {
