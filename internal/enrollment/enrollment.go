@@ -28,8 +28,19 @@ import (
 const FileName = "enrollment.json"
 
 // enrollFunction exchanges a token for agent credentials (contract v1,
-// Compliance-OS#543). It's public: the anon key gates it, the token
-// authenticates the device.
+// Compliance-OS#543; Windows MDM identity and mdm_host, Compliance-OS#555).
+// It's public: the anon key gates it, the token authenticates the device.
+//
+// Request:  {token, serial, provisioning_udid, omadm_device_id, smbios_uuid, os, arch}
+//
+//	Every identity field is always sent, "" when unknown. provisioning_udid
+//	is filled on macOS; omadm_device_id and smbios_uuid on Windows (#398),
+//	where the backend's Windows MDM record has no serial.
+//
+// Response: {agent_id, agent_secret, mdm_host?}
+//
+//	mdm_host is optional: older backends don't send it, and then the
+//	config's value is left as it is.
 const enrollFunction = "agent-enroll"
 
 // ErrNoToken means no enrollment token is available yet.
@@ -48,7 +59,18 @@ type Source struct {
 // Identity is what the backend checks the token against.
 type Identity struct {
 	Serial           string
-	ProvisioningUDID string
+	ProvisioningUDID string // macOS
+	OMADMDeviceID    string // Windows: the OMA-DM DeviceID of the MDM enrollment
+	SMBIOSUUID       string // Windows
+}
+
+// Credentials is the backend's answer to a token exchange.
+type Credentials struct {
+	AgentID     string
+	AgentSecret string
+	// MDMHost is the deployment's MDM hostname; "" when the backend didn't
+	// send one (or sent something that isn't a hostname).
+	MDMHost string
 }
 
 // Needed reports whether the agent has no usable configuration: no API URL
@@ -113,21 +135,24 @@ var ErrRejected = errors.New("the enrollment token was rejected")
 var httpClient *http.Client
 
 // Exchange trades the token for this device's agent credentials.
-func Exchange(ctx context.Context, src Source, id Identity) (agentID, agentSecret string, err error) {
+func Exchange(ctx context.Context, src Source, id Identity) (Credentials, error) {
 	return exchangeWith(ctx, src, id, httpClient)
 }
 
-func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (agentID, agentSecret string, err error) {
+func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (Credentials, error) {
 	body := map[string]string{
 		"token":             src.Token,
 		"serial":            id.Serial,
 		"provisioning_udid": id.ProvisioningUDID,
+		"omadm_device_id":   id.OMADMDeviceID,
+		"smbios_uuid":       id.SMBIOSUUID,
 		"os":                runtime.GOOS,
 		"arch":              runtime.GOARCH,
 	}
 	var resp struct {
 		AgentID     string `json:"agent_id"`
 		AgentSecret string `json:"agent_secret"`
+		MDMHost     string `json:"mdm_host"`
 	}
 	var opts []supabase.Option
 	if hc != nil {
@@ -136,21 +161,41 @@ func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client)
 	c := supabase.New(src.ServerURL, src.AnonKey, func() string { return "" }, opts...)
 	if err := c.InvokeFunction(ctx, enrollFunction, body, &resp); err != nil {
 		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) {
-			return "", "", fmt.Errorf("%w: %v", ErrRejected, err)
+			return Credentials{}, fmt.Errorf("%w: %v", ErrRejected, err)
 		}
-		return "", "", err
+		return Credentials{}, err
 	}
 	if resp.AgentID == "" || resp.AgentSecret == "" {
-		return "", "", errors.New("the server's answer has no agent credentials")
+		return Credentials{}, errors.New("the server's answer has no agent credentials")
 	}
-	return resp.AgentID, resp.AgentSecret, nil
+	return Credentials{AgentID: resp.AgentID, AgentSecret: resp.AgentSecret, MDMHost: mdmHost(resp.MDMHost)}, nil
+}
+
+// mdmHost returns h when it's a bare hostname (optionally with a port), as
+// config's mdm_host expects ("mdm.example.com"), and "" otherwise. A bad
+// value is dropped rather than failing the enrollment: the agent works
+// without it, and an admin can still set it in config.json.
+func mdmHost(h string) string {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return ""
+	}
+	u, err := url.Parse("https://" + h)
+	if err != nil || u.Host != h || u.User != nil || u.Hostname() == "" {
+		return ""
+	}
+	return h
 }
 
 // Apply writes the credentials to cfg, saves config.json and deletes the
-// used token file. The secret is never logged.
-func Apply(cfg *config.Config, src Source, agentID, agentSecret string) error {
+// used token file. mdm_host is saved only when the backend sent one and the
+// config has none: an admin's value wins. The secret is never logged.
+func Apply(cfg *config.Config, src Source, creds Credentials) error {
 	cfg.SupabaseURL, cfg.SupabaseKey = src.ServerURL, src.AnonKey
-	cfg.AgentID, cfg.AgentSecret = agentID, agentSecret
+	cfg.AgentID, cfg.AgentSecret = creds.AgentID, creds.AgentSecret
+	if creds.MDMHost != "" && strings.TrimSpace(cfg.MDMHost) == "" {
+		cfg.MDMHost = creds.MDMHost
+	}
 	if err := cfg.SaveAtomic(); err != nil {
 		return fmt.Errorf("saving config.json: %w", err)
 	}
@@ -169,11 +214,11 @@ func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
 	if err != nil {
 		return err
 	}
-	agentID, secret, err := Exchange(ctx, src, id)
+	creds, err := Exchange(ctx, src, id)
 	if err != nil {
 		return fmt.Errorf("enrolling with the token from %s: %w", src.Origin, err)
 	}
-	return Apply(cfg, src, agentID, secret)
+	return Apply(cfg, src, creds)
 }
 
 // WriteToken saves a token where Find looks for it: enrollment.json in the

@@ -10,6 +10,7 @@ import (
 
 	"sentinelgo/internal/enrollment"
 	"sentinelgo/internal/lockfile"
+	"sentinelgo/internal/osinfo/shared"
 )
 
 // The daemon entry point (-run and launchd service mode both use
@@ -131,5 +132,29 @@ func TestLaunchdPlist_ServiceMode(t *testing.T) {
 	}
 	if !strings.Contains(plist, "SentinelGo Agent v1.2.3") {
 		t.Error("version missing from the plist comment")
+	}
+}
+
+// The enrollment identity carries the Windows OMA-DM DeviceID and SMBIOS UUID
+// from the MDM collector (#398), the macOS provisioning UDID, and prefers the
+// collector's serial over the system one.
+func TestIdentityFromMDM(t *testing.T) {
+	win := &shared.MDMInfo{Identity: shared.MDMIdentity{
+		OMADMDeviceID: "6F3A1C2B-0D4E-4F5A-9B8C-7D6E5F4A3B2C",
+		SMBIOSUUID:    "4c4c4544-0042-3510-8052-b4c04f4e3132",
+	}}
+	got := identityFromMDM("SYS-SERIAL", win)
+	want := enrollment.Identity{Serial: "SYS-SERIAL", OMADMDeviceID: win.Identity.OMADMDeviceID, SMBIOSUUID: win.Identity.SMBIOSUUID}
+	if got != want {
+		t.Errorf("windows: %+v, want %+v", got, want)
+	}
+
+	mac := &shared.MDMInfo{Identity: shared.MDMIdentity{Serial: "C02XYZ", ProvisioningUDID: "00008103-001A"}}
+	if got := identityFromMDM("SYS-SERIAL", mac); got != (enrollment.Identity{Serial: "C02XYZ", ProvisioningUDID: "00008103-001A"}) {
+		t.Errorf("macOS: %+v", got)
+	}
+
+	if got := identityFromMDM("SYS-SERIAL", nil); got != (enrollment.Identity{Serial: "SYS-SERIAL"}) {
+		t.Errorf("no MDM info: %+v", got)
 	}
 }

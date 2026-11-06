@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- First-boot enrollment: on Windows the agent sends the PC's OMA-DM DeviceID and SMBIOS UUID with its enrollment token, so the backend can check a token issued to a Windows MDM enrollment against the PC that redeems it. When the backend's answer includes `mdm_host`, it is saved to `config.json` unless one is already set, so an agent installed by MDM can run `mdm-enroll`, `mdm-sync` and `mdm-unenroll` and reports `is_our_server` correctly (#398).
+
+### Fixed
+
+- macOS: an agent installed from a generic package now enrolls with the token from MDM managed preferences, including a profile delivered after the install. The LaunchDaemon starts the agent in service mode instead of `-run`, and `-run` itself now runs first-boot enrollment, so LaunchDaemons from older installs enroll too. A daemon that fails to start exits with its startup exit code, so launchd restarts it, instead of staying up with nothing running (#399).
+
 ## [v4.0.6] - 2026-11-05
 
 ### Added
