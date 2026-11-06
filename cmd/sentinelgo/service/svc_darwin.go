@@ -47,16 +47,16 @@ func (ds *darwinService) Uninstall() error {
 	return fmt.Errorf("unreachable: Uninstall called on darwin")
 }
 
-// Run starts the program goroutines and blocks until launchd sends SIGTERM.
+// Run starts the program and blocks until launchd sends SIGTERM. A failed
+// start returns at once; RunAsService then exits with StartExitCode so
+// launchd's KeepAlive restarts the daemon.
 func (ds *darwinService) Run() error {
-	if err := ds.prg.Start(ds); err != nil {
-		return fmt.Errorf("start program: %w", err)
-	}
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigChan)
 
-	<-sigChan
-	return ds.prg.Stop(ds)
+	if err := runUntilSignal(ds.prg, sigChan); err != nil {
+		return fmt.Errorf("start program: %w", err)
+	}
+	return nil
 }

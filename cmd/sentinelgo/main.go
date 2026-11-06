@@ -148,7 +148,7 @@ func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 	case *f.uninstall:
 		svcsub.HandleUninstall(svc)
 	case *f.run:
-		if err := svcsub.RunForeground(cfg); err != nil {
+		if err := svcsub.RunForeground(prg); err != nil {
 			os.Exit(int(svcsub.StartExitCode(err)))
 		}
 	default:
