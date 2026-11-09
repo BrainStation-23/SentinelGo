@@ -1,7 +1,6 @@
-//go:build !linux
+//go:build !linux && !windows && !darwin
 
 package filedlp
 
-// New returns nil: file DLP has no hook on this platform yet (Windows #330,
-// macOS #332).
+// New returns nil: file DLP has no hook on this platform.
 func New(Options) Enforcer { return nil }

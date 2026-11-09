@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"sentinelgo/internal/dlp/channel"
+	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/scanworker"
 )
@@ -27,6 +28,12 @@ type Enforcer interface {
 	CopyCorrelation() map[string]string
 	// Health reports the hook's state and counters; nil when never started.
 	Health() *Health
+}
+
+// UserFileTaker is an Enforcer that decides files the session helpers hand
+// over (Windows network shares and sync folders, #330).
+type UserFileTaker interface {
+	TakeUserFile(from ipc.Identity, f ipc.UserFile)
 }
 
 // Options configure an Enforcer.
@@ -69,6 +76,9 @@ type Health struct {
 	// Blocking is the permission hook that holds file creation while the
 	// agent decides (Linux, #333); nil where there is none.
 	Blocking *BlockingHealth `json:"blocking,omitempty"`
+	// DeepInspection is the upload channel's HTTPS inspection
+	// (uploadproxy.Status, #344); nil when it never started.
+	DeepInspection any `json:"deep_inspection,omitempty"`
 }
 
 // Hook states.

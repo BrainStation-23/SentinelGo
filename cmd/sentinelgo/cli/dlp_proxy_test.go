@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"sentinelgo/internal/dlp/uploadproxy"
 )
 
 // The proxy must never listen where the network can reach it.
@@ -23,13 +25,13 @@ func TestRequireLoopback(t *testing.T) {
 
 func TestResetDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spill")
-	if err := resetDir(dir); err != nil {
+	if err := uploadproxy.ResetSpillDir(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "upload-left-by-a-crash"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := resetDir(dir); err != nil {
+	if err := uploadproxy.ResetSpillDir(dir); err != nil {
 		t.Fatal(err)
 	}
 	if left, _ := os.ReadDir(dir); len(left) != 0 {

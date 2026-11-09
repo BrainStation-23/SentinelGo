@@ -20,11 +20,7 @@ import (
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/uploadproxy"
-	"sentinelgo/internal/winsec"
 )
-
-// uploadSpillDir holds upload bodies while they are inspected (config dir).
-const uploadSpillDir = "upload-spill"
 
 // runDLPProxy is `sentinelgo dlp proxy`: the upload inspection proxy (#344,
 // phase 1) run by hand for testing. Point a browser at it as its HTTP and
@@ -80,8 +76,8 @@ func runDLPProxy(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	spill := filepath.Join(dir, uploadSpillDir)
-	if err := resetDir(spill); err != nil {
+	spill := filepath.Join(dir, uploadproxy.SpillDir)
+	if err := uploadproxy.ResetSpillDir(spill); err != nil {
 		_, _ = fmt.Fprintf(stderr, "Spill directory: %v\n", err)
 		return 1
 	}
@@ -124,26 +120,6 @@ func requireLoopback(addr string) error {
 	}
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("-listen %q: only a loopback address is allowed (e.g. 127.0.0.1:3129)", addr)
-	}
-	return nil
-}
-
-// resetDir creates dir (owner only; on Windows SYSTEM, Administrators and
-// this account, inherited by the spill files) and empties it of spill files
-// a crash may have left.
-func resetDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := winsec.SecurePath(dir); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		_ = os.Remove(filepath.Join(dir, e.Name()))
 	}
 	return nil
 }

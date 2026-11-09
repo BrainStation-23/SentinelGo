@@ -55,6 +55,9 @@ const (
 
 	TypeAskOverride    = "ask_override"    // service → helper: a file was blocked; ask the user what to do (#336)
 	TypeOverrideAnswer = "override_answer" // helper → service: the user's choice and reason
+
+	TypeUserFile    = "user_file"     // helper → service: a file the user wrote to a share or sync folder (Windows, #330)
+	TypeUserFileAck = "user_file_ack" // service → helper: the service has its own handle; close yours
 )
 
 // Notification levels.
@@ -87,6 +90,30 @@ type Message struct {
 	AskOverride   *AskOverride       `json:"ask_override,omitempty"`
 	// OverrideAnswer answers an AskOverride with the same ID.
 	OverrideAnswer *OverrideAnswer `json:"override_answer,omitempty"`
+	UserFile       *UserFile       `json:"user_file,omitempty"`
+	// UserFileAck answers a UserFile with the same ID.
+	UserFileAck *UserFileAck `json:"user_file_ack,omitempty"`
+}
+
+// UserFile hands the service a file the user wrote to a network share or a
+// cloud sync folder, which only the user's session can see (#330). Handle
+// is the helper's own open handle (Windows: read and delete access, shared
+// for reading); the service duplicates it out of the helper's process, so it
+// scans the very file the helper opened and needs neither its path nor the
+// user's credentials. The service acts on the handle, never on these path
+// fields; Root and Label only describe the destination to the user.
+type UserFile struct {
+	ID      string `json:"id"`
+	Handle  uint64 `json:"handle"`
+	Channel string `json:"channel"` // file.network_share or file.cloud_sync
+	Root    string `json:"root"`    // the watched drive or folder
+	Label   string `json:"label,omitempty"`
+}
+
+// UserFileAck says the service has its own copy of the handle, or won't
+// take it: either way the helper closes its handle.
+type UserFileAck struct {
+	ID string `json:"id"`
 }
 
 // AskOverride asks the user what to do about a file blocked by a

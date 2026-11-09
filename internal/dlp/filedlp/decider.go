@@ -677,4 +677,5 @@ const (
 	TypeRemovable    = "removable"
 	TypeNetworkShare = "network_share"
 	TypeUpload       = "upload"
+	TypeCloudSync    = "cloud_sync"
 )

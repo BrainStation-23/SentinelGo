@@ -138,6 +138,8 @@ type helperRuntime struct {
 	running map[string]bool // channels whose Run is active
 	sent    string          // the last status sent, to skip repeats
 	ready   string          // notification readiness, "" when not read
+	// handoffs are files handed to the service, waiting for its ack.
+	handoffs map[string]*pendingHandoff
 
 	chCancel context.CancelFunc
 	chWG     sync.WaitGroup
@@ -211,6 +213,10 @@ func (r *helperRuntime) dispatch(ctx context.Context, m ipc.Message) {
 	case ipc.TypeAskOverride:
 		if m.AskOverride != nil {
 			go r.askOverride(ctx, *m.AskOverride)
+		}
+	case ipc.TypeUserFileAck:
+		if m.UserFileAck != nil {
+			r.released(m.UserFileAck.ID)
 		}
 	}
 }
@@ -517,8 +523,9 @@ func (r *helperRuntime) attach(c ipc.Conn) {
 
 func (r *helperRuntime) detach() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.conn = nil
+	r.mu.Unlock()
+	r.releaseAll()
 }
 
 // lingerRefused ends a refused connection without sending anything: it
