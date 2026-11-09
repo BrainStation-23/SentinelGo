@@ -19,5 +19,9 @@ func startETW(func(fileOpen)) (*etwSession, error) {
 	return nil, errors.New("file tracing needs 64-bit Windows")
 }
 
-func (*etwSession) stop()                        {}
+// stop has nothing to stop: no trace runs on 32-bit Windows.
+func (*etwSession) stop() {
+	// No session was started (startETW always fails here).
+}
+
 func (*etwSession) stats() (events, lost uint64) { return 0, 0 }

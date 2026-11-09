@@ -14,10 +14,6 @@ package filedlp
 import (
 	"context"
 	"fmt"
-	"log"
-
-	"sentinelgo/internal/dlp/events"
-	"sentinelgo/internal/dlp/policy"
 )
 
 // Test seam: the remount.
@@ -37,92 +33,14 @@ var remountDevice = func(dev string, readOnly bool) error {
 	return nil
 }
 
-type macDeviceState struct {
-	madeRO   map[string]macVolume // device (/dev/disk4s1) → what the agent made read-only
-	reported map[string]bool
-	failed   map[string]bool
-}
+// setReadOnlyDevice is the device control's set on macOS.
+func setReadOnlyDevice(v devVolume, readOnly bool) error { return remountDevice(v.Source, readOnly) }
 
-func newMacDeviceState() *macDeviceState {
-	return &macDeviceState{madeRO: map[string]macVolume{}, reported: map[string]bool{}, failed: map[string]bool{}}
-}
-
-// reconcileDevices makes untrusted removable volumes read-only (or records
-// that it would, while audit-only), and writable again what no longer needs
-// to be. The volume's stream is closed first.
-func (e *darwinEnforcer) reconcileDevices(c *policy.Compiled, vols []macVolume, off bool, st *macDeviceState) {
-	want := map[string]macVolume{}
-	present := map[string]bool{}
-	var removable []Destination
-	byMount := map[string]macVolume{}
-	for _, v := range vols {
-		present[v.Source] = true
-		if v.Type == TypeRemovable {
-			removable = append(removable, v.Destination)
-			byMount[v.Mount] = v
-		}
+// devVolumes turns the mounts into what the device control uses.
+func devVolumes(vols []macVolume) []devVolume {
+	out := make([]devVolume, len(vols))
+	for i, v := range vols {
+		out[i] = devVolume{Destination: v.Destination, ReadOnly: v.ReadOnly}
 	}
-	var files policy.FilesModule
-	if c != nil {
-		files = c.Modules.Files
-	}
-	if c != nil && !off && files.CopyCorrelation.UntrustedDevices != policy.UntrustedAllow && files.ChannelEnabled(policy.ChannelFileRemovable) {
-		for _, d := range untrustedRemovable(c, removable) {
-			v := byMount[d.Mount]
-			want[v.Source] = v
-		}
-	}
-	for dev, v := range st.madeRO {
-		if _, ok := want[dev]; ok {
-			continue
-		}
-		if present[dev] {
-			e.releaseWatch(v.Mount)
-			if err := remountDevice(dev, false); err != nil {
-				log.Printf("DLP: could not make a removable drive writable again: %v", err)
-				continue
-			}
-		}
-		delete(st.madeRO, dev)
-	}
-	for dev := range st.reported {
-		if !present[dev] {
-			delete(st.reported, dev)
-		}
-	}
-	for dev, v := range want {
-		if _, done := st.madeRO[dev]; done || v.ReadOnly {
-			continue
-		}
-		if files.IsAuditOnly() {
-			if !st.reported[dev] {
-				st.reported[dev] = true
-				emitDeviceEvent(e.opts.Sink, c, v.Destination, events.ActionMonitored, events.ActionBlocked)
-			}
-			continue
-		}
-		e.releaseWatch(v.Mount)
-		if err := remountDevice(dev, true); err != nil {
-			if !st.failed[dev] {
-				st.failed[dev] = true
-				log.Printf("DLP: could not make an untrusted removable drive read-only: %v", err)
-			}
-			continue
-		}
-		delete(st.failed, dev)
-		st.madeRO[dev] = v
-		if !st.reported[dev] {
-			st.reported[dev] = true
-			emitDeviceEvent(e.opts.Sink, c, v.Destination, events.ActionBlocked, "")
-		}
-	}
-}
-
-func (e *darwinEnforcer) restoreDevices(st *macDeviceState) {
-	for dev := range st.madeRO {
-		if err := remountDevice(dev, false); err != nil {
-			log.Printf("DLP: could not make a removable drive writable again: %v", err)
-		}
-		delete(st.madeRO, dev)
-	}
+	return out
 }

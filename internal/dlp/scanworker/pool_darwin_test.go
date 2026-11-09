@@ -2,6 +2,7 @@ package scanworker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,5 +123,71 @@ func TestAccountIDs_Parse(t *testing.T) {
 	runDscl = func(args ...string) ([]byte, error) { return []byte("UniqueID: 0\nPrimaryGroupID: 0\n"), nil }
 	if _, _, ok := accountIDs(); ok {
 		t.Error("root accepted as the scan account")
+	}
+}
+
+func TestCreateScanAccount(t *testing.T) {
+	prev := runDscl
+	t.Cleanup(func() { runDscl = prev })
+	exists := false
+	var created []string
+	runDscl = func(args ...string) ([]byte, error) {
+		switch args[1] {
+		case "-read":
+			if !exists {
+				return nil, errors.New("no such record")
+			}
+			return []byte("UniqueID: 497\nPrimaryGroupID: -2\n"), nil
+		case "-list":
+			return []byte("root 0\n_www 70\n_taken 499\n_taken2 498\n"), nil
+		case "-create":
+			created = append(created, args[3]+"="+args[4])
+			if args[3] == "Password" {
+				exists = true
+			}
+		case "-delete":
+			exists = false
+		}
+		return nil, nil
+	}
+	if err := createScanAccount(); err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 7 || created[0] != "UniqueID=497" {
+		t.Errorf("created %v", created)
+	}
+	if uid, gid, err := unprivilegedIDs(); err != nil || uid != 497 || gid != nobodyID {
+		t.Errorf("ids %d %d %v", uid, gid, err)
+	}
+	created = nil
+	if err := createScanAccount(); err != nil || len(created) != 0 {
+		t.Errorf("created twice: %v %v", created, err)
+	}
+	if err := RemoveScanAccount(); err != nil || exists {
+		t.Errorf("remove: %v exists=%v", err, exists)
+	}
+	if uid, _, _ := unprivilegedIDs(); uid != nobodyID {
+		t.Errorf("without the account: uid %d", uid)
+	}
+	if err := RemoveScanAccount(); err != nil {
+		t.Errorf("removing a missing account: %v", err)
+	}
+	// A create that fails is undone.
+	runDscl = func(args ...string) ([]byte, error) {
+		switch args[1] {
+		case "-read":
+			return nil, errors.New("no such record")
+		case "-create":
+			if args[3] == "UserShell" {
+				return []byte("denied"), errors.New("exit 1")
+			}
+		case "-delete":
+			created = append(created, "deleted")
+		}
+		return nil, nil
+	}
+	created = nil
+	if err := createScanAccount(); err == nil || len(created) != 1 {
+		t.Errorf("a failed create: %v %v", err, created)
 	}
 }

@@ -19,6 +19,9 @@ import (
 // ScanAccount is the account the scan workers run as.
 const ScanAccount = "_sentinelgo-scan"
 
+// accountPath is ScanAccount's record in the local directory.
+const accountPath = "/Users/" + ScanAccount
+
 const (
 	accountUIDLow  = 400
 	accountUIDHigh = 499
@@ -41,7 +44,7 @@ func ensureScanAccount() {
 }
 
 func accountIDs() (uint32, uint32, bool) {
-	out, err := runDscl(".", "-read", "/Users/"+ScanAccount, "UniqueID", "PrimaryGroupID")
+	out, err := runDscl(".", "-read", accountPath, "UniqueID", "PrimaryGroupID")
 	if err != nil {
 		return 0, 0, false
 	}
@@ -103,7 +106,7 @@ func createScanAccount() error {
 	if uid == 0 {
 		return errors.New("no free system UID")
 	}
-	path := "/Users/" + ScanAccount
+	path := accountPath
 	for _, kv := range [][2]string{
 		{"UniqueID", strconv.Itoa(uid)}, {"PrimaryGroupID", "-2"}, {"UserShell", "/usr/bin/false"},
 		{"NFSHomeDirectory", "/var/empty"}, {"RealName", "SentinelGo DLP scan worker"}, {"IsHidden", "1"}, {"Password", "*"},
@@ -126,7 +129,7 @@ func RemoveScanAccount() error {
 	if _, _, ok := accountIDs(); !ok {
 		return nil
 	}
-	if out, err := runDscl(".", "-delete", "/Users/"+ScanAccount); err != nil {
+	if out, err := runDscl(".", "-delete", accountPath); err != nil {
 		return fmt.Errorf("dscl delete %s: %w: %s", ScanAccount, err, bytes.TrimSpace(out))
 	}
 	return nil

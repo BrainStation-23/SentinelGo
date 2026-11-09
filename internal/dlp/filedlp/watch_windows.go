@@ -77,37 +77,55 @@ func (w *dirWatch) loop(change func(fsChange), overflow func(root string), gone 
 	defer func() { _ = windows.CloseHandle(ioEvent) }()
 	buf := make([]byte, watchBufSize)
 	for {
-		ov := windows.Overlapped{HEvent: ioEvent}
-		_ = windows.ResetEvent(ioEvent)
-		err := windows.ReadDirectoryChanges(w.dir, &buf[0], uint32(len(buf)), true, watchMask, nil, &ov, 0)
-		if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
-			gone(w.root)
+		n, st := w.next(ioEvent, buf)
+		switch st {
+		case watchStopped:
 			return
-		}
-		ev, _ := windows.WaitForMultipleObjects([]windows.Handle{ioEvent, w.stop}, false, windows.INFINITE)
-		if ev == windows.WAIT_OBJECT_0+1 {
-			_ = windows.CancelIoEx(w.dir, &ov)
-			var n uint32
-			_ = windows.GetOverlappedResult(w.dir, &ov, &n, true) // wait: buf must outlive the I/O
-			return
-		}
-		var n uint32
-		if err := windows.GetOverlappedResult(w.dir, &ov, &n, false); err != nil {
-			if errors.Is(err, windows.ERROR_NOTIFY_ENUM_DIR) {
-				overflow(w.root)
-				continue
-			}
+		case watchGone:
 			gone(w.root) // the volume was removed or dismounted
 			return
-		}
-		if n == 0 {
+		case watchOverflow:
 			overflow(w.root) // too much changed at once: the buffer overflowed
-			continue
-		}
-		for _, name := range parseNotify(buf[:n]) {
-			change(fsChange{root: w.root, path: filepath.Join(w.root, name)})
+		case watchChanges:
+			for _, name := range parseNotify(buf[:n]) {
+				change(fsChange{root: w.root, path: filepath.Join(w.root, name)})
+			}
 		}
 	}
+}
+
+type watchStatus int
+
+const (
+	watchChanges watchStatus = iota
+	watchOverflow
+	watchGone
+	watchStopped
+)
+
+// next waits for one batch of notifications into buf, or for close.
+func (w *dirWatch) next(ioEvent windows.Handle, buf []byte) (uint32, watchStatus) {
+	ov := windows.Overlapped{HEvent: ioEvent}
+	_ = windows.ResetEvent(ioEvent)
+	err := windows.ReadDirectoryChanges(w.dir, &buf[0], uint32(len(buf)), true, watchMask, nil, &ov, 0)
+	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
+		return 0, watchGone
+	}
+	var n uint32
+	ev, _ := windows.WaitForMultipleObjects([]windows.Handle{ioEvent, w.stop}, false, windows.INFINITE)
+	if ev == windows.WAIT_OBJECT_0+1 {
+		_ = windows.CancelIoEx(w.dir, &ov)
+		_ = windows.GetOverlappedResult(w.dir, &ov, &n, true) // wait: buf must outlive the I/O
+		return 0, watchStopped
+	}
+	err = windows.GetOverlappedResult(w.dir, &ov, &n, false)
+	switch {
+	case errors.Is(err, windows.ERROR_NOTIFY_ENUM_DIR), err == nil && n == 0:
+		return 0, watchOverflow
+	case err != nil:
+		return 0, watchGone
+	}
+	return n, watchChanges
 }
 
 // parseNotify reads the FILE_NOTIFY_INFORMATION records in b and returns the

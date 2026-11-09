@@ -69,7 +69,7 @@ type windowsEnforcer struct {
 	queue    chan Request
 	changes  chan fsChange
 	kick     chan struct{}
-	devices  *winDeviceState // the volume loop's, then stopLocked's
+	devices  *deviceCtl // the volume loop's, then stopLocked's
 	lastPool scanworker.Health
 
 	pool     atomic.Pointer[scanworker.Pool]
@@ -99,7 +99,8 @@ type watchEntry struct {
 
 // New returns the Windows file DLP enforcer.
 func New(o Options) Enforcer {
-	e := &windowsEnforcer{opts: o, devices: newWinDeviceState(), watches: map[string]*watchEntry{}, removing: map[string]time.Time{}}
+	e := &windowsEnforcer{opts: o, watches: map[string]*watchEntry{}, removing: map[string]time.Time{}}
+	e.devices = newDeviceCtl(o.Sink, setReadOnlyVolume, e.releaseWatch)
 	e.decider = NewDecider(winPoolScanner{e}, o.Sink)
 	e.decider.SetSourceOpener(openSourceWin)
 	if o.Notifier != nil {
@@ -209,7 +210,7 @@ func (e *windowsEnforcer) stopLocked() {
 			drained = true
 		}
 	}
-	e.restoreDevices(e.devices) // fail open: nothing stays read-only because of us
+	e.devices.restore() // fail open: nothing stays read-only because of us
 	pool := e.pool.Swap(nil)
 	e.lastPool = pool.Health()
 	e.lastPool.Workers = 0
@@ -231,7 +232,7 @@ func (e *windowsEnforcer) volumeLoop(ctx context.Context, kick <-chan struct{}) 
 		e.localOff.Store(off)
 		c := e.compiled.Load()
 		vols := listVolumes()
-		e.reconcileDevices(c, vols, off, e.devices)
+		e.devices.reconcile(c, devVolumes(vols), off)
 		e.reconcileWatches(c, vols, off)
 		e.reconcileTaint(c, *e.dests.Load())
 		select {
@@ -264,7 +265,7 @@ func (e *windowsEnforcer) monitoredVolumes(c *policy.Compiled, vols []winVolume,
 		if !files.ChannelEnabled(v.Channel) || TrustedDevice(files.TrustedDevices, v.USB) || v.ReadOnly {
 			continue
 		}
-		if _, ok := e.devices.madeRO[v.Source]; ok {
+		if e.devices.madeReadOnly(v.Source) {
 			continue // nothing can be written to it
 		}
 		if _, ok := e.removing[v.Mount]; ok {

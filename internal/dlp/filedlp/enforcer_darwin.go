@@ -40,11 +40,11 @@ var darwinChannels = map[string]bool{policy.ChannelFileRemovable: true, policy.C
 var workerEnv []string
 
 // Test seam: what watches a root.
-var startRootWatch = func(root string, change func(fsChange), overflow, gone func(string)) (rootWatch, error) {
+var startRootWatch = func(root string, change func(fsChange), overflow, gone func(string)) (watchCloser, error) {
 	return startFSEvents(root, change, overflow, gone)
 }
 
-type rootWatch interface{ close() }
+type watchCloser interface{ close() }
 
 var volumePoll = 2 * time.Second
 
@@ -69,7 +69,7 @@ type darwinEnforcer struct {
 	queue    chan Request
 	changes  chan fsChange
 	kick     chan struct{}
-	devices  *macDeviceState
+	devices  *deviceCtl
 	lastPool scanworker.Health
 
 	pool     atomic.Pointer[scanworker.Pool]
@@ -84,14 +84,15 @@ type darwinEnforcer struct {
 }
 
 type macWatch struct {
-	w    rootWatch
+	w    watchCloser
 	dest Destination
 	dead atomic.Bool
 }
 
 // New returns the macOS file DLP enforcer.
 func New(o Options) Enforcer {
-	e := &darwinEnforcer{opts: o, devices: newMacDeviceState(), watches: map[string]*macWatch{}}
+	e := &darwinEnforcer{opts: o, watches: map[string]*macWatch{}}
+	e.devices = newDeviceCtl(o.Sink, setReadOnlyDevice, e.releaseWatch)
 	e.decider = NewDecider(macPoolScanner{e}, o.Sink)
 	if o.Notifier != nil {
 		e.decider.SetUserNotifier(o.Notifier)
@@ -198,7 +199,7 @@ func (e *darwinEnforcer) stopLocked() {
 			drained = true
 		}
 	}
-	e.restoreDevices(e.devices)
+	e.devices.restore()
 	pool := e.pool.Swap(nil)
 	e.lastPool = pool.Health()
 	e.lastPool.Workers = 0
@@ -217,7 +218,7 @@ func (e *darwinEnforcer) volumeLoop(ctx context.Context, kick <-chan struct{}) {
 		e.localOff.Store(off)
 		c := e.compiled.Load()
 		vols := listVolumes()
-		e.reconcileDevices(c, vols, off, e.devices)
+		e.devices.reconcile(c, devVolumes(vols), off)
 		e.reconcileWatches(c, vols, off)
 		select {
 		case <-ctx.Done():
@@ -241,7 +242,7 @@ func (e *darwinEnforcer) monitoredVolumes(c *policy.Compiled, vols []macVolume, 
 		if !files.ChannelEnabled(v.Channel) || v.ReadOnly || TrustedDevice(files.TrustedDevices, v.USB) || TrustedShare(files.TrustedShares, v.Destination) {
 			continue
 		}
-		if _, ok := e.devices.madeRO[v.Source]; ok {
+		if e.devices.madeReadOnly(v.Source) {
 			continue
 		}
 		out[v.Mount] = v.Destination

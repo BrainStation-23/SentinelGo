@@ -16,14 +16,11 @@ package filedlp
 // becomes trusted, the emergency switch is on or monitoring stops.
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-
-	"sentinelgo/internal/dlp/events"
-	"sentinelgo/internal/dlp/policy"
 )
 
 const (
@@ -111,124 +108,34 @@ func describeVolumeFlags(root string) (readOnly, ok bool) {
 	return flags&windows.FILE_READ_ONLY_VOLUME != 0, true
 }
 
-// winDeviceState is the device control's memory, owned by the volume loop
-// (and by stopLocked once the loop has ended).
-type winDeviceState struct {
-	madeRO   map[string]winVolume // volume (GUID path) → what the agent made read-only
-	reported map[string]bool      // volume already recorded
-	failed   map[string]bool      // volume whose change failed (logged once)
-}
-
-func newWinDeviceState() *winDeviceState {
-	return &winDeviceState{madeRO: map[string]winVolume{}, reported: map[string]bool{}, failed: map[string]bool{}}
-}
-
 // setReadOnlyVolume sets the disk attribute and remounts. When making a
 // drive read-only fails to remount, the attribute is cleared again, so the
 // drive isn't left half-changed. Making it writable keeps the attribute
 // cleared even then (fail open): the file system picks it up on its next
-// mount at the latest.
-func setReadOnlyVolume(v winVolume, readOnly bool) error {
-	if err := setDiskReadOnly(v.DiskNumber, readOnly); err != nil {
+// mount at the latest. A drive that ignores the attribute (some readers and
+// odd controllers do) is put back and reported as a failure.
+func setReadOnlyVolume(v devVolume, readOnly bool) error {
+	if err := setDiskReadOnly(v.Disk, readOnly); err != nil {
 		return err
 	}
 	if err := remountVolume(v.Mount); err != nil {
 		if readOnly {
-			_ = setDiskReadOnly(v.DiskNumber, false)
+			_ = setDiskReadOnly(v.Disk, false)
 		}
 		return err
+	}
+	if readOnly && !volumeReadOnly(v.Mount) {
+		_ = setReadOnlyVolume(v, false)
+		return errors.New("the device ignores the read-only attribute")
 	}
 	return nil
 }
 
-// reconcileDevices makes untrusted removable volumes read-only (or records
-// that it would, while audit-only), and makes writable again what no longer
-// needs to be read-only. vols are all removable volumes now. The volume's
-// watch is closed first: its handle would make the volume lock fail.
-func (e *windowsEnforcer) reconcileDevices(c *policy.Compiled, vols []winVolume, off bool, st *winDeviceState) {
-	want := map[string]winVolume{}
-	present := map[string]bool{}
-	for _, v := range vols {
-		present[v.Source] = true
+// devVolumes turns the removable volumes into what the device control uses.
+func devVolumes(vols []winVolume) []devVolume {
+	out := make([]devVolume, len(vols))
+	for i, v := range vols {
+		out[i] = devVolume{Destination: v.Destination, Disk: v.DiskNumber, ReadOnly: v.ReadOnly}
 	}
-	var files policy.FilesModule
-	if c != nil {
-		files = c.Modules.Files
-	}
-	mode := files.CopyCorrelation.UntrustedDevices
-	if c != nil && !off && mode != policy.UntrustedAllow && files.ChannelEnabled(policy.ChannelFileRemovable) {
-		dests := make([]Destination, len(vols))
-		byMount := map[string]winVolume{}
-		for i, v := range vols {
-			dests[i] = v.Destination
-			byMount[v.Mount] = v
-		}
-		for _, d := range untrustedRemovable(c, dests) {
-			v := byMount[d.Mount]
-			want[v.Source] = v
-		}
-	}
-	for src, v := range st.madeRO {
-		if _, ok := want[src]; ok {
-			continue
-		}
-		if present[src] {
-			e.releaseWatch(v.Mount)
-			if err := setReadOnlyVolume(v, false); err != nil {
-				log.Printf("DLP: could not make a removable drive writable again: %v", err)
-				continue // tried again next pass
-			}
-		}
-		delete(st.madeRO, src) // writable again, or unplugged (the attribute went with it)
-	}
-	for src := range st.reported {
-		if !present[src] {
-			delete(st.reported, src) // unplugged: a new plug-in is recorded again
-		}
-	}
-	for src, v := range want {
-		if _, done := st.madeRO[src]; done {
-			continue
-		}
-		if v.ReadOnly {
-			continue // read-only already: write-protected, or mounted so
-		}
-		if files.IsAuditOnly() {
-			if !st.reported[src] {
-				st.reported[src] = true
-				emitDeviceEvent(e.opts.Sink, c, v.Destination, events.ActionMonitored, events.ActionBlocked)
-			}
-			continue
-		}
-		e.releaseWatch(v.Mount)
-		err := setReadOnlyVolume(v, true)
-		if err == nil && !volumeReadOnly(v.Mount) {
-			// Some readers and odd controllers ignore the attribute.
-			_ = setReadOnlyVolume(v, false)
-			err = fmt.Errorf("the device ignores the read-only attribute")
-		}
-		if err != nil {
-			if !st.failed[src] {
-				st.failed[src] = true
-				log.Printf("DLP: could not make an untrusted removable drive read-only: %v", err)
-			}
-			continue
-		}
-		delete(st.failed, src)
-		st.madeRO[src] = v
-		if !st.reported[src] {
-			st.reported[src] = true
-			emitDeviceEvent(e.opts.Sink, c, v.Destination, events.ActionBlocked, "")
-		}
-	}
-}
-
-// restoreDevices makes writable again everything the agent made read-only.
-func (e *windowsEnforcer) restoreDevices(st *winDeviceState) {
-	for src, v := range st.madeRO {
-		if err := setReadOnlyVolume(v, false); err != nil {
-			log.Printf("DLP: could not make a removable drive writable again: %v", err)
-		}
-		delete(st.madeRO, src)
-	}
+	return out
 }

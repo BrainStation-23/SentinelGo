@@ -165,29 +165,35 @@ type eventTraceLogfile struct {
 	Context             uintptr
 }
 
+// eventDescriptor is EVENT_DESCRIPTOR.
+type eventDescriptor struct {
+	ID      uint16
+	Version uint8
+	Channel uint8
+	Level   uint8
+	Opcode  uint8
+	Task    uint16
+	Keyword uint64
+}
+
+// eventHeader is EVENT_HEADER.
+type eventHeader struct {
+	Size          uint16
+	HeaderType    uint16
+	Flags         uint16
+	EventProperty uint16
+	ThreadID      uint32
+	ProcessID     uint32
+	TimeStamp     int64
+	ProviderID    windows.GUID
+	Descriptor    eventDescriptor
+	ProcessorTime uint64
+	ActivityID    windows.GUID
+}
+
 // eventRecord is EVENT_RECORD.
 type eventRecord struct {
-	Header struct {
-		Size          uint16
-		HeaderType    uint16
-		Flags         uint16
-		EventProperty uint16
-		ThreadID      uint32
-		ProcessID     uint32
-		TimeStamp     int64
-		ProviderID    windows.GUID
-		Descriptor    struct {
-			ID      uint16
-			Version uint8
-			Channel uint8
-			Level   uint8
-			Opcode  uint8
-			Task    uint16
-			Keyword uint64
-		}
-		ProcessorTime uint64
-		ActivityID    windows.GUID
-	}
+	Header            eventHeader
 	BufferContext     uint32
 	ExtendedDataCount uint16
 	UserDataLength    uint16

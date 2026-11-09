@@ -75,7 +75,7 @@ func sandboxInit(profile string) error {
 	var initFn func(profile string, flags uint64, errbuf *uintptr) int32
 	purego.RegisterLibFunc(&initFn, lib, "sandbox_init")
 	var errbuf uintptr
-	if rc := initFn(profile, sandboxNamed, &errbuf); rc != 0 {
+	if initFn(profile, sandboxNamed, &errbuf) != 0 {
 		return fmt.Errorf("sandbox_init %s: %w", profile, syscall.EPERM)
 	}
 	return nil

@@ -39,50 +39,9 @@ func plistValue(d *xml.Decoder, se xml.StartElement, depth int) (any, error) {
 	}
 	switch se.Name.Local {
 	case "dict":
-		m := map[string]any{}
-		key := ""
-		for {
-			tok, err := d.Token()
-			if err != nil {
-				return nil, err
-			}
-			switch t := tok.(type) {
-			case xml.StartElement:
-				if t.Name.Local == "key" {
-					s, err := plistText(d)
-					if err != nil {
-						return nil, err
-					}
-					key = s
-					continue
-				}
-				v, err := plistValue(d, t, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				m[key] = v
-			case xml.EndElement:
-				return m, nil
-			}
-		}
+		return plistDict(d, depth)
 	case "array":
-		var a []any
-		for {
-			tok, err := d.Token()
-			if err != nil {
-				return nil, err
-			}
-			switch t := tok.(type) {
-			case xml.StartElement:
-				v, err := plistValue(d, t, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				a = append(a, v)
-			case xml.EndElement:
-				return a, nil
-			}
-		}
+		return plistArray(d, depth)
 	case "true", "false":
 		if err := d.Skip(); err != nil {
 			return nil, err
@@ -111,6 +70,53 @@ func plistValue(d *xml.Decoder, se xml.StartElement, depth int) (any, error) {
 		return f, nil
 	default: // string, data, date
 		return plistText(d)
+	}
+}
+
+func plistDict(d *xml.Decoder, depth int) (map[string]any, error) {
+	m := map[string]any{}
+	key := ""
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "key" {
+				if key, err = plistText(d); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			v, err := plistValue(d, t, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			m[key] = v
+		case xml.EndElement:
+			return m, nil
+		}
+	}
+}
+
+func plistArray(d *xml.Decoder, depth int) ([]any, error) {
+	var a []any
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			v, err := plistValue(d, t, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			a = append(a, v)
+		case xml.EndElement:
+			return a, nil
+		}
 	}
 }
 
