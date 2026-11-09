@@ -88,6 +88,11 @@ type windowsEnforcer struct {
 
 	dropped, overflows, unreadable atomic.Uint64
 
+	// Process attribution and taint (#331): nil while off.
+	taint       atomic.Pointer[winTaint]
+	taintFailed atomic.Bool            // the trace couldn't start; not tried again until restart
+	taintError  atomic.Pointer[string] // why
+
 	// Watches: the volume loop adds and removes them; the device window
 	// closes one when its drive is being removed.
 	wmu      sync.Mutex
@@ -105,6 +110,7 @@ type watchEntry struct {
 func New(o Options) Enforcer {
 	e := &windowsEnforcer{opts: o, devices: newWinDeviceState(), watches: map[string]*watchEntry{}, removing: map[string]time.Time{}}
 	e.decider = NewDecider(winPoolScanner{e}, o.Sink)
+	e.decider.SetSourceOpener(openSourceWin)
 	if o.Notifier != nil {
 		e.decider.SetUserNotifier(o.Notifier)
 	}
@@ -164,6 +170,8 @@ func (e *windowsEnforcer) Stop() {
 
 func (e *windowsEnforcer) startLocked() {
 	e.tried = true
+	e.taintFailed.Store(false) // a restart gives the trace another chance
+	e.taintError.Store(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel, e.running = cancel, true
 	e.queue = make(chan Request, winQueueSize)
@@ -192,6 +200,7 @@ func (e *windowsEnforcer) stopLocked() {
 	e.running = false
 	e.cancel()
 	e.wg.Wait()
+	e.stopTaint()
 	e.wmu.Lock()
 	roots := make([]string, 0, len(e.watches))
 	for root := range e.watches {
@@ -233,6 +242,7 @@ func (e *windowsEnforcer) volumeLoop(ctx context.Context, kick <-chan struct{}) 
 		vols := listVolumes()
 		e.reconcileDevices(c, vols, off, e.devices)
 		e.reconcileWatches(c, vols, off)
+		e.reconcileTaint(c, *e.dests.Load())
 		select {
 		case <-ctx.Done():
 			return
@@ -528,7 +538,9 @@ func (e *windowsEnforcer) openChanged(path string, now time.Time) (Request, open
 		e.unreadable.Add(1)
 		return Request{}, openSkip
 	}
-	return Request{File: os.NewFile(uintptr(h), path), Path: path, Dest: dest, Proc: consoleUser(), Ident: id, At: now}, openOK
+	r := Request{File: os.NewFile(uintptr(h), path), Path: path, Dest: dest, Proc: consoleUser(), Ident: id, At: now}
+	e.attribute(&r, e.compiled.Load())
+	return r, openOK
 }
 
 // destinationOf maps a path to the watched volume containing it.
@@ -566,8 +578,9 @@ func (e *windowsEnforcer) decide(ctx context.Context, r Request) {
 }
 
 // consoleUser is who most likely wrote to a removable drive: the user at
-// the console. Without process attribution (#331) the writing program is
-// unknown; the session id routes the notification to that user's helper.
+// the console. Without process attribution (process_taint, #331) the
+// writing program is unknown; the session id routes the notification to
+// that user's helper.
 func consoleUser() Process {
 	s := windows.WTSGetActiveConsoleSessionId()
 	if s == 0xFFFFFFFF {
@@ -627,11 +640,20 @@ func wtsString(s uint32, class uintptr) string {
 }
 
 // windowsMethods are the copy correlation methods this hook implements ("")
-// or why it can't. process_taint comes with ETW attribution (#331).
-var windowsMethods = map[string]string{
-	MethodScanOnClose:      "",
-	MethodUntrustedDevices: "",
-	MethodOSCopyEvents:     winMethodsNoOSCpy, // macOS's copyfile/clone events
+// or why it can't: process_taint needs the ETW trace (64-bit Windows, admin).
+func (e *windowsEnforcer) windowsMethods() map[string]string {
+	m := map[string]string{
+		MethodScanOnClose:      "",
+		MethodUntrustedDevices: "",
+		MethodProcessTaint:     "",
+		MethodOSCopyEvents:     winMethodsNoOSCpy, // macOS's copyfile/clone events
+	}
+	if !etwAvailable {
+		m[MethodProcessTaint] = "etw_unavailable"
+	} else if r := e.taintError.Load(); r != nil {
+		m[MethodProcessTaint] = *r
+	}
+	return m
 }
 
 func (e *windowsEnforcer) CopyCorrelation() map[string]string {
@@ -641,7 +663,7 @@ func (e *windowsEnforcer) CopyCorrelation() map[string]string {
 	if state == stateStopped {
 		state = stateRunning
 	}
-	return copyCorrelationCapabilities(e.compiled.Load(), windowsMethods, state, workers)
+	return copyCorrelationCapabilities(e.compiled.Load(), e.windowsMethods(), state, workers)
 }
 
 func (e *windowsEnforcer) Capabilities() map[string]string {
@@ -675,6 +697,13 @@ func (e *windowsEnforcer) Health() *Health {
 	if !tried {
 		return nil
 	}
-	return &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
+	h := &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
 		Unreadable: e.unreadable.Load(), Stats: e.decider.Stats(), Workers: workers}
+	if t := e.taint.Load(); t != nil {
+		h.TaintProcesses = t.store.len()
+		if t.sess != nil {
+			_, h.TaintOverflows = t.sess.stats()
+		}
+	}
+	return h
 }

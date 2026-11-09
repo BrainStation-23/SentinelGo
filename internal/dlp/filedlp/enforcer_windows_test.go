@@ -90,7 +90,7 @@ func TestWindowsEnforcer_ScansAfterWrite(t *testing.T) {
 	}
 	cc := e.CopyCorrelation()
 	if cc[MethodScanOnClose] != "supported" || cc[MethodUntrustedDevices] != "supported" ||
-		cc[MethodOSCopyEvents] != "unsupported:not_on_windows" || cc[MethodProcessTaint] != "unsupported:not_implemented" {
+		cc[MethodOSCopyEvents] != "unsupported:not_on_windows" || cc[MethodProcessTaint] != "supported" {
 		t.Errorf("copy correlation %v", cc)
 	}
 	if h := e.Health(); h.Blocking != nil {
