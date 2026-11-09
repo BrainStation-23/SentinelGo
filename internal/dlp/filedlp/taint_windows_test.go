@@ -140,8 +140,8 @@ func TestWinTaint_Paths(t *testing.T) {
 	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume3\Users\ann\plan.txt`})
 	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume3\Windows\notepad.exe`}) // not a user file
 	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume12\copy.txt`})
-	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume1\x.txt`})   // unknown device
-	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume31\x.txt`})  // a longer number isn't volume 3
+	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume1\x.txt`})  // unknown device
+	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume31\x.txt`}) // a longer number isn't volume 3
 	now := time.Now()
 	if src := tk.store.sources(7, time.Time{}, now, time.Minute); len(src) != 1 || src[0].Path != `C:\Users\ann\plan.txt` {
 		t.Errorf("sources %+v", src)

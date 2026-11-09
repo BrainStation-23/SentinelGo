@@ -16,8 +16,8 @@ import (
 
 // Tuning; vars for tests.
 var (
-	quietFor      = time.Second      // a file must be unchanged this long before it is scanned
-	tempQuietFor  = 5 * time.Second  // longer for temp names: a save usually renames them first
+	quietFor      = time.Second     // a file must be unchanged this long before it is scanned
+	tempQuietFor  = 5 * time.Second // longer for temp names: a save usually renames them first
 	pendingTick   = 250 * time.Millisecond
 	pendingGiveUp = 10 * time.Minute // a file still being written after this is dropped
 	rescanWindow  = 5 * time.Minute  // after lost events, files changed this recently are scanned

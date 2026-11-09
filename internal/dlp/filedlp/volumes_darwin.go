@@ -131,4 +131,3 @@ func describeDisk(dev string) (diskInfo, error) {
 	}
 	return info, nil
 }
-
