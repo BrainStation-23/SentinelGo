@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -45,21 +44,13 @@ var workerEnv []string
 
 // Tuning; vars for tests.
 var (
-	volumePoll    = 2 * time.Second
-	quietFor      = time.Second     // a file must be unchanged this long before it is scanned
-	tempQuietFor  = 5 * time.Second // longer for temp names: a save usually renames them first
-	pendingTick   = 250 * time.Millisecond
-	pendingGiveUp = 10 * time.Minute // a file still open for writing after this is dropped
-	removeGrace   = 15 * time.Second // a drive being removed is left alone this long
-	rescanWindow  = 5 * time.Minute  // after an overflow, files changed this recently are scanned
+	volumePoll  = 2 * time.Second
+	removeGrace = 15 * time.Second // a drive being removed is left alone this long
 )
 
 const (
 	winQueueSize      = 256
 	winDecideWorkers  = 2
-	maxPending        = 4096
-	changeQueueSize   = 4096
-	maxRescanFiles    = 5000
 	fileFlagNoRecall  = 0x00100000 // FILE_FLAG_OPEN_NO_RECALL
 	attrRecallOnOpen  = 0x00040000 // FILE_ATTRIBUTE_RECALL_ON_OPEN
 	attrRecallOnData  = 0x00400000 // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
@@ -392,106 +383,26 @@ func (e *windowsEnforcer) offSwitch() bool {
 	return err == nil
 }
 
-// pendingFile is a changed file waiting for its writer to finish.
-type pendingFile struct {
-	first, last time.Time
-}
-
 // pendingLoop collects changed files and queues each for a decision once it
 // has been quiet and can be opened without write sharing.
 func (e *windowsEnforcer) pendingLoop(ctx context.Context, changes <-chan fsChange, queue chan<- Request) {
 	defer e.wg.Done()
-	pending := map[string]*pendingFile{}
+	pending := newPendingSet(&e.dropped, &e.unreadable)
 	t := time.NewTicker(pendingTick)
 	defer t.Stop()
-	add := func(path string, now time.Time) {
-		if p, ok := pending[path]; ok {
-			p.last = now
-			return
-		}
-		if len(pending) >= maxPending {
-			e.dropped.Add(1)
-			return
-		}
-		pending[path] = &pendingFile{first: now, last: now}
-	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ch := <-changes:
-			if e.localOff.Load() {
-				continue
+			if !e.localOff.Load() {
+				pending.add(ch, time.Now())
 			}
-			if ch.path == "" {
-				for _, p := range rescan(ch.root, time.Now().Add(-rescanWindow)) {
-					add(p, time.Now())
-				}
-				continue
-			}
-			add(ch.path, time.Now())
 		case now := <-t.C:
-			for path, p := range pending {
-				quiet := quietFor
-				if isTempName(filepath.Base(path)) {
-					quiet = tempQuietFor
-				}
-				if now.Sub(p.last) < quiet {
-					continue
-				}
-				r, st := e.openChanged(path, now)
-				switch st {
-				case openRetry:
-					if now.Sub(p.first) > pendingGiveUp {
-						delete(pending, path)
-						e.unreadable.Add(1)
-					} else {
-						p.last = now // look again after another quiet period
-					}
-				case openSkip:
-					delete(pending, path)
-				case openOK:
-					delete(pending, path)
-					select {
-					case queue <- r:
-					default:
-						_ = r.File.Close()
-						e.dropped.Add(1)
-					}
-				}
-			}
+			pending.due(now, e.openChanged, queue)
 		}
 	}
 }
-
-// rescan lists the files under root changed since since (after a lost
-// batch of notifications), at most maxRescanFiles.
-func rescan(root string, since time.Time) []string {
-	var out []string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // skip what can't be read
-		}
-		if len(out) >= maxRescanFiles {
-			return filepath.SkipAll
-		}
-		if d.Type().IsRegular() {
-			if fi, err := d.Info(); err == nil && fi.ModTime().After(since) {
-				out = append(out, path)
-			}
-		}
-		return nil
-	})
-	return out
-}
-
-type openStatus int
-
-const (
-	openOK openStatus = iota
-	openRetry
-	openSkip
-)
 
 // openChanged opens a changed file for its decision: read and delete
 // access (delete, for on_close_violation), sharing reads and deletes but not

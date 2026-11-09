@@ -23,12 +23,6 @@ const watchMask = windows.FILE_NOTIFY_CHANGE_FILE_NAME | windows.FILE_NOTIFY_CHA
 // network redirector accepts.
 const watchBufSize = 64 << 10
 
-// fsChange is one changed file under a watched root.
-type fsChange struct {
-	root string // the watch's root
-	path string // full path
-}
-
 // dirWatch is a running watch on one root.
 type dirWatch struct {
 	root   string
