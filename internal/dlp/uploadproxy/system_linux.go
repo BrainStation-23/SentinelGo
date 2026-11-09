@@ -13,15 +13,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"sentinelgo/internal/binpath"
 )
 
 // Test seams: where the anchor goes and the bundle update.
 var (
 	anchorDir      = "/usr/local/share/ca-certificates"
 	updateCABundle = func() error {
+		// A fixed system path, never a PATH search: this runs as root.
+		tool, ok := binpath.Lookup("update-ca-certificates")
+		if !ok {
+			return fmt.Errorf("%w: update-ca-certificates not found", ErrNotImplemented)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		return exec.CommandContext(ctx, "update-ca-certificates").Run()
+		return exec.CommandContext(ctx, tool).Run() // #nosec G204 -- a fixed system tool, no arguments
 	}
 )
 

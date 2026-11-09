@@ -23,7 +23,7 @@ type handoffChannel struct {
 func (c *handoffChannel) Name() string                  { return policy.ChannelClipboard }
 func (c *handoffChannel) Supported() channel.Capability { return channel.Supported() }
 func (c *handoffChannel) Run(ctx context.Context, _ *policy.Compiled, sink channel.EventSink) error {
-	h, ok := sink.(FileHandoff)
+	h, ok := sink.(HandOffer)
 	if !ok {
 		return channel.ErrUnsupported
 	}

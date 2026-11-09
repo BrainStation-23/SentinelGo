@@ -15,9 +15,9 @@ import (
 	"sentinelgo/internal/dlp/ipc"
 )
 
-// FileHandoff is what a helper channel hands files to. The channel's
+// HandOffer is what a helper channel hands files to. The channel's
 // EventSink implements it in the helper.
-type FileHandoff interface {
+type HandOffer interface {
 	// HandOff sends f to the service; release is called exactly once, when
 	// the helper's handle can be closed.
 	HandOff(f ipc.UserFile, release func())
@@ -36,7 +36,7 @@ type pendingHandoff struct {
 	timer   *time.Timer
 }
 
-// HandOff implements FileHandoff.
+// HandOff implements HandOffer.
 func (r *helperRuntime) HandOff(f ipc.UserFile, release func()) {
 	if f.ID == "" {
 		f.ID = newHandoffID()

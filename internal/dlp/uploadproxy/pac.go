@@ -7,14 +7,21 @@ package uploadproxy
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
 // pacPath is where the proxy serves the script.
 const pacPath = "/proxy.pac"
 
-// PACURL is the auto-config URL for a proxy listening on addr.
-func PACURL(addr string) string { return "http://" + addr + pacPath }
+// PACURL is the auto-config URL for a proxy listening on addr. It is plain
+// HTTP on purpose: the proxy listens on loopback only (requireLoopback,
+// Service), the script holds no secret, and system proxy settings fetch
+// auto-config over HTTP (an HTTPS URL would need a certificate the OS
+// trusts before the proxy that serves it is set up).
+func PACURL(addr string) string {
+	return (&url.URL{Scheme: "http", Host: addr, Path: pacPath}).String()
+}
 
 // Scope is the proxy's scope for intercept and bypass host lists: in
 // intercept, not in bypass, on 443 or 80. Lists are host names or

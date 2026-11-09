@@ -33,10 +33,10 @@ import (
 	"sentinelgo/internal/dlp/policy"
 )
 
-// UserFileSink is what the helper's event sink offers to these channels
-// (session.FileHandoff): hand an open file to the service; release closes
+// HandOffer is what the helper's event sink offers to these channels
+// (session.HandOffer): hand an open file to the service; release closes
 // it.
-type UserFileSink interface {
+type HandOffer interface {
 	HandOff(f ipc.UserFile, release func())
 }
 
@@ -67,7 +67,7 @@ func (userFolders) Supported() channel.Capability { return channel.Supported() }
 
 // Run watches the channel's roots until ctx ends.
 func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.EventSink) error {
-	hand, ok := sink.(UserFileSink)
+	hand, ok := sink.(HandOffer)
 	if !ok || c == nil || !c.Modules.Files.Enabled || !c.Modules.Files.CopyCorrelation.ScansOnClose() {
 		return channel.ErrUnsupported
 	}
@@ -100,7 +100,7 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 type userWatcher struct {
 	name    string
 	files   policy.FilesModule
-	hand    UserFileSink
+	hand    HandOffer
 	watches map[string]*dirWatch
 	roots   map[string]userRoot
 	changes chan fsChange
@@ -143,7 +143,10 @@ func (w *userWatcher) reconcile() {
 				default:
 				}
 			},
-			func(string) {})
+			func(string) {
+				// The share or folder went away: the next reconcile (rootsPoll)
+				// drops the watch or starts a new one when it is back.
+			})
 		if err == nil {
 			w.watches[key] = dw
 		}
