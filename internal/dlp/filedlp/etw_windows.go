@@ -218,6 +218,7 @@ type etwSession struct {
 	self    uint32
 	events  atomic.Uint64
 	lost    atomic.Uint64
+	diag    etwDiag
 	done    chan struct{}
 	buf     []byte // the callback's buffer: it runs on the consumer's thread only
 }
@@ -316,7 +317,17 @@ func (s *etwSession) stats() (events, lost uint64) { return s.events.Load(), s.l
 // etwEventCallback is EventRecordCallback.
 func etwEventCallback(r *eventRecord) uintptr {
 	s := etwActive.Load()
-	if s == nil || r.Header.Descriptor.ID != kernelFileEventCreate || r.Header.ProviderID != kernelFileProvider || r.Header.ProcessID == s.self {
+	if s == nil {
+		return 0
+	}
+	s.diag.calls.Add(1)
+	if r.Header.ProviderID != kernelFileProvider {
+		return 0
+	}
+	if id := r.Header.Descriptor.ID; int(id) < len(s.diag.ids) {
+		s.diag.ids[id].Add(1)
+	}
+	if r.Header.Descriptor.ID != kernelFileEventCreate || r.Header.ProcessID == s.self {
 		return 0
 	}
 	s.events.Add(1)
@@ -325,8 +336,28 @@ func etwEventCallback(r *eventRecord) uintptr {
 	}
 	if path := etwString(r, etwPropFileName, s.buf); path != "" {
 		s.onOpen(fileOpen{pid: r.Header.ProcessID, path: path})
+	} else {
+		s.diag.noName.Add(1)
 	}
 	return 0
+}
+
+// etwDiag counts what the callback saw, for diagnosing a trace that
+// delivers nothing useful (tests and debug output; never content or paths).
+type etwDiag struct {
+	calls  atomic.Uint64     // every event delivered
+	noName atomic.Uint64     // Create events whose FileName couldn't be read
+	ids    [64]atomic.Uint64 // Kernel-File events by id
+}
+
+func (d *etwDiag) String() string {
+	out := fmt.Sprintf("calls=%d no_name=%d ids=", d.calls.Load(), d.noName.Load())
+	for i := range d.ids {
+		if n := d.ids[i].Load(); n > 0 {
+			out += fmt.Sprintf("%d:%d,", i, n)
+		}
+	}
+	return out
 }
 
 // etwProperty reads one top-level property of r through TDH.

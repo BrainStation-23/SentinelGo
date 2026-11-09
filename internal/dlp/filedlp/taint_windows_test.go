@@ -193,7 +193,8 @@ func TestETW_RealTrace(t *testing.T) {
 			}
 			return
 		case <-deadline:
-			t.Fatal("the open never showed up")
+			ev, lost := s.stats()
+			t.Fatalf("the open never showed up: create events %d, lost %d, %s", ev, lost, s.diag.String())
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
