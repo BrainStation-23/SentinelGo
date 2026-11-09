@@ -457,7 +457,8 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if cfg.DLPEnabled {
-		// File DLP (Linux so far): runs in the service, scans in sandboxed
+		// File DLP (Linux: fanotify; Windows: scan after write and device
+		// control, no driver): runs in the service, scans in sandboxed
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {

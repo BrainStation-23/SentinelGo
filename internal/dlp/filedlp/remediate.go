@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"sentinelgo/internal/dlp/policy"
 )
 
@@ -29,7 +27,8 @@ var errFileChanged = errors.New("the file was replaced or removed after it was s
 
 // remediator quarantines or deletes files found to violate a policy after
 // they were written (on_close_violation). Errors never carry the file's path
-// (#341).
+// (#341). How a file is checked and removed is per OS (sameFile,
+// removeFile).
 type remediator struct {
 	dir string // the quarantine folder
 	now func() time.Time
@@ -49,27 +48,11 @@ func (m *remediator) remediate(r Request, action string) error {
 			return err
 		}
 	}
-	if err := unix.Unlink(r.Path); err != nil {
-		return fmt.Errorf("remove the file: %w", errnoOnly(err))
-	}
-	return nil
+	return m.removeFile(r)
 }
 
-// sameFile checks that r.Path still names the scanned file (device and
-// inode), so a file swapped in meanwhile is never moved or deleted.
-func (m *remediator) sameFile(r Request) error {
-	var st unix.Stat_t
-	if err := unix.Lstat(r.Path, &st); err != nil {
-		return errFileChanged
-	}
-	if st.Dev != r.Ident.Dev || st.Ino != r.Ident.Ino || st.Mode&unix.S_IFMT != unix.S_IFREG { // #nosec G115 -- device numbers
-		return errFileChanged
-	}
-	return nil
-}
-
-// quarantine copies the file, from the descriptor the hook already holds,
-// into the root-only quarantine folder.
+// quarantine copies the file, from the handle the hook already holds, into
+// the root/SYSTEM-only quarantine folder.
 func (m *remediator) quarantine(r Request) error {
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return fmt.Errorf("quarantine folder: %w", errnoOnly(err))
