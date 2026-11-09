@@ -76,6 +76,9 @@ var knownPaths = func() map[string][]string {
 		"userdel": {"/usr/sbin/userdel", "/sbin/userdel"},
 		"nologin": {"/usr/sbin/nologin", "/sbin/nologin"},
 
+		// Linux CA bundle (the upload inspection CA, #344).
+		"update-ca-certificates": {"/usr/sbin/update-ca-certificates", "/sbin/update-ca-certificates"},
+
 		// Linux firewalls (osinfo/security). firewall-cmd is a Python
 		// script under bin; iptables and nft are under sbin.
 		"firewall-cmd": {"/usr/bin/firewall-cmd", "/bin/firewall-cmd"},

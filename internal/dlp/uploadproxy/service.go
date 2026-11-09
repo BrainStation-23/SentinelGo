@@ -58,6 +58,7 @@ var (
 
 // Redirect and proxy states in the status.
 const (
+	unsupported      = "unsupported:" // prefix of a capability that can't work, with its reason
 	RedirectActive   = "active"
 	RedirectInactive = "inactive"
 	ProxyHealthy     = "healthy"
@@ -328,7 +329,7 @@ func (s *Service) applyRedirect() {
 	s.mu.Unlock()
 	state := RedirectActive
 	if err := s.redir.Apply(url); err != nil {
-		state = "unsupported:" + Reason(err)
+		state = unsupported + Reason(err)
 		if cur := s.redirect.Load(); cur == nil || *cur != state {
 			log.Printf("DLP: upload redirect not applied: %v", err)
 		}
@@ -342,7 +343,7 @@ func (s *Service) removeRedirect() {
 		log.Printf("DLP: could not remove the upload redirect: %v", err)
 		return
 	}
-	if cur != nil && strings.HasPrefix(*cur, "unsupported:") && s.running {
+	if cur != nil && strings.HasPrefix(*cur, unsupported) && s.running {
 		return // keep the reason while running
 	}
 	inactive := RedirectInactive
@@ -364,7 +365,7 @@ func (s *Service) Capability() string {
 	defer s.mu.Unlock()
 	switch {
 	case s.failure != "":
-		return "unsupported:" + strings.TrimPrefix(s.failure, "unavailable:")
+		return unsupported + strings.TrimPrefix(s.failure, "unavailable:")
 	case !s.running:
 		return "unsupported:not_running"
 	case s.localOff.Load():
@@ -372,10 +373,10 @@ func (s *Service) Capability() string {
 	case !s.healthy.Load():
 		return "unsupported:proxy_down"
 	case s.trustErr != "":
-		return "unsupported:" + s.trustErr
+		return unsupported + s.trustErr
 	}
 	if r := *s.redirect.Load(); r != RedirectActive {
-		if strings.HasPrefix(r, "unsupported:") {
+		if strings.HasPrefix(r, unsupported) {
 			return r
 		}
 		return "unsupported:redirect_inactive"
