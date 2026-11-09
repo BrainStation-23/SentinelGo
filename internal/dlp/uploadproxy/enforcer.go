@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"sentinelgo/internal/dlp/filedlp"
+	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/policy"
 )
 
@@ -70,6 +71,14 @@ func (w *withUploads) Capabilities() map[string]string {
 		caps[policy.ChannelFileUpload] = "unsupported:inspection_off"
 	}
 	return caps
+}
+
+// TakeUserFile passes a file a session helper handed over to the file hook,
+// when it takes them (filedlp.UserFileTaker).
+func (w *withUploads) TakeUserFile(from ipc.Identity, f ipc.UserFile) {
+	if t, ok := w.files.(filedlp.UserFileTaker); ok {
+		t.TakeUserFile(from, f)
+	}
 }
 
 func (w *withUploads) CopyCorrelation() map[string]string {

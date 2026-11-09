@@ -14,6 +14,7 @@ package dlp
 import (
 	"context"
 	"log"
+	"runtime"
 	"sync"
 
 	"sentinelgo/internal/dlp/detect"
@@ -57,6 +58,17 @@ func Decide(localEnabled bool, b *policy.Bundle) State {
 	default:
 		return StateEnforcing
 	}
+}
+
+// helperFileChannels reports whether a file channel the session helpers run
+// is on: on Windows, network shares and sync folders belong to the user's
+// session, so the helpers watch them and hand files to the service (#330).
+func helperFileChannels(b *policy.Bundle) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	f := b.Modules.Files
+	return f.Enabled && (f.ChannelEnabled(policy.ChannelFileNetworkShare) || f.ChannelEnabled(policy.ChannelFileCloudSync))
 }
 
 // BundleSource supplies the last-known bundle at startup, before any network
@@ -150,7 +162,7 @@ func (m *Manager) applyLocked() {
 				log.Printf("DLP: rule %s skipped: %s", ce.RuleID, ce.Error)
 			}
 		}
-		if m.bundle.AnyChannelEnabled() {
+		if m.bundle.AnyChannelEnabled() || helperFileChannels(m.bundle) {
 			m.sup.Apply(m.ctx, m.compiled)
 		} else {
 			m.sup.Stop() // files only: no clipboard to watch

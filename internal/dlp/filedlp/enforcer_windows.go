@@ -37,7 +37,9 @@ import (
 )
 
 // windowsChannels are the file channels this hook monitors.
-var windowsChannels = map[string]bool{policy.ChannelFileRemovable: true}
+// Removable drives are watched by the service; network shares and sync
+// folders by the session helpers, which hand files over (TakeUserFile).
+var windowsChannels = map[string]bool{policy.ChannelFileRemovable: true, policy.ChannelFileNetworkShare: true, policy.ChannelFileCloudSync: true}
 
 // workerEnv is extra environment for the scan workers (tests).
 var workerEnv []string
@@ -414,9 +416,26 @@ func (e *windowsEnforcer) openChanged(path string, now time.Time) (Request, open
 	if !ok {
 		return Request{}, openSkip
 	}
+	h, id, st := openForDecision(path, &e.unreadable)
+	if st != openOK {
+		return Request{}, st
+	}
+	r := Request{File: os.NewFile(uintptr(h), path), Path: path, Dest: dest, Proc: consoleUser(), Ident: id, At: now}
+	e.attribute(&r, e.compiled.Load())
+	return r, openOK
+}
+
+// openForDecision opens a changed file for its decision: read and delete
+// access (delete, for on_close_violation), sharing reads and deletes but not
+// writes, so it can't change while it is scanned. A writer still holding it
+// makes the open fail with a sharing violation: try again later. Folders,
+// links and cloud placeholders (reading those would download them) are
+// skipped. Used by the service for drives and by the session helper for
+// shares and sync folders.
+func openForDecision(path string, unreadable *atomic.Uint64) (windows.Handle, Identity, openStatus) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return Request{}, openSkip
+		return 0, Identity{}, openSkip
 	}
 	const share = windows.FILE_SHARE_READ | windows.FILE_SHARE_DELETE
 	flags := uint32(windows.FILE_FLAG_BACKUP_SEMANTICS | windows.FILE_FLAG_OPEN_REPARSE_POINT | fileFlagNoRecall)
@@ -426,33 +445,38 @@ func (e *windowsEnforcer) openChanged(path string, now time.Time) (Request, open
 	}
 	switch {
 	case errors.Is(err, windows.ERROR_SHARING_VIOLATION), errors.Is(err, windows.ERROR_LOCK_VIOLATION):
-		return Request{}, openRetry
+		return 0, Identity{}, openRetry
 	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND), errors.Is(err, windows.ERROR_PATH_NOT_FOUND):
-		return Request{}, openSkip // gone again (a temp file renamed away, say)
+		return 0, Identity{}, openSkip // gone again (a temp file renamed away, say)
 	case err != nil:
-		e.unreadable.Add(1)
-		return Request{}, openSkip
+		unreadable.Add(1)
+		return 0, Identity{}, openSkip
 	}
-	var fi windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(h, &fi); err != nil {
+	if !decidable(h) {
 		_ = windows.CloseHandle(h)
-		e.unreadable.Add(1)
-		return Request{}, openSkip
-	}
-	const skipAttrs = windows.FILE_ATTRIBUTE_DIRECTORY | windows.FILE_ATTRIBUTE_REPARSE_POINT | windows.FILE_ATTRIBUTE_OFFLINE | attrRecallOnOpen | attrRecallOnData
-	if fi.FileAttributes&skipAttrs != 0 {
-		_ = windows.CloseHandle(h)
-		return Request{}, openSkip // folders, links, and cloud placeholders (reading those would download them)
+		return 0, Identity{}, openSkip
 	}
 	id, err := handleIdentity(h)
 	if err != nil {
 		_ = windows.CloseHandle(h)
-		e.unreadable.Add(1)
-		return Request{}, openSkip
+		unreadable.Add(1)
+		return 0, Identity{}, openSkip
 	}
-	r := Request{File: os.NewFile(uintptr(h), path), Path: path, Dest: dest, Proc: consoleUser(), Ident: id, At: now}
-	e.attribute(&r, e.compiled.Load())
-	return r, openOK
+	return h, id, openOK
+}
+
+// decidable reports whether h is a regular file on disk: not a folder, a
+// link or a cloud placeholder.
+func decidable(h windows.Handle) bool {
+	if t, err := windows.GetFileType(h); err != nil || t != windows.FILE_TYPE_DISK {
+		return false
+	}
+	var fi windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(h, &fi) != nil {
+		return false
+	}
+	const skipAttrs = windows.FILE_ATTRIBUTE_DIRECTORY | windows.FILE_ATTRIBUTE_REPARSE_POINT | windows.FILE_ATTRIBUTE_OFFLINE | attrRecallOnOpen | attrRecallOnData
+	return fi.FileAttributes&skipAttrs == 0
 }
 
 // destinationOf maps a path to the watched volume containing it.

@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/channel/clipboard"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/prompt"
@@ -56,7 +57,7 @@ func RunDLPSession() int {
 	err = session.RunHelper(ctx, session.HelperOptions{
 		Addr:      ipc.DefaultAddress,
 		Version:   config.Version,
-		Channels:  []channel.Channel{clipboard.New()},
+		Channels:  append([]channel.Channel{clipboard.New()}, filedlp.UserFolderChannels()...),
 		Notify:    notify.Show,
 		Readiness: notify.Readiness,
 		AskOverride: func(ctx context.Context, a ipc.AskOverride) (string, string, error) {

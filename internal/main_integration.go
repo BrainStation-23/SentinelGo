@@ -468,7 +468,14 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)})
 			// Upload inspection (#344): off until the bundle turns it on.
 			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path)})
-			m.SetFiles(uploadproxy.WithUploads(files, uploads))
+			enforcer := uploadproxy.WithUploads(files, uploads)
+			m.SetFiles(enforcer)
+			// Windows: the helpers hand over files on shares and sync folders (#330).
+			if fr, ok := sup.(interface{ SetFileReceiver(session.FileReceiver) }); ok {
+				if t, ok := enforcer.(filedlp.UserFileTaker); ok {
+					fr.SetFileReceiver(t.TakeUserFile)
+				}
+			}
 		}
 	}
 	if err := m.Start(ctx); err != nil {
