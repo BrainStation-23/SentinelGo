@@ -69,6 +69,9 @@ type Health struct {
 	// Blocking is the permission hook that holds file creation while the
 	// agent decides (Linux, #333); nil where there is none.
 	Blocking *BlockingHealth `json:"blocking,omitempty"`
+	// DeepInspection is the upload channel's HTTPS inspection
+	// (uploadproxy.Status, #344); nil when it never started.
+	DeepInspection any `json:"deep_inspection,omitempty"`
 }
 
 // Hook states.

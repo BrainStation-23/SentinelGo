@@ -69,6 +69,9 @@ type FilesModule struct {
 	// Exceptions are the admin-approved exceptions for this device: a
 	// matching file passes the policy until expires_at.
 	Exceptions []FileException `json:"exceptions"`
+	// Uploads configures the upload channel's HTTPS inspection (#344,
+	// backend Compliance-OS#532). Absent means off.
+	Uploads Uploads `json:"uploads"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
@@ -184,6 +187,7 @@ func (m *FilesModule) normalize() {
 	}
 	m.ScanTimeoutMs = min(max(m.ScanTimeoutMs, MinScanTimeout), MaxScanTimeout)
 	m.CopyCorrelation.normalize()
+	m.Uploads.Inspection.normalize()
 	if len(m.Exceptions) > maxFileExceptions {
 		m.Exceptions = m.Exceptions[:maxFileExceptions]
 	}
@@ -353,3 +357,103 @@ func (c CopyCorrelation) ScansOnClose() bool { return c.ScanOnClose == nil || *c
 // UsesOSCopyEvents reports whether OS copy events are used where the OS has
 // them (the default).
 func (c CopyCorrelation) UsesOSCopyEvents() bool { return c.OSCopyEvents == nil || *c.OSCopyEvents }
+
+// Uploads is modules.files.uploads.
+type Uploads struct {
+	Inspection UploadInspection `json:"inspection"`
+}
+
+// UploadInspection is modules.files.uploads.inspection: the local
+// TLS-inspecting proxy for uploads (#344). Off unless enabled. The server
+// resolves categories, org and device-group rings into the two host lists;
+// the agent only matches hosts. Whether a violating upload is refused or
+// only recorded follows the files module's audit_only, like every file
+// channel.
+type UploadInspection struct {
+	Enabled bool `json:"enabled"`
+	// Intercept are the destinations whose HTTPS uploads are decrypted and
+	// inspected: host names, or "*.example.com" for its subdomains.
+	Intercept []string `json:"intercept"`
+	// Bypass are never decrypted, even when Intercept lists them (banking,
+	// health, government, pinned apps' hosts).
+	Bypass []string `json:"bypass"`
+
+	// DecodeError is why the block couldn't be read; inspection is then off.
+	DecodeError string `json:"-"`
+}
+
+// Inspection list limits.
+const (
+	maxInspectionHosts = 2000
+	maxHostLen         = 253
+)
+
+// UnmarshalJSON never fails: an unreadable block turns inspection off with
+// DecodeError set, so it can't turn file DLP off.
+func (u *UploadInspection) UnmarshalJSON(data []byte) error {
+	type plain UploadInspection
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		*u = UploadInspection{DecodeError: fmt.Sprintf("modules.files.uploads.inspection: %v", err)}
+		return nil
+	}
+	*u = UploadInspection(p)
+	return nil
+}
+
+func (u *UploadInspection) normalize() {
+	if u.DecodeError != "" {
+		u.Enabled = false
+	}
+	u.Intercept = cleanHosts(u.Intercept)
+	u.Bypass = cleanHosts(u.Bypass)
+	if len(u.Intercept) == 0 {
+		u.Enabled = false // nothing to inspect
+	}
+}
+
+// cleanHosts keeps valid host patterns (lower case, letters, digits, dots,
+// hyphens, an optional leading "*."), without duplicates, at most
+// maxInspectionHosts. Anything else is dropped: the list ends up in a PAC
+// script and in the proxy's scope, so it must be plain host names.
+func cleanHosts(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range in {
+		h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+		if !validHostPattern(h) || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+		if len(out) == maxInspectionHosts {
+			break
+		}
+	}
+	return out
+}
+
+func validHostPattern(h string) bool {
+	name := strings.TrimPrefix(h, "*.")
+	if name == "" || len(name) > maxHostLen || !strings.Contains(name, ".") {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// InspectsUploads reports whether m turns HTTPS upload inspection on: the
+// module and the upload channel are on, and there is something to inspect.
+func (m FilesModule) InspectsUploads() bool {
+	return m.Enabled && m.ChannelEnabled(ChannelFileUpload) && m.Uploads.Inspection.Enabled
+}
