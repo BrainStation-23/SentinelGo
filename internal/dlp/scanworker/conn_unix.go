@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package scanworker
 
 import (
@@ -104,7 +106,7 @@ func takeFD(oob []byte) (*os.File, error) {
 // socketPair returns the service's end (as a conn) and the worker's end (as
 // a file to hand over as fd 3).
 func socketPair() (conn, *os.File, error) {
-	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	fds, err := socketpairCloexec()
 	if err != nil {
 		return conn{}, nil, err
 	}
