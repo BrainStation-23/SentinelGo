@@ -10,7 +10,8 @@ Someone with admin rights, encryption tools, a phone camera or a second operatin
 |---|---|---|
 | Linux | USB sticks, SD cards and other removable drives; SMB, NFS and sshfs shares (files written there are scanned) | Audit only by default. With a `block` policy and audit-only off, copies by copy programs (`cp`, `rsync`, file managers) are refused before anything is written; other writes are judged after the write (`on_close_violation`) |
 | Any (manual test tool) | `sentinelgo dlp proxy`: uploads to listed sites, through a local HTTPS proxy (on Linux as root and on Windows, uploads are parsed in sandboxed workers) | Can block, when the policy allows it |
-| Windows, macOS | Not yet (they need a signed driver and Apple's Endpoint Security entitlement) | — |
+| Windows | USB sticks, SD cards and other removable drives (files written there are scanned once the writer closes them) | Audit only by default. Windows can't refuse a copy before it lands (there is no driver), so a `block` policy acts after the write: `on_close_violation` records, quarantines or deletes the file. Untrusted drives can be made read-only (`untrusted_devices`). With `process_taint` on, the event names the program that wrote the file |
+| macOS | USB sticks and other removable drives; SMB, NFS, AFP and WebDAV shares (files written there are scanned) | Audit only by default. Like Windows, a `block` policy acts after the write (`on_close_violation`), and untrusted drives can be mounted read-only. Refusing a copy before it lands comes with Endpoint Security, which needs Apple's entitlement |
 
 ## Coverage
 

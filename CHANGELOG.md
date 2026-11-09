@@ -13,6 +13,13 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Windows: file DLP without a driver (#330). Removable drives (classified by the bus their disk is on, so USB hard disks count) are watched, and each file written there is scanned in the sandboxed workers once its writer has closed it. Windows has no way to hold a copy while the agent decides, so a `block` policy acts after the write: `on_close_violation` records, quarantines or deletes the file, deleting through the handle that was scanned so only that file can be removed. `untrusted_devices` makes drives no policy trusts read-only (a disk attribute that isn't kept across a re-plug, applied only when the volume can be locked, so a copy in progress is never cut off) and writable again when the setting changes, the device becomes trusted, the emergency switch is on or monitoring stops. Ejecting a watched drive isn't blocked: its watch closes when the user asks to remove it. `trusted_devices` matches the USB vendor, product and serial.
+- Windows: with `process_taint` on, an ETW trace of file opens (it needs the service's admin rights) names the program that wrote a file to a drive, and a file that can't be judged on its own (unreadable, an archive) is judged by what that program opened in the user profiles before (#331). When the trace can't start, `capabilities.copy_correlation.process_taint` says why and scanning after the write keeps working.
+- macOS: file DLP in the agent's daemon, without a system extension (#332). Removable drives and SMB, NFS, AFP and WebDAV shares are watched with FSEvents and files are scanned after the write, with the same `on_close_violation` and `untrusted_devices` (remounted read-only with diskutil) as Windows. `process_taint` and `os_copy_events` report `unsupported:needs_endpoint_security` until Endpoint Security, which needs Apple's entitlement.
+- macOS: sandboxed scan workers (#332). As root each `sentinelgo dlp-scan` worker runs as a hidden `_sentinelgo-scan` account (or nobody), under the `pure-computation` sandbox profile where it works (no files by path, no network), else `no-network`, else resource limits only; `files.workers.sandbox` says which. The file reaches the worker as a descriptor; the worker never opens a path.
+
 ## [v4.0.7] - 2026-11-06
 
 ### Added
