@@ -3,8 +3,8 @@
 package filedlp
 
 import (
-	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -181,8 +181,9 @@ func TestETW_RealTrace(t *testing.T) {
 	defer s.stop()
 	deadline := time.After(15 * time.Second)
 	for {
-		cmd := `type "` + path + `" > nul`
-		_ = runCmd(cmd)
+		if err := openFromChild(path); err != nil {
+			t.Fatalf("child open: %v", err)
+		}
 		select {
 		case p := <-seen:
 			if !strings.HasPrefix(p, `\Device\`) {
@@ -200,15 +201,14 @@ func TestETW_RealTrace(t *testing.T) {
 	}
 }
 
-func runCmd(cmd string) error {
-	p, err := os.StartProcess(filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe"), []string{"cmd", "/c", cmd},
-		&os.ProcAttr{Files: []*os.File{nil, nil, nil}})
+// openFromChild has another process (the test binary, see probeOpenEnv)
+// open path.
+func openFromChild(path string) error {
+	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	st, err := p.Wait()
-	if err == nil && !st.Success() {
-		err = errors.New(st.String())
-	}
-	return err
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), probeOpenEnv+"="+path)
+	return cmd.Run()
 }

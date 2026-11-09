@@ -21,7 +21,17 @@ import (
 // The test binary doubles as the scan worker.
 const workerTestEnv = "SENTINELGO_SCANWORKER_TEST"
 
+// probeOpenEnv makes the test binary open one file and exit (a process
+// other than the test, for the ETW trace).
+const probeOpenEnv = "SENTINELGO_ETW_PROBE_OPEN"
+
 func TestMain(m *testing.M) {
+	if p := os.Getenv(probeOpenEnv); p != "" {
+		if _, err := os.ReadFile(p); err != nil { // #nosec G304 -- the test's own temp file
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv(workerTestEnv) == "serve" {
 		if err := scanworker.Serve(); err != nil {
 			os.Exit(1)
