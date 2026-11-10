@@ -167,17 +167,17 @@ func TestUserWatcher_RetriesFailedRoot(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := newUserWatcher(ctx, policy.ChannelFileNetworkShare, policy.FilesModule{}, nil)
+	w := newUserWatcher(policy.ChannelFileNetworkShare, policy.FilesModule{}, nil)
 	now := time.Now()
-	w.reconcile(now)
+	w.reconcile(ctx, now)
 	w.onStarted(<-w.started, now)
-	w.reconcile(now.Add(rootsPoll))
+	w.reconcile(ctx, now.Add(rootsPoll))
 	select {
 	case res := <-w.started:
 		t.Fatalf("started again within rootRetry: %+v", res)
 	case <-time.After(100 * time.Millisecond):
 	}
-	w.reconcile(now.Add(rootRetry + time.Second))
+	w.reconcile(ctx, now.Add(rootRetry+time.Second))
 	w.onStarted(<-w.started, now)
 	mu.Lock()
 	defer mu.Unlock()
@@ -198,9 +198,9 @@ func TestUserWatcher_LostWatch(t *testing.T) {
 	t.Cleanup(func() { findShareRoots = prevShare })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	w := newUserWatcher(ctx, policy.ChannelFileNetworkShare, policy.FilesModule{}, nil)
+	w := newUserWatcher(policy.ChannelFileNetworkShare, policy.FilesModule{}, nil)
 	now := time.Now()
-	w.reconcile(now)
+	w.reconcile(ctx, now)
 	res := <-w.started
 	w.onStarted(res, now)
 	if len(w.watches) != 1 {
@@ -211,11 +211,43 @@ func TestUserWatcher_LostWatch(t *testing.T) {
 		t.Errorf("lost watch kept: watches %v retry %v", w.watches, w.retry)
 	}
 
-	w.reconcile(now.Add(rootRetry + time.Second))
+	w.reconcile(ctx, now.Add(rootRetry+time.Second))
 	res = <-w.started
 	res.tok.gone.Store(true) // its loop ended before the start was handled
 	w.onStarted(res, now)
 	if len(w.watches) != 0 {
 		t.Errorf("a watch already gone was kept: %v", w.watches)
+	}
+}
+
+// The real sources run as this user (most machines have no shares): every
+// root they give is a share's.
+func TestShareRoots_RealSources(t *testing.T) {
+	for _, r := range shareRoots() {
+		if r.dest.Channel != policy.ChannelFileNetworkShare || r.dest.Type != TypeNetworkShare || r.path == "" {
+			t.Errorf("root %+v", r)
+		}
+	}
+}
+
+// Learned sync folders are bounded, and a taint running when one is learned
+// gets it.
+func TestLearnSyncRoot_Bounded(t *testing.T) {
+	e := &windowsEnforcer{}
+	tk := &winTaint{store: newTaintStore(), writers: map[string]writerRef{}}
+	e.taint.Store(tk)
+	for i := range maxSyncRoots + 3 {
+		root := `D:\Sync` + string(rune('A'+i/26)) + string(rune('a'+i%26))
+		e.learnSyncRoot(root+`\a.txt`, root)
+	}
+	if n := len(*e.syncRootList()); n != maxSyncRoots {
+		t.Fatalf("%d roots, want %d", n, maxSyncRoots)
+	}
+	if n := len(*tk.syncs.Load()); n != maxSyncRoots {
+		t.Errorf("the taint has %d roots", n)
+	}
+	e.learnSyncRoot(`D:\Other\a.txt`, `D:\Sync`) // not where the file is
+	if n := len(*e.syncRootList()); n != maxSyncRoots {
+		t.Errorf("%d roots", n)
 	}
 }

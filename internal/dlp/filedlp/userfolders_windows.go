@@ -75,7 +75,7 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 	if !ok || c == nil || !c.Modules.Files.Enabled || !c.Modules.Files.CopyCorrelation.ScansOnClose() {
 		return channel.ErrUnsupported
 	}
-	w := newUserWatcher(ctx, u.name, c.Modules.Files, hand)
+	w := newUserWatcher(u.name, c.Modules.Files, hand)
 	defer w.closeAll()
 	var dropped, unreadable atomic.Uint64
 	pending := newPendingSet(&dropped, &unreadable)
@@ -83,13 +83,13 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 	defer roots.Stop()
 	tick := time.NewTicker(pendingTick)
 	defer tick.Stop()
-	w.reconcile(time.Now())
+	w.reconcile(ctx, time.Now())
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-roots.C:
-			w.reconcile(time.Now())
+			w.reconcile(ctx, time.Now())
 		case res := <-w.started:
 			w.onStarted(res, time.Now())
 		case tok := <-w.lost:
@@ -109,7 +109,6 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 // timeout (tens of seconds), so each start runs on its own goroutine and
 // reports back on started.
 type userWatcher struct {
-	ctx     context.Context
 	name    string
 	files   policy.FilesModule
 	hand    HandOffer
@@ -137,14 +136,14 @@ type startedWatch struct {
 	err error
 }
 
-func newUserWatcher(ctx context.Context, name string, files policy.FilesModule, hand HandOffer) *userWatcher {
-	return &userWatcher{ctx: ctx, name: name, files: files, hand: hand,
+func newUserWatcher(name string, files policy.FilesModule, hand HandOffer) *userWatcher {
+	return &userWatcher{name: name, files: files, hand: hand,
 		watches: map[string]userWatch{}, start: map[string]bool{}, retry: map[string]time.Time{}, roots: map[string]userRoot{},
 		changes: make(chan fsChange, changeQueueSize), started: make(chan startedWatch), lost: make(chan *watchToken, 64)}
 }
 
 // reconcile watches the roots there are now and stops watching the rest.
-func (w *userWatcher) reconcile(now time.Time) {
+func (w *userWatcher) reconcile(ctx context.Context, now time.Time) {
 	want := w.wanted()
 	for key, uw := range w.watches {
 		if _, ok := want[key]; !ok {
@@ -166,7 +165,7 @@ func (w *userWatcher) reconcile(now time.Time) {
 			continue
 		}
 		w.start[key] = true
-		go w.startOne(key, r.path)
+		go w.startOne(ctx, key, r.path)
 	}
 }
 
@@ -189,7 +188,7 @@ func (w *userWatcher) wanted() map[string]userRoot {
 
 // startOne opens root off the channel's goroutine and reports the watch,
 // or closes it if the channel has stopped.
-func (w *userWatcher) startOne(key, root string) {
+func (w *userWatcher) startOne(ctx context.Context, key, root string) {
 	changes, lost, tok := w.changes, w.lost, &watchToken{}
 	dw, err := startUserWatch(root,
 		func(ch fsChange) {
@@ -215,7 +214,7 @@ func (w *userWatcher) startOne(key, root string) {
 		})
 	select {
 	case w.started <- startedWatch{key: key, userWatch: userWatch{dw: dw, tok: tok}, err: err}:
-	case <-w.ctx.Done():
+	case <-ctx.Done():
 		if dw != nil {
 			dw.close()
 		}
