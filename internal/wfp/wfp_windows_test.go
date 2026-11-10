@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -129,7 +130,41 @@ func TestAppIDAndOpen(t *testing.T) {
 	}
 }
 
-var testSublayer = windows.GUID{Data1: 0x5e4f1c2a, Data2: 0x7b11, Data3: 0x4d6e, Data4: [8]byte{0x9a, 0x01, 0x42, 0x7a, 0x11, 0x0c, 0xd3, 0x27}}
+// A program started through an 8.3 path (GitHub's runners have TEMP under
+// C:\Users\RUNNER~1) has the same app id as through its long path.
+func TestAppIDShortPath(t *testing.T) {
+	dir := t.TempDir()
+	long := dir + `\a long directory name\program.exe`
+	if err := os.MkdirAll(long[:len(long)-len(`\program.exe`)], 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(long, []byte("MZ"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lp, _ := windows.UTF16PtrFromString(long)
+	buf := make([]uint16, windows.MAX_PATH)
+	n, err := windows.GetShortPathName(lp, &buf[0], uint32(len(buf)))
+	short := windows.UTF16ToString(buf[:n])
+	if err != nil || short == long {
+		t.Skip("no 8.3 names on this volume")
+	}
+	if got := longPath(short); !strings.EqualFold(got, long) {
+		t.Errorf("longPath(%q) = %q", short, got)
+	}
+	a, err := AppID(long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := AppID(short)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Error("short path gives another app id")
+	}
+}
+
+var testSublayer =windows.GUID{Data1: 0x5e4f1c2a, Data2: 0x7b11, Data3: 0x4d6e, Data4: [8]byte{0x9a, 0x01, 0x42, 0x7a, 0x11, 0x0c, 0xd3, 0x27}}
 
 func isAdmin() bool {
 	return windows.GetCurrentProcessToken().IsElevated()

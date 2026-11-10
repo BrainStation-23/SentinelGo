@@ -395,9 +395,11 @@ func (s *Session) Transaction(fn func() error) error {
 }
 
 // AppID returns the WFP application id of the program at path (its NT
-// path, as FieldALEAppID compares it).
+// path, as FieldALEAppID compares it). A short (8.3) path is expanded
+// first: the id is built from the path as given, and the kernel's id for a
+// running program uses the long one.
 func AppID(path string) ([]byte, error) {
-	p, err := windows.UTF16PtrFromString(path)
+	p, err := windows.UTF16PtrFromString(longPath(path))
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +412,26 @@ func AppID(path string) ([]byte, error) {
 		return nil, errors.New("FwpmGetAppIdFromFileName0: empty app id")
 	}
 	return append([]byte(nil), unsafe.Slice(blob.data, blob.size)...), nil
+}
+
+// longPath expands 8.3 components of path ("C:\Users\RUNNER~1\..."); path
+// itself when it can't.
+func longPath(path string) string {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return path
+	}
+	buf := make([]uint16, windows.MAX_PATH)
+	for {
+		n, err := windows.GetLongPathName(p, &buf[0], uint32(len(buf))) // #nosec G115 -- a path buffer
+		if err != nil || n == 0 {
+			return path
+		}
+		if int(n) < len(buf) { // fits: n excludes the NUL; too small: n is the size needed
+			return windows.UTF16ToString(buf[:n])
+		}
+		buf = make([]uint16, n)
+	}
 }
 
 // marshal lays f out as an FWPM_FILTER0. keep holds everything the
