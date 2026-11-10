@@ -81,50 +81,54 @@ func (d *Decider) SetExceptionRequester(f func(context.Context, ExceptionRequest
 	d.requestException = f
 }
 
-// ask opens the dialog for an overridable block and returns whether the
-// user could be asked. ok=false: fall back to a notification.
-func (d *Decider) ask(ev events.Event, r Request, v Verdict, sha string, limit int) bool {
+// ask prepares the dialog for an overridable block and returns the function
+// that opens it, or nil when the user can't be asked (fall back to a
+// notification). The caller opens it only after it has recorded the block
+// event, so an override or request never reaches the sink before the block
+// it refers to.
+func (d *Decider) ask(ev events.Event, r Request, v Verdict, sha string, limit int) (open func()) {
 	d.mu.Lock()
 	n, request := d.notices, d.requestException
 	d.mu.Unlock()
 	if n == nil || r.Proc.UID == "" {
-		return false
+		return nil
 	}
 	asker, ok := n.n.(Asker)
 	if !ok {
-		return false
+		return nil
 	}
 	state, ok := n.n.SessionReadiness(r.Proc.UID)
 	if !ok || !notify.Shows(state) {
-		return false
+		return nil
 	}
 	canOverride := d.overrides.remaining(r.Proc.UID, limit) > 0
 	canRequest := request != nil
 	if (!canOverride && !canRequest) || !d.asking.start(r.Proc.UID) {
-		return false
+		return nil
 	}
 	name := filepath.Base(r.Path)
 	msg := fmt.Sprintf("%s (%q to %s).", v.Message, name, destLabel(r.Dest))
-	go func() {
-		defer d.asking.done(r.Proc.UID)
-		ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
-		defer cancel()
-		choice, reason, err := asker.AskOverride(ctx, r.Proc.UID, "SentinelOps blocked a file", msg, canOverride, canRequest)
-		if err != nil {
-			log.Printf("DLP: block_override dialog not shown: %v", err)
-			return
-		}
-		result := d.answer(ctx, ev, r.Proc.UID, name, sha, choice, reason, request)
-		if result == "" {
-			return
-		}
-		nctx, ncancel := context.WithTimeout(context.Background(), noticeSendTimeout)
-		defer ncancel()
-		if err := n.n.NotifySession(nctx, r.Proc.UID, "SentinelOps", result); err != nil {
-			log.Printf("DLP: override result not shown: %v", err)
-		}
-	}()
-	return true
+	return func() {
+		go func() {
+			defer d.asking.done(r.Proc.UID)
+			ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
+			defer cancel()
+			choice, reason, err := asker.AskOverride(ctx, r.Proc.UID, "SentinelOps blocked a file", msg, canOverride, canRequest)
+			if err != nil {
+				log.Printf("DLP: block_override dialog not shown: %v", err)
+				return
+			}
+			result := d.answer(ctx, ev, r.Proc.UID, name, sha, choice, reason, request)
+			if result == "" {
+				return
+			}
+			nctx, ncancel := context.WithTimeout(context.Background(), noticeSendTimeout)
+			defer ncancel()
+			if err := n.n.NotifySession(nctx, r.Proc.UID, "SentinelOps", result); err != nil {
+				log.Printf("DLP: override result not shown: %v", err)
+			}
+		}()
+	}
 }
 
 // answer acts on the user's choice and returns what to tell them ("" for
@@ -153,11 +157,16 @@ func (d *Decider) answer(ctx context.Context, ev events.Event, uid, name, sha, c
 }
 
 // tellBlock asks about an overridable block, else queues a notification.
-func (d *Decider) tellBlock(ev *events.Event, r Request, v Verdict, sha string, limit int, findings []detect.Finding) {
-	if v.Overridable && d.ask(*ev, r, v, sha, limit) {
-		told := true
-		ev.UserNotified = &told
-		return
+// It returns the function that opens the dialog, for the caller to run once
+// it has emitted ev, or nil.
+func (d *Decider) tellBlock(ev *events.Event, r Request, v Verdict, sha string, limit int, findings []detect.Finding) (openDialog func()) {
+	if v.Overridable {
+		if open := d.ask(*ev, r, v, sha, limit); open != nil {
+			told := true
+			ev.UserNotified = &told
+			return open
+		}
 	}
 	d.tell(ev, r, noticeBlocked, v, findings)
+	return nil
 }

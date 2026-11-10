@@ -35,7 +35,13 @@ type darwinCollector struct {
 	// open starts a subprocess and streams its stdout. Defaults to execStream;
 	// tests inject a fake that returns canned `log show` output.
 	open streamOpener
+	// lookback bounds a log file's first read (see StartBounded); nil reads
+	// the whole file.
+	lookback func() time.Duration
 }
+
+// SetLookback implements StartBounded.
+func (c *darwinCollector) SetLookback(lookback func() time.Duration) { c.lookback = lookback }
 
 // NewCollector creates a macOS-specific log collector. It reads the unified log
 // by shelling out to `log show --style ndjson` (pure Go, no cgo), tails the
@@ -216,8 +222,17 @@ func (c *darwinCollector) collectFile(_ context.Context, path, source string, ch
 	// float64 after JSON persistence. A bare .(float64) silently failed on the
 	// in-memory path, resetting the offset to 0 and re-reading the same lines
 	// every cycle.
-	if saved, ok := CheckpointInt64(checkpoint, cpKey); ok {
+	saved, hasCP := CheckpointInt64(checkpoint, cpKey)
+	if hasCP {
 		offset = saved
+	} else if c.lookback != nil {
+		// First run: start at the retention window, not the file's start (#437).
+		if offset, err = firstRunOffset(f, info.Size(), time.Now().Add(-c.lookback()), parseMacFileTimestamp); err != nil {
+			return nil, nil, fmt.Errorf("find first-run start in %s: %w", path, err)
+		}
+		if offset >= info.Size() {
+			return nil, CheckpointData{cpKey: info.Size()}, nil
+		}
 	}
 
 	// Check for file truncation/rotation

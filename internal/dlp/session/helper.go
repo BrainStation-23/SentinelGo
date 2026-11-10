@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/dlp/channel"
+	"sentinelgo/internal/dlp/desktopproxy"
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
@@ -66,6 +67,11 @@ type HelperOptions struct {
 	// AskOverride shows the block_override dialog (#336, prompt.Show); nil
 	// means this helper can't, and answers cancel.
 	AskOverride func(ctx context.Context, a ipc.AskOverride) (choice, reason string, err error)
+	// SetProxy points the user's desktop proxy at a PAC URL, and with ""
+	// puts their own setting back (#426, Linux: desktopproxy.Manager.Set);
+	// nil means this platform doesn't. Errors are desktopproxy's. The
+	// helper clears it whenever it loses the service (fail open).
+	SetProxy func(pacURL string) error
 
 	// Backoff is the wait before reconnect attempt n (n >= 1). Defaults to
 	// 1 s doubling to 30 s.
@@ -138,6 +144,10 @@ type helperRuntime struct {
 	running map[string]bool // channels whose Run is active
 	sent    string          // the last status sent, to skip repeats
 	ready   string          // notification readiness, "" when not read
+	// proxyReason is the last SetProxy outcome, to log only changes.
+	proxyReason string
+	// handoffs are files handed to the service, waiting for its ack.
+	handoffs map[string]*pendingHandoff
 
 	chCancel context.CancelFunc
 	chWG     sync.WaitGroup
@@ -211,6 +221,16 @@ func (r *helperRuntime) dispatch(ctx context.Context, m ipc.Message) {
 	case ipc.TypeAskOverride:
 		if m.AskOverride != nil {
 			go r.askOverride(ctx, *m.AskOverride)
+		}
+	case ipc.TypeSetProxy:
+		if m.SetProxy != nil {
+			// In order, on the read loop: a set and the clear after it
+			// must not swap. The tools take milliseconds.
+			r.setProxy(*m.SetProxy)
+		}
+	case ipc.TypeUserFileAck:
+		if m.UserFileAck != nil {
+			r.released(m.UserFileAck.ID)
 		}
 	}
 }
@@ -403,6 +423,43 @@ func (r *helperRuntime) notify(n ipc.Notify) {
 	r.send(ipc.Message{Type: ipc.TypeNotifyResult, NotifyResult: res})
 }
 
+// setProxy applies or clears the desktop proxy and answers with the result.
+func (r *helperRuntime) setProxy(p ipc.SetProxy) {
+	res := &ipc.SetProxyResult{ID: p.ID}
+	if r.o.SetProxy == nil {
+		res.Reason, res.Error = "unsupported_platform", "this helper doesn't set a desktop proxy on this platform"
+	} else if err := r.o.SetProxy(p.PACURL); err != nil {
+		res.Reason, res.Error = desktopproxy.Reason(err), err.Error()
+		r.logProxy(res.Reason, err)
+	} else {
+		r.logProxy("", nil)
+	}
+	r.send(ipc.Message{Type: ipc.TypeSetProxyResult, SetProxyResult: res})
+}
+
+// logProxy logs the desktop proxy result when it changed (the service asks
+// every few seconds).
+func (r *helperRuntime) logProxy(reason string, err error) {
+	r.mu.Lock()
+	changed := reason != r.proxyReason
+	r.proxyReason = reason
+	r.mu.Unlock()
+	if changed && err != nil {
+		log.Printf("DLP helper: desktop proxy not set: %v", err)
+	}
+}
+
+// clearProxy puts the user's own proxy setting back: the helper lost the
+// service, which ran the proxy.
+func (r *helperRuntime) clearProxy() {
+	if r.o.SetProxy == nil {
+		return
+	}
+	if err := r.o.SetProxy(""); err != nil {
+		log.Printf("DLP helper: could not restore the desktop proxy: %v", err)
+	}
+}
+
 // askOverrideWait bounds how long a block_override dialog stays open.
 const askOverrideWait = 10 * time.Minute
 
@@ -517,8 +574,10 @@ func (r *helperRuntime) attach(c ipc.Conn) {
 
 func (r *helperRuntime) detach() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.conn = nil
+	r.mu.Unlock()
+	r.releaseAll()
+	r.clearProxy()
 }
 
 // lingerRefused ends a refused connection without sending anything: it

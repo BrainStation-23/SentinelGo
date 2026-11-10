@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -13,6 +14,7 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/dlp/session"
+	"sentinelgo/internal/dlp/uploadproxy"
 )
 
 // HandleInstall installs SentinelGo as a system service (launchd on macOS,
@@ -83,6 +85,13 @@ func cleanupDLPHelpers() {
 	}
 	if err := scanworker.RemoveScanAccount(); err != nil {
 		log.Printf("Warning: failed to remove the DLP scan account: %v", err)
+	}
+	// Upload inspection (#344): the system proxy setting and the CA.
+	if err := uploadproxy.NewRedirector(filepath.Dir(config.GetDefaultConfigPath())).Remove(); err != nil {
+		log.Printf("Warning: failed to remove the DLP upload redirect: %v", err)
+	}
+	if err := uploadproxy.NewTruster().Untrust(); err != nil {
+		log.Printf("Warning: failed to remove the DLP upload inspection CA: %v", err)
 	}
 }
 

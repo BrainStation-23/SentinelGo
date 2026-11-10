@@ -39,6 +39,9 @@ type Options struct {
 	// AllowLocalTargets lets clients reach loopback and link-local
 	// addresses through the proxy. Off except in tests: see guardDial.
 	AllowLocalTargets bool
+	// PAC, when set, is served at /proxy.pac to clients asking the proxy
+	// directly (the system proxy's auto-config URL points here).
+	PAC func() []byte
 }
 
 // Stats are the proxy's counters.
@@ -59,6 +62,7 @@ type Proxy struct {
 	resolver  *net.Resolver
 
 	tunnelled, intercepted, inspected, blocked, errs atomic.Uint64
+	lastInspection                                   atomic.Int64 // Unix ns
 }
 
 // New returns a Proxy.
@@ -89,6 +93,14 @@ func New(o Options) *Proxy {
 	}
 }
 
+// LastInspection is when an upload was last inspected (zero if never).
+func (p *Proxy) LastInspection() time.Time {
+	if n := p.lastInspection.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
+
 // Stats returns the counters.
 func (p *Proxy) Stats() Stats {
 	return Stats{Tunnelled: p.tunnelled.Load(), Intercepted: p.intercepted.Load(), Inspected: p.inspected.Load(),
@@ -105,6 +117,12 @@ func (p *Proxy) Serve(l net.Listener) error {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		p.connect(w, r)
+		return
+	}
+	if r.URL.Host == "" && r.URL.Path == pacPath && p.opts.PAC != nil && r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(p.opts.PAC())
 		return
 	}
 	// A plain-HTTP request through the proxy: http://host/path.
@@ -331,6 +349,7 @@ func sameHost(hostHeader, host string) bool {
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream *url.URL, host string, inspect bool) {
 	if inspect && p.opts.Inspector != nil && hasBody(r) {
 		p.inspected.Add(1)
+		p.lastInspection.Store(time.Now().UnixNano())
 		v, body, err := p.opts.Inspector.Inspect(r.Context(), r, host)
 		if err != nil {
 			p.errs.Add(1)

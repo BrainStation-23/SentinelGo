@@ -63,9 +63,9 @@ func TestParseJournalTimestamp(t *testing.T) {
 	if got.Unix() != 1700000000 {
 		t.Errorf("Unix() = %d, want 1700000000", got.Unix())
 	}
-	// Invalid values fall back to "now" (just assert it doesn't return zero time).
-	if parseJournalTimestamp("garbage").IsZero() {
-		t.Error("expected non-zero fallback time")
+	// Invalid values return the zero time; the parser marks the row.
+	if !parseJournalTimestamp("garbage").IsZero() {
+		t.Error("expected the zero time for an unparseable value")
 	}
 }
 
@@ -90,9 +90,9 @@ func TestParseSyslogTimestamp(t *testing.T) {
 	if got.Month() != 1 || got.Day() != 2 {
 		t.Errorf("got %v, want Jan 2", got)
 	}
-	// A too-short / unparseable line falls back to a non-zero time.
-	if parseSyslogTimestamp("short").IsZero() {
-		t.Error("expected non-zero fallback time")
+	// A too-short / unparseable line returns the zero time.
+	if !parseSyslogTimestamp("short").IsZero() {
+		t.Error("expected the zero time for an unparseable line")
 	}
 }
 
@@ -101,8 +101,8 @@ func TestParseMacFileTimestamp(t *testing.T) {
 	if got.Month() != 4 || got.Day() != 19 {
 		t.Errorf("got %v, want Apr 19", got)
 	}
-	if parseMacFileTimestamp("x").IsZero() {
-		t.Error("expected non-zero fallback time")
+	if !parseMacFileTimestamp("x").IsZero() {
+		t.Error("expected the zero time for an unparseable line")
 	}
 }
 
@@ -167,8 +167,8 @@ func TestParseMacShowTimestamp(t *testing.T) {
 	if got.Year() != 2024 || got.Month() != 4 || got.Day() != 19 {
 		t.Errorf("got %v, want 2024-04-19", got)
 	}
-	if parseMacShowTimestamp("garbage").IsZero() {
-		t.Error("expected non-zero fallback time")
+	if !parseMacShowTimestamp("garbage").IsZero() {
+		t.Error("expected the zero time for an unparseable value")
 	}
 }
 

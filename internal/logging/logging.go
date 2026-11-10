@@ -13,6 +13,7 @@ import (
 	"sentinelgo/internal/auditlogs/collector"
 	"sentinelgo/internal/auditlogs/parser"
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/models"
 	"sentinelgo/internal/sanitize"
 	"sentinelgo/internal/store"
 )
@@ -26,12 +27,14 @@ const (
 // collector -> parser -> local SQLite store -> uploader -> Supabase.
 //
 // On each collection cycle the pipeline:
-//  1. Records collectionTime = now and windowStart = now - flushInterval.
-//  2. Collects raw OS log entries since the last checkpoint.
-//  3. Filters entries to those with Timestamp >= windowStart (time-window bound).
-//  4. Parses and inserts filtered entries into the local SQLite queue (dedup'd by hash).
-//  5. Advances the checkpoint to the latest record seen (even for filtered-out entries).
-//  6. Uploads all pending rows from the SQLite queue to Supabase, deleting successes.
+//  1. Collects raw OS log entries since the last checkpoint. A source with no
+//     checkpoint starts at the server's retention window, not its beginning.
+//  2. Parses them and drops rows dated outside the retention window (#437).
+//  3. Inserts the rest into the local SQLite queue (dedup'd by hash, and
+//     skipping rows uploaded in the last day).
+//  4. Advances the checkpoint past what was stored.
+//  5. Uploads the queue to Supabase in chunks with stable batch ids, deleting
+//     each chunk once the server has it.
 //
 // Failed uploads leave rows in the store and are retried on the next cycle.
 type LoggingIntegration struct {
@@ -41,6 +44,7 @@ type LoggingIntegration struct {
 	store      *store.AuditLogStore
 	uploader   *Uploader
 	checkpoint *CheckpointStore
+	window     *auditWindow // nil uses the default window
 	stats      statsCounter
 
 	cancel  context.CancelFunc
@@ -99,8 +103,13 @@ func NewLoggingIntegration(cfg *config.Config) (*LoggingIntegration, error) {
 		parser:     parser.NewParser(),
 		store:      auditStore,
 		checkpoint: cpStore,
+		window:     loadWindow(checkpointDir),
 	}
 	li.uploader = NewUploader(cfg, &li.stats)
+	li.uploader.window = li.window
+	if sb, ok := li.collector.(collector.StartBounded); ok {
+		sb.SetLookback(li.window.retention)
+	}
 
 	log.Printf("[logging] Logging integration created successfully")
 	return li, nil
@@ -252,7 +261,7 @@ func (li *LoggingIntegration) subscriptionLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			parsed := li.parser.Parse([]collector.RawLogEntry{raw}, parserCfg)
+			parsed := li.inWindow(li.parser.Parse([]collector.RawLogEntry{raw}, parserCfg))
 			if len(parsed) == 0 {
 				continue
 			}
@@ -278,10 +287,11 @@ const maxDrainIterations = 100
 //
 // Correctness notes (audit fixes H1/H6 — this is a compliance agent, audit
 // events must not be silently dropped):
-//   - There is NO time-window filter. The previous implementation discarded any
-//     entry older than now-flushInterval AFTER advancing the checkpoint past it,
-//     so a downtime backlog (agent offline > flushInterval) was permanently lost.
-//     The checkpoint/cursor is the single source of "what is new".
+//   - The only time filter is the server's retention window (days, #437):
+//     rows the server would delete on arrival are dropped and counted. A
+//     downtime backlog inside the window is kept. (An earlier filter dropped
+//     everything older than the flush interval, losing any backlog.) The
+//     checkpoint/cursor is the single source of "what is new".
 //   - The checkpoint is advanced ONLY after entries are durably stored, so a
 //     store failure re-collects rather than skips. The SQLite store is the
 //     at-least-once queue; the uploader drains it independently.
@@ -310,7 +320,7 @@ func (li *LoggingIntegration) runCollection(ctx context.Context) error {
 		// Parse and persist BEFORE advancing the checkpoint. The store dedups by
 		// hash, so a re-collect after a crash between Insert and checkpoint Save
 		// produces no duplicates.
-		parsed := li.parser.Parse(entries, li.parserConfig())
+		parsed := li.inWindow(li.parser.Parse(entries, li.parserConfig()))
 		if err := li.store.Insert(parsed); err != nil {
 			return fmt.Errorf("store insert: %w", err)
 		}
@@ -351,12 +361,23 @@ func (li *LoggingIntegration) runCollection(ctx context.Context) error {
 	return nil
 }
 
+// inWindow drops rows dated outside the server's retention window (#437)
+// and counts them.
+func (li *LoggingIntegration) inWindow(logs []models.AuditLog) []models.AuditLog {
+	kept, dropped := li.window.filter(logs)
+	if dropped > 0 {
+		li.stats.addDroppedOutOfWindow(int64(dropped))
+	}
+	return kept
+}
+
 // parserConfig builds a ParserConfig from the current agent config.
 func (li *LoggingIntegration) parserConfig() parser.ParserConfig {
 	return parser.ParserConfig{
-		AgentID:      "",
-		DeviceID:     li.cfg.DeviceID,
-		OSType:       runtime.GOOS,
-		AgentVersion: li.cfg.CurrentVersion,
+		AgentID:           "",
+		DeviceID:          li.cfg.DeviceID,
+		OSType:            runtime.GOOS,
+		AgentVersion:      li.cfg.CurrentVersion,
+		MaxEventDataBytes: li.window.maxEventDataBytes(),
 	}
 }

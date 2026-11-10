@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // maxJournalEntries caps how many journal entries are read per Collect cycle.
@@ -31,7 +32,13 @@ type linuxCollector struct {
 	// open starts a subprocess and streams its stdout. Defaults to execStream;
 	// tests inject a fake that returns canned journalctl output.
 	open streamOpener
+	// lookback bounds a log file's first read (see StartBounded); nil reads
+	// the whole file.
+	lookback func() time.Duration
 }
+
+// SetLookback implements StartBounded.
+func (c *linuxCollector) SetLookback(lookback func() time.Duration) { c.lookback = lookback }
 
 // NewCollector creates a Linux-specific log collector. It reads the systemd
 // journal by shelling out to `journalctl -o json` (pure Go, no cgo) and tails
@@ -228,6 +235,16 @@ func (c *linuxCollector) collectFile(ctx context.Context, path, source string, c
 	inodeKey := source + "_inode"
 
 	offset := resumeOffset(checkpoint, inodeKey, cpKey, currentInode)
+	if _, hasCP := CheckpointInt64(checkpoint, inodeKey); !hasCP && c.lookback != nil {
+		// First run: start at the retention window, not the file's start
+		// (#437). A rotated file (new inode) is still read from its start.
+		if offset, err = firstRunOffset(f, info.Size(), time.Now().Add(-c.lookback()), parseSyslogTimestamp); err != nil {
+			return nil, nil, fmt.Errorf("find first-run start in %s: %w", path, err)
+		}
+		if offset >= info.Size() {
+			return nil, CheckpointData{cpKey: float64(info.Size()), inodeKey: float64(currentInode)}, nil
+		}
+	}
 
 	// Check for in-place truncation (e.g. logrotate copytruncate): same inode
 	// but the file shrank below our saved offset. Reset to the start so we don't

@@ -13,6 +13,8 @@ import (
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/channel/clipboard"
+	"sentinelgo/internal/dlp/desktopproxy"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/prompt"
@@ -53,10 +55,20 @@ func RunDLPSession() int {
 	} else {
 		defer release()
 	}
+	// Linux: the upload redirect is the user's desktop proxy (#426). A
+	// helper that was killed left it set: put the user's setting back now;
+	// the service asks again while it inspects uploads.
+	var setProxy func(string) error
+	if dp := desktopproxy.New(); dp != nil {
+		if err := dp.Clear(); err != nil {
+			log.Printf("DLP helper: could not restore the desktop proxy: %v", err)
+		}
+		setProxy = dp.Set
+	}
 	err = session.RunHelper(ctx, session.HelperOptions{
 		Addr:      ipc.DefaultAddress,
 		Version:   config.Version,
-		Channels:  []channel.Channel{clipboard.New()},
+		Channels:  append([]channel.Channel{clipboard.New()}, filedlp.UserFolderChannels()...),
 		Notify:    notify.Show,
 		Readiness: notify.Readiness,
 		AskOverride: func(ctx context.Context, a ipc.AskOverride) (string, string, error) {
@@ -67,6 +79,8 @@ func RunDLPSession() int {
 		OpenProfile: mdmenroll.OpenProfileForUser,
 		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
 		OpenURL: mdmenroll.OpenURLForUser,
+		// The upload inspection's redirect on Linux (#426).
+		SetProxy: setProxy,
 	})
 	if err != nil {
 		log.Printf("DLP helper stopped: %v", err)

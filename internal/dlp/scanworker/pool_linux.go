@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // unprivilegedUsers are tried in order for the worker's account when the
@@ -146,4 +148,9 @@ func (w *worker) kill() {
 	case <-w.exited:
 	case <-time.After(5 * time.Second):
 	}
+}
+
+// socketpairCloexec makes the service<->worker socket pair, close-on-exec.
+func socketpairCloexec() ([2]int, error) {
+	return unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 }

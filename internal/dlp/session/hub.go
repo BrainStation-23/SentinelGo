@@ -28,6 +28,9 @@ const helloTimeout = 10 * time.Second
 type Hub struct {
 	addr string
 	sink channel.EventSink
+	// files takes the files helpers hand over (TypeUserFile); nil drops
+	// them. Set with SetFileReceiver.
+	files FileReceiver
 
 	mu      sync.Mutex
 	running bool
@@ -61,6 +64,10 @@ type helper struct {
 
 	pending map[string]chan string             // notify id -> its result (guarded by Hub.mu)
 	asks    map[string]chan ipc.OverrideAnswer // ask id -> the user's answer (guarded by Hub.mu)
+	proxies map[string]chan ipc.SetProxyResult // set_proxy id -> its result (guarded by Hub.mu)
+	// redirect is the session's upload redirect from its last SetProxy
+	// answer (CapUploadRedirect); "" before any.
+	redirect string
 }
 
 // helperOutbox is how many messages may wait for a helper. A helper that
@@ -76,6 +83,19 @@ const (
 	maxConns        = 64
 	maxConnsPerUser = 4
 )
+
+// FileReceiver takes a file a helper handed over: from is the helper, by its
+// OS identity. It runs on the helper's read loop, so it must only take its
+// own copy of the handle and queue the work; the hub acks the file when it
+// returns, and the helper then closes its handle.
+type FileReceiver func(from ipc.Identity, f ipc.UserFile)
+
+// SetFileReceiver sets what takes the files helpers hand over (#330).
+func (h *Hub) SetFileReceiver(fn FileReceiver) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.files = fn
+}
 
 // NewHub returns a hub listening on addr once started.
 func NewHub(addr string, sink channel.EventSink) *Hub {
@@ -166,6 +186,81 @@ func (h *Hub) Notify(ctx context.Context, n ipc.Notify) []NotifyResult {
 		}
 		h.mu.Lock()
 		r.Readiness = w.hp.caps[CapNotifications]
+		h.mu.Unlock()
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
+	return out
+}
+
+// ProxyResult is one session's answer to SetProxy: Reason is "" when the
+// helper applied it, else why not (ipc.SetProxyResult's reasons, or
+// no_answer).
+type ProxyResult struct {
+	User      string
+	SessionID string
+	Reason    string
+	Err       string
+}
+
+// Upload redirect states a session reports under CapUploadRedirect.
+const (
+	redirectActive   = "active"
+	redirectInactive = "inactive"
+)
+
+// SetProxy asks every connected helper to point its user's desktop proxy at
+// pacURL ("" puts the user's own setting back, #426) and waits for each
+// answer until ctx ends. Each session's outcome shows in Sessions under
+// CapUploadRedirect.
+func (h *Hub) SetProxy(ctx context.Context, pacURL string) []ProxyResult {
+	req := ipc.SetProxy{ID: newNotifyID(), PACURL: pacURL}
+	type wait struct {
+		hp *helper
+		ch chan ipc.SetProxyResult
+	}
+	h.mu.Lock()
+	waits := make([]wait, 0, len(h.helpers))
+	for hp := range h.helpers {
+		ch := make(chan ipc.SetProxyResult, 1)
+		if hp.proxies == nil {
+			hp.proxies = map[string]chan ipc.SetProxyResult{}
+		}
+		hp.proxies[req.ID] = ch
+		waits = append(waits, wait{hp, ch})
+	}
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		for _, w := range waits {
+			delete(w.hp.proxies, req.ID)
+		}
+		h.mu.Unlock()
+	}()
+
+	for _, w := range waits {
+		h.send(w.hp, ipc.Message{Type: ipc.TypeSetProxy, SetProxy: &req})
+	}
+	out := make([]ProxyResult, 0, len(waits))
+	for _, w := range waits {
+		r := ProxyResult{User: w.hp.id.User, SessionID: w.hp.id.SessionID}
+		select {
+		case res := <-w.ch:
+			r.Reason, r.Err = boundError(res.Reason), boundError(res.Error)
+		case <-w.hp.done:
+			r.Reason, r.Err = "no_answer", "the session helper disconnected"
+		case <-ctx.Done():
+			r.Reason, r.Err = "no_answer", "no answer from the session helper (it may run an older agent)"
+		}
+		state := redirectActive
+		switch {
+		case r.Reason != "":
+			state = "unsupported:" + r.Reason
+		case pacURL == "":
+			state = redirectInactive
+		}
+		h.mu.Lock()
+		w.hp.redirect = state
 		h.mu.Unlock()
 		out = append(out, r)
 	}
@@ -353,7 +448,15 @@ func (h *Hub) Sessions() []Info {
 	defer h.mu.Unlock()
 	out := make([]Info, 0, len(h.helpers))
 	for hp := range h.helpers {
-		out = append(out, Info{User: hp.id.User, State: hp.state, SessionID: hp.id.SessionID, Capabilities: hp.caps})
+		caps := hp.caps
+		if hp.redirect != "" {
+			caps = make(map[string]string, len(hp.caps)+1)
+			for k, v := range hp.caps {
+				caps[k] = v
+			}
+			caps[CapUploadRedirect] = hp.redirect
+		}
+		out = append(out, Info{User: hp.id.User, State: hp.state, SessionID: hp.id.SessionID, Capabilities: caps})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
 	return out
@@ -581,50 +684,75 @@ func (h *Hub) readLoop(hp *helper) {
 		if err != nil {
 			return // disconnect, oversized or malformed frame: drop the connection
 		}
-		switch m.Type {
-		case ipc.TypeEvent:
-			if m.Event == nil {
-				continue
-			}
-			ev := *m.Event
-			// Never trust the helper for who it is.
-			ev.User = hp.id.User
-			ev.SessionID = hp.id.SessionID
-			h.sink.Emit(ev)
-		case ipc.TypeNotifyResult:
-			if m.NotifyResult != nil {
-				h.answer(hp, m.NotifyResult.ID, m.NotifyResult.Error)
-			}
-		case ipc.TypeOpenProfileResult:
-			if m.OpenProfileResult != nil {
-				h.answer(hp, m.OpenProfileResult.ID, m.OpenProfileResult.Error)
-			}
-		case ipc.TypeOpenURLResult:
-			if m.OpenURLResult != nil {
-				h.answer(hp, m.OpenURLResult.ID, m.OpenURLResult.Error)
-			}
-		case ipc.TypeOverrideAnswer:
-			if a := m.OverrideAnswer; a != nil {
-				h.mu.Lock()
-				ch := hp.asks[a.ID]
-				h.mu.Unlock()
-				if ch != nil {
-					select {
-					case ch <- *a:
-					default:
-					}
-				}
-			}
-		case ipc.TypeStatus:
-			if m.Status != nil {
-				h.mu.Lock()
-				hp.state = m.Status.State
-				if m.Status.Capabilities != nil {
-					hp.caps = sanitizeCaps(m.Status.Capabilities)
-				}
-				h.mu.Unlock()
-			}
+		h.handle(hp, m)
+	}
+}
+
+// handle acts on one message from a helper.
+func (h *Hub) handle(hp *helper, m ipc.Message) {
+	switch {
+	case m.Type == ipc.TypeEvent && m.Event != nil:
+		ev := *m.Event
+		// Never trust the helper for who it is.
+		ev.User = hp.id.User
+		ev.SessionID = hp.id.SessionID
+		h.sink.Emit(ev)
+	case m.Type == ipc.TypeUserFile && m.UserFile != nil:
+		h.takeFile(hp, *m.UserFile)
+	case m.Type == ipc.TypeNotifyResult && m.NotifyResult != nil:
+		h.answer(hp, m.NotifyResult.ID, m.NotifyResult.Error)
+	case m.Type == ipc.TypeOpenProfileResult && m.OpenProfileResult != nil:
+		h.answer(hp, m.OpenProfileResult.ID, m.OpenProfileResult.Error)
+	case m.Type == ipc.TypeOpenURLResult && m.OpenURLResult != nil:
+		h.answer(hp, m.OpenURLResult.ID, m.OpenURLResult.Error)
+	case m.Type == ipc.TypeSetProxyResult && m.SetProxyResult != nil:
+		h.proxyAnswer(hp, *m.SetProxyResult)
+	case m.Type == ipc.TypeOverrideAnswer && m.OverrideAnswer != nil:
+		h.overrideAnswer(hp, *m.OverrideAnswer)
+	case m.Type == ipc.TypeStatus && m.Status != nil:
+		h.mu.Lock()
+		hp.state = m.Status.State
+		if m.Status.Capabilities != nil {
+			hp.caps = sanitizeCaps(m.Status.Capabilities)
 		}
+		h.mu.Unlock()
+	}
+}
+
+// takeFile gives a handed-over file to the receiver, then acks it so the
+// helper closes its handle.
+func (h *Hub) takeFile(hp *helper, f ipc.UserFile) {
+	h.mu.Lock()
+	fn := h.files
+	h.mu.Unlock()
+	if fn != nil {
+		fn(hp.id, f)
+	}
+	h.send(hp, ipc.Message{Type: ipc.TypeUserFileAck, UserFileAck: &ipc.UserFileAck{ID: f.ID}})
+}
+
+// overrideAnswer delivers the user's answer to the AskOverride waiting on it.
+func (h *Hub) overrideAnswer(hp *helper, a ipc.OverrideAnswer) {
+	h.mu.Lock()
+	ch := hp.asks[a.ID]
+	h.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- a:
+	default:
+	}
+}
+
+// proxyAnswer delivers a helper's SetProxy result to the call waiting on it.
+func (h *Hub) proxyAnswer(hp *helper, r ipc.SetProxyResult) {
+	h.mu.Lock()
+	ch := hp.proxies[r.ID]
+	delete(hp.proxies, r.ID)
+	h.mu.Unlock()
+	if ch != nil {
+		ch <- r
 	}
 }
 
