@@ -146,9 +146,14 @@ func TestUploadFromStore_RetrySendsSameBatchID(t *testing.T) {
 func TestUploadFromStore_FailedChunkResentAlone(t *testing.T) {
 	var failSecond atomic.Bool
 	failSecond.Store(true)
+	// The first cycle ends when the second chunk fails (a 5xx is otherwise
+	// retried until the context ends), so the test doesn't depend on timing.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	fake := &fakeEnqueue{}
 	fake.respond = func(n int, _ sentBatch) (int, string) {
 		if n == 1 && failSecond.Load() {
+			cancel()
 			return http.StatusBadGateway, `{}`
 		}
 		return http.StatusOK, `{"success":true}`
@@ -161,9 +166,7 @@ func TestUploadFromStore_FailedChunkResentAlone(t *testing.T) {
 	}
 	storeEntries(t, li, entries)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	_, err := li.uploader.UploadFromStore(ctx, li.store) // second chunk keeps failing until ctx ends
-	cancel()
+	_, err := li.uploader.UploadFromStore(ctx, li.store)
 	if err == nil {
 		t.Fatal("want an error from the failing chunk")
 	}
