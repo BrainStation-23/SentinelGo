@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.8] - 2026-11-10
+
 ### Added
 
 - Windows: file DLP on network shares opened by path, and the writing program for shares and sync folders (#428). Besides mapped drives, the session helper now watches the user's shares without a drive letter: live connections (`WNetOpenEnum`), remembered mappings (`HKCU\Network`) and shares Explorer has opened (`MountPoints2`), live ones first, at most 16, trusted shares skipped. A share is opened off the helper's loop, so a server that is gone can't stall it, and a share that can't be watched or goes away is tried again after a minute. With `process_taint` on, the ETW trace now also runs when only `file.network_share` or `file.cloud_sync` is on: opens on `\Device\Mup` paths are mapped to `\\server\share`, and sync folders are learned from the files the helpers hand over (never a whole profile). A handed-over file's event names the program that wrote it and uses its taint sources. The first file in a sync folder the service hasn't seen yet isn't attributed.
@@ -583,7 +585,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.7...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.8...HEAD
+[v4.0.8]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.7...v4.0.8
 [v4.0.7]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.6...v4.0.7
 [v4.0.6]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.5...v4.0.6
 [v4.0.5]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.4...v4.0.5
