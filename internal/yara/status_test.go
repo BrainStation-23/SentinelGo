@@ -106,7 +106,7 @@ func TestStatus_Caps(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
+func TestTruncateUTF8(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
 		n    int
@@ -118,8 +118,8 @@ func TestTruncate(t *testing.T) {
 		{"日本", 4, "日"},
 		{"", 0, ""},
 	} {
-		if got := truncate(tc.in, tc.n); got != tc.want {
-			t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+		if got := Truncate(tc.in, tc.n); got != tc.want {
+			t.Errorf("Truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
 		}
 	}
 }

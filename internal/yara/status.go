@@ -93,17 +93,17 @@ func (s Status) Encode() ([]byte, error) {
 }
 
 func (s Status) capped() Status {
-	s.AppliedVersion = truncate(s.AppliedVersion, MaxVersionLen)
-	s.AgentVersion = truncate(s.AgentVersion, MaxAgentVerLen)
-	s.EngineVersion = truncate(s.EngineVersion, MaxAgentVerLen)
+	s.AppliedVersion = Truncate(s.AppliedVersion, MaxVersionLen)
+	s.AgentVersion = Truncate(s.AgentVersion, MaxAgentVerLen)
+	s.EngineVersion = Truncate(s.EngineVersion, MaxAgentVerLen)
 	rs := s.Rulesets[:min(len(s.Rulesets), MaxRulesets)]
 	s.Rulesets = make([]RulesetStatus, len(rs))
 	for i, r := range rs {
 		sk := r.SkippedRules[:min(len(r.SkippedRules), MaxSkippedRules)]
 		r.SkippedRules = make([]SkippedRule, len(sk))
 		for j, k := range sk {
-			k.Rule = truncate(k.Rule, MaxRuleLen)
-			k.Reason = truncate(k.Reason, MaxErrorLen)
+			k.Rule = Truncate(k.Rule, MaxRuleLen)
+			k.Reason = Truncate(k.Reason, MaxErrorLen)
 			r.SkippedRules[j] = k
 		}
 		s.Rulesets[i] = r

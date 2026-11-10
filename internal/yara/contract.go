@@ -9,7 +9,11 @@
 // carries matched bytes or file content, and nothing may be added that does.
 package yara
 
-import "regexp"
+import (
+	"crypto/rand"
+	"fmt"
+	"regexp"
+)
 
 // SchemaVersion is the bundle schema this agent understands.
 const SchemaVersion = 1
@@ -118,8 +122,17 @@ func IsSHA256(s string) bool { return sha256RE.MatchString(s) }
 // IsStringID reports whether s is a YARA string identifier ($name).
 func IsStringID(s string) bool { return stringIDRE.MatchString(s) }
 
-// truncate cuts s to at most n bytes without splitting a UTF-8 sequence.
-func truncate(s string, n int) string {
+// NewID returns a random (version 4) UUID, for event and scan ids.
+func NewID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// Truncate cuts s to at most n bytes without splitting a UTF-8 sequence.
+func Truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
