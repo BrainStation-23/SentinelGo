@@ -1,6 +1,6 @@
 //go:build darwin
 
-package software
+package userhomes
 
 import (
 	"testing"

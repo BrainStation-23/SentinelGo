@@ -1,0 +1,11 @@
+{
+    "_meta": {"hash": {"sha256": "abc"}, "pipfile-spec": 6},
+    "default": {
+        "requests": {"hashes": ["sha256:abc"], "index": "pypi", "markers": "python_version >= '3.7'", "version": "==2.31.0"},
+        "mylib": {"editable": true, "path": "."},
+        "gitdep": {"git": "https://github.com/acme/gitdep.git", "ref": "abc"}
+    },
+    "develop": {
+        "pytest": {"version": "==8.1.1"}
+    }
+}

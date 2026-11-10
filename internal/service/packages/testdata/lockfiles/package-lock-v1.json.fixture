@@ -1,0 +1,20 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "keyv": {
+      "version": "4.5.4",
+      "resolved": "https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz",
+      "requires": { "json-buffer": "3.0.1" },
+      "dependencies": {
+        "json-buffer": { "version": "3.0.1" }
+      }
+    },
+    "@types/node": { "version": "20.11.5" },
+    "my-alias": { "version": "npm:lodash@4.17.21" },
+    "local-lib": { "version": "file:../local-lib" },
+    "from-git": { "version": "git+https://github.com/acme/x.git#abc" }
+  }
+}

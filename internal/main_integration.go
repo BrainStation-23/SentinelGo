@@ -161,6 +161,9 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// notify-user).
 	mi.startDLP(ctx)
 
+	// 6b. Schedule the npm/PyPI/Composer inventory (#421).
+	mi.startPackageSync()
+
 	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
@@ -854,6 +857,7 @@ func (mi *MainIntegration) Stop() error {
 
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
+	native.SetPackageSync(nil)
 	native.SetUserNotifier(nil)
 	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)
