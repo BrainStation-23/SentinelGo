@@ -11,6 +11,11 @@ package uploadproxy
 //     only the destinations in scope go through the proxy, everything else
 //     and every bypass host goes direct.
 //
+// While the redirect is active and the files module isn't audit_only, it
+// also blocks direct connections to the intercepted sites from other
+// processes (directblock.go, Windows: WFP), so apps that ignore the proxy
+// can't go around it.
+//
 // It fails open: the PAC script says "PROXY …; DIRECT", so browsers go
 // direct when the proxy is down; a watchdog removes the redirect when the
 // proxy stops answering, when the emergency switch is on, and on stop; and
@@ -74,6 +79,11 @@ type ServiceOptions struct {
 	// The OS integration; nil means this OS's (NewRedirector, NewTruster).
 	Redirector Redirector
 	Truster    Truster
+	// DirectBlocker and Resolver replace this OS's direct block (tests);
+	// where the OS has none (platformDirectBlocker nil) and no DirectBlocker
+	// is given, there is no direct block.
+	DirectBlocker func() (DirectBlocker, error)
+	Resolver      Resolver
 	// Scanner replaces the worker pool (tests); nil starts workers.
 	Scanner filedlp.Scanner
 	// ProxyTestOptions lets tests reach local upstreams (their roots,
@@ -90,6 +100,9 @@ type Status struct {
 	Addr             string     `json:"addr,omitempty"`
 	LastInspectionAt *time.Time `json:"last_inspection_at,omitempty"`
 	Stats            Stats      `json:"stats"`
+	// DirectBlock is the block on direct connections (Windows, #427); nil
+	// where the OS has none.
+	DirectBlock *DirectBlockStatus `json:"direct_block,omitempty"`
 }
 
 // CAStatus describes the inspection CA (never its key).
@@ -128,6 +141,9 @@ type Service struct {
 	redirect atomic.Pointer[string]      // active, inactive, unsupported:<reason>
 	healthy  atomic.Bool
 	localOff atomic.Bool
+
+	direct    *directBlock // nil where the OS has no direct block
+	auditOnly atomic.Bool
 }
 
 // NewService returns a Service. It removes a redirect a crashed agent left.
@@ -145,6 +161,17 @@ func NewService(o ServiceOptions) *Service {
 	if err := s.redir.Remove(); err != nil {
 		log.Printf("DLP: could not remove a stale upload redirect: %v", err)
 	}
+	open, resolve := o.DirectBlocker, o.Resolver
+	if open == nil {
+		open = platformDirectBlocker
+	}
+	if resolve == nil {
+		resolve = platformResolver
+	}
+	if open != nil && resolve != nil {
+		s.direct = newDirectBlock(open, resolve)
+	}
+	s.auditOnly.Store(true)
 	inactive := RedirectInactive
 	s.redirect.Store(&inactive)
 	none := func(string, string) bool { return false }
@@ -188,6 +215,7 @@ func (s *Service) Apply(_ context.Context, c *policy.Compiled) {
 	pac := BuildPAC(s.ln.Addr().String(), in.Intercept, in.Bypass)
 	s.pac.Store(&pac)
 	s.hosts.Store(&[2][]string{in.Intercept, in.Bypass})
+	s.auditOnly.Store(c.Modules.Files.IsAuditOnly())
 }
 
 // Stop stops the proxy and removes the redirect. The CA stays trusted: Stop
@@ -268,6 +296,9 @@ func (s *Service) stopLocked() {
 	s.cancel()
 	_ = s.ln.Close()
 	s.wg.Wait()
+	if s.direct != nil {
+		s.direct.stop(DirectBlockInactive)
+	}
 	s.removeRedirect()
 	if s.pool != nil {
 		s.pool.Stop()
@@ -294,16 +325,36 @@ func (s *Service) watchdog(ctx context.Context, addr string) {
 		s.localOff.Store(off)
 		healthy := probe(ctx, addr)
 		s.healthy.Store(healthy)
-		if healthy && !off && len(*s.pac.Load()) > 0 {
+		redirecting := healthy && !off && len(*s.pac.Load()) > 0
+		if redirecting {
 			s.applyRedirect()
 		} else {
 			s.removeRedirect()
 		}
+		s.syncDirectBlock(ctx, redirecting)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// syncDirectBlock blocks direct connections to the intercepted sites while
+// the redirect is active and the module may block, and removes the block
+// otherwise (fail open with the redirect).
+func (s *Service) syncDirectBlock(ctx context.Context, redirecting bool) {
+	if s.direct == nil {
+		return
+	}
+	hosts := s.hosts.Load()
+	switch {
+	case !redirecting || hosts == nil || *s.redirect.Load() != RedirectActive:
+		s.direct.stop(DirectBlockInactive)
+	case s.auditOnly.Load():
+		s.direct.stop(DirectBlockAuditOnly)
+	default:
+		s.direct.update(ctx, hosts[0], hosts[1])
 	}
 }
 
@@ -410,6 +461,10 @@ func (s *Service) Status() *Status {
 	}
 	if s.running && s.ln != nil {
 		st.Addr = s.ln.Addr().String()
+	}
+	if s.direct != nil {
+		d := s.direct.status()
+		st.DirectBlock = &d
 	}
 	return st
 }
