@@ -10,7 +10,7 @@ import (
 
 func write(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -106,7 +106,7 @@ func TestCollectGlobal_SkipsSymlinks(t *testing.T) {
 	nm := filepath.Join(sys, "lib", "node_modules")
 	project := filepath.Join(dir, "project")
 	write(t, filepath.Join(project, "package.json"), `{"name":"linked","version":"0.0.1"}`)
-	if err := os.MkdirAll(nm, 0o755); err != nil {
+	if err := os.MkdirAll(nm, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(project, filepath.Join(nm, "linked")); err != nil {

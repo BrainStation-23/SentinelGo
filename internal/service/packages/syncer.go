@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,9 +222,9 @@ func randDuration(maxD time.Duration) time.Duration {
 	if maxD <= 0 {
 		return 0
 	}
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(maxD)))
+	if err != nil {
 		return maxD / 2
 	}
-	return time.Duration(binary.BigEndian.Uint64(b[:]) % uint64(maxD))
+	return time.Duration(n.Int64())
 }
