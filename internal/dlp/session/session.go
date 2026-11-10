@@ -33,6 +33,18 @@ type Supervisor interface {
 // is never rolled up to the device's channel capabilities.
 const CapNotifications = "notifications"
 
+// CapUploadRedirect is the per-session upload redirect (#426, Linux): the
+// hub records each helper's answer to SetProxy ("active", "inactive" or
+// "unsupported:<reason>"). Per user, like CapNotifications: the device's
+// file.upload capability comes from the upload proxy service.
+const CapUploadRedirect = "upload_redirect"
+
+// PerSession reports whether a session capability describes one user only,
+// so it is never rolled up to the device's capabilities.
+func PerSession(capability string) bool {
+	return capability == CapNotifications || capability == CapUploadRedirect
+}
+
 // Info is one session helper's state, as reported to the backend.
 type Info struct {
 	User      string `json:"user"`

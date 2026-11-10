@@ -467,7 +467,9 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 			files := filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
 				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)})
 			// Upload inspection (#344): off until the bundle turns it on.
-			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path)})
+			// On Linux the helpers set each user's desktop proxy (#426).
+			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+				SessionProxy: sessionProxySetter(sup)})
 			enforcer := uploadproxy.WithUploads(files, uploads)
 			m.SetFiles(enforcer)
 			// Windows: the helpers hand over files on shares and sync folders (#330).
@@ -683,6 +685,25 @@ func sessionReports(in []session.Info) []agentsvc.SessionReport {
 		out = append(out, agentsvc.SessionReport{User: s.User, State: s.State, SessionID: s.SessionID, Capabilities: s.Capabilities})
 	}
 	return out
+}
+
+// sessionProxySetter lets the upload proxy set each session's desktop proxy
+// through the helpers (Linux, #426); nil when sup can't.
+func sessionProxySetter(sup session.Service) uploadproxy.SessionProxySetter {
+	sp, ok := sup.(interface {
+		SetProxy(ctx context.Context, pacURL string) []session.ProxyResult
+	})
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, pacURL string) []string {
+		results := sp.SetProxy(ctx, pacURL)
+		reasons := make([]string, 0, len(results))
+		for _, r := range results {
+			reasons = append(reasons, r.Reason)
+		}
+		return reasons
+	}
 }
 
 // discardEvents is the event sink when the evidence queue is unavailable.

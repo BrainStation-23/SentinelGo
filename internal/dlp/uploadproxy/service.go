@@ -84,6 +84,9 @@ type ServiceOptions struct {
 	// is given, there is no direct block.
 	DirectBlocker func() (DirectBlocker, error)
 	Resolver      Resolver
+	// SessionProxy reaches the session helpers, which set the per-user
+	// proxy on Linux (#426); unused elsewhere.
+	SessionProxy SessionProxySetter
 	// Scanner replaces the worker pool (tests); nil starts workers.
 	Scanner filedlp.Scanner
 	// ProxyTestOptions lets tests reach local upstreams (their roots,
@@ -153,7 +156,7 @@ func NewService(o ServiceOptions) *Service {
 	}
 	s := &Service{opts: o, redir: o.Redirector, trust: o.Truster}
 	if s.redir == nil {
-		s.redir = NewRedirector(o.ConfigDir)
+		s.redir = platformRedirector(o)
 	}
 	if s.trust == nil {
 		s.trust = NewTruster()

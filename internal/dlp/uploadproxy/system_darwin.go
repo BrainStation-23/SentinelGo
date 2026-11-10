@@ -32,6 +32,9 @@ type macRedirector struct{ dir string }
 // NewRedirector returns this OS's Redirector; dir holds its note.
 func NewRedirector(dir string) Redirector { return &macRedirector{dir: dir} }
 
+// platformRedirector is the machine-wide setting; helpers aren't needed.
+func platformRedirector(o ServiceOptions) Redirector { return NewRedirector(o.ConfigDir) }
+
 type macNote struct {
 	PACURL   string   `json:"pac_url"`
 	Services []string `json:"services"` // where the agent turned the auto proxy on
