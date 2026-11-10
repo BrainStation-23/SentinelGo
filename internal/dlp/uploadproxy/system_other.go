@@ -7,6 +7,8 @@ type noRedirector struct{}
 // NewRedirector returns a Redirector that can't redirect here.
 func NewRedirector(string) Redirector { return noRedirector{} }
 
+func platformRedirector(ServiceOptions) Redirector { return noRedirector{} }
+
 func (noRedirector) Apply(string) error { return ErrNotImplemented }
 
 // Remove has nothing to undo here.

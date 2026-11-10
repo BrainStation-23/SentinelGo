@@ -58,6 +58,9 @@ const (
 
 	TypeUserFile    = "user_file"     // helper → service: a file the user wrote to a share or sync folder (Windows, #330)
 	TypeUserFileAck = "user_file_ack" // service → helper: the service has its own handle; close yours
+
+	TypeSetProxy       = "set_proxy"        // service → helper: point the user's desktop proxy at the PAC URL, or clear it (Linux, #426)
+	TypeSetProxyResult = "set_proxy_result" // helper → service: whether it was applied
 )
 
 // Notification levels.
@@ -93,6 +96,28 @@ type Message struct {
 	UserFile       *UserFile       `json:"user_file,omitempty"`
 	// UserFileAck answers a UserFile with the same ID.
 	UserFileAck *UserFileAck `json:"user_file_ack,omitempty"`
+	SetProxy    *SetProxy    `json:"set_proxy,omitempty"`
+	// SetProxyResult answers a SetProxy with the same ID.
+	SetProxyResult *SetProxyResult `json:"set_proxy_result,omitempty"`
+}
+
+// SetProxy asks a Linux helper to point its user's desktop proxy setting
+// (GNOME, KDE) at the upload inspection's PAC script, or with an empty
+// PACURL to put the user's own setting back (#426). Windows and macOS
+// redirect machine-wide from the service instead.
+type SetProxy struct {
+	ID     string `json:"id"`
+	PACURL string `json:"pac_url,omitempty"`
+}
+
+// SetProxyResult says whether a helper applied a SetProxy. Reason is "" when
+// it did; otherwise existing_proxy (the user has their own proxy: nothing
+// changed), unsupported_desktop, unsupported_platform or error, with Error
+// saying more.
+type SetProxyResult struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // UserFile hands the service a file the user wrote to a network share or a

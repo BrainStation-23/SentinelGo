@@ -2,8 +2,9 @@ package uploadproxy
 
 // Linux: the CA goes into the system bundle the distribution builds from
 // /usr/local/share/ca-certificates (update-ca-certificates on Debian and
-// Ubuntu). Redirecting traffic (nftables, #344) is not done yet; until then
-// clients are pointed at the proxy explicitly.
+// Ubuntu). The proxy setting is per user (GNOME, KDE), so the session
+// helpers point it at the PAC script (#426, sessionRedirector); an nftables
+// backstop for apps that ignore it comes later.
 
 import (
 	"context"
@@ -34,17 +35,13 @@ var (
 
 const anchorName = "sentinelops-upload-inspection.crt"
 
-type linuxRedirector struct{}
+// NewRedirector returns a Redirector without session helpers: Apply can't
+// redirect and Remove has nothing to do (for uninstall: each helper puts
+// its user's setting back when it stops).
+func NewRedirector(string) Redirector { return sessionRedirector{} }
 
-// NewRedirector returns this OS's Redirector.
-func NewRedirector(string) Redirector { return linuxRedirector{} }
-
-func (linuxRedirector) Apply(string) error {
-	return fmt.Errorf("%w: redirect on Linux comes with nftables (#344)", ErrNotImplemented)
-}
-
-// Remove has nothing to undo: Apply never changes anything here.
-func (linuxRedirector) Remove() error { return nil }
+// platformRedirector redirects through the session helpers.
+func platformRedirector(o ServiceOptions) Redirector { return sessionRedirector{set: o.SessionProxy} }
 
 type linuxTruster struct{}
 
