@@ -85,6 +85,13 @@ var knownPaths = func() map[string][]string {
 		"iptables":     {"/usr/sbin/iptables", "/sbin/iptables"},
 		"nft":          {"/usr/sbin/nft", "/sbin/nft"},
 
+		// Linux desktop proxy setting (DLP upload redirect, #426)
+		"kreadconfig5":  {"/usr/bin/kreadconfig5", "/bin/kreadconfig5"},
+		"kreadconfig6":  {"/usr/bin/kreadconfig6", "/bin/kreadconfig6"},
+		"kwriteconfig5": {"/usr/bin/kwriteconfig5", "/bin/kwriteconfig5"},
+		"kwriteconfig6": {"/usr/bin/kwriteconfig6", "/bin/kwriteconfig6"},
+		"dbus-send":     {"/usr/bin/dbus-send", "/bin/dbus-send"},
+
 		// Linux compliance probes (osinfo/security, osinfo/users)
 		"auditctl":         {"/usr/sbin/auditctl", "/sbin/auditctl"},
 		"chronyc":          {"/usr/bin/chronyc", "/bin/chronyc"},

@@ -37,6 +37,9 @@ type winRedirector struct{ dir string }
 // NewRedirector returns this OS's Redirector; dir holds its note.
 func NewRedirector(dir string) Redirector { return &winRedirector{dir: dir} }
 
+// platformRedirector is the machine-wide setting; helpers aren't needed.
+func platformRedirector(o ServiceOptions) Redirector { return NewRedirector(o.ConfigDir) }
+
 // winNote is what Apply changed, to undo it exactly.
 type winNote struct {
 	PACURL string `json:"pac_url"`

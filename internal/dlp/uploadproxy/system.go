@@ -10,12 +10,17 @@ package uploadproxy
 //     it out when inspection is turned off.
 //
 // Both leave a note in the config directory of what they changed, so a
-// crashed agent's changes are undone on the next start (fail open).
+// crashed agent's changes are undone on the next start (fail open). On
+// Linux the proxy setting is per user, so the session helpers set it
+// (sessionRedirector) and keep their own notes.
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // Redirector points the system proxy setting at a PAC URL.
@@ -44,16 +49,80 @@ var (
 	ErrExistingProxy  = errors.New("existing_proxy")
 	ErrNeedsMDM       = errors.New("ca_needs_mdm")
 	ErrNotImplemented = errors.New("not_implemented")
+	// ErrNoSession: no user session has a helper that could set its proxy.
+	ErrNoSession = errors.New("no_graphical_session")
+	// ErrUnsupportedDesktop: the sessions' desktops have no proxy setting
+	// the agent knows (GNOME, KDE).
+	ErrUnsupportedDesktop = errors.New("unsupported_desktop")
 )
 
 // Reason is the capability reason for a Redirector or Truster error.
 func Reason(err error) string {
-	for _, e := range []error{ErrExistingProxy, ErrNeedsMDM, ErrNotImplemented} {
+	for _, e := range []error{ErrExistingProxy, ErrNeedsMDM, ErrNotImplemented, ErrNoSession, ErrUnsupportedDesktop} {
 		if errors.Is(err, e) {
 			return e.Error()
 		}
 	}
 	return "error"
+}
+
+// SessionProxySetter asks every user session's helper to point the user's
+// desktop proxy at pacURL ("" puts their own setting back) and returns each
+// session's reason: "" when applied, else existing_proxy,
+// unsupported_desktop, no_answer, ... (ipc.SetProxyResult).
+type SessionProxySetter func(ctx context.Context, pacURL string) []string
+
+// sessionProxyWait bounds how long a Redirector waits for the helpers. The
+// watchdog calls it every watchdogEvery, and Stop holds the service lock.
+var sessionProxyWait = 5 * time.Second
+
+// sessionRedirector redirects through the session helpers (Linux, #426):
+// active when at least one session applied it. It stands down per session:
+// a user with their own proxy keeps it, and each session's outcome is in
+// the sessions list.
+type sessionRedirector struct{ set SessionProxySetter }
+
+func (r sessionRedirector) Apply(pacURL string) error {
+	if r.set == nil {
+		return fmt.Errorf("%w: no session helpers to set the desktop proxy", ErrNotImplemented)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionProxyWait)
+	defer cancel()
+	return sessionsResult(r.set(ctx, pacURL))
+}
+
+// Remove asks every helper to put its user's setting back. Failures stay
+// per session (a helper also restores when it loses the service or exits),
+// so Remove itself always succeeds.
+func (r sessionRedirector) Remove() error {
+	if r.set == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionProxyWait)
+	defer cancel()
+	r.set(ctx, "")
+	return nil
+}
+
+// sessionsResult is the device's redirect from the sessions' reasons: nil
+// when any session applied it, else the most telling reason.
+func sessionsResult(reasons []string) error {
+	if len(reasons) == 0 {
+		return fmt.Errorf("%w: no session helper is connected", ErrNoSession)
+	}
+	counts := map[string]int{}
+	for _, r := range reasons {
+		if r == "" {
+			return nil
+		}
+		counts[r]++
+	}
+	for _, e := range []error{ErrExistingProxy, ErrUnsupportedDesktop} {
+		if n := counts[e.Error()]; n > 0 {
+			return fmt.Errorf("%w: in %d of %d sessions", e, n, len(reasons))
+		}
+	}
+	return fmt.Errorf("no session applied the desktop proxy: %v", counts)
 }
 
 // systemTrusts reports whether the system's verifier trusts ca as a root
