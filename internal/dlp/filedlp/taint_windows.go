@@ -1,22 +1,27 @@
 package filedlp
 
 // Process attribution and taint on Windows (#331), from the ETW opens
-// (etw_windows.go). Only while process_taint is on and a drive is watched:
+// (etw_windows.go). Only while process_taint is on and a drive is watched,
+// or the network share or cloud sync channel is on (#428):
 //
 //   - an open under the user profiles folder by process P is a source in
 //     P's taint (as on Linux: opens, not reads; nothing is scanned);
-//   - an open on a watched drive tells which program wrote the file there,
-//     so its event names the program and its user, and a file that can't be
-//     judged on its own (unreadable, an archive) is judged by what that
-//     program opened before.
+//   - an open on a watched drive, on a network share or under a sync folder
+//     tells which program wrote the file there, so its event names the
+//     program and its user, and a file that can't be judged on its own
+//     (unreadable, an archive) is judged by what that program opened before.
 //
-// ETW gives NT paths (\Device\HarddiskVolume3\…); they are mapped to drive
-// letters with QueryDosDevice.
+// ETW gives NT paths (\Device\HarddiskVolume3\…, \Device\Mup\server\share\…);
+// they are mapped to drive letters with QueryDosDevice, and to
+// \\server\share paths. Sync folders are learned from the files the session
+// helpers hand over (learnSyncRoot): the service can't list a user's sync
+// folders itself.
 
 import (
 	"errors"
 	"hash/fnv"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +36,12 @@ import (
 // maxWriters bounds the remembered writers of files on watched drives.
 const maxWriters = 8192
 
+// maxSyncRoots bounds the sync folders learned from hand-overs.
+const maxSyncRoots = 64
+
+// mupPrefix is the NT path of the network redirectors.
+const mupPrefix = `\Device\Mup\`
+
 type winTaint struct {
 	sess  *etwSession
 	store *taintStore
@@ -38,6 +49,7 @@ type winTaint struct {
 	devices  atomic.Pointer[[]ntPrefix] // NT device → drive letter
 	profiles string                     // C:\Users\ (lower case)
 	watched  atomic.Pointer[[]string]   // watched roots (lower case)
+	syncs    atomic.Pointer[[]string]   // learned sync folders (lower case)
 
 	mu      sync.Mutex
 	writers map[string]writerRef // lower-case path on a watched drive → last opener
@@ -53,10 +65,11 @@ type writerRef struct {
 // Test seam: what starts the trace.
 var startTrace = startETW
 
-// reconcileTaint starts the trace when taint is on and a drive is watched,
-// and stops it otherwise.
+// reconcileTaint starts the trace when taint is on and a drive is watched or
+// the session helpers hand files over, and stops it otherwise.
 func (e *windowsEnforcer) reconcileTaint(c *policy.Compiled, watched []Destination) {
-	want := c != nil && len(watched) > 0 && c.Modules.Files.CopyCorrelation.ProcessTaint
+	want := c != nil && c.Modules.Files.CopyCorrelation.ProcessTaint &&
+		(len(watched) > 0 || (!e.localOff.Load() && takesUserFiles(c.Modules.Files)))
 	t := e.taint.Load()
 	switch {
 	case want && t == nil:
@@ -65,6 +78,7 @@ func (e *windowsEnforcer) reconcileTaint(c *policy.Compiled, watched []Destinati
 		}
 		t = &winTaint{store: newTaintStore(), writers: map[string]writerRef{}, profiles: profilesDir()}
 		t.refresh(watched)
+		t.syncs.Store(e.syncRootList())
 		sess, err := startTrace(t.onOpen)
 		if err != nil {
 			e.taintFailed.Store(true)
@@ -99,6 +113,74 @@ func (e *windowsEnforcer) stopTaint() {
 	}
 }
 
+// takesUserFiles reports whether the session helpers hand files over.
+func takesUserFiles(m policy.FilesModule) bool {
+	return m.Enabled && m.CopyCorrelation.ScansOnClose() &&
+		(m.ChannelEnabled(policy.ChannelFileNetworkShare) || m.ChannelEnabled(policy.ChannelFileCloudSync))
+}
+
+// learnSyncRoot remembers the sync folder a handed-over file is in, so the
+// next writes there are attributed. claimed is the helper's word: it is
+// taken only when path (from the service's own handle) is under it, and
+// never when it would cover a whole profile or the profiles folder.
+func (e *windowsEnforcer) learnSyncRoot(path, claimed string) {
+	root, ok := syncRootOf(path, claimed, profilesDir())
+	if !ok {
+		return
+	}
+	e.rootsMu.Lock()
+	if e.syncRoots == nil {
+		e.syncRoots = map[string]time.Time{}
+	}
+	_, known := e.syncRoots[root]
+	if !known && len(e.syncRoots) >= maxSyncRoots {
+		oldest, at := "", time.Time{}
+		for k, seen := range e.syncRoots {
+			if oldest == "" || seen.Before(at) {
+				oldest, at = k, seen
+			}
+		}
+		delete(e.syncRoots, oldest)
+	}
+	e.syncRoots[root] = time.Now()
+	e.rootsMu.Unlock()
+	if t := e.taint.Load(); t != nil && !known {
+		t.syncs.Store(e.syncRootList())
+	}
+}
+
+func (e *windowsEnforcer) syncRootList() *[]string {
+	e.rootsMu.Lock()
+	defer e.rootsMu.Unlock()
+	out := make([]string, 0, len(e.syncRoots))
+	for k := range e.syncRoots {
+		out = append(out, k)
+	}
+	return &out
+}
+
+// syncRootOf checks a helper's claimed sync folder for path against
+// profiles (c:\users\, lower case). It returns the folder lower case, with
+// a trailing backslash.
+func syncRootOf(path, claimed, profiles string) (string, bool) {
+	if claimed == "" {
+		return "", false
+	}
+	root := strings.ToLower(strings.TrimSuffix(filepath.Clean(claimed), `\`) + `\`)
+	if len(root) < 3 || root[1] != ':' || root[2] != '\\' || !strings.HasPrefix(strings.ToLower(path), root) {
+		return "", false
+	}
+	if profiles != "" {
+		if strings.HasPrefix(profiles, root) {
+			return "", false // the profiles folder or a folder above it
+		}
+		if rel, ok := strings.CutPrefix(root, profiles); ok && strings.Count(rel, `\`) < 2 {
+			return "", false // a whole profile: c:\users\ann\
+		}
+	}
+	return root, true
+}
+
 // refresh updates the device map and the watched roots.
 func (t *winTaint) refresh(watched []Destination) {
 	devs := ntDevices()
@@ -118,15 +200,22 @@ func (t *winTaint) onOpen(o fileOpen) {
 	}
 	lower := strings.ToLower(path)
 	now := time.Now()
+	if strings.HasPrefix(lower, `\\`) { // a share: the helpers know which are the user's
+		t.recordWriter(lower, o.pid, now)
+		return
+	}
 	for _, root := range *t.watched.Load() {
 		if strings.HasPrefix(lower, root) {
-			t.mu.Lock()
-			if len(t.writers) >= maxWriters {
-				clear(t.writers)
-			}
-			t.writers[lower] = writerRef{pid: o.pid, at: now}
-			t.mu.Unlock()
+			t.recordWriter(lower, o.pid, now)
 			return
+		}
+	}
+	if syncs := t.syncs.Load(); syncs != nil {
+		for _, root := range *syncs {
+			if strings.HasPrefix(lower, root) {
+				t.recordWriter(lower, o.pid, now) // and a source too, below, if under a profile
+				break
+			}
 		}
 	}
 	if t.profiles != "" && strings.HasPrefix(lower, t.profiles) {
@@ -134,14 +223,49 @@ func (t *winTaint) onOpen(o fileOpen) {
 	}
 }
 
-// dosPath maps an NT path to a drive-letter path.
+func (t *winTaint) recordWriter(lower string, pid uint32, now time.Time) {
+	t.mu.Lock()
+	if len(t.writers) >= maxWriters {
+		clear(t.writers)
+	}
+	t.writers[lower] = writerRef{pid: pid, at: now}
+	t.mu.Unlock()
+}
+
+// dosPath maps an NT path to a drive-letter path, or a network one
+// (\Device\Mup\…) to a \\server\share path.
 func (t *winTaint) dosPath(nt string) (string, bool) {
+	if p, ok := mupPath(nt); ok {
+		return p, true
+	}
 	for _, p := range *t.devices.Load() {
 		if len(nt) > len(p.nt) && nt[len(p.nt)] == '\\' && strings.EqualFold(nt[:len(p.nt)], p.nt) {
 			return p.dos + nt[len(p.nt):], true
 		}
 	}
 	return "", false
+}
+
+// mupPath maps \Device\Mup\server\share\x to \\server\share\x. An open
+// through a mapped drive may name the redirector and the drive first
+// (\Device\Mup\;LanmanRedirector\;Z:000…\server\share\x); those parts are
+// dropped. Only a path in a share (server, share and a name) is mapped.
+func mupPath(nt string) (string, bool) {
+	if len(nt) <= len(mupPrefix) || !strings.EqualFold(nt[:len(mupPrefix)], mupPrefix) {
+		return "", false
+	}
+	rest := nt[len(mupPrefix):]
+	for strings.HasPrefix(rest, ";") {
+		var ok bool
+		if _, rest, ok = strings.Cut(rest, `\`); !ok {
+			return "", false
+		}
+	}
+	parts := strings.SplitN(rest, `\`, 3)
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", false
+	}
+	return `\\` + rest, true
 }
 
 // writer is the program that last opened path on a watched drive, within

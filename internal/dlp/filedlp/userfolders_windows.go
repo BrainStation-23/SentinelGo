@@ -6,7 +6,8 @@ package filedlp
 // run in the session helper, as the user:
 //
 //   - file.network_share watches the user's mapped network drives (drive
-//     letters that are DRIVE_REMOTE in the user's session);
+//     letters that are DRIVE_REMOTE in the user's session) and the shares
+//     they use by path, without a drive letter (unc_windows.go, #428);
 //   - file.cloud_sync watches the user's OneDrive, Dropbox, Box and iCloud
 //     Drive folders, and a Google Drive for desktop volume.
 //
@@ -47,11 +48,14 @@ type userRoot struct {
 	dest  Destination
 }
 
-// Test seams: how the roots are found, and how often.
+// Test seams: how the roots are found, how often, how a watch starts, and
+// how long a root that failed waits before it is tried again.
 var (
-	findShareRoots = mappedDrives
+	findShareRoots = shareRoots
 	findSyncRoots  = syncFolders
 	rootsPoll      = 5 * time.Second
+	startUserWatch = startWatch
+	rootRetry      = time.Minute
 )
 
 // UserFolderChannels are the helper's file channels on Windows.
@@ -71,8 +75,7 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 	if !ok || c == nil || !c.Modules.Files.Enabled || !c.Modules.Files.CopyCorrelation.ScansOnClose() {
 		return channel.ErrUnsupported
 	}
-	w := &userWatcher{name: u.name, files: c.Modules.Files, hand: hand, watches: map[string]*dirWatch{},
-		changes: make(chan fsChange, changeQueueSize)}
+	w := newUserWatcher(ctx, u.name, c.Modules.Files, hand)
 	defer w.closeAll()
 	var dropped, unreadable atomic.Uint64
 	pending := newPendingSet(&dropped, &unreadable)
@@ -80,13 +83,17 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 	defer roots.Stop()
 	tick := time.NewTicker(pendingTick)
 	defer tick.Stop()
-	w.reconcile()
+	w.reconcile(time.Now())
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-roots.C:
-			w.reconcile()
+			w.reconcile(time.Now())
+		case res := <-w.started:
+			w.onStarted(res, time.Now())
+		case tok := <-w.lost:
+			w.onLost(tok, time.Now())
 		case ch := <-w.changes:
 			pending.add(ch, time.Now())
 		case now := <-tick.C:
@@ -97,17 +104,75 @@ func (u userFolders) Run(ctx context.Context, c *policy.Compiled, sink channel.E
 	}
 }
 
+// userWatcher runs on the channel's goroutine only, except the watch
+// starts: opening a root on a server that is gone can take the network
+// timeout (tens of seconds), so each start runs on its own goroutine and
+// reports back on started.
 type userWatcher struct {
+	ctx     context.Context
 	name    string
 	files   policy.FilesModule
 	hand    HandOffer
-	watches map[string]*dirWatch
+	watches map[string]userWatch // lower-case root → running watch
+	start   map[string]bool      // roots being started
+	retry   map[string]time.Time // roots that failed or went away → not before
 	roots   map[string]userRoot
 	changes chan fsChange
+	started chan startedWatch
+	lost    chan *watchToken
+}
+
+// watchToken names one watch: its loop reports it lost with it, possibly
+// before the start has been reported.
+type watchToken struct{ gone atomic.Bool }
+
+type userWatch struct {
+	dw  *dirWatch
+	tok *watchToken
+}
+
+type startedWatch struct {
+	key string
+	userWatch
+	err error
+}
+
+func newUserWatcher(ctx context.Context, name string, files policy.FilesModule, hand HandOffer) *userWatcher {
+	return &userWatcher{ctx: ctx, name: name, files: files, hand: hand,
+		watches: map[string]userWatch{}, start: map[string]bool{}, retry: map[string]time.Time{}, roots: map[string]userRoot{},
+		changes: make(chan fsChange, changeQueueSize), started: make(chan startedWatch), lost: make(chan *watchToken, 64)}
 }
 
 // reconcile watches the roots there are now and stops watching the rest.
-func (w *userWatcher) reconcile() {
+func (w *userWatcher) reconcile(now time.Time) {
+	want := w.wanted()
+	for key, uw := range w.watches {
+		if _, ok := want[key]; !ok {
+			uw.dw.close()
+			delete(w.watches, key)
+		}
+	}
+	for key, at := range w.retry {
+		if _, ok := want[key]; !ok || !now.Before(at) {
+			delete(w.retry, key)
+		}
+	}
+	w.roots = want
+	for key, r := range want {
+		if _, ok := w.watches[key]; ok || w.start[key] {
+			continue
+		}
+		if _, waiting := w.retry[key]; waiting {
+			continue
+		}
+		w.start[key] = true
+		go w.startOne(key, r.path)
+	}
+}
+
+// wanted are the channel's roots now, by lower-case path, without trusted
+// shares.
+func (w *userWatcher) wanted() map[string]userRoot {
 	want := map[string]userRoot{}
 	find := findSyncRoots
 	if w.name == policy.ChannelFileNetworkShare {
@@ -119,44 +184,78 @@ func (w *userWatcher) reconcile() {
 		}
 		want[strings.ToLower(r.path)] = r
 	}
-	for key, dw := range w.watches {
-		if _, ok := want[key]; !ok {
-			dw.close()
-			delete(w.watches, key)
-		}
-	}
-	for key, r := range want {
-		if _, ok := w.watches[key]; ok {
-			continue
-		}
-		changes := w.changes
-		dw, err := startWatch(r.path,
-			func(ch fsChange) {
-				select {
-				case changes <- ch:
-				default:
-				}
-			},
-			func(root string) {
-				select {
-				case changes <- fsChange{root: root}:
-				default:
-				}
-			},
-			func(string) {
-				// The share or folder went away: the next reconcile (rootsPoll)
-				// drops the watch or starts a new one when it is back.
-			})
-		if err == nil {
-			w.watches[key] = dw
-		}
-	}
-	w.roots = want
+	return want
 }
 
+// startOne opens root off the channel's goroutine and reports the watch,
+// or closes it if the channel has stopped.
+func (w *userWatcher) startOne(key, root string) {
+	changes, lost, tok := w.changes, w.lost, &watchToken{}
+	dw, err := startUserWatch(root,
+		func(ch fsChange) {
+			select {
+			case changes <- ch:
+			default:
+			}
+		},
+		func(root string) {
+			select {
+			case changes <- fsChange{root: root}:
+			default:
+			}
+		},
+		func(string) {
+			// The share or folder went away: drop the watch and try again
+			// after rootRetry.
+			tok.gone.Store(true)
+			select {
+			case lost <- tok:
+			default:
+			}
+		})
+	select {
+	case w.started <- startedWatch{key: key, userWatch: userWatch{dw: dw, tok: tok}, err: err}:
+	case <-w.ctx.Done():
+		if dw != nil {
+			dw.close()
+		}
+	}
+}
+
+func (w *userWatcher) onStarted(res startedWatch, now time.Time) {
+	delete(w.start, res.key)
+	if res.err != nil {
+		w.retry[res.key] = now.Add(rootRetry)
+		return
+	}
+	if res.tok.gone.Load() {
+		res.dw.close() // went away already
+		w.retry[res.key] = now.Add(rootRetry)
+		return
+	}
+	if _, ok := w.roots[res.key]; !ok {
+		res.dw.close() // not wanted any more
+		return
+	}
+	w.watches[res.key] = res.userWatch
+}
+
+func (w *userWatcher) onLost(tok *watchToken, now time.Time) {
+	for key, uw := range w.watches {
+		if uw.tok == tok {
+			uw.dw.close()
+			delete(w.watches, key)
+			w.retry[key] = now.Add(rootRetry)
+			return
+		}
+	}
+}
+
+// closeAll stops every running watch. Run returns only when ctx is done,
+// so a watch still starting closes itself (startOne).
 func (w *userWatcher) closeAll() {
-	for key, dw := range w.watches {
-		dw.close()
+	for key, uw := range w.watches {
+		uw.dw.close()
 		delete(w.watches, key)
 	}
 }

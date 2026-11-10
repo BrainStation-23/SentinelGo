@@ -86,6 +86,10 @@ type windowsEnforcer struct {
 	taintFailed atomic.Bool            // the trace couldn't start; not tried again until restart
 	taintError  atomic.Pointer[string] // why
 
+	// Sync folders learned from hand-overs (learnSyncRoot), for attribution.
+	rootsMu   sync.Mutex
+	syncRoots map[string]time.Time // lower-case root → last handed-over file
+
 	// Watches: the volume loop adds and removes them; the device window
 	// closes one when its drive is being removed.
 	wmu      sync.Mutex
