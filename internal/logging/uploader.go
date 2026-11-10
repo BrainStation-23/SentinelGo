@@ -2,11 +2,15 @@ package logging
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
 	"runtime"
+	"sort"
+	"time"
 
+	"sentinelgo/internal/auditlogs/parser"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/models"
 	auditlogsvc "sentinelgo/internal/service/auditlog"
@@ -14,8 +18,15 @@ import (
 )
 
 const (
-	maxBatchSize    = 100
-	maxPayloadBytes = 900_000 // 900 KB — headroom under the 1 MB enqueue limit
+	maxBatchSize = 100
+	// maxPayloadBytes caps one upload body. Smaller batches retry faster and
+	// keep the server's per-message cost flat (#438); the enqueue limit is 1 MB.
+	maxPayloadBytes = 256 << 10
+	// storeChunkSize is how many queued rows one store upload considers.
+	storeChunkSize = 500
+	// uploadedMemory is how long uploaded rows' hashes are remembered, so the
+	// same event collected again is not queued again (#436).
+	uploadedMemory = 24 * time.Hour
 )
 
 // authRetrier recovers the session on a 401 and reports auth health. It is
@@ -29,10 +40,11 @@ type authRetrier interface {
 // Uploader sends batches of audit logs to the Supabase backend
 // via AuditLogService. It handles batch sizing and size-based splitting.
 type Uploader struct {
-	svc   *auditlogsvc.AuditLogService
-	cfg   *config.Config
-	stats *statsCounter
-	auth  authRetrier // optional; when set, uploads recover the session on 401
+	svc    *auditlogsvc.AuditLogService
+	cfg    *config.Config
+	stats  *statsCounter
+	auth   authRetrier  // optional; when set, uploads recover the session on 401
+	window *auditWindow // optional; receives the server's window from each response
 }
 
 // NewUploader creates an uploader wrapping the given audit log service.
@@ -65,14 +77,13 @@ func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, err
 	totalUploaded := 0
 	var lastErr error
 
-	for i := 0; i < len(logs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(logs) {
-			end = len(logs)
-		}
+	for i := 0; i < len(logs); {
+		end := min(i+maxBatchSize, len(logs))
 		batch := logs[i:end]
+		batch = batch[:u.fitCount(batch, nil)]
+		i += len(batch)
 
-		if err := u.safeUploadBatch(ctx, batch); err != nil {
+		if _, err := u.send(ctx, batch, nil, newBatchID()); err != nil {
 			lastErr = err
 			u.stats.addErrors(int64(len(batch)))
 			log.Printf("[uploader] batch upload failed (%d logs): %v", len(batch), err)
@@ -90,39 +101,69 @@ func (u *Uploader) Upload(ctx context.Context, logs []models.AuditLog) (int, err
 	return totalUploaded, lastErr
 }
 
-// safeUploadBatch checks the marshalled payload size. If it exceeds maxPayloadBytes
-// and the batch has more than one entry, it splits in half and uploads each half
-// separately (recursively). This keeps every call under the 1 MB enqueue limit.
-func (u *Uploader) safeUploadBatch(ctx context.Context, logs []models.AuditLog) error {
-	if len(logs) <= 1 {
-		return u.uploadBatch(ctx, logs)
-	}
-	data, err := json.Marshal(u.buildBatchPayload(logs))
-	if err == nil && len(data) > maxPayloadBytes {
-		mid := len(logs) / 2
-		if err := u.safeUploadBatch(ctx, logs[:mid]); err != nil {
-			return err
+// fitCount returns how many of logs, from the start, fit in one upload body of
+// at most maxPayloadBytes (at least 1, so a single oversized row still goes).
+func (u *Uploader) fitCount(logs []models.AuditLog, uids []string) int {
+	fits := func(n int) bool {
+		var ids []string
+		if uids != nil {
+			ids = uids[:n]
 		}
-		return u.safeUploadBatch(ctx, logs[mid:])
+		data, err := json.Marshal(u.buildPayload(logs[:n], ids, "00000000-0000-4000-8000-000000000000"))
+		return err == nil && len(data) <= maxPayloadBytes
 	}
-	return u.uploadBatch(ctx, logs)
+	if len(logs) == 0 || fits(len(logs)) {
+		return len(logs)
+	}
+	// The largest n in [1, len) that fits; n = 1 is sent even when it doesn't.
+	n := sort.Search(len(logs), func(n int) bool { return n > 0 && !fits(n) }) - 1
+	return max(n, 1)
 }
 
-// uploadBatch sends one batch. Retry is handled inside SendBatchLogsWithContext
-// via WithEnqueueRetry; DoWithAuthRetry wraps it for 401 recovery.
-func (u *Uploader) uploadBatch(ctx context.Context, batch []models.AuditLog) error {
-	batchData := u.buildBatchPayload(batch)
+// send uploads one batch under batchID and passes the server's window on.
+// Retry is handled inside SendBatch via WithEnqueueRetry, with the same body
+// (and so the same batch_id) every time; DoWithAuthRetry wraps it for 401
+// recovery.
+func (u *Uploader) send(ctx context.Context, logs []models.AuditLog, uids []string, batchID string) (auditlogsvc.BatchResult, error) {
+	batchData := u.buildPayload(logs, uids, batchID)
 
+	var res auditlogsvc.BatchResult
+	call := func() error {
+		var err error
+		res, err = u.svc.SendBatch(ctx, batchData)
+		return err
+	}
+	var err error
 	if u.auth != nil {
-		return u.auth.DoWithAuthRetry(ctx, u.cfg, func() error {
-			return u.svc.SendBatchLogsWithContext(ctx, batchData)
-		})
+		err = u.auth.DoWithAuthRetry(ctx, u.cfg, call)
+	} else {
+		err = call()
 	}
-	return u.svc.SendBatchLogsWithContext(ctx, batchData)
+	if err != nil {
+		return res, err
+	}
+	if res.Duplicate {
+		log.Printf("[uploader] server already had batch %s (%d logs); treating it as uploaded", batchID, len(logs))
+	}
+	u.window.update(res.Window)
+	return res, nil
 }
 
-// buildBatchPayload constructs the map structure expected by SendBatchLogsWithContext.
-func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interface{} {
+// newBatchID returns a random (version 4) UUID.
+func newBatchID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// buildPayload constructs the map structure expected by SendBatch. batchID
+// (when set) lets the server recognise a resend of a batch it already has;
+// uids[i] (when set) is logs[i]'s dedup key (#436). event_data is trimmed to
+// the server's limit, for rows queued before the parser did that (#438).
+func (u *Uploader) buildPayload(logs []models.AuditLog, uids []string, batchID string) map[string]interface{} {
+	target := u.window.eventDataTarget()
 	systemLogs := make([]map[string]interface{}, 0)
 	securityLogs := make([]map[string]interface{}, 0)
 	networkLogs := make([]map[string]interface{}, 0)
@@ -136,7 +177,10 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 			"severity":     logs[i].Severity,
 			"log_category": logs[i].LogCategory,
 			"source":       logs[i].Source,
-			"event_data":   logs[i].EventData,
+			"event_data":   parser.CapEventData(logs[i].EventData, target),
+		}
+		if i < len(uids) && uids[i] != "" {
+			entry["uid"] = uids[i]
 		}
 
 		switch logs[i].LogCategory {
@@ -178,22 +222,31 @@ func (u *Uploader) buildBatchPayload(logs []models.AuditLog) map[string]interfac
 		"source":        "agent",
 		"logs":          logGroups,
 	}
+	if batchID != "" {
+		inner["batch_id"] = batchID
+	}
 
 	return map[string]interface{}{
 		"payload": inner,
 	}
 }
 
-// UploadFromStore reads pending logs from the local SQLite queue, uploads them to
-// Supabase in batches, and deletes each batch from the store on success.
-// Rows that fail to upload are left in the store and retried on the next cycle.
-// Returns the total number of logs successfully uploaded.
+// UploadFromStore uploads the local SQLite queue to Supabase, one chunk at a
+// time, and removes each chunk from the queue once the server has it.
+//
+// Each chunk gets a batch_id when it is formed (at most storeChunkSize rows
+// and maxPayloadBytes of body) and keeps it until it is confirmed, across
+// retries and restarts, so the server can recognise a resend (#436). A chunk
+// that fails stays queued with its id and is sent first next cycle; nothing
+// that was confirmed is ever resent. Returns the number of logs uploaded.
 func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditLogStore) (int, error) {
-	const chunkSize = 500
-
 	if u.auth != nil && !u.auth.Healthy() {
 		log.Printf("[uploader] auth degraded, deferring store upload until session recovers")
 		return 0, nil
+	}
+
+	if err := auditStore.PruneUploaded(time.Now().Add(-uploadedMemory)); err != nil {
+		log.Printf("[uploader] warning: %v", err)
 	}
 
 	totalUploaded := 0
@@ -204,26 +257,26 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 			return totalUploaded, err
 		}
 
-		rows, err := auditStore.GetPending(chunkSize)
+		rows, err := u.nextChunk(auditStore)
 		if err != nil {
-			return totalUploaded, fmt.Errorf("get pending logs: %w", err)
+			return totalUploaded, err
 		}
 		if len(rows) == 0 {
 			break
 		}
 
 		logs := make([]models.AuditLog, len(rows))
-		ids := make([]int64, len(rows))
+		uids := make([]string, len(rows))
 		for i, r := range rows {
 			logs[i] = r.Log
-			ids[i] = r.ID
+			uids[i] = r.Hash
 		}
 
-		if err := u.safeUploadBatch(ctx, logs); err != nil {
+		if _, err := u.send(ctx, logs, uids, rows[0].BatchID); err != nil {
 			lastErr = err
 			u.stats.addErrors(int64(len(logs)))
 			log.Printf("[uploader] store batch upload failed (%d logs): %v", len(logs), err)
-			// Leave rows in DB; they will be retried next cycle.
+			// Leave the chunk queued with its batch id; it is resent next cycle.
 			break
 		}
 
@@ -232,11 +285,12 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 		totalUploaded += len(logs)
 		u.stats.addUploaded(int64(len(logs)))
 
-		if err := auditStore.DeleteByIDs(ids); err != nil {
+		if err := auditStore.CompleteBatch(rows, time.Now()); err != nil {
 			// CRITICAL: do NOT continue the loop on delete failure. The same rows
-			// are still pending, so the next GetPending would return them again and
-			// we would re-upload the identical batch in a tight loop for as long as
-			// the DB error persists. Stop the cycle; the next scheduled cycle retries.
+			// are still pending, so the next chunk would be the identical batch,
+			// re-uploaded in a tight loop for as long as the DB error persists.
+			// Stop the cycle; the next scheduled cycle retries (with the same
+			// batch id, so the server drops the repeat).
 			lastErr = fmt.Errorf("delete uploaded logs from store: %w", err)
 			log.Printf("[uploader] %v — stopping cycle to avoid re-uploading the same rows", lastErr)
 			break
@@ -246,4 +300,42 @@ func (u *Uploader) UploadFromStore(ctx context.Context, auditStore *store.AuditL
 	}
 
 	return totalUploaded, lastErr
+}
+
+// nextChunk returns the chunk to upload next: one formed earlier and not yet
+// confirmed, else a new one from the oldest unassigned rows, sized to fit one
+// upload body and given a new batch id.
+func (u *Uploader) nextChunk(auditStore *store.AuditLogStore) ([]store.PendingRow, error) {
+	rows, err := auditStore.GetOpenBatch()
+	if err != nil {
+		return nil, fmt.Errorf("get open batch: %w", err)
+	}
+	if len(rows) > 0 {
+		return rows, nil
+	}
+
+	rows, err = auditStore.GetUnbatched(storeChunkSize)
+	if err != nil {
+		return nil, fmt.Errorf("get pending logs: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	logs := make([]models.AuditLog, len(rows))
+	uids := make([]string, len(rows))
+	for i, r := range rows {
+		logs[i], uids[i] = r.Log, r.Hash
+	}
+	rows = rows[:u.fitCount(logs, uids)]
+
+	id := newBatchID()
+	ids := make([]int64, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+		rows[i].BatchID = id
+	}
+	if err := auditStore.AssignBatch(ids, id); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }

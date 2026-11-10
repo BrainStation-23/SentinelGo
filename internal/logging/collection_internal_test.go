@@ -103,10 +103,12 @@ func TestRunCollection_DrainsAllBatches(t *testing.T) {
 	}
 }
 
-// TestRunCollection_KeepsOldBacklog proves the downtime-loss fix (H1/H6):
-// entries older than the flush window are NOT discarded. Previously the
-// time-window filter dropped them after advancing the checkpoint past them.
-func TestRunCollection_KeepsOldBacklog(t *testing.T) {
+// TestRunCollection_KeepsBacklogInWindow proves the downtime-loss fix (H1/H6):
+// entries older than the flush interval but inside the retention window are
+// NOT discarded. Previously a flush-interval filter dropped them after
+// advancing the checkpoint past them. What is outside the retention window is
+// covered by TestRunCollection_KeepsOnlyRetentionWindow (#437).
+func TestRunCollection_KeepsBacklogInWindow(t *testing.T) {
 	twoHoursAgo := time.Now().Add(-2 * time.Hour) // well outside the 5m flush window
 	fc := &fakeCollector{batches: [][]collector.RawLogEntry{
 		makeBatch("old", 50, twoHoursAgo),

@@ -105,10 +105,12 @@ var channels = []eventChannel{
 		cpKey:  generateSource("Security") + "_policy_record_id",
 		query:  "*[System[(EventID=4656 or EventID=4663 or EventID=4670 or EventID=4688 or EventID=4719 or EventID=4739 or EventID=5156 or EventID=5157)]]",
 	},
+	// System events 35 and 24 (time service) are collected by the next entry,
+	// so they're excluded here; otherwise every one was sent twice (#436).
 	{
 		name:   "System",
 		source: generateSource("System"),
-		query:  "*[System[(Level=1 or Level=2 or Level=3 or Level=4)]]",
+		query:  "*[System[(Level=1 or Level=2 or Level=3 or Level=4) and EventID!=35 and EventID!=24]]",
 	},
 	{
 		name:   "System",
@@ -176,14 +178,22 @@ type eventXML struct {
 		Computer      string           `xml:"Computer"`
 	} `xml:"System"`
 	EventData struct {
-		Data []struct {
-			Name  string `xml:"Name,attr"`
-			Value string `xml:",chardata"`
-		} `xml:"Data"`
+		Data []eventDataField `xml:"Data"`
 	} `xml:"EventData"`
 }
 
-type windowsCollector struct{}
+// eventDataField is one <Data> element of a rendered event.
+type eventDataField struct {
+	Name  string `xml:"Name,attr"`
+	Value string `xml:",chardata"`
+}
+
+type windowsCollector struct {
+	lookback func() time.Duration // nil: a channel with no checkpoint is read from its start
+}
+
+// SetLookback implements StartBounded.
+func (c *windowsCollector) SetLookback(lookback func() time.Duration) { c.lookback = lookback }
 
 // NewCollector creates a Windows-specific log collector using
 // the Windows Event Log API (EvtQuery, EvtSubscribe, EvtNext, EvtRender).
@@ -314,6 +324,21 @@ func buildXPathQuery(baseQuery string, rid int64) string {
 	return fmt.Sprintf("*[System[EventRecordID > %d and (%s)]]", rid, inner)
 }
 
+// buildFirstRunQuery bounds a channel that has no checkpoint to events created
+// within lookback, instead of every event since the log began (#437).
+func buildFirstRunQuery(baseQuery string, lookback time.Duration) string {
+	if lookback <= 0 {
+		return baseQuery
+	}
+	bound := fmt.Sprintf("TimeCreated[timediff(@SystemTime) <= %d]", lookback.Milliseconds())
+	if baseQuery == "*" {
+		return "*[System[" + bound + "]]"
+	}
+	inner := strings.TrimPrefix(baseQuery, "*[System[")
+	inner = strings.TrimSuffix(inner, "]]")
+	return fmt.Sprintf("*[System[(%s) and %s]]", inner, bound)
+}
+
 // queryChannel queries a single event log channel from the checkpoint position.
 func (c *windowsCollector) queryChannel(ctx context.Context, ch eventChannel, checkpoint CheckpointData) ([]RawLogEntry, int64, error) {
 	if ctx.Err() != nil {
@@ -326,6 +351,8 @@ func (c *windowsCollector) queryChannel(ctx context.Context, ch eventChannel, ch
 	// panicked on the in-memory int64 path and crashed the agent.
 	if rid, ok := CheckpointInt64(checkpoint, ch.checkpointKey()); ok && rid > 0 {
 		query = buildXPathQuery(ch.query, rid)
+	} else if c.lookback != nil {
+		query = buildFirstRunQuery(ch.query, c.lookback())
 	}
 
 	channelPath, err := windows.UTF16PtrFromString(ch.name)
@@ -441,11 +468,10 @@ func (c *windowsCollector) renderEvent(evtHandle uintptr, buf []uint16, source s
 		Metadata: make(map[string]string),
 	}
 
-	// Parse timestamp
+	// Parse timestamp. A zero time tells the parser to use the collection
+	// time and mark the row (#437).
 	if t, err := time.Parse(time.RFC3339Nano, evt.System.TimeCreated.SystemTime); err == nil {
 		entry.Timestamp = t
-	} else {
-		entry.Timestamp = time.Now()
 	}
 
 	// Set metadata
@@ -454,19 +480,27 @@ func (c *windowsCollector) renderEvent(evtHandle uintptr, buf []uint16, source s
 	entry.Metadata["computer"] = evt.System.Computer
 	entry.Metadata["record_id"] = fmt.Sprintf("%d", evt.System.EventRecordID)
 
-	// Extract EventData fields
+	entry.RawMessage = applyEventData(entry.Metadata, evt.EventData.Data)
+
+	return entry
+}
+
+// applyEventData adds each named <Data> field to metadata and returns the
+// message: only the values of unnamed fields, joined with " | ". Named values
+// already travel as their own keys, so repeating them in the message doubled
+// the row's size and pushed rows over the server's event_data limit (#438).
+func applyEventData(metadata map[string]string, data []eventDataField) string {
 	var msgParts []string
-	for _, d := range evt.EventData.Data {
+	for _, d := range data {
 		if d.Name != "" {
-			entry.Metadata[d.Name] = d.Value
+			metadata[d.Name] = d.Value
+			continue
 		}
 		if d.Value != "" {
 			msgParts = append(msgParts, d.Value)
 		}
 	}
-	entry.RawMessage = strings.Join(msgParts, " | ")
-
-	return entry
+	return strings.Join(msgParts, " | ")
 }
 
 // windowsLevelToSeverity maps Windows event level to syslog-style severity string.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/lockfile"
 	"sentinelgo/internal/logging"
 	"sentinelgo/internal/osinfo"
 	"sentinelgo/internal/sanitize"
@@ -28,10 +30,34 @@ var (
 	logFatalf         = log.Fatalf
 	notifySignals     = signal.Notify
 	collectOSInfo     = osinfo.Collect
+	newAgentLock      = func() *lockfile.LockFile { return lockfile.NewLockFile(lockfile.AgentLockName) }
 )
+
+// acquireAgentLock takes the agent's process lock for a CLI command that runs
+// the audit-log pipeline. Run next to the service, a second pipeline on the
+// same checkpoints.json and SQLite queue collected and uploaded the same logs
+// again (#436), so the command refuses while the service (or -run) holds it.
+func acquireAgentLock() (release func(), err error) {
+	lock := newAgentLock()
+	if err := lock.TryAcquire(); err != nil {
+		if errors.Is(err, lockfile.ErrAlreadyRunning) {
+			return nil, errors.New("the SentinelGo agent is running and already collects and uploads audit logs; stop it first")
+		}
+		return nil, fmt.Errorf("take the agent lock: %w", err)
+	}
+	return func() { _ = lock.Release() }, nil
+}
 
 func HandleAuditLogsStandalone(cfg *config.Config) {
 	fmt.Println("Starting audit logs service in standalone mode...")
+
+	release, err := acquireAgentLock()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		osExit(1)
+		return
+	}
+	defer release()
 
 	li, err := logging.NewLoggingIntegration(cfg)
 	if err != nil {
@@ -101,6 +127,13 @@ func withLoggingIntegration(action func(*logging.LoggingIntegration, context.Con
 		osExit(1)
 		return
 	}
+	release, err := acquireAgentLock()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		osExit(1)
+		return
+	}
+	defer release()
 	if err := withLoggingIntegrationForConfig(cfg, action); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		osExit(1)
@@ -136,6 +169,7 @@ func HandleLoggingStats() {
 		fmt.Printf("Logs Stored: %d\n", stats.LogsStored)
 		fmt.Printf("Logs Uploaded: %d\n", stats.LogsUploaded)
 		fmt.Printf("Upload Errors: %d\n", stats.UploadErrors)
+		fmt.Printf("Dropped (outside retention window): %d\n", stats.DroppedOutOfWindow)
 		return nil
 	})
 }
