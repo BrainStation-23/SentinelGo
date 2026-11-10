@@ -22,10 +22,9 @@ import (
 	"sentinelgo/internal/sanitize"
 )
 
-// lockName is the process lock shared by the service and -run. Both use the
-// same name, and it has no version suffix, so no two agents (of any version,
-// in any mode) run at once.
-const lockName = "sentinelgo"
+// lockName is the process lock shared by the service and -run (see
+// lockfile.AgentLockName).
+const lockName = lockfile.AgentLockName
 
 // newProcessLock returns the agent's process lock. Tests replace it to use a
 // temporary path.

@@ -122,3 +122,13 @@ type Collector interface {
 	// Sources returns the list of log source names this collector handles.
 	Sources() []string
 }
+
+// StartBounded is implemented by collectors that can start a source that has
+// no checkpoint (first run, or a missing or corrupt checkpoints.json) at
+// now-lookback instead of at its beginning, so a fresh install doesn't ship
+// years of history the server deletes anyway (#437). lookback is called on
+// every collection, so a new server retention window applies at once; a
+// lookback of 0 or less keeps the old behaviour.
+type StartBounded interface {
+	SetLookback(lookback func() time.Duration)
+}

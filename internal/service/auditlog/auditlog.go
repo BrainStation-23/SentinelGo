@@ -62,11 +62,68 @@ func auditLogCategoryKey(category string) string {
 }
 
 // enqueue calls the audit-log enqueue RPC once with body (already-marshalled
-// JSON). The access token is read from the config on every request.
-func (s *AuditLogService) enqueue(ctx context.Context, body []byte) error {
+// JSON) and returns the raw response. The access token is read from the
+// config on every request.
+func (s *AuditLogService) enqueue(ctx context.Context, body []byte) ([]byte, error) {
 	c := supabase.FromConfig(s.config, supabase.WithHTTPClient(s.client))
-	return c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), nil,
+	var raw []byte
+	err := c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), &raw,
 		supabase.WithHeader(headerXDeviceID, s.config.DeviceID))
+	return raw, err
+}
+
+// ServerWindow is the server's audit-log limits, returned with every enqueue
+// (BrainStation-23/Compliance-OS#828). Zero values mean "not sent".
+type ServerWindow struct {
+	RetentionDays     int
+	AcceptAfter       time.Time
+	AcceptBefore      time.Time
+	MaxEventDataBytes int
+}
+
+// BatchResult is what the server said about one enqueued batch.
+type BatchResult struct {
+	// Duplicate: the server already had this batch_id. The rows are on the
+	// server, so the agent treats it as success.
+	Duplicate bool
+	// Window is nil when the server sent no limits (servers before #828).
+	Window *ServerWindow
+}
+
+// parseBatchResult reads the enqueue response. Fields are additive and
+// optional: anything missing or unparseable is left zero, since the batch was
+// accepted either way.
+func parseBatchResult(raw []byte) BatchResult {
+	var resp struct {
+		Duplicate bool `json:"duplicate"`
+		AuditLogs *struct {
+			RetentionDays     int    `json:"retention_days"`
+			AcceptAfter       string `json:"accept_after"`
+			AcceptBefore      string `json:"accept_before"`
+			MaxEventDataBytes int    `json:"max_event_data_bytes"`
+		} `json:"audit_logs"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &resp) != nil {
+		return BatchResult{}
+	}
+	res := BatchResult{Duplicate: resp.Duplicate}
+	if a := resp.AuditLogs; a != nil {
+		res.Window = &ServerWindow{
+			RetentionDays:     a.RetentionDays,
+			AcceptAfter:       parseServerTime(a.AcceptAfter),
+			AcceptBefore:      parseServerTime(a.AcceptBefore),
+			MaxEventDataBytes: a.MaxEventDataBytes,
+		}
+	}
+	return res
+}
+
+func parseServerTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // sendToSupabase sends an audit log to the agent_enqueue_audit_logs RPC.
@@ -97,7 +154,7 @@ func (s *AuditLogService) sendToSupabase(ctx context.Context, auditLog models.Au
 	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
 	data = sanitize.StripJSONNUL(data)
 
-	if err := s.enqueue(ctx, data); err != nil {
+	if _, err := s.enqueue(ctx, data); err != nil {
 		return fmt.Errorf("audit log upload failed: %w", err)
 	}
 	return nil
@@ -173,23 +230,35 @@ func (s *AuditLogService) SendBatchLogs(batchData map[string]any) error {
 // with exponential backoff (1 s initial, 5 min cap); 401 is propagated for the
 // caller's DoWithAuthRetry to handle; other 4xx errors are logged and dropped.
 func (s *AuditLogService) SendBatchLogsWithContext(ctx context.Context, batchData map[string]any) error {
+	_, err := s.SendBatch(ctx, batchData)
+	return err
+}
+
+// SendBatch is SendBatchLogsWithContext that also returns what the server
+// said about the batch. Every retry resends the same body, so a batch_id in it
+// lets the server recognise a batch it already committed (#436).
+func (s *AuditLogService) SendBatch(ctx context.Context, batchData map[string]any) (BatchResult, error) {
 	if s.config.SupabaseURL == "" {
-		return fmt.Errorf("supabase URL not configured")
+		return BatchResult{}, fmt.Errorf("supabase URL not configured")
 	}
 
 	data, err := json.Marshal(batchData)
 	if err != nil {
-		return fmt.Errorf("marshal batch data: %w", err)
+		return BatchResult{}, fmt.Errorf("marshal batch data: %w", err)
 	}
 	// Postgres rejects NUL bytes in text/jsonb; strip any that survived collection.
 	data = sanitize.StripJSONNUL(data)
 
 	log.Printf("Audit Service: uploading batch (%d bytes)", len(data))
 
-	return rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) error {
-		if err := s.enqueue(ctx, data); err != nil {
+	var res BatchResult
+	err = rpcutil.WithEnqueueRetry(ctx, func(ctx context.Context) error {
+		raw, err := s.enqueue(ctx, data)
+		if err != nil {
 			return fmt.Errorf("batch logs upload failed: %w", err)
 		}
+		res = parseBatchResult(raw)
 		return nil
 	})
+	return res, err
 }

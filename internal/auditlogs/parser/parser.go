@@ -16,6 +16,9 @@ type ParserConfig struct {
 	DeviceID     string
 	OSType       string
 	AgentVersion string
+	// MaxEventDataBytes is the server's limit on one row's event_data (from
+	// the enqueue response). 0 means DefaultMaxEventDataBytes.
+	MaxEventDataBytes int
 }
 
 // Parser normalizes raw OS log entries into the AuditLog model.
@@ -41,13 +44,21 @@ func (p *DefaultParser) Parse(entries []collector.RawLogEntry, cfg ParserConfig)
 		osType = runtime.GOOS
 	}
 
+	target := EventDataTarget(cfg.MaxEventDataBytes)
+
 	for i := range entries {
 		raw := &entries[i]
 
-		eventData := marshalEventData(raw)
+		// A zero timestamp means the collector couldn't parse the event's own
+		// time: use the collection time and say so in event_data (#437).
+		ts, collected := raw.Timestamp, raw.Timestamp.IsZero()
+		if collected {
+			ts = time.Now()
+		}
+		eventData := CapEventData(marshalEventData(raw, collected), target)
 
 		log := models.AuditLog{
-			Timestamp:    raw.Timestamp.UTC().Format(time.RFC3339),
+			Timestamp:    ts.UTC().Format(time.RFC3339),
 			AgentID:      cfg.AgentID,
 			DeviceID:     cfg.DeviceID,
 			LogCategory:  mapCategory(raw.Source),
@@ -161,9 +172,10 @@ func mapEventType(raw *collector.RawLogEntry) string {
 	}
 }
 
-// marshalEventData serializes the raw entry's message and metadata into a JSON string.
-func marshalEventData(raw *collector.RawLogEntry) json.RawMessage {
-	data := make(map[string]interface{}, len(raw.Metadata)+2)
+// marshalEventData serializes the raw entry's message and metadata into a JSON
+// string. collected marks a row whose timestamp is the collection time.
+func marshalEventData(raw *collector.RawLogEntry, collected bool) json.RawMessage {
+	data := make(map[string]interface{}, len(raw.Metadata)+3)
 
 	if raw.RawMessage != "" {
 		data["message"] = raw.RawMessage
@@ -174,6 +186,9 @@ func marshalEventData(raw *collector.RawLogEntry) json.RawMessage {
 
 	for k, v := range raw.Metadata {
 		data[k] = v
+	}
+	if collected {
+		data["timestamp_source"] = "collected"
 	}
 
 	b, err := json.Marshal(data)

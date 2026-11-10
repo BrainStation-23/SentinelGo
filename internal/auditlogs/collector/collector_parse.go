@@ -94,24 +94,25 @@ func journalString(fields map[string]json.RawMessage, key string) string {
 }
 
 // parseJournalTimestamp converts a __REALTIME_TIMESTAMP (microseconds since the
-// Unix epoch, as a string) into a time.Time, falling back to now on error.
+// Unix epoch, as a string) into a time.Time. It returns the zero time when s
+// can't be parsed; the parser then uses the collection time and marks the row.
 func parseJournalTimestamp(s string) time.Time {
 	if s == "" {
-		return time.Now()
+		return time.Time{}
 	}
 	usec, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return time.Now()
+		return time.Time{}
 	}
 	return time.UnixMicro(usec)
 }
 
 // parseSyslogTimestamp attempts to extract a timestamp from a syslog-format line.
-// Falls back to current time if parsing fails.
+// It returns the zero time when no timestamp can be parsed.
 func parseSyslogTimestamp(line string) time.Time {
 	// Standard syslog format: "Mon Jan  2 15:04:05"
 	if len(line) < 15 {
-		return time.Now()
+		return time.Time{}
 	}
 	layouts := []string{
 		"Jan  2 15:04:05",
@@ -124,7 +125,7 @@ func parseSyslogTimestamp(line string) time.Time {
 			return t
 		}
 	}
-	return time.Now()
+	return time.Time{}
 }
 
 // tryParseSyslogLayout attempts to parse line's leading prefix (sized to
@@ -215,15 +216,16 @@ func parseMacLogShowLine(line []byte) (RawLogEntry, bool) {
 	return entry, true
 }
 
-// parseMacShowTimestamp parses the timestamp emitted by `log show`.
+// parseMacShowTimestamp parses the timestamp emitted by `log show`, or
+// returns the zero time.
 func parseMacShowTimestamp(s string) time.Time {
 	if s == "" {
-		return time.Now()
+		return time.Time{}
 	}
 	if t, err := time.Parse(macLogTimestampLayout, s); err == nil {
 		return t
 	}
-	return time.Now()
+	return time.Time{}
 }
 
 // macMessageTypeToSeverity maps a `log show` messageType to a syslog-style severity string.
@@ -244,7 +246,8 @@ func macMessageTypeToSeverity(messageType string) string {
 	}
 }
 
-// parseMacFileTimestamp parses timestamps from macOS system.log format.
+// parseMacFileTimestamp parses timestamps from macOS system.log format, or
+// returns the zero time.
 func parseMacFileTimestamp(line string) time.Time {
 	// macOS system.log format: "Apr 19 14:30:00"
 	layouts := []string{
@@ -270,7 +273,7 @@ func parseMacFileTimestamp(line string) time.Time {
 			return t
 		}
 	}
-	return time.Now()
+	return time.Time{}
 }
 
 // inferMacSeverity guesses severity from keywords in a macOS log line.

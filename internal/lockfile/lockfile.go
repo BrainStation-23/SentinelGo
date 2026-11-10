@@ -16,6 +16,11 @@ import (
 	"strconv"
 )
 
+// AgentLockName is the process lock shared by the service, -run and the CLI
+// commands that run the audit-log pipeline. It has no version suffix, so no
+// two agents (of any version, in any mode) run at once.
+const AgentLockName = "sentinelgo"
+
 // ErrAlreadyRunning is returned by TryAcquire when another process holds the
 // lock.
 var ErrAlreadyRunning = errors.New("another SentinelGo agent is already running")

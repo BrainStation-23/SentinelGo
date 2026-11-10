@@ -3,6 +3,7 @@ package logging
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -48,7 +49,9 @@ func (s *CheckpointStore) Load() error {
 
 	var data CheckpointData
 	if err := json.Unmarshal(raw, &data); err != nil {
-		// Corrupt file -- start fresh
+		// Corrupt file: start fresh. Sources then start at the retention
+		// window (collector.StartBounded), not at their beginning (#437).
+		log.Printf("[logging] warning: %s is corrupt (%v); starting every source at the retention window", filepath.Base(s.path), err)
 		s.data = make(CheckpointData)
 		return nil
 	}
