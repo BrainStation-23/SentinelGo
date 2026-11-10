@@ -132,8 +132,7 @@ func TestAppIDAndOpen(t *testing.T) {
 var testSublayer = windows.GUID{Data1: 0x5e4f1c2a, Data2: 0x7b11, Data3: 0x4d6e, Data4: [8]byte{0x9a, 0x01, 0x42, 0x7a, 0x11, 0x0c, 0xd3, 0x27}}
 
 func isAdmin() bool {
-	var tok windows.Token = windows.GetCurrentProcessToken()
-	return tok.IsElevated()
+	return windows.GetCurrentProcessToken().IsElevated()
 }
 
 // listen serves TCP on loopback and returns its port.
