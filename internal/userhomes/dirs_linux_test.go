@@ -1,6 +1,6 @@
 //go:build linux
 
-package software
+package userhomes
 
 import "testing"
 

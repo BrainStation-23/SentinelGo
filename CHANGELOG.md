@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- npm, PyPI and Composer package inventory (#421, global installs). The agent reports the packages installed globally for the machine and for each user: global `node_modules` (npm's default prefix, Homebrew, nvm, nvm-windows, fnm, Volta), Python `site-packages` (system, Homebrew, python.org, `pip install --user`, pyenv) and `composer global` installs. It only reads `package.json`, `METADATA`/`PKG-INFO` and `installed.json` files; it never runs npm, pip or composer, follows no symlinks and makes no network call while collecting. Packages go to the new `agent_enqueue_packages` RPC as full snapshots in parts of at most 5,000 packages, so the backend can match them against malicious-package advisories; when a location couldn't be read, the upload is a delta, so nothing the agent couldn't see is retired. It is off until the console turns it on: the agent polls `agent_get_package_settings` every 15 minutes and collects every 6 hours or when the settings change, and uploads an unchanged inventory only once a day. The new `sync-packages` task collects and uploads now. New capability `packages_v1`.
+
 ## [v4.0.8] - 2026-11-10
 
 ### Added

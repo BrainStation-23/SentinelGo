@@ -23,6 +23,7 @@ var AgentCapabilities = []string{
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
 	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
+	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on

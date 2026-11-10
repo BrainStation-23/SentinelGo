@@ -1,6 +1,6 @@
 //go:build windows
 
-package software
+package userhomes
 
 import (
 	"strings"
