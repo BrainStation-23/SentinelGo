@@ -1,0 +1,18 @@
+lockfileVersion: 5.4
+
+specifiers:
+  keyv: ^4.0.0
+
+packages:
+
+  /@babel/code-frame/7.12.13:
+    resolution: {integrity: sha512-abc}
+    dependencies:
+      '@babel/highlight': 7.12.13
+    dev: false
+
+  /keyv/4.5.4:
+    resolution: {integrity: sha512-def}
+
+  /react-dom/18.2.0_react@18.2.0:
+    resolution: {integrity: sha512-ghi}

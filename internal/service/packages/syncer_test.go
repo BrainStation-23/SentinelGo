@@ -32,6 +32,7 @@ type harness struct {
 	collects int
 	pkgs     []Package
 	complete bool
+	more     bool
 	clock    time.Time
 }
 
@@ -43,9 +44,9 @@ func newHarness(enabled bool) *harness {
 		complete: true,
 		clock:    time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC),
 	}
-	collect := func(context.Context, Settings) ([]Package, bool) {
+	collect := func(context.Context, Settings) Collection {
 		h.collects++
-		return append([]Package(nil), h.pkgs...), h.complete
+		return Collection{Packages: append([]Package(nil), h.pkgs...), Complete: h.complete, More: h.more}
 	}
 	h.s = NewSyncer(h.settings, h.enq, collect, nil)
 	h.s.now = func() time.Time { return h.clock }
@@ -207,10 +208,10 @@ func TestSyncNow_Busy(t *testing.T) {
 	h := newHarness(true)
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	h.s.collect = func(context.Context, Settings) ([]Package, bool) {
+	h.s.collect = func(context.Context, Settings) Collection {
 		close(entered)
 		<-release
-		return nil, true
+		return Collection{Complete: true}
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -248,5 +249,16 @@ func TestRandDuration(t *testing.T) {
 	}
 	if randDuration(0) != 0 {
 		t.Error("randDuration(0) != 0")
+	}
+}
+
+func TestTick_UnfinishedProjectPassResumesSoon(t *testing.T) {
+	h := newHarness(true)
+	h.more = true
+	_ = h.s.Tick(context.Background())
+	h.clock = h.clock.Add(resumeInterval)
+	_ = h.s.Tick(context.Background())
+	if h.collects != 2 {
+		t.Errorf("an unfinished pass waited for the next collection (%d collects)", h.collects)
 	}
 }

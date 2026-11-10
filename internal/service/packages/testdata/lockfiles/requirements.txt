@@ -1,0 +1,13 @@
+# pinned
+requests==2.31.0
+urllib3[socks]==2.2.1 ; python_version >= "3.8"  # comment
+Django===4.2.11
+certifi==2024.2.2 \
+    --hash=sha256:abc
+-r other.txt
+-e git+https://github.com/acme/x.git#egg=x
+flask>=2.0
+numpy~=1.26
+pip @ https://example.com/pip.whl
+broken==
+star==1.*

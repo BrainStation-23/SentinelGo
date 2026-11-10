@@ -24,6 +24,9 @@ const (
 	// global install folder is cheap, but there's no need to do it more
 	// often: package installs are rare compared with the software list.
 	collectInterval = 6 * time.Hour
+	// resumeInterval is how soon a project scan pass that didn't fit in
+	// one run continues.
+	resumeInterval = TickInterval
 	// resendInterval forces an upload of an unchanged inventory, so the
 	// server's view recovers from a lost upload or a database fix.
 	resendInterval = 24 * time.Hour
@@ -40,8 +43,33 @@ type SettingsFetcher interface {
 	FetchSettings(ctx context.Context, knownVersion string) (Settings, bool, error)
 }
 
+// Collection is what one collection run found.
+type Collection struct {
+	Packages []Package
+	// Complete is false when part of the inventory couldn't be read, so it
+	// must not retire packages the run didn't see.
+	Complete bool
+	// More is true when a project scan pass has work left for the next run.
+	More bool
+}
+
 // Collector collects the inventory a run reports.
-type Collector func(ctx context.Context, s Settings) (pkgs []Package, complete bool)
+type Collector func(ctx context.Context, s Settings) Collection
+
+// DefaultCollector collects global installs and, when the settings turn
+// project scanning on, the lockfiles under the project roots.
+func DefaultCollector() Collector {
+	projects := newProjectScanner()
+	return func(ctx context.Context, s Settings) Collection {
+		pkgs, complete := CollectGlobal(ctx)
+		if !s.ProjectScan {
+			projects.reset()
+			return Collection{Packages: pkgs, Complete: complete}
+		}
+		proj, projComplete, more := projects.run(ctx, s)
+		return Collection{Packages: append(pkgs, proj...), Complete: complete && projComplete, More: more}
+	}
+}
 
 // Retrier runs one server call, recovering an expired session once
 // (auth.Service.DoWithAuthRetry in production).
@@ -80,11 +108,11 @@ type Syncer struct {
 	lastSent    time.Time
 }
 
-// NewSyncer returns a Syncer. collect nil means CollectGlobal; retry nil
+// NewSyncer returns a Syncer. collect nil means DefaultCollector; retry nil
 // calls fn directly.
 func NewSyncer(fetch SettingsFetcher, enqueue Enqueuer, collect Collector, retry Retrier) *Syncer {
 	if collect == nil {
-		collect = func(ctx context.Context, _ Settings) ([]Package, bool) { return CollectGlobal(ctx) }
+		collect = DefaultCollector()
 	}
 	if retry == nil {
 		retry = func(_ context.Context, fn func() error) error { return fn() }
@@ -169,8 +197,9 @@ func (s *Syncer) run(ctx context.Context, settings Settings, force bool) (Result
 	}
 	defer s.running.Store(false)
 
-	collected, complete := s.collect(ctx, settings)
-	pkgs, invalid := normalize(collected)
+	c := s.collect(ctx, settings)
+	complete := c.Complete
+	pkgs, invalid := normalize(c.Packages)
 	if invalid > 0 {
 		log.Printf("[packages] skipped %d packages the server would reject (empty or over-long fields)", invalid)
 	}
@@ -178,6 +207,9 @@ func (s *Syncer) run(ctx context.Context, settings Settings, force bool) (Result
 
 	s.mu.Lock()
 	s.nextCollect = s.now().Add(collectInterval)
+	if c.More {
+		s.nextCollect = s.now().Add(resumeInterval)
+	}
 	hash := hashPackages(pkgs, complete)
 	unchanged := hash == s.lastHash && s.now().Before(s.lastSent.Add(resendInterval))
 	s.mu.Unlock()
