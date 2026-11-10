@@ -148,8 +148,22 @@ func TestAppIDShortPath(t *testing.T) {
 	if err != nil || short == long {
 		t.Skip("no 8.3 names on this volume")
 	}
-	if got := longPath(short); !strings.EqualFold(got, long) {
+	// t.TempDir itself may be an 8.3 path (RUNNER~1), which longPath also
+	// expands, so compare by file identity and the expanded last segments.
+	got := longPath(short)
+	if !strings.HasSuffix(strings.ToLower(got), `\a long directory name\program.exe`) {
 		t.Errorf("longPath(%q) = %q", short, got)
+	}
+	gi, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	li, err := os.Stat(long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gi, li) {
+		t.Errorf("longPath(%q) = %q, not the same file as %q", short, got, long)
 	}
 	a, err := AppID(long)
 	if err != nil {
