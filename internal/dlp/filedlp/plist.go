@@ -58,7 +58,9 @@ func plistValue(d *xml.Decoder, se xml.StartElement, depth int) (any, error) {
 			if uerr != nil {
 				return int64(0), nil //nolint:nilerr // an unreadable number is not fatal
 			}
-			return int64(u), nil // #nosec G115 -- ids beyond int64 wrap; only compared
+			// Beyond int64: kept as uint64 rather than converted, so it can't
+			// wrap into a plausible id; plistInt reports it as not an int64.
+			return u, nil
 		}
 		return n, nil
 	case "real":

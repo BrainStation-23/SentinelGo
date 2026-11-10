@@ -343,11 +343,12 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 	for _, o := range outs {
 		ev := buildEvent(c, o.p, r, res, o.findings, source)
 		ev.Correlation = corr
+		var openDialog func()
 		switch {
 		case o.block && mayBlock:
 			ev.Action = events.ActionBlocked
 			v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
-			d.tellBlock(&ev, r, v, res.SHA256, files.DailyOverrides(), o.findings)
+			openDialog = d.tellBlock(&ev, r, v, res.SHA256, files.DailyOverrides(), o.findings)
 		case o.block && canBlock:
 			ev.WouldHave = events.ActionBlocked // audit-only
 		case o.block:
@@ -360,6 +361,9 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 		}
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
+		if openDialog != nil {
+			openDialog() // after the block event, so an override follows it
+		}
 	}
 	return v
 }
@@ -461,9 +465,12 @@ func (d *Decider) DecideBySources(ctx context.Context, r Request, method string)
 		ev.Correlation = corr
 		ev.Action = events.ActionBlocked
 		v = d.blocked(c, o.p, ev, r, res.SHA256, o.findings)
-		d.tellBlock(&ev, r, v, res.SHA256, c.Modules.Files.DailyOverrides(), o.findings)
+		openDialog := d.tellBlock(&ev, r, v, res.SHA256, c.Modules.Files.DailyOverrides(), o.findings)
 		d.sink.Emit(ev)
 		d.emitted.Add(1)
+		if openDialog != nil {
+			openDialog() // after the block event, so an override follows it
+		}
 	}
 	return v
 }
