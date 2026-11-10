@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/supabase"
@@ -39,6 +38,9 @@ type fakeRPC struct {
 	errs  []error
 	calls [][]yara.Event
 	raw   [][]byte
+	// onErr runs when a queued error is returned (e.g. the device goes
+	// offline for good: cancel the sync).
+	onErr func()
 }
 
 func (f *fakeRPC) RPC(_ context.Context, fn string, params, _ any, _ ...supabase.CallOption) error {
@@ -52,6 +54,9 @@ func (f *fakeRPC) RPC(_ context.Context, fn string, params, _ any, _ ...supabase
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]
+		if f.onErr != nil {
+			f.onErr()
+		}
 		return err
 	}
 	return nil
@@ -70,17 +75,18 @@ func TestSync_OfflineThenReconnect(t *testing.T) {
 	if err := q.Add(evs); err != nil {
 		t.Fatal(err)
 	}
-	// Offline: the network call fails and the context ends during the
-	// backoff; everything stays queued.
-	rpc := &fakeRPC{errs: []error{errors.New("dial tcp: no route to host")}}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Offline: the network call fails and the sync ends (here: its
+	// context is cancelled during that call, so the retry backoff stops);
+	// everything stays queued. No timing involved, so -race can't flake it.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	rpc := &fakeRPC{errs: []error{errors.New("dial tcp: no route to host")}, onErr: cancel}
 	sync := NewEventSync(q, NewClient(func() RPC { return rpc }), nil)
 	if _, err := sync.Sync(ctx); err == nil {
 		t.Fatal("offline sync succeeded")
 	}
-	if n, _, _, _ := q.Stats(); n != 1200 {
-		t.Fatalf("%d queued after failing offline, want 1200", n)
+	if n, _, _, _ := q.Stats(); n != 1200 || len(rpc.calls) != 1 {
+		t.Fatalf("%d queued after failing offline (want 1200), %d calls (want 1)", n, len(rpc.calls))
 	}
 	// Back online: three batches of at most 500, queue empty.
 	rpc.errs = nil
