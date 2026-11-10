@@ -8,9 +8,12 @@ import (
 	"testing"
 )
 
+// fixture reads testdata/lockfiles/<name>.fixture. The suffix keeps
+// dependency scanners (FOSSA, Dependabot, Snyk) from reading the fixtures
+// as the repository's own manifests: they pin old versions on purpose.
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "lockfiles", name))
+	data, err := os.ReadFile(filepath.Join("testdata", "lockfiles", name+".fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}

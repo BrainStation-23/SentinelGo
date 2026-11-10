@@ -10,7 +10,7 @@ import (
 // parser of untrusted lockfiles never panics or returns empty fields.
 func fuzzLockfile(f *testing.F, parse func([]byte) []nameVersion, seeds ...string) {
 	for _, s := range seeds {
-		if data, err := os.ReadFile(filepath.Join("testdata", "lockfiles", s)); err == nil {
+		if data, err := os.ReadFile(filepath.Join("testdata", "lockfiles", s+".fixture")); err == nil {
 			f.Add(data)
 		}
 	}
