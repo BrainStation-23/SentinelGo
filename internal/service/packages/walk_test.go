@@ -29,8 +29,8 @@ func TestProjectScan_HomeTree(t *testing.T) {
 	app := filepath.Join(alice, "code", "app")
 	write(t, filepath.Join(app, "package-lock.json"), lockV3)
 	write(t, filepath.Join(app, "requirements.txt"), "requests==2.31.0\n")
-	write(t, filepath.Join(app, "node_modules", "dep", "package-lock.json"), lockV3)  // skipped dir
-	write(t, filepath.Join(app, ".git", "x", "package-lock.json"), lockV3)            // hidden dir
+	write(t, filepath.Join(app, "node_modules", "dep", "package-lock.json"), lockV3)   // skipped dir
+	write(t, filepath.Join(app, ".git", "x", "package-lock.json"), lockV3)             // hidden dir
 	write(t, filepath.Join(alice, "a", "b", "c", "d", "e", "f", "g", "yarn.lock"), "") // deeper than 6
 	write(t, filepath.Join(alice, "composer.lock"), `{"packages":[{"name":"a/b","version":"v1.0.0"}]}`)
 	pinHomes(t, alice)
