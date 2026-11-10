@@ -153,13 +153,30 @@ func TestWinTruster(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tr.Untrust() })
-	if !systemTrusts(ca) {
+	if !trustSettles(ca, true) {
 		t.Error("not trusted after Trust")
 	}
 	if err := tr.Untrust(); err != nil {
 		t.Fatal(err)
 	}
-	if systemTrusts(ca) {
+	if !trustSettles(ca, false) {
 		t.Error("still trusted after Untrust")
+	}
+}
+
+// trustSettles waits until the system's verdict on ca is want. The chain
+// engine caches the Root store and picks up a change through a registry
+// notification, so a verify right after Trust or Untrust can still see the
+// old store.
+func trustSettles(ca *CA, want bool) bool {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if systemTrusts(ca) == want {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

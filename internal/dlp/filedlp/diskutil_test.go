@@ -106,3 +106,27 @@ func TestParsePlist_Depth(t *testing.T) {
 		t.Error("too deep accepted")
 	}
 }
+
+// An integer beyond int64 is never read as an id (no wrap into a plausible
+// one); ordinary and negative integers are.
+func TestParsePlist_Integers(t *testing.T) {
+	v, err := parsePlist(strings.NewReader(`<plist><dict>
+		<key>small</key><integer>1452</integer>
+		<key>hex</key><integer>0x5ac</integer>
+		<key>neg</key><integer>-3</integer>
+		<key>huge</key><integer>18446744073709551615</integer>
+		<key>bad</key><integer>12abc</integer>
+	</dict></plist>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := v.(map[string]any)
+	for k, want := range map[string]int64{"small": 1452, "hex": 1452, "neg": -3, "bad": 0} {
+		if n, ok := plistInt(m, k); !ok || n != want {
+			t.Errorf("%s = %d, %v; want %d", k, n, ok, want)
+		}
+	}
+	if n, ok := plistInt(m, "huge"); ok {
+		t.Errorf("huge read as int64 %d; want not an int64", n)
+	}
+}
