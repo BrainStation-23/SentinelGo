@@ -85,6 +85,12 @@ func (e *windowsEnforcer) userRequest(from ipc.Identity, f ipc.UserFile) (Reques
 		_ = windows.CloseHandle(h)
 		return Request{}, err
 	}
+	if r.Dest.Type == TypeCloudSync {
+		e.learnSyncRoot(r.Path, f.Root)
+	}
+	// Who wrote it (#428): the program, and with process_taint its sources;
+	// the helper's user stays when the writer isn't known.
+	e.attribute(&r, c)
 	return r, nil
 }
 

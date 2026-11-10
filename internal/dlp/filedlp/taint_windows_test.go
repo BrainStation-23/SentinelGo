@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sys/windows"
 
 	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/ipc"
+	"sentinelgo/internal/dlp/policy"
 )
 
 // fakeTrace replaces the ETW trace: the test calls open as ETW would.
@@ -116,6 +118,66 @@ func TestWindowsTaint_EndToEnd(t *testing.T) {
 	if h := e.Health(); h.TaintProcesses != 1 {
 		t.Errorf("health %+v", h)
 	}
+}
+
+// With process_taint on and only the sync and share channels, the trace
+// runs; a sync folder learned from one hand-over attributes the next file
+// written there to its program (#428).
+func TestWindowsTaint_HandedOverFiles(t *testing.T) {
+	home := needProfileTemp(t)
+	trace := &fakeTrace{}
+	trace.install(t, nil)
+	listVolumes = func() []winVolume { return nil }
+	workerEnv = []string{workerTestEnv + "=serve"}
+	t.Cleanup(func() { listVolumes, workerEnv = removableVolumes, nil })
+	e, sink, _ := startEnforcer(t, syncBundle(`, "copy_correlation": {"process_taint": true}`))
+	we := e.(*windowsEnforcer)
+	eventually(t, "the trace", trace.started)
+
+	// The helper's roots are long paths (the registry's); the temp folder
+	// may be an 8.3 one (RUNNER~1).
+	dir := filepath.Join(longTestPath(t, home), "OneDrive")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	from := ipc.Identity{PID: os.Getpid(), User: `CORP\ann`, SessionID: "3"}
+	hand := func(id, name string) {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("the TOPSECRET plan"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if id == "2" {
+			trace.opened(t, windows.GetCurrentProcessId(), path)
+		}
+		h := openAsHelper(t, path)
+		we.TakeUserFile(from, ipc.UserFile{ID: id, Handle: uint64(h), Channel: policy.ChannelFileCloudSync, Root: dir, Label: "OneDrive"})
+	}
+	hand("1", "first.txt") // teaches the service the folder
+	eventually(t, "the first event", func() bool { return len(sink.events()) == 1 })
+	if roots := *we.syncRootList(); len(roots) != 1 || roots[0] != strings.ToLower(dir)+`\` {
+		t.Fatalf("learned %v", roots)
+	}
+	hand("2", "second.txt")
+	eventually(t, "the second event", func() bool { return len(sink.events()) == 2 })
+	ev := sink.events()[1]
+	if ev.Process == nil || !strings.HasSuffix(strings.ToLower(ev.Process.Path), ".exe") {
+		t.Errorf("the writer isn't named: %+v", ev.Process)
+	}
+	if ev.User == "" {
+		t.Errorf("no user: %+v", ev)
+	}
+}
+
+// longTestPath expands any 8.3 names in path.
+func longTestPath(t *testing.T, path string) string {
+	t.Helper()
+	p, _ := windows.UTF16PtrFromString(path)
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetLongPathName(p, &buf[0], uint32(len(buf)))
+	if err != nil || n == 0 {
+		t.Fatalf("long path of %s: %v", path, err)
+	}
+	return windows.UTF16ToString(buf[:n])
 }
 
 func TestWindowsTaint_TraceRefused(t *testing.T) {
