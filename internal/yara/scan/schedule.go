@@ -2,7 +2,7 @@ package scan
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
+	"math/big"
 	"time"
 
 	"sentinelgo/internal/yara"
@@ -18,8 +18,9 @@ func Offset(agentID, scheduleID string, jitterMinutes int) time.Duration {
 		return 0
 	}
 	sum := sha256.Sum256([]byte(agentID + "\x00" + scheduleID))
-	span := uint64(jitterMinutes) * uint64(time.Minute/time.Second)
-	return time.Duration(binary.BigEndian.Uint64(sum[:8])%span) * time.Second
+	span := big.NewInt(int64(jitterMinutes) * int64(time.Minute/time.Second))
+	secs := new(big.Int).Mod(new(big.Int).SetBytes(sum[:8]), span)
+	return time.Duration(secs.Int64()) * time.Second
 }
 
 // windowStart is the start of the period of t: periods are every_hours long,

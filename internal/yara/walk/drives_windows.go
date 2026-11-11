@@ -9,12 +9,13 @@ func fixedDrives() []string {
 	if err != nil {
 		return []string{`C:\`}
 	}
+	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	var out []string
-	for i := range 26 {
-		if mask&(1<<uint(i)) == 0 {
+	for i, bit := 0, uint32(1); i < len(letters); i, bit = i+1, bit<<1 {
+		if mask&bit == 0 {
 			continue
 		}
-		root := string(rune('A'+i)) + `:\`
+		root := letters[i:i+1] + `:\`
 		p, err := windows.UTF16PtrFromString(root)
 		if err != nil {
 			continue
