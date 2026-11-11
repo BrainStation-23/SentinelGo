@@ -337,6 +337,26 @@ func TestSync_RestoreOffline(t *testing.T) {
 	}
 }
 
+// Restore applies the cached bundle without polling, once: a yara-scan task
+// right after startup scans with the rules the device has.
+func TestRestore_WithoutPoll(t *testing.T) {
+	dir := t.TempDir()
+	h := newHarness(t, dir)
+	h.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}))
+	if err := h.s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h2 := newHarness(t, dir)
+	h2.s.Restore(context.Background())
+	h2.s.Restore(context.Background())
+	if a := h2.s.Active(); !a.Enabled() || len(h2.srv.known) != 0 || h2.comp.calls != 1 {
+		t.Fatalf("active %+v, polls %d, compiles %d", a, len(h2.srv.known), h2.comp.calls)
+	}
+	if err := h2.s.Sync(context.Background()); err != nil || h2.comp.calls != 1 {
+		t.Fatalf("sync after restore: %v, compiles %d", err, h2.comp.calls)
+	}
+}
+
 // A corrupt cache is deleted and the bundle is asked for from scratch.
 func TestSync_CorruptCache(t *testing.T) {
 	for name, corrupt := range map[string]func(dir string){
@@ -451,4 +471,56 @@ func TestCacheIsOwnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkOwnerOnly(t, filepath.Join(dir, DirName))
+}
+
+// yara_enabled false (#416): the device still polls and reports disabled,
+// but never applies a bundle, compiles, or keeps a cache, and doesn't ask
+// for the same bundle again.
+func TestSync_LocallyDisabled(t *testing.T) {
+	dir := t.TempDir()
+	// A cache left from when it was on.
+	on := newHarness(t, dir)
+	on.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}))
+	if err := on.s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t, dir)
+	h.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}))
+	h.s.o.LocallyDisabled = true
+	for range 2 {
+		if err := h.s.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.s.Active() != nil || len(h.changes) != 0 || h.comp.calls != 0 {
+		t.Fatalf("applied while locally disabled: active %+v, compiles %d", h.s.Active(), h.comp.calls)
+	}
+	if st := h.s.Status(); st.State != yara.StateDisabled || h.srv.statuses[0] == nil || h.srv.statuses[0].State != yara.StateDisabled {
+		t.Fatalf("status %+v, sent %+v", st, h.srv.statuses[0])
+	}
+	if h.srv.known[1] != "v1" {
+		t.Errorf("second poll known %q, want v1", h.srv.known[1])
+	}
+	if _, err := os.Stat(filepath.Join(dir, DirName)); !os.IsNotExist(err) {
+		t.Errorf("ruleset cache kept: %v", err)
+	}
+}
+
+// A scan refused folders by macOS privacy shows as tcc_denied, below the
+// failure states.
+func TestStatus_TCCDenied(t *testing.T) {
+	h := newHarness(t, t.TempDir())
+	h.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}))
+	if err := h.s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.s.SetTCCDenied(true)
+	if st := h.s.Status(); st.State != yara.StateTCCDenied {
+		t.Fatalf("state %q, want tcc_denied", st.State)
+	}
+	h.s.SetTCCDenied(false)
+	if st := h.s.Status(); st.State != yara.StateOK {
+		t.Fatalf("state %q, want ok", st.State)
+	}
 }

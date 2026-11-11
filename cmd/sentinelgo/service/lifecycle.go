@@ -15,6 +15,7 @@ import (
 	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/dlp/uploadproxy"
+	"sentinelgo/internal/yara/scan"
 )
 
 // HandleInstall installs SentinelGo as a system service (launchd on macOS,
@@ -76,15 +77,19 @@ func HandleInstall(svc AgentService) {
 }
 
 // cleanupDLPHelpers removes the DLP session helper definitions (LaunchAgent,
-// systemd user unit, XDG autostart) and, on Linux, the file DLP scan workers'
-// account. The service removes the helpers when it stops cleanly; this covers
-// an abrupt exit before uninstall.
+// systemd user unit, XDG autostart), the scan workers' account on macOS and
+// Linux (shared by file DLP and threat hunting), and threat hunting's cache,
+// state and event queue (#416). The service removes the helpers when it
+// stops cleanly; this covers an abrupt exit before uninstall.
 func cleanupDLPHelpers() {
 	if err := session.CleanupHelpers(); err != nil {
 		log.Printf("Warning: failed to remove DLP session helpers: %v", err)
 	}
 	if err := scanworker.RemoveScanAccount(); err != nil {
 		log.Printf("Warning: failed to remove the DLP scan account: %v", err)
+	}
+	if err := scan.RemoveLocalData(filepath.Dir(config.GetDefaultConfigPath())); err != nil {
+		log.Printf("Warning: failed to remove the threat hunting (YARA) data: %v", err)
 	}
 	// Upload inspection (#344): the system proxy setting and the CA.
 	if err := uploadproxy.NewRedirector(filepath.Dir(config.GetDefaultConfigPath())).Remove(); err != nil {

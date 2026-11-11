@@ -18,9 +18,9 @@ import (
 // SchemaVersion is the bundle schema this agent understands.
 const SchemaVersion = 1
 
-// Capability is advertised in constants.AgentCapabilities only by the change
-// that makes scans work end to end (#416). The backend sends a disabled
-// bundle, and no yara-scan task, to agents that don't report it.
+// Capability is advertised in constants.AgentCapabilities (#416). The
+// backend sends a disabled bundle, and no yara-scan task, to agents that
+// don't report it.
 const Capability = "yara_scan_v1"
 
 // RPCs and tasks.
@@ -28,9 +28,11 @@ const (
 	RPCGetRuleset    = "agent_get_yara_ruleset"
 	RPCEnqueueEvents = "agent_enqueue_yara_events"
 
-	TaskScan       = "yara-scan"         // native task: start a scan (§4)
-	TaskScanCancel = "yara-scan-cancel"  // native task: stop the running scan (§4)
-	TaskSync       = "yara-ruleset-sync" // scheduler task: poll the ruleset (#411)
+	TaskScan       = "yara-scan"           // native task: start a scan (§4)
+	TaskScanCancel = "yara-scan-cancel"    // native task: stop the running scan (§4)
+	TaskSync       = "yara-ruleset-sync"   // scheduler task: poll the ruleset (#411)
+	TaskScheduler  = "yara-scan-scheduler" // scheduler task: start due scheduled scans (#414)
+	TaskEventSync  = "yara-event-sync"     // scheduler task: upload queued events (#415)
 )
 
 // SQLStateInvalid is the PostgREST code both RPCs use for a payload they

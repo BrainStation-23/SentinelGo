@@ -19,7 +19,6 @@ import (
 	"sentinelgo/internal/dlp/ipc"
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/policy"
-	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/dlp/uploadproxy"
 	"sentinelgo/internal/emergencylog"
@@ -38,7 +37,6 @@ import (
 	"sentinelgo/internal/store"
 	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/updater"
-	"sentinelgo/internal/yara/ruleset"
 )
 
 // startupTokenSkew is how much validity a stored access token must still have
@@ -89,10 +87,9 @@ type MainIntegration struct {
 	dlpManager    *dlp.Manager
 	dlpSyncer     *dlp.Syncer
 	dlpEvents     *store.DLPEventStore
-	// yaraPool runs YARA compiles and scans in sandboxed workers; yaraSyncer
-	// keeps the ruleset bundle current (#411, #412).
-	yaraPool   *scanworker.Pool
-	yaraSyncer *ruleset.Syncer
+	// yara is threat hunting: ruleset sync, scan workers, scans and the
+	// event queue (#411-#416); nil when not started.
+	yara *yaraState
 	// mu protects sessions against concurrent access between notifyUser
 	// (which reads it) and Stop (which nils it).
 	mu sync.Mutex
@@ -170,7 +167,9 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// 6b. Schedule the npm/PyPI/Composer inventory (#421).
 	mi.startPackageSync()
 
-	// 6c. YARA ruleset sync and scan workers (#411, #412).
+	// 6c. Threat hunting (YARA): after auth and DLP (whose worker binary
+	// the scan workers share), before the task manager accepts yara-scan
+	// (#416).
 	mi.startYARA()
 
 	// 7. Start the task manager (polling + execution) if enabled.
@@ -863,6 +862,8 @@ func (mi *MainIntegration) Stop() error {
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
 	mi.stopLocalAdminExpiry()
+	// Threat hunting: cancel and checkpoint the scan, stop its workers,
+	// flush the event queue (#416).
 	mi.stopYARA()
 
 	// Stop DLP and the session helpers, then close the evidence queue

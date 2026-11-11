@@ -390,3 +390,26 @@ func hostEnv() Env {
 	return Env{GOOS: runtime.GOOS, Getenv: os.Getenv, ReadDir: os.ReadDir,
 		Exists: func(p string) bool { _, err := os.Lstat(p); return err == nil }}
 }
+
+// A walk stopped by its context (service stop, preemption) has a checkpoint
+// too; resuming from it hands out the rest, the interrupted file included.
+func TestWalk_CheckpointOnCancel(t *testing.T) {
+	root := tree(t, map[string]string{"a": "a", "b": "b", "c": "c"})
+	ctx, cancel := context.WithCancel(context.Background())
+	var first []string
+	st, err := Walk(ctx, Options{GOOS: runtime.GOOS, Roots: []string{root}}, func(f File) error {
+		if len(first) == 1 {
+			cancel()
+			return ctx.Err()
+		}
+		first = append(first, filepath.Base(f.Path))
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || st.Checkpoint == nil {
+		t.Fatalf("err = %v, checkpoint = %v", err, st.Checkpoint)
+	}
+	rest, _, err := collect(t, root, Options{Roots: []string{root}, Resume: st.Checkpoint})
+	if err != nil || !reflect.DeepEqual(append(first, rest...), []string{"a", "b", "c"}) {
+		t.Fatalf("first %q, rest %q, err %v", first, rest, err)
+	}
+}

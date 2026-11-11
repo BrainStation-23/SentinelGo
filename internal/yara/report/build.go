@@ -88,6 +88,29 @@ func NewScan(id, trigger, preset string, evidence yara.Evidence, dedupe Dedupe) 
 	return s
 }
 
+// Progress is what a scan has reported so far. It is saved with the
+// checkpoint of a scan the service stopped, so the scan continues under the
+// same id with the same counts and per-scan cap after a restart.
+type Progress struct {
+	Found     int64 `json:"found"`
+	Sent      int   `json:"sent"`
+	Truncated bool  `json:"truncated,omitempty"`
+}
+
+// Progress returns the scan's counts so far.
+func (s *Scan) Progress() Progress {
+	return Progress{Found: s.found, Sent: s.sent, Truncated: s.truncated}
+}
+
+// Restore continues an interrupted scan: it takes back the start time and
+// counts saved with its checkpoint.
+func (s *Scan) Restore(started time.Time, p Progress) {
+	if !started.IsZero() {
+		s.Started = started.UTC()
+	}
+	s.found, s.sent, s.truncated = max(p.Found, 0), max(p.Sent, 0), p.Truncated
+}
+
 // Matches returns the events for a matched file: one per hit, minus hits
 // already reported (scheduled scans) and hits past the per-scan cap. Each
 // event is valid under §3.

@@ -59,6 +59,9 @@ audit-config-sample.json
 sentinelgo_*.db
 sentinelgo_*.db-wal
 sentinelgo_*.db-shm
+yara_status.json
+yara_scan_state.json
+yara_skip.cache
 tasks.sqlite
 *.sqlite-wal
 *.sqlite-shm

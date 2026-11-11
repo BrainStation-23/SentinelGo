@@ -123,3 +123,14 @@ func TestTruncateUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryOf(t *testing.T) {
+	st := Status{State: StateOK, AppliedVersion: "v9", Rulesets: []RulesetStatus{
+		{ID: "a", CompiledRules: 3, SkippedRules: []SkippedRule{{Rule: "p", Reason: "unsupported_module:pe"}}},
+		{ID: "b", CompiledRules: 2},
+	}}
+	s := SummaryOf(st)
+	if s.State != StateOK || s.AppliedVersion != "v9" || s.Rulesets != 2 || s.CompiledRules != 5 || s.SkippedRules != 1 {
+		t.Fatalf("summary %+v", s)
+	}
+}

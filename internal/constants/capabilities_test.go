@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"slices"
 	"testing"
+
+	"sentinelgo/internal/yara"
 )
 
 func TestAgentCapabilities_Valid(t *testing.T) {
@@ -96,6 +98,23 @@ func TestCapabilities_MDMTasks(t *testing.T) {
 		enroll, unenroll := slices.Contains(caps, CapabilityMDMEnroll), slices.Contains(caps, CapabilityMDMUnenroll)
 		if enroll != want[0] || unenroll != want[1] {
 			t.Errorf("%s: enroll/unenroll = %v/%v, want %v", os, enroll, unenroll, want)
+		}
+	}
+}
+
+// yara_scan_v1 is advertised on every OS since scans work end to end (sync,
+// workers, walk, events, tasks: #416). The backend sends rules and yara-scan
+// tasks only to agents that report it.
+func TestCapabilities_YARAScan(t *testing.T) {
+	if yara.Capability != "yara_scan_v1" || !slices.Contains(AgentCapabilities, yara.Capability) {
+		t.Fatalf("%s not in AgentCapabilities %q", yara.Capability, AgentCapabilities)
+	}
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for _, os := range []string{"windows", "darwin", "linux"} {
+		goos = os
+		if !slices.Contains(Capabilities(), yara.Capability) {
+			t.Errorf("%s: yara_scan_v1 not advertised", os)
 		}
 	}
 }
