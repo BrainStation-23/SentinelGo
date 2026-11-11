@@ -26,6 +26,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 ### Security
 
 - Built with Go 1.26.11, which fixes an HTTP/1 server crash in `net/http` (GO-2026-6859). The agent's local upload inspection proxy serves HTTP/1.
+- First-boot enrollment errors are written to the service log with line breaks removed, so text in an enrollment server's error response can no longer add forged lines to the log (CodeQL alerts 224 and 225).
 
 ## [v4.0.8] - 2026-11-10
 
