@@ -11,8 +11,11 @@ import (
 	"strings"
 )
 
-// pacPath is where the proxy serves the script.
-const pacPath = "/proxy.pac"
+// pacPath is where the proxy serves the script, crlPath the CA's CRL (#452).
+const (
+	pacPath = "/proxy.pac"
+	crlPath = "/ca.crl"
+)
 
 // PACURL is the auto-config URL for a proxy listening on addr. It is plain
 // HTTP on purpose: the proxy listens on loopback only (requireLoopback,
@@ -21,6 +24,13 @@ const pacPath = "/proxy.pac"
 // trusts before the proxy that serves it is set up).
 func PACURL(addr string) string {
 	return (&url.URL{Scheme: "http", Host: addr, Path: pacPath}).String()
+}
+
+// CRLURL is the CRL distribution point for a proxy listening on addr. Plain
+// HTTP like PACURL (CRLs are signed, and HTTP is what CRL fetchers expect).
+// The PAC sends it DIRECT, so fetching it never loops through the proxy.
+func CRLURL(addr string) string {
+	return (&url.URL{Scheme: "http", Host: addr, Path: crlPath}).String()
 }
 
 // Scope is the proxy's scope for intercept and bypass host lists: in

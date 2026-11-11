@@ -268,6 +268,7 @@ func (s *Service) startLocked() {
 	if t := s.opts.ProxyTestOptions; t != nil {
 		o.UpstreamRoots, o.AllowLocalTargets = t.UpstreamRoots, t.AllowLocalTargets
 	}
+	ca.SetCRLURL(CRLURL(ln.Addr().String()))
 	s.ca, s.ln, s.proxy = ca, ln, New(o)
 	s.pacURL = PACURL(ln.Addr().String())
 	if err := s.trust.Trust(ca); err != nil {

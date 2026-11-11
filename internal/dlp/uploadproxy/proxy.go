@@ -125,6 +125,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(p.opts.PAC())
 		return
 	}
+	if r.URL.Host == "" && r.URL.Path == crlPath && p.opts.CA != nil && r.Method == http.MethodGet {
+		crl, err := p.opts.CA.CRL()
+		if err != nil {
+			log.Printf("DLP: upload proxy CRL: %v", err)
+			http.Error(w, "CRL unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/pkix-crl")
+		_, _ = w.Write(crl)
+		return
+	}
 	// A plain-HTTP request through the proxy: http://host/path.
 	if r.URL.Scheme != "http" || r.URL.Host == "" {
 		http.Error(w, "this is a proxy", http.StatusBadRequest)

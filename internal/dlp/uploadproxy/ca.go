@@ -47,6 +47,11 @@ const (
 	caRenewAhead = 30 * 24 * time.Hour
 	leafLifetime = 24 * time.Hour
 	leafCacheMax = 1024
+	// crlLifetime is the CRL's nextUpdate, well past any leaf's lifetime so
+	// a client's cached copy never expires before the leaf it checked;
+	// crlRenewAhead reissues it before then.
+	crlLifetime   = 7 * 24 * time.Hour
+	crlRenewAhead = 2 * 24 * time.Hour
 )
 
 // CA is the device's inspection CA. It is safe for concurrent use.
@@ -58,6 +63,8 @@ type CA struct {
 
 	mu     sync.Mutex
 	leaves map[string]*tls.Certificate
+	crlURL string // CRL distribution point stamped on new leaves (#452)
+	crl    *x509.RevocationList
 }
 
 // LoadOrCreateCA loads the CA from dir, or creates one (and writes it, the
@@ -165,6 +172,46 @@ func (ca *CA) CertPEM() []byte { return append([]byte(nil), ca.certPEM...) }
 // Certificate is the parsed CA certificate.
 func (ca *CA) Certificate() *x509.Certificate { return ca.cert }
 
+// SetCRLURL sets the CRL distribution point stamped on host certificates
+// (#452). Windows clients that require a revocation answer (schannel with
+// revocation checking on, e.g. curl) refuse a leaf without one. Changing it
+// drops the cached leaves, so none carries an old address.
+func (ca *CA) SetCRLURL(u string) {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	if u != ca.crlURL {
+		ca.crlURL = u
+		ca.leaves = map[string]*tls.Certificate{}
+	}
+}
+
+// CRL returns the CA's certificate revocation list, DER-encoded. It is always
+// empty (host certificates are short-lived and never revoked); it exists so
+// revocation checks get an answer. It is reissued before nextUpdate.
+func (ca *CA) CRL() ([]byte, error) {
+	now := ca.now()
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	if ca.crl != nil && now.Add(crlRenewAhead).Before(ca.crl.NextUpdate) {
+		return ca.crl.Raw, nil
+	}
+	tmpl := &x509.RevocationList{
+		Number:     big.NewInt(now.Unix()), // increases with each reissue
+		ThisUpdate: now.Add(-time.Hour),
+		NextUpdate: now.Add(crlLifetime),
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, tmpl, ca.cert, ca.key)
+	if err != nil {
+		return nil, fmt.Errorf("upload proxy CRL: %w", err)
+	}
+	crl, err := x509.ParseRevocationList(der)
+	if err != nil {
+		return nil, fmt.Errorf("upload proxy CRL: %w", err)
+	}
+	ca.crl = crl
+	return crl.Raw, nil
+}
+
 // Leaf returns a certificate for host signed by the CA, reusing one that is
 // still valid for at least an hour.
 func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
@@ -174,6 +221,7 @@ func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
 		ca.mu.Unlock()
 		return c, nil
 	}
+	crlURL := ca.crlURL
 	ca.mu.Unlock()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -187,6 +235,9 @@ func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
 		NotAfter:     now.Add(leafLifetime),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if crlURL != "" {
+		tmpl.CRLDistributionPoints = []string{crlURL}
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
@@ -203,10 +254,12 @@ func (ca *CA) Leaf(host string) (*tls.Certificate, error) {
 	}
 	c := &tls.Certificate{Certificate: [][]byte{der, ca.cert.Raw}, PrivateKey: key, Leaf: leaf}
 	ca.mu.Lock()
-	if len(ca.leaves) >= leafCacheMax {
-		ca.leaves = map[string]*tls.Certificate{}
+	if ca.crlURL == crlURL { // not cached if the URL changed while minting
+		if len(ca.leaves) >= leafCacheMax {
+			ca.leaves = map[string]*tls.Certificate{}
+		}
+		ca.leaves[host] = c
 	}
-	ca.leaves[host] = c
 	ca.mu.Unlock()
 	return c, nil
 }
