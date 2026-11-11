@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/dlp/filescan"
+	"sentinelgo/internal/yara"
 )
 
 // Pool defaults.
@@ -39,6 +40,9 @@ type Options struct {
 	Args    []string // default: [Command]
 	Workers int      // default: DefaultWorkers
 	Env     []string // the worker's environment (default: none beyond what the OS needs)
+	// Name says what the pool is for in its log lines (default "DLP file
+	// scan").
+	Name string
 }
 
 // Pool runs scans in sandboxed workers. It is safe for concurrent use.
@@ -69,6 +73,10 @@ type worker struct {
 	version uint64     // of the policy it has
 	nextID  uint64
 	exited  chan struct{}
+	// The YARA rule set it has compiled (YARARules.id; 0: none) and how it
+	// compiled.
+	yaraID       uint64
+	yaraCompiled []yara.CompileResult
 }
 
 // NewPool returns a pool; workers start on the first scan.
@@ -78,6 +86,9 @@ func NewPool(o Options) *Pool {
 	}
 	if len(o.Args) == 0 {
 		o.Args = []string{Command}
+	}
+	if o.Name == "" {
+		o.Name = "DLP file scan"
 	}
 	return &Pool{opts: o, all: map[*worker]struct{}{}, idle: make(chan *worker, o.Workers), changed: make(chan struct{})}
 }
@@ -132,25 +143,8 @@ func (p *Pool) scanIn(ctx context.Context, w *worker, f *os.File, size int64, ti
 	if err := w.sendScan(message{Type: typeScan, ID: id, Size: size}, f); err != nil {
 		return filescan.Result{}, err
 	}
-	deadline := time.Now().Add(timeout + scanGrace)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	_ = w.c.setReadDeadline(deadline)
-	// Cancelling ctx (the service stopping file DLP) ends the wait at once.
-	stop := context.AfterFunc(ctx, func() { _ = w.c.setReadDeadline(time.Now()) })
-	defer func() {
-		stop()
-		_ = w.c.setReadDeadline(time.Time{})
-	}()
-	m, extra, err := w.c.readMsg(maxFrameFromWorker)
-	if extra != nil {
-		_ = extra.Close()
-	}
+	m, err := w.await(ctx, time.Now().Add(timeout+scanGrace))
 	if err != nil {
-		if os.IsTimeout(err) {
-			return filescan.Result{}, errScanTimeout
-		}
 		return filescan.Result{}, err
 	}
 	if m.Type != typeResult || m.ID != id || m.Result == nil {
@@ -264,8 +258,8 @@ func (p *Pool) failLocked(err error) {
 	p.failures = append(keep, now)
 	if len(p.failures) >= crashLimit && !p.disabled {
 		p.disabled = true
-		log.Printf("DLP: file scan workers failed %d times in %v; file scanning is off until the agent restarts (last: %v)",
-			len(p.failures), crashWindow, err)
+		log.Printf("%s workers failed %d times in %v; no more are started until the agent restarts (last: %v)",
+			p.opts.Name, len(p.failures), crashWindow, err)
 	}
 }
 
