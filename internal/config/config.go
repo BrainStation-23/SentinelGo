@@ -117,6 +117,10 @@ type Config struct {
 	// DLPEnabled is the device-local DLP kill switch. false turns DLP off on this
 	// device whatever the server-side policy says (for troubleshooting).
 	DLPEnabled bool `json:"dlp_enabled"`
+	// YARAEnabled is the device-local threat hunting (YARA) kill switch
+	// (#416). false keeps scans and scan workers off on this device whatever
+	// the server's bundle says; the agent reports state disabled.
+	YARAEnabled bool `json:"yara_enabled"`
 	// MDMHost is this deployment's MDM hostname, e.g. "mdm.example.com".
 	// The inventory compares it with the MDM a device is enrolled in, to tell
 	// our MDM from another one. Empty until the backend provides it.
@@ -243,6 +247,7 @@ func Load(path string) (*Config, error) {
 		ServicesSyncEnabled:    true,                      // Enable services collection by default
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
 		DLPEnabled:             true,                      // DLP stays off until the server sends an enabled policy
+		YARAEnabled:            true,                      // scans stay off until the server sends an enabled bundle
 	}
 
 	if path == "" {

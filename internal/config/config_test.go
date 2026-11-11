@@ -274,6 +274,32 @@ func TestLoad_DLPEnabled(t *testing.T) {
 	}
 }
 
+// yara_enabled defaults to true (scans stay off until the server's bundle
+// enables them), and an explicit false is the device-local kill switch
+// (#416).
+func TestLoad_YARAEnabled(t *testing.T) {
+	for _, tt := range []struct {
+		json string
+		want bool
+	}{
+		{`{}`, true},
+		{`{"yara_enabled": false}`, false},
+		{`{"yara_enabled": true}`, true},
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(tt.json), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s) error = %v", tt.json, err)
+		}
+		if cfg.YARAEnabled != tt.want {
+			t.Errorf("%s: YARAEnabled = %v, want %v", tt.json, cfg.YARAEnabled, tt.want)
+		}
+	}
+}
+
 func minimalTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return &config.Config{

@@ -104,6 +104,11 @@ type Options struct {
 	// outside the Syncer's locks. A disabled bundle must stop a running
 	// scan.
 	OnChange func(*Active)
+	// LocallyDisabled is config.json's yara_enabled false (#416): the
+	// Syncer still polls, so the server sees state disabled, but never
+	// applies a bundle, compiles rules or starts a worker, and deletes the
+	// ruleset cache.
+	LocallyDisabled bool
 }
 
 // Syncer polls for the ruleset bundle and applies it.
@@ -124,6 +129,10 @@ type Syncer struct {
 	lastScan   *yara.ScanSummary
 	sentStatus [32]byte
 	statusSent bool
+	tccDenied  bool
+	// seen is the newest bundle version the server sent while the agent is
+	// locally disabled, so it isn't sent again on every poll.
+	seen string
 }
 
 // New returns a Syncer. The first Sync loads the cache before polling.
@@ -170,10 +179,7 @@ func (s *Syncer) SetLastScan(sum *yara.ScanSummary) {
 func (s *Syncer) Sync(ctx context.Context) error {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
-	if !s.restored {
-		s.restored = true
-		s.restore(ctx)
-	}
+	s.restoreOnce(ctx)
 	err := s.poll(ctx)
 	s.schedule(err)
 	return err
@@ -183,6 +189,9 @@ func (s *Syncer) poll(ctx context.Context) error {
 	known := ""
 	if a := s.Active(); a != nil && a.Bundle != nil {
 		known = a.Bundle.Version
+	}
+	if s.o.LocallyDisabled {
+		known = s.seen
 	}
 	status := s.Status()
 	data, _ := json.Marshal(status)
@@ -215,6 +224,13 @@ func (s *Syncer) poll(ctx context.Context) error {
 		s.mu.Unlock()
 	}
 	if !res.Changed {
+		return nil
+	}
+	if s.o.LocallyDisabled {
+		// Remember the version only: nothing is applied on this device.
+		if b, err := yara.Decode(res.Raw); err == nil {
+			s.seen = b.Version
+		}
 		return nil
 	}
 	return s.apply(ctx, res.Raw)
@@ -288,6 +304,31 @@ func (s *Syncer) download(ctx context.Context, b *yara.Bundle) ([]yara.RuleSourc
 		out = append(out, yara.RuleSource{ID: r.ID, Revision: r.Revision, Source: buf.Bytes()})
 	}
 	return out, nil
+}
+
+// Restore applies the cached bundle now, if no Sync has yet. A yara-scan
+// task that arrives right after startup calls it, so it scans with the
+// rules the device already has instead of failing.
+func (s *Syncer) Restore(ctx context.Context) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	s.restoreOnce(ctx)
+}
+
+// restoreOnce runs the first-Sync work once; syncMu is held. A locally
+// disabled agent deletes the cache instead.
+func (s *Syncer) restoreOnce(ctx context.Context) {
+	if s.restored {
+		return
+	}
+	s.restored = true
+	if s.o.LocallyDisabled {
+		if err := s.o.Cache.Clear(); err != nil {
+			log.Printf("YARA: could not delete the ruleset cache: %v", err)
+		}
+		return
+	}
+	s.restore(ctx)
 }
 
 // restore applies the cached bundle at startup, so scans work offline. A
@@ -375,11 +416,19 @@ func (s *Syncer) schedule(err error) {
 	s.next = s.now().Add(max(wait, minPollGap))
 }
 
+// SetTCCDenied records whether the last scan was refused folders by macOS
+// privacy (no Full Disk Access, #413); the status then says tcc_denied.
+func (s *Syncer) SetTCCDenied(denied bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tccDenied = denied
+}
+
 // Status is what the device applied (p_status).
 func (s *Syncer) Status() yara.Status {
 	a := s.Active()
 	s.mu.Lock()
-	failState, results, lastScan := s.failState, s.results, s.lastScan
+	failState, results, lastScan, tcc := s.failState, s.results, s.lastScan, s.tccDenied
 	s.mu.Unlock()
 	st := yara.Status{
 		AgentVersion:  s.o.AgentVersion,
@@ -391,12 +440,16 @@ func (s *Syncer) Status() yara.Status {
 		st.AppliedVersion = a.Bundle.Version
 	}
 	switch {
+	case s.o.LocallyDisabled:
+		st.State = yara.StateDisabled
 	case failState != "":
 		st.State = failState
 	case !a.Enabled():
 		st.State = yara.StateDisabled
 	case s.o.WorkerHealthy != nil && !s.o.WorkerHealthy():
 		st.State = yara.StateWorkerUnavailable
+	case tcc:
+		st.State = yara.StateTCCDenied
 	default:
 		st.State = yara.StateOK
 	}

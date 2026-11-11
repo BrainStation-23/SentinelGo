@@ -37,6 +37,10 @@ type TaskResult struct {
 	State        string `json:"state"`
 	FilesScanned int64  `json:"files_scanned"`
 	Matches      int64  `json:"matches"`
+	// RunningScanID is the on-demand scan that made this one busy. ScanID
+	// stays this request's id, so the server never re-keys its row onto the
+	// running scan.
+	RunningScanID string `json:"running_scan_id,omitempty"`
 }
 
 // DecodeTaskParams parses and checks yara-scan params. A custom scan needs

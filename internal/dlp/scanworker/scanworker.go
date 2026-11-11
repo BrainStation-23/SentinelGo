@@ -22,6 +22,12 @@ import "errors"
 // Command is the hidden subcommand that runs a worker.
 const Command = "dlp-scan"
 
+// BackgroundEnv, set to "1" in a pool's Options.Env, makes its workers lower
+// their own CPU and IO priority before they sandbox themselves. The YARA
+// pool sets it (#413): a scan must not slow the user down. File DLP's pool
+// doesn't, because writes wait for its decisions.
+const BackgroundEnv = "SENTINELGO_WORKER_BACKGROUND"
+
 // ReasonWorkerFailed is the unscannable reason when no worker could scan.
 const ReasonWorkerFailed = "worker_failed"
 

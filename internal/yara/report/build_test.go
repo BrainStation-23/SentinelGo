@@ -188,3 +188,17 @@ func TestCleanMeta_SizeCap(t *testing.T) {
 		t.Fatalf("meta is %d bytes with %d keys", len(data), len(out))
 	}
 }
+
+// A scan continued after a restart keeps its start time, counts and cap.
+func TestScan_RestoreProgress(t *testing.T) {
+	started := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	s := NewScan("", yara.TriggerScheduled, yara.PresetQuick, yara.Evidence{PathMode: yara.PathModeHashed}, nil)
+	s.Restore(started, Progress{Found: 7, Sent: MaxMatchEventsPerScan, Truncated: true})
+	if got := s.Progress(); got.Found != 7 || got.Sent != MaxMatchEventsPerScan || !got.Truncated {
+		t.Fatalf("progress %+v", got)
+	}
+	sum := s.SummaryBody(yara.ScanCompleted, 1, 0, 0)
+	if !sum.StartedAt.Equal(started) || sum.Matches != 7 || !sum.Truncated {
+		t.Fatalf("summary %+v", sum)
+	}
+}

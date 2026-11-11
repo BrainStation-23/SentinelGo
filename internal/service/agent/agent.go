@@ -14,6 +14,7 @@ import (
 	"sentinelgo/internal/osinfo/shared"
 	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/supabase"
+	"sentinelgo/internal/yara"
 )
 
 const rpcTimeout = 60 * time.Second
@@ -59,6 +60,9 @@ type AgentUpdatePayload struct {
 	// the device (#388), so the console can see an expiry enforced offline.
 	// Left out when there are none.
 	AdminGrants []localadmin.GrantReport `json:"admin_grants,omitempty"`
+	// YARA is the threat hunting health (#416): state, rules applied,
+	// workers, last scan. Left out when the service runs no YARA.
+	YARA *yara.Summary `json:"yara,omitempty"`
 	// Capabilities lists the task features this agent supports (contract
 	// v1 §6). Always sent, even empty, so the backend can tell "none" from
 	// an agent too old to report them.
@@ -91,6 +95,18 @@ func SetSessionsSource(f func() []SessionReport) {
 	sessionsSource.Store(&f)
 }
 
+var yaraSource atomic.Pointer[func() *yara.Summary]
+
+// SetYARASource installs (or with nil removes) what fills the inventory's
+// yara summary.
+func SetYARASource(f func() *yara.Summary) {
+	if f == nil {
+		yaraSource.Store(nil)
+		return
+	}
+	yaraSource.Store(&f)
+}
+
 // AgentService handles agent-related database operations.
 type AgentService struct {
 	client *http.Client
@@ -108,6 +124,9 @@ func (s *AgentService) UpdateAgentInfo(ctx context.Context, cfg *config.Config, 
 	payload := buildPayload(sysInfo)
 	if f := sessionsSource.Load(); f != nil {
 		payload.Sessions = (*f)()
+	}
+	if f := yaraSource.Load(); f != nil {
+		payload.YARA = (*f)()
 	}
 	if cfg != nil && cfg.Path != "" {
 		payload.AdminGrants = localadmin.Report(localadmin.StorePath(filepath.Dir(cfg.Path)), time.Now())

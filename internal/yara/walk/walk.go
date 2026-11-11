@@ -90,7 +90,9 @@ type Stats struct {
 	Errors  int64            // folders or files that couldn't be listed or read
 	// TCCDenied: macOS refused a folder for privacy (no Full Disk Access).
 	TCCDenied bool
-	// Checkpoint is set when the walk returned ErrPartial.
+	// Checkpoint is set when the walk returned ErrPartial, or stopped
+	// because ctx ended (the service stopping, a scan preempted), so the
+	// scan can continue from there.
 	Checkpoint *Checkpoint
 }
 
@@ -129,8 +131,8 @@ type walker struct {
 // Walk lists the files under o.Roots and calls fn for each, in a stable
 // order (roots in order, each folder's entries by name). It never follows
 // links and never reads a file. It stops at fn's first error (returning
-// it), when ctx ends, or when the guard says a limit was reached
-// (ErrPartial, with a checkpoint).
+// it), when ctx ends (with a checkpoint), or when the guard says a limit was
+// reached (ErrPartial, with a checkpoint).
 func Walk(ctx context.Context, o Options, fn func(File) error) (Stats, error) {
 	if o.MaxDepth <= 0 {
 		o.MaxDepth = DefaultMaxDepth
@@ -150,12 +152,15 @@ func Walk(ctx context.Context, o Options, fn func(File) error) (Stats, error) {
 			w.resume = ""
 		}
 		if err := w.walkRoot(ctx, o.Roots[i]); err != nil {
-			if errors.Is(err, ErrLimitReached) {
+			limit := errors.Is(err, ErrLimitReached)
+			if limit || ctx.Err() != nil {
 				last := w.lastOut
 				if last == "" && i == start {
 					last = w.resume // nothing new handed out: keep the old position
 				}
 				w.st.Checkpoint = &Checkpoint{RootsKey: key, Root: i, Path: last}
+			}
+			if limit {
 				return w.st, ErrPartial
 			}
 			return w.st, err

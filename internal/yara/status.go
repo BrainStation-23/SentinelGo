@@ -131,3 +131,33 @@ func (s *Status) dropSkipped() bool {
 	s.Rulesets[longest].SkippedRules = sk[:len(sk)/2]
 	return true
 }
+
+// Summary is the compact threat hunting health in the inventory payload
+// (#416), so the console can show "scanning works on this device" without
+// parsing the status. It carries counts and states only, never rule text.
+type Summary struct {
+	State string `json:"state"`
+	// LocalEnabled is config.json's yara_enabled.
+	LocalEnabled   bool   `json:"local_enabled"`
+	AppliedVersion string `json:"applied_version,omitempty"`
+	Rulesets       int    `json:"rulesets"`
+	CompiledRules  int    `json:"compiled_rules"`
+	SkippedRules   int    `json:"skipped_rules"`
+	// WorkersHealthy is false when the scan workers were disabled after a
+	// crash loop.
+	WorkersHealthy bool `json:"workers_healthy"`
+	// Scanning is the running scan's id.
+	Scanning     string       `json:"scanning,omitempty"`
+	LastScan     *ScanSummary `json:"last_scan,omitempty"`
+	QueuedEvents int          `json:"queued_events"`
+}
+
+// SummaryOf condenses a status.
+func SummaryOf(st Status) Summary {
+	s := Summary{State: st.State, AppliedVersion: st.AppliedVersion, Rulesets: len(st.Rulesets), LastScan: st.LastScan}
+	for _, r := range st.Rulesets {
+		s.CompiledRules += r.CompiledRules
+		s.SkippedRules += len(r.SkippedRules)
+	}
+	return s
+}
