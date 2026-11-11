@@ -20,6 +20,7 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ### Fixed
 
+- Windows: upload inspection no longer breaks whole websites (#451). Blocking direct connections to the inspected sites also blocked every other site on the same shared CDN addresses (github.com, Chrome updates), browsers before they picked up the proxy settings, and tools that ignore the system proxy (git, curl). A new policy setting, `modules.files.uploads.inspection.direct_block`, chooses how much is blocked: `quic` (the default, also for a missing or unknown value) blocks only UDP 443, so apps fall back to TCP and browsers take it through the proxy; `strict` keeps the old TCP and UDP block; `off` blocks nothing. `files.deep_inspection.direct_block` now also reports `mode` and the blocked `protocols`.
 - Upload inspection: clients that require a certificate revocation check (curl and other Windows schannel/WinHTTP clients) no longer fail through the proxy with `CRYPT_E_NO_REVOCATION_CHECK` (#452). The certificates the proxy issues now name a revocation list the proxy serves itself at `http://127.0.0.1:<port>/ca.crl`: empty, signed by the device's inspection CA and renewed every few days.
 
 ### Security

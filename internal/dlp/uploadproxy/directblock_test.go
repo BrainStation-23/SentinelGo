@@ -14,6 +14,7 @@ import (
 
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/filescan"
+	"sentinelgo/internal/dlp/policy"
 )
 
 // fakeDNS answers from a map and counts lookups.
@@ -53,19 +54,35 @@ func (f *fakeDNS) resolve(_ context.Context, host string) ([]netip.Addr, time.Du
 type fakeBlocker struct {
 	mu     sync.Mutex
 	addrs  []netip.Addr
+	tcp    bool
 	sets   int
 	open   bool
+	opens  int
 	setErr error
 }
 
-func (f *fakeBlocker) Set(a []netip.Addr) error {
+func (f *fakeBlocker) Set(a []netip.Addr, tcp bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.setErr != nil {
 		return f.setErr
 	}
-	f.addrs, f.sets = slices.Clone(a), f.sets+1
+	f.addrs, f.tcp, f.sets = slices.Clone(a), tcp, f.sets+1
 	return nil
+}
+
+// openCount is how often the blocker was opened.
+func (f *fakeBlocker) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+// blocksTCP reports whether the last Set blocked TCP too.
+func (f *fakeBlocker) blocksTCP() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tcp
 }
 
 func (f *fakeBlocker) Close() error {
@@ -79,7 +96,7 @@ func (f *fakeBlocker) opener() func() (DirectBlocker, error) {
 	return func() (DirectBlocker, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.open = true
+		f.open, f.opens = true, f.opens+1
 		return f, nil
 	}
 }
@@ -150,38 +167,65 @@ func TestDirectBlockUpdate(t *testing.T) {
 	fb := &fakeBlocker{}
 	d := newDirectBlock(fb.opener(), dns.resolve)
 
-	d.update(context.Background(), []string{"drive.example.com", "*.dropbox.com", "missing.example.com"}, []string{"login.example.com"})
+	d.update(context.Background(), []string{"drive.example.com", "*.dropbox.com", "missing.example.com"}, []string{"login.example.com"}, policy.DirectBlockQUIC)
 	open, got := fb.blocked()
-	if !open || got != "192.0.2.10,2001:db8::a" {
-		t.Fatalf("blocked %v %q", open, got)
+	if !open || got != "192.0.2.10,2001:db8::a" || fb.blocksTCP() {
+		t.Fatalf("blocked %v %q tcp %v", open, got, fb.blocksTCP())
 	}
 	st := d.status()
-	if st.State != DirectBlockActive || st.Addresses != 2 || st.Patterns != 1 || st.Unresolved != 1 {
+	if st.State != DirectBlockActive || st.Mode != "quic" || !slices.Equal(st.Protocols, []string{"udp"}) ||
+		st.Addresses != 2 || st.Patterns != 1 || st.Unresolved != 1 {
 		t.Errorf("status %+v", st)
 	}
-	d.update(context.Background(), []string{"drive.example.com"}, []string{"login.example.com"})
+	d.update(context.Background(), []string{"drive.example.com"}, []string{"login.example.com"}, policy.DirectBlockQUIC)
 	if fb.sets != 1 {
 		t.Errorf("unchanged set rewritten: %d", fb.sets)
 	}
 
-	d.stop(DirectBlockAuditOnly)
-	if open, _ := fb.blocked(); open || d.status().State != DirectBlockAuditOnly {
+	// Strict adds TCP to the same addresses, and going back drops it.
+	d.update(context.Background(), []string{"drive.example.com"}, []string{"login.example.com"}, policy.DirectBlockStrict)
+	if !fb.blocksTCP() || fb.sets != 2 {
+		t.Errorf("strict: tcp %v, sets %d", fb.blocksTCP(), fb.sets)
+	}
+	if st := d.status(); st.Mode != "strict" || !slices.Equal(st.Protocols, []string{"tcp", "udp"}) {
+		t.Errorf("strict status %+v", st)
+	}
+	d.update(context.Background(), []string{"drive.example.com"}, []string{"login.example.com"}, policy.DirectBlockQUIC)
+	if fb.blocksTCP() || fb.sets != 3 {
+		t.Errorf("back to quic: tcp %v, sets %d", fb.blocksTCP(), fb.sets)
+	}
+
+	// Off closes the blocker.
+	d.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockOff)
+	if open, _ := fb.blocked(); open || d.status().State != DirectBlockOff || d.status().Mode != "off" {
+		t.Errorf("off: open %v, %+v", open, d.status())
+	}
+
+	d.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockQUIC)
+	d.stop(DirectBlockAuditOnly, policy.DirectBlockQUIC)
+	if open, _ := fb.blocked(); open || d.status().State != DirectBlockAuditOnly || d.status().Protocols != nil {
 		t.Errorf("stop: open %v, %+v", open, d.status())
 	}
 
 	// A failing Set closes the blocker and says so.
 	fb.setErr = errors.New("boom")
-	d.update(context.Background(), []string{"drive.example.com"}, nil)
+	d.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockQUIC)
 	if open, _ := fb.blocked(); open || d.status().State != "unsupported:error" {
 		t.Errorf("set error: open %v, %+v", open, d.status())
 	}
 
 	// An open error is reported with its reason.
 	d2 := newDirectBlock(func() (DirectBlocker, error) { return nil, ErrNotImplemented }, dns.resolve)
-	d2.update(context.Background(), []string{"drive.example.com"}, nil)
+	d2.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockQUIC)
 	if d2.status().State != "unsupported:not_implemented" {
 		t.Errorf("open error: %+v", d2.status())
 	}
+}
+
+// withDirectBlock sets the inspection's direct_block in a bundle from
+// inspectionBundle.
+func withDirectBlock(bundle, mode string) string {
+	return strings.Replace(bundle, `"inspection": {"enabled": true,`, `"inspection": {"enabled": true, "direct_block": "`+mode+`",`, 1)
 }
 
 // The service blocks direct connections only while the redirect is active
@@ -215,9 +259,30 @@ func TestService_DirectBlock(t *testing.T) {
 	enforcing := strings.Replace(inspectionBundle(`"drive.example.com"`), `"files": {"enabled": true,`, `"files": {"enabled": true, "audit_only": false,`, 1)
 	s.Apply(context.Background(), compileBundle(t, enforcing))
 	eventually(t, "the block", func() bool { _, got := fb.blocked(); return got == "192.0.2.10" })
-	if st := s.Status().DirectBlock; st.State != DirectBlockActive || st.Addresses != 1 {
-		t.Errorf("status %+v", st)
+	// No direct_block in the bundle: quic, UDP only.
+	if st := s.Status().DirectBlock; st.State != DirectBlockActive || st.Mode != "quic" || fb.blocksTCP() || st.Addresses != 1 {
+		t.Errorf("status %+v, tcp %v", st, fb.blocksTCP())
 	}
+
+	// strict adds TCP; off removes the block (and never reopens it).
+	s.Apply(context.Background(), compileBundle(t, withDirectBlock(enforcing, "strict")))
+	eventually(t, "strict", func() bool { return fb.blocksTCP() })
+	s.Apply(context.Background(), compileBundle(t, withDirectBlock(enforcing, "off")))
+	eventually(t, "off", func() bool { st := s.Status().DirectBlock; return st != nil && st.State == DirectBlockOff })
+	opens := fb.openCount()
+	if open, _ := fb.blocked(); open {
+		t.Error("blocked with direct_block off")
+	}
+	time.Sleep(3 * watchdogEvery)
+	if fb.openCount() != opens {
+		t.Error("off reopened the blocker")
+	}
+	// An unknown value is quic.
+	s.Apply(context.Background(), compileBundle(t, withDirectBlock(enforcing, "bogus")))
+	eventually(t, "quic again", func() bool {
+		st := s.Status().DirectBlock
+		return st != nil && st.State == DirectBlockActive && st.Mode == "quic" && !fb.blocksTCP()
+	})
 
 	// The emergency switch removes it with the redirect.
 	off := filepath.Join(dir, filedlp.OffSwitchFile)

@@ -2,10 +2,21 @@ package uploadproxy
 
 // Blocking direct connections to the inspected sites (#427, Windows): the
 // PAC script only steers apps that honour the system proxy, so while the
-// redirect is active the agent also blocks direct TCP and UDP 443 to the
-// addresses the intercept hosts resolve to, except from its own process
-// (it is the proxy). Apps that ignore the proxy then can't upload to those
-// sites around the inspection, and browsers fall back from QUIC to TCP.
+// redirect is active the agent also blocks direct 443 to the addresses the
+// intercept hosts resolve to, except from its own process (it is the
+// proxy). How much is blocked is the policy's direct_block mode (#451):
+//
+//   - quic (default): UDP 443 only. QUIC clients fall back to TCP, and TCP
+//     follows the PAC into the proxy. A shared CDN address costs other
+//     sites HTTP/3, not reachability.
+//   - strict: TCP and UDP 443. Apps that ignore the proxy can't upload to
+//     the sites around the inspection, but every site sharing an address
+//     with them breaks too, as do browsers before the PAC applies (WPAD
+//     resolves to DIRECT first) and the PAC's DIRECT fallback.
+//   - off: no block, the PAC only.
+//
+// The same rule holds for the later backstops (Linux nftables, macOS pf):
+// no TCP block by address for all processes except in strict.
 //
 // It is enforcement, so it only runs when the files module isn't
 // audit_only, and only while the redirect is active: when the proxy is
@@ -16,8 +27,8 @@ package uploadproxy
 // Addresses are best effort: they come from resolving the exact intercept
 // hosts (a "*.example.com" pattern can't be resolved) and are refreshed on
 // the DNS TTL; addresses a bypass host resolves to are never blocked. A CDN
-// address shared with sites outside the list is blocked for them too, which
-// is why the count is reported.
+// address shared with sites outside the list is blocked for them too (in
+// strict, for TCP as well), which is why the count is reported.
 
 import (
 	"context"
@@ -26,13 +37,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"sentinelgo/internal/dlp/policy"
 )
 
-// DirectBlocker blocks direct TCP and UDP 443 to a set of addresses, except
-// from the agent's own process.
+// DirectBlocker blocks direct UDP 443, and TCP 443 when asked, to a set of
+// addresses, except from the agent's own process.
 type DirectBlocker interface {
-	// Set replaces the blocked addresses; an empty set blocks nothing.
-	Set(addrs []netip.Addr) error
+	// Set replaces the blocked addresses and protocols; an empty set blocks
+	// nothing.
+	Set(addrs []netip.Addr, tcp bool) error
 	// Close removes every block.
 	Close() error
 }
@@ -45,12 +59,17 @@ const (
 	DirectBlockActive    = "active"
 	DirectBlockInactive  = "inactive"
 	DirectBlockAuditOnly = "off:audit_only"
+	DirectBlockOff       = "off:policy" // direct_block is "off"
 )
 
 // DirectBlockStatus is the direct block in files.deep_inspection.
 type DirectBlockStatus struct {
-	State     string `json:"state"`     // active, inactive, off:audit_only, unsupported:<reason>
-	Addresses int    `json:"addresses"` // blocked addresses
+	State string `json:"state"` // active, inactive, off:audit_only, off:policy, unsupported:<reason>
+	// Mode is the policy's direct_block (quic, strict, off), and Protocols
+	// what is blocked while active: ["udp"] or ["tcp","udp"].
+	Mode      string   `json:"mode"`
+	Protocols []string `json:"protocols,omitempty"`
+	Addresses int      `json:"addresses"` // blocked addresses
 	// Unresolved counts intercept hosts with no address yet, and Patterns
 	// the wildcard patterns that can't be blocked by address.
 	Unresolved int `json:"unresolved"`
@@ -161,18 +180,30 @@ type directBlock struct {
 	open func() (DirectBlocker, error)
 	book *addressBook
 
-	mu      sync.Mutex
-	blocker DirectBlocker
-	applied []netip.Addr
-	st      DirectBlockStatus
+	mu         sync.Mutex
+	blocker    DirectBlocker
+	applied    []netip.Addr
+	appliedTCP bool
+	st         DirectBlockStatus
 }
 
 func newDirectBlock(open func() (DirectBlocker, error), r Resolver) *directBlock {
-	return &directBlock{open: open, book: newAddressBook(r), st: DirectBlockStatus{State: DirectBlockInactive}}
+	return &directBlock{open: open, book: newAddressBook(r),
+		st: DirectBlockStatus{State: DirectBlockInactive, Mode: policy.DirectBlockQUIC}}
 }
 
-// update blocks the current addresses of intercept (less bypass's).
-func (d *directBlock) update(ctx context.Context, intercept, bypass []string) {
+// update blocks the current addresses of intercept (less bypass's) in mode
+// (policy.DirectBlockQUIC or DirectBlockStrict; DirectBlockOff stops).
+func (d *directBlock) update(ctx context.Context, intercept, bypass []string, mode string) {
+	if mode == policy.DirectBlockOff {
+		d.stop(DirectBlockOff, mode)
+		return
+	}
+	tcp := mode == policy.DirectBlockStrict
+	protocols := []string{"udp"}
+	if tcp {
+		protocols = []string{"tcp", "udp"}
+	}
 	in, patterns := exactHosts(intercept)
 	out, _ := exactHosts(bypass)
 	d.book.refresh(ctx, append(slices.Clone(in), out...))
@@ -196,43 +227,45 @@ func (d *directBlock) update(ctx context.Context, intercept, bypass []string) {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.st.Unresolved, d.st.Patterns = unresolved, patterns
+	failed := func(state string) DirectBlockStatus {
+		return DirectBlockStatus{State: state, Mode: mode, Unresolved: unresolved, Patterns: patterns}
+	}
 	if d.blocker == nil {
 		b, err := d.open()
 		if err != nil {
-			d.st = DirectBlockStatus{State: unsupported + Reason(err), Unresolved: unresolved, Patterns: patterns}
+			d.st = failed(unsupported + Reason(err))
 			return
 		}
 		d.blocker, d.applied = b, nil
 	}
-	if d.applied != nil && slices.Equal(addrs, d.applied) {
-		d.st.State, d.st.Addresses = DirectBlockActive, len(addrs)
-		return
+	if d.applied == nil || !slices.Equal(addrs, d.applied) || tcp != d.appliedTCP {
+		if err := d.blocker.Set(addrs, tcp); err != nil {
+			d.closeLocked()
+			d.st = failed(unsupported + "error")
+			return
+		}
+		if addrs == nil {
+			addrs = []netip.Addr{}
+		}
+		d.applied, d.appliedTCP = addrs, tcp
 	}
-	if err := d.blocker.Set(addrs); err != nil {
-		d.closeLocked()
-		d.st = DirectBlockStatus{State: unsupported + "error", Unresolved: unresolved, Patterns: patterns}
-		return
-	}
-	if addrs == nil {
-		addrs = []netip.Addr{}
-	}
-	d.applied = addrs
-	d.st.State, d.st.Addresses = DirectBlockActive, len(addrs)
+	d.st = DirectBlockStatus{State: DirectBlockActive, Mode: mode, Protocols: protocols,
+		Addresses: len(addrs), Unresolved: unresolved, Patterns: patterns}
 }
 
-// stop removes every block; state says why (inactive, off:audit_only).
-func (d *directBlock) stop(state string) {
+// stop removes every block; state says why (inactive, off:audit_only,
+// off:policy) and mode is the policy's direct_block.
+func (d *directBlock) stop(state, mode string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.closeLocked()
-	d.st = DirectBlockStatus{State: state}
+	d.st = DirectBlockStatus{State: state, Mode: mode}
 }
 
 func (d *directBlock) closeLocked() {
 	if d.blocker != nil {
 		_ = d.blocker.Close()
-		d.blocker, d.applied = nil, nil
+		d.blocker, d.applied, d.appliedTCP = nil, nil, false
 	}
 }
 
