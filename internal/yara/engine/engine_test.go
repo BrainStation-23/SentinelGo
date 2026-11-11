@@ -181,7 +181,12 @@ func TestCompileLimits(t *testing.T) {
 	if _, _, err := New(Options{MaxRules: 2}).Compile(context.Background(), "x", []byte(b.String())); !errors.Is(err, ErrTooManyRules) {
 		t.Errorf("cap: err = %v, want ErrTooManyRules", err)
 	}
-	if _, _, err := New(Options{CompileTimeout: time.Nanosecond}).Compile(context.Background(), "x", []byte(b.String())); !errors.Is(err, ErrTimeout) {
+	// Big enough to take several clock ticks (Windows' time.Now is coarse).
+	var slow strings.Builder
+	for i := range 2000 {
+		fmt.Fprintf(&slow, "rule s%d { strings: $a = \"abc%dxyz\" condition: $a }\n", i, i)
+	}
+	if _, _, err := New(Options{CompileTimeout: time.Nanosecond}).Compile(context.Background(), "x", []byte(slow.String())); !errors.Is(err, ErrTimeout) {
 		t.Errorf("timeout: err = %v, want ErrTimeout", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

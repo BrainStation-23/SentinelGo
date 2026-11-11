@@ -19,6 +19,7 @@ import (
 
 	"sentinelgo/internal/dlp/filescan"
 	"sentinelgo/internal/dlp/policy"
+	"sentinelgo/internal/yara"
 )
 
 // Message types.
@@ -27,6 +28,13 @@ const (
 	typePolicy = "policy" // service -> worker: the bundle to scan with
 	typeScan   = "scan"   // service -> worker, with the file
 	typeResult = "result" // worker -> service
+
+	// YARA (#412): the rulesets one at a time, then compile; the worker
+	// answers yara_compiled. A yara_scan comes with the file like a scan.
+	typeYARARuleset  = "yara_ruleset"  // service -> worker: one rule source
+	typeYARACompile  = "yara_compile"  // service -> worker: compile the rulesets sent since the last compile
+	typeYARACompiled = "yara_compiled" // worker -> service
+	typeYARAScan     = "yara_scan"     // service -> worker, with the file
 )
 
 // message is one frame of the protocol.
@@ -39,6 +47,13 @@ type message struct {
 	Result  *filescan.Result `json:"result,omitempty"`  // result
 	Sandbox string           `json:"sandbox,omitempty"` // ready: what the sandbox applies
 	Error   string           `json:"error,omitempty"`
+
+	Ruleset    *yara.RuleSource     `json:"ruleset,omitempty"`     // yara_ruleset
+	Compiled   []yara.CompileResult `json:"compiled,omitempty"`    // yara_compiled
+	Path       string               `json:"path,omitempty"`        // yara_scan: for the filename/filepath externals
+	RulesetIDs []string             `json:"ruleset_ids,omitempty"` // yara_scan: nil means all
+	TimeoutMS  int64                `json:"timeout_ms,omitempty"`  // yara_scan
+	YARA       *YARAResult          `json:"yara,omitempty"`        // result of a yara_scan
 }
 
 // Frame limits: a bundle is at most 8 MB; results are capped below.
@@ -121,6 +136,7 @@ func serve(c frameConn, sandboxDesc string) error {
 		return err
 	}
 	var scanner *filescan.Scanner
+	ys := &yaraState{}
 	for {
 		m, f, err := c.readMsg(maxFrameToWorker)
 		if err != nil {
@@ -142,6 +158,19 @@ func serve(c frameConn, sandboxDesc string) error {
 		case typeScan:
 			res := scanOne(scanner, f, m.Size)
 			if err := c.writeMsg(message{Type: typeResult, ID: m.ID, Result: &res}, -1); err != nil {
+				return err
+			}
+		case typeYARARuleset:
+			closeFile(f)
+			ys.add(m.Ruleset)
+		case typeYARACompile:
+			closeFile(f)
+			if err := c.writeMsg(message{Type: typeYARACompiled, ID: m.ID, Compiled: ys.compile()}, -1); err != nil {
+				return err
+			}
+		case typeYARAScan:
+			res := ys.scan(f, m)
+			if err := c.writeMsg(message{Type: typeResult, ID: m.ID, YARA: &res}, -1); err != nil {
 				return err
 			}
 		default:
