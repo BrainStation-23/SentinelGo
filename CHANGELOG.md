@@ -22,6 +22,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - Upload inspection: clients that require a certificate revocation check (curl and other Windows schannel/WinHTTP clients) no longer fail through the proxy with `CRYPT_E_NO_REVOCATION_CHECK` (#452). The certificates the proxy issues now name a revocation list the proxy serves itself at `http://127.0.0.1:<port>/ca.crl`: empty, signed by the device's inspection CA and renewed every few days.
 
+### Security
+
+- Built with Go 1.26.11, which fixes an HTTP/1 server crash in `net/http` (GO-2026-6859). The agent's local upload inspection proxy serves HTTP/1.
+
 ## [v4.0.8] - 2026-11-10
 
 ### Added
