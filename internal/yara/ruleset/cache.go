@@ -68,6 +68,7 @@ func (c *Cache) Save(raw []byte, b *yara.Bundle, sources []yara.RuleSource) erro
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("create YARA cache: %w", err)
 		}
+		// #nosec G302 - a directory needs the execute bit to be entered; 0700 is owner-only
 		if err := os.Chmod(d, 0o700); err != nil {
 			return err
 		}
