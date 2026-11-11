@@ -34,6 +34,13 @@ updates:
       sqlite:
         patterns:
           - "modernc.org/*"
+      # The YARA engine always gets a PR of its own: a bump needs a manual
+      # review (go-yara changelog, `go run ./scripts/yaradiff` against
+      # libyara, update pinnedVersion in internal/yara/engine), never a
+      # merge along with routine updates.
+      go-yara:
+        patterns:
+          - "github.com/cawalch/go-yara"
       go-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]

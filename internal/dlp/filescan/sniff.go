@@ -210,3 +210,8 @@ func (st *scanState) scanDoc(ra io.ReaderAt, size int64, depth int, name string)
 		return docResult{typ: sn.typ, status: Unscannable(ReasonUnsupportedType)}
 	}
 }
+
+// SniffType returns the detected type ("executable.pe", "text.utf8", ...)
+// of a file starting with head, as reported in DLP evidence. The YARA engine
+// uses it for the filetype external.
+func SniffType(head []byte) string { return sniff(head).typ }
