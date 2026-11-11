@@ -12,6 +12,7 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte(`{"schema_version":1,"version":"v","enabled":false}`))
 	f.Add([]byte(`{"schema_version":1,"version":"v","enabled":true,"rulesets":null,"limits":{"max_cpu_percent":-3}}`))
 	f.Add([]byte(`{"schema_version":2}`))
+	f.Add([]byte(`{"schema_version":1,"version":"v","enabled":true,"on_write":{"enabled":true,"paths":{"linux":["/tmp"]},"ruleset_ids":null}}`))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		b, err := Decode(raw)
 		if err != nil {
@@ -20,8 +21,23 @@ func FuzzDecode(f *testing.F) {
 		if b.Version == "" || len(b.Rulesets) > MaxRulesets {
 			t.Fatalf("accepted out-of-contract bundle: %+v", b)
 		}
-		if !b.Enabled && (b.Rulesets != nil || b.Schedules != nil) {
+		if !b.Enabled && (b.Rulesets != nil || b.Schedules != nil || b.OnWrite != nil) {
 			t.Fatal("disabled bundle kept rules")
+		}
+		if ow := b.OnWrite; ow != nil {
+			if !ow.Enabled || !b.OnWriteEnabled() {
+				t.Fatal("kept a disabled on_write")
+			}
+			for _, l := range []OSPaths{ow.Paths, ow.Exclusions} {
+				for _, list := range [][]string{l.Windows, l.Darwin, l.Linux} {
+					if len(list) > MaxOnWritePaths {
+						t.Fatalf("accepted %d on_write paths", len(list))
+					}
+				}
+			}
+			if ow.RulesetIDs != nil && len(b.RulesetsFor(ow.RulesetIDs)) != len(ow.RulesetIDs) {
+				t.Fatalf("on_write names rulesets outside the bundle: %v", ow.RulesetIDs)
+			}
 		}
 		var total int64
 		for _, r := range b.Rulesets {

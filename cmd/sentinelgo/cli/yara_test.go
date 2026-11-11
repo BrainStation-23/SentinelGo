@@ -39,6 +39,8 @@ func TestRunYARA_Status(t *testing.T) {
 		Workers:      &scan.Workers{Live: 1, Sandbox: "appcontainer"},
 		Schedules:    []scan.ScheduleStatus{{ID: "sched-1", Preset: yara.PresetQuick, EveryHours: 24, NextRun: finished.Add(24 * time.Hour)}},
 		QueuedEvents: 2,
+		OnWrite: &scan.OnWriteStatus{Watching: 5, Pending: 1, Dropped: 3,
+			Window: &scan.OnWriteWindow{ScanID: "win-1", Started: finished, Scanned: 40, Matches: 1}},
 	}
 	if err := scan.WriteStatus(filepath.Join(filepath.Dir(cfg.Path), scan.StatusFileName), ls); err != nil {
 		t.Fatal(err)
@@ -49,7 +51,8 @@ func TestRunYARA_Status(t *testing.T) {
 	}
 	for _, want := range []string{"State:                       ok", "Applied bundle version:      abc123",
 		"Rulesets:                    1 (5 rules compiled, 1 skipped)", "skipped uses_pe (line 4): unsupported_module:pe",
-		"scan-1 completed (scheduled quick)", "120 scanned", "schedule sched-1: quick every 24h", "2 events awaiting upload"} {
+		"scan-1 completed (scheduled quick)", "120 scanned", "schedule sched-1: quick every 24h", "2 events awaiting upload",
+		"On-write scanning:           on, 5 folders watched, 1 files waiting", "3 files dropped", "window win-1"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

@@ -23,6 +23,11 @@ const SchemaVersion = 1
 // don't report it.
 const Capability = "yara_scan_v1"
 
+// CapabilityOnWrite is advertised next to Capability by agents that scan
+// files as they are written (contract v1.1, #418). The backend sends an
+// enabled on_write block only to agents that report it.
+const CapabilityOnWrite = "yara_on_write_v1"
+
 // RPCs and tasks.
 const (
 	RPCGetRuleset    = "agent_get_yara_ruleset"
@@ -81,7 +86,7 @@ func ValidPreset(p string) bool {
 const (
 	TriggerScheduled = "scheduled"
 	TriggerOnDemand  = "on_demand"
-	TriggerOnWrite   = "on_write" // M2 (#418)
+	TriggerOnWrite   = "on_write" // contract v1.1 (#418)
 )
 
 // ValidTrigger reports whether t is a trigger the contract defines.

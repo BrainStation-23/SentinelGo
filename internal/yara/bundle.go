@@ -32,6 +32,29 @@ type Bundle struct {
 	Schedules []Schedule `json:"schedules"`
 	Limits    Limits     `json:"limits"`
 	Evidence  Evidence   `json:"evidence"`
+	// OnWrite is contract v1.1 (#418): scan files as they are written into
+	// watched folders. nil (an older backend) means off.
+	OnWrite *OnWrite `json:"on_write,omitempty"`
+}
+
+// OnWrite configures on-write scanning (contract v1.1, #418).
+type OnWrite struct {
+	Enabled bool `json:"enabled"`
+	// Paths are the folders watched on each OS, recursively. An empty list
+	// for an OS means the agent's on-write defaults (walk.OnWriteRoots),
+	// not "off": off is Enabled false.
+	Paths      OSPaths `json:"paths"`
+	Exclusions OSPaths `json:"exclusions"`
+	// RulesetIDs nil means every ruleset in the bundle.
+	RulesetIDs []string `json:"ruleset_ids"`
+}
+
+// MaxOnWritePaths bounds on_write's paths and exclusions per OS.
+const MaxOnWritePaths = 64
+
+// OnWriteEnabled reports whether the bundle asks for on-write scanning.
+func (b *Bundle) OnWriteEnabled() bool {
+	return b != nil && b.Enabled && b.OnWrite != nil && b.OnWrite.Enabled
 }
 
 // Engine names the engine the rules were validated with.
@@ -154,6 +177,9 @@ func Decode(raw []byte) (*Bundle, error) {
 		return nil, err
 	}
 	b.Limits = b.Limits.normalized()
+	if !b.Enabled || (b.OnWrite != nil && !b.OnWrite.Enabled) {
+		b.OnWrite = nil
+	}
 	if !b.Enabled {
 		b.Rulesets, b.Schedules = nil, nil
 	}
@@ -189,6 +215,32 @@ func (b *Bundle) check() error {
 	for i, s := range b.Schedules {
 		if err := s.check(ids); err != nil {
 			return fmt.Errorf("schedule %d: %w", i, err)
+		}
+	}
+	if b.OnWrite != nil && b.OnWrite.Enabled {
+		if err := b.OnWrite.check(ids); err != nil {
+			return fmt.Errorf("on_write: %w", err)
+		}
+	}
+	return nil
+}
+
+func (o *OnWrite) check(rulesets map[string]bool) error {
+	for _, l := range []OSPaths{o.Paths, o.Exclusions} {
+		for _, list := range [][]string{l.Windows, l.Darwin, l.Linux} {
+			if len(list) > MaxOnWritePaths {
+				return fmt.Errorf("%w: %d paths for one OS (max %d)", ErrInvalidBundle, len(list), MaxOnWritePaths)
+			}
+			for _, p := range list {
+				if p == "" || len(p) > MaxPathLen || strings.ContainsRune(p, 0) {
+					return fmt.Errorf("%w: paths must be 1-%d characters", ErrInvalidBundle, MaxPathLen)
+				}
+			}
+		}
+	}
+	for _, id := range o.RulesetIDs {
+		if !rulesets[strings.ToLower(id)] {
+			return fmt.Errorf("%w: ruleset %q isn't in the bundle", ErrInvalidBundle, id)
 		}
 	}
 	return nil

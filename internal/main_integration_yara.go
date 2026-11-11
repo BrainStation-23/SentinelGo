@@ -27,6 +27,7 @@ import (
 	"sentinelgo/internal/yara/ruleset"
 	"sentinelgo/internal/yara/scan"
 	"sentinelgo/internal/yara/walk"
+	"sentinelgo/internal/yara/watch"
 )
 
 // yaraSyncTick is how often the yara-ruleset-sync task wakes up; the Syncer
@@ -58,8 +59,11 @@ type yaraState struct {
 	pool   *scanworker.Pool
 	syncer *ruleset.Syncer
 	runner *scan.Runner
-	events *store.YARAEventStore
-	upload *report.EventSync
+	// onWrite scans files as they are written (#418); nil with
+	// yara_enabled false.
+	onWrite *scan.OnWrite
+	events  *store.YARAEventStore
+	upload  *report.EventSync
 
 	statusPath string
 	statusMu   sync.Mutex
@@ -100,10 +104,16 @@ func (mi *MainIntegration) startYARA() {
 		y.pool = scanworker.NewPool(yaraPoolOptions(exe))
 		opts.Compiler = poolCompiler{y.pool}
 		opts.WorkerHealthy = func() bool { return !y.pool.Health().Disabled }
-		// A disabled bundle stops the running scan (contract §2).
+		// A disabled bundle stops the running scan (contract §2); on-write
+		// scanning follows the bundle's on_write block (#418).
+		// The sync runs only from tasks scheduled at the end of startYARA,
+		// so both fields are set by then.
 		opts.OnChange = func(a *ruleset.Active) {
 			if !a.Enabled() && y.runner != nil {
 				y.runner.Disable()
+			}
+			if y.onWrite != nil {
+				y.onWrite.Apply(a)
 			}
 		}
 	} else {
@@ -145,6 +155,8 @@ func (mi *MainIntegration) startYARA() {
 			},
 		})
 		y.syncer.SetLastScan(y.runner.LastScan())
+		y.onWrite = scan.NewOnWrite(y.runner, scan.OnWriteOptions{Watch: yaraWatch})
+		y.onWrite.Apply(y.syncer.Active())
 	}
 
 	tasks := []*scheduler.Task{
@@ -180,6 +192,9 @@ func (mi *MainIntegration) stopYARA() {
 	mi.yara = nil
 	native.SetYARAScanner(nil)
 	agentsvc.SetYARASource(nil)
+	if y.onWrite != nil {
+		y.onWrite.Stop() // its window's summary is queued before the flush below
+	}
 	if y.runner != nil {
 		y.runner.Stop(yaraScanStopTimeout)
 	}
@@ -219,10 +234,14 @@ func (y *yaraState) syncHandler() scheduler.TaskHandler {
 	}
 }
 
-// scanTickHandler starts a due scheduled scan (in the background) and keeps
-// the local status current.
+// scanTickHandler starts a due scheduled scan (in the background), has
+// on-write scanning pick up new user folders and drives, and keeps the local
+// status current.
 func (y *yaraState) scanTickHandler() scheduler.TaskHandler {
 	return func(context.Context, *config.Config, *authsvc.Service) error {
+		if y.onWrite != nil {
+			y.onWrite.Apply(y.syncer.Active())
+		}
 		err := y.runner.Tick()
 		y.writeStatus()
 		return err
@@ -254,6 +273,9 @@ func (y *yaraState) local() scan.LocalStatus {
 	if y.runner != nil {
 		ls.Scanning = y.runner.Current()
 		ls.Schedules = y.runner.Schedules()
+	}
+	if y.onWrite != nil {
+		ls.OnWrite = y.onWrite.Status()
 	}
 	if y.events != nil {
 		if rows, _, dropped, err := y.events.Stats(); err == nil {
@@ -311,6 +333,15 @@ func (h yaraTaskHook) StartScan(ctx context.Context, p yara.TaskParams) (yara.Ta
 }
 
 func (h yaraTaskHook) CancelScan() string { return h.y.runner.Cancel() }
+
+// yaraWatch starts the on-write watcher (#418) for scan.OnWrite.
+func yaraWatch(roots []string, changed func(string), lost func(), gone func(string)) (scan.Watcher, error) {
+	w, err := watch.Start(roots, watch.Handler{Changed: changed, Lost: lost, Gone: gone})
+	if w == nil {
+		return nil, err // no typed nil in the interface
+	}
+	return w, err
+}
 
 // yaraMounts lists removable drives and network shares, which scans skip
 // unless the bundle's limits include them.

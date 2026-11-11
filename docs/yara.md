@@ -58,6 +58,51 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    most 5,000 match events per scan; scheduled scans don't report a match
    (same file, path, rule and revision) already reported.
 
+## On-write scanning
+
+With contract v1.1 (#418) the bundle can turn on `on_write`. Files written or
+renamed into watched folders are then scanned as soon as they have been quiet
+for 2 seconds, so a dropped tool is found in seconds instead of at the next
+scheduled scan. It is detection only: nothing waits on a scan and nothing is
+blocked.
+
+- **Folders.** The bundle's `on_write.paths` for this OS (same syntax as
+  schedules), or, when the list is empty, the on-write defaults: each user's
+  Downloads, Desktop, temp and startup folders (Windows), Downloads, Desktop
+  and `Library/LaunchAgents` (macOS), Downloads and `.config/autostart`
+  (Linux), and the system's temp and autostart folders (`%PUBLIC%`, the
+  common StartUp folder, `%SystemRoot%\Temp`; `/private/tmp`,
+  `/Library/LaunchAgents`, `/Library/LaunchDaemons`; `/tmp`, `/var/tmp`,
+  `/dev/shm`, `/etc/systemd/system`, `/etc/cron*`). These are the `quick`
+  folders minus those that change all the time (`%ProgramData%`,
+  `/private/var/folders`, `/root`). New user folders are picked up within a
+  minute. `on_write.exclusions` and the built-in exclusions apply, and so do
+  the network and removable drive limits.
+- **Notifications.** The ones file DLP already uses, with no driver.
+  Linux: fanotify `FAN_CLOSE_WRITE` on the folders' mounts, and
+  `FAN_MOVED_TO` on their file systems where the kernel reports names (5.9 and
+  later), so a file moved in from elsewhere on the same disk is seen too.
+  Windows: `ReadDirectoryChangesW` on each folder. macOS: an FSEvents stream
+  per folder. The agent's own writes are ignored.
+- **Bursts.** A file is scanned when it has been quiet for 2 seconds, or a
+  minute after its first change if it keeps changing. Each file waits once
+  however many notifications it gets. At most 16,384 files wait at once. Past
+  that, new ones are dropped and counted, and the next scheduled scan covers
+  them. When the OS drops notifications that is counted too.
+- **Sharing the worker.** On-write scans use the YARA worker at a priority
+  below on-demand scans (while one runs, on-write gets one file a second) and
+  above scheduled scans. They run within the bundle's `max_cpu_percent`, which
+  counts on-write and scan time together, and use `max_file_bytes`,
+  `per_file_timeout_ms` and the skip cache. `max_files_per_scan`,
+  `max_scan_minutes` and `skip_on_battery` don't apply.
+- **Reporting.** Matches carry `trigger: on_write` and are de-duplicated like
+  a scheduled scan's. They are grouped into windows of up to 24 hours, and
+  each window ends (after 24 hours, or when the service stops) with one
+  `scan_summary` (`trigger: on_write`, `preset: custom`), unless nothing
+  happened in it. On-write windows don't replace the status's last scan.
+- The agent advertises `yara_on_write_v1`; the backend sends an enabled
+  `on_write` only to agents that report it.
+
 ## One scan at a time
 
 - An on-demand scan stops a running scheduled scan. The scheduled scan is
@@ -153,7 +198,8 @@ Next to `config.json` (`C:\sentinelgo\.sentinelgo\` on Windows,
 what the service last recorded: the local switch, the state, the applied
 bundle version, each ruleset with its compiled and skipped rules (names and
 reasons, never rule text), worker health, the running scan, the last scan,
-each schedule's last and next run, and the event queue.
+each schedule's last and next run, on-write scanning (folders watched, files
+waiting and dropped, the current window) and the event queue.
 
 | State                | Meaning and what to do                                                                                   |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |

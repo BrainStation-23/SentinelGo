@@ -25,6 +25,7 @@ var AgentCapabilities = []string{
 	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
 	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
 	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
+	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on

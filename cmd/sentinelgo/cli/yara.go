@@ -128,8 +128,33 @@ func printYARAStatus(w io.Writer, ls *scan.LocalStatus, configEnabled bool) {
 		}
 		p("%s", line)
 	}
+	printOnWrite(p, ls.OnWrite)
 	p("Event queue:                 %d events awaiting upload, %d dropped over the cap", ls.QueuedEvents, ls.DroppedEvents)
 	p("Written by the service at:   %s", ls.UpdatedAt.Format(time.RFC3339))
+}
+
+// printOnWrite prints on-write scanning (#418): counts and the window's
+// scan id, never paths.
+func printOnWrite(p func(string, ...any), ow *scan.OnWriteStatus) {
+	if ow == nil {
+		p("On-write scanning:           off")
+		return
+	}
+	if ow.Watching > 0 {
+		p("On-write scanning:           on, %d folders watched, %d files waiting", ow.Watching, ow.Pending)
+	} else {
+		p("On-write scanning:           NOT WATCHING (the service retries every minute)")
+	}
+	if ow.Error != "" {
+		p("                             watcher error: %s", ow.Error)
+	}
+	if ow.Dropped > 0 || ow.Lost > 0 {
+		p("                             %d files dropped (too many waiting), notifications lost %d times; the next scheduled scan covers them", ow.Dropped, ow.Lost)
+	}
+	if w := ow.Window; w != nil {
+		p("                             window %s since %s: %d scanned, %d skipped, %d errors, %d matches",
+			w.ScanID, w.Started.Format(time.RFC3339), w.Scanned, w.Skipped, w.Errors, w.Matches)
+	}
 }
 
 // stateHint explains the states support asks about.

@@ -140,6 +140,7 @@ type Runner struct {
 	cacheMu sync.Mutex
 
 	busy atomic.Int64 // nanoseconds spent in ScanFile: the workers' CPU budget
+	gate *gate        // the worker, by priority: on-demand, on-write, scheduled (#418)
 }
 
 type job struct {
@@ -172,7 +173,7 @@ func New(o Options) *Runner {
 	if o.Mounts == nil {
 		o.Mounts = func() []walk.Mount { return nil }
 	}
-	return &Runner{o: o}
+	return &Runner{o: o, gate: newGate()}
 }
 
 // Current returns the scan in progress, or nil.
@@ -427,11 +428,18 @@ func (r *Runner) startLocked(sp spec) {
 		j.started = sp.Resume.Scan.Started
 	}
 	r.cur = j
+	demand := sp.Trigger == yara.TriggerOnDemand
+	if demand {
+		r.gate.setDemand(true)
+	}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		defer close(j.done)
 		defer cancel(nil)
+		if demand {
+			defer r.gate.setDemand(false)
+		}
 		r.run(ctx, j)
 		r.mu.Lock()
 		if r.cur == j {
@@ -536,10 +544,8 @@ func errOr(cause, err error) error {
 
 // scanFile scans one listed file and queues its match events.
 func (r *Runner) scanFile(ctx context.Context, sp spec, rep *report.Scan, cache *walk.Cache, f walk.File, timeout time.Duration, c *counts) error {
-	start := time.Now()
-	out := r.o.Scanner.ScanFile(ctx, sp.Active.Rules, f, sp.RulesetIDs, timeout)
-	r.busy.Add(int64(time.Since(start)))
-	if ctx.Err() != nil {
+	out, err := r.scanOne(ctx, prioOf(sp.Trigger), sp.Active.Rules, f, sp.RulesetIDs, timeout)
+	if err != nil || ctx.Err() != nil {
 		return context.Cause(ctx) // the file is scanned again on resume
 	}
 	if out.Status != WorkerFailed {
@@ -581,6 +587,19 @@ func (r *Runner) scanFile(ctx context.Context, sp spec, rep *report.Scan, cache 
 		cache.Store(f.Key, sp.RulesKey, result)
 	}
 	return nil
+}
+
+// scanOne has a worker scan f once the gate lets p through, and counts the
+// time against the workers' CPU budget. It fails only when ctx ends.
+func (r *Runner) scanOne(ctx context.Context, p priority, rules ruleset.Rules, f walk.File, ids []string, timeout time.Duration) (FileOutcome, error) {
+	if err := r.gate.acquire(ctx, p); err != nil {
+		return FileOutcome{}, err
+	}
+	defer r.gate.release()
+	start := time.Now()
+	out := r.o.Scanner.ScanFile(ctx, rules, f, ids, timeout)
+	r.busy.Add(int64(time.Since(start)))
+	return out, nil
 }
 
 // hits turns the worker's matches into report hits; the namespace is the
