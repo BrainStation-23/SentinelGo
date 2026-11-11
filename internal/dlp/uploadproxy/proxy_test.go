@@ -416,6 +416,33 @@ func TestCA(t *testing.T) {
 			t.Errorf("%s: not cached", host)
 		}
 	}
+	// With a CRL URL, new leaves carry it, and changing it drops the cache.
+	before, _ := ca.Leaf("drive.example.com")
+	if len(before.Leaf.CRLDistributionPoints) != 0 {
+		t.Errorf("CDP before a URL was set: %v", before.Leaf.CRLDistributionPoints)
+	}
+	ca.SetCRLURL(CRLURL("127.0.0.1:3129"))
+	withCDP, _ := ca.Leaf("drive.example.com")
+	if withCDP == before || len(withCDP.Leaf.CRLDistributionPoints) != 1 || withCDP.Leaf.CRLDistributionPoints[0] != "http://127.0.0.1:3129/ca.crl" {
+		t.Errorf("CDP %v (reused stale leaf: %v)", withCDP.Leaf.CRLDistributionPoints, withCDP == before)
+	}
+	ca.SetCRLURL(CRLURL("127.0.0.1:4000"))
+	if moved, _ := ca.Leaf("drive.example.com"); moved.Leaf.CRLDistributionPoints[0] != "http://127.0.0.1:4000/ca.crl" {
+		t.Errorf("CDP after the address changed: %v", moved.Leaf.CRLDistributionPoints)
+	}
+	checkCRL(t, ca)
+	// The CRL is reused, then reissued with a higher number before nextUpdate.
+	first, _ := ca.CRL()
+	if again, _ := ca.CRL(); string(again) != string(first) {
+		t.Error("CRL not reused")
+	}
+	ca.now = func() time.Time { return time.Now().Add(crlLifetime - crlRenewAhead/2) }
+	reissued := checkCRL(t, ca)
+	if old, _ := x509.ParseRevocationList(first); reissued.Number.Cmp(old.Number) <= 0 {
+		t.Errorf("CRL number %v not above %v", reissued.Number, old.Number)
+	}
+	ca.now = time.Now
+
 	// A corrupt CA file is an error, not silently replaced.
 	if err := os.WriteFile(filepath.Join(dir, CACertFile), []byte("junk"), 0o600); err != nil {
 		t.Fatal(err)
@@ -423,6 +450,30 @@ func TestCA(t *testing.T) {
 	if _, err := LoadOrCreateCA(dir); err == nil {
 		t.Error("a corrupt CA was accepted")
 	}
+}
+
+// checkCRL fetches ca's CRL and checks it: signed by the CA, empty, and
+// valid well past a leaf's lifetime.
+func checkCRL(t *testing.T, ca *CA) *x509.RevocationList {
+	t.Helper()
+	der, err := ca.CRL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := x509.ParseRevocationList(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := crl.CheckSignatureFrom(ca.Certificate()); err != nil {
+		t.Errorf("CRL signature: %v", err)
+	}
+	if len(crl.RevokedCertificateEntries) != 0 {
+		t.Errorf("CRL revokes %d certificates", len(crl.RevokedCertificateEntries))
+	}
+	if crl.NextUpdate.Sub(ca.now()) <= leafLifetime {
+		t.Errorf("CRL nextUpdate %v too soon", crl.NextUpdate)
+	}
+	return crl
 }
 
 // Upstream TLS verification is never skipped anywhere in this package.

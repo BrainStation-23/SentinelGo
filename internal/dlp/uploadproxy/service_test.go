@@ -2,6 +2,7 @@ package uploadproxy
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -130,6 +131,29 @@ func TestService_Lifecycle(t *testing.T) {
 			t.Errorf("PAC lacks %q:\n%s", want, pac)
 		}
 	}
+	// Minted leaves point at the proxy's CRL, which it serves signed by the CA (#452).
+	leaf, err := s.ca.Leaf("drive.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cdp := leaf.Leaf.CRLDistributionPoints; len(cdp) != 1 || cdp[0] != CRLURL(s.ln.Addr().String()) {
+		t.Errorf("leaf CDP %v", cdp)
+	}
+	resp, err = (&http.Client{Transport: &http.Transport{Proxy: nil}}).Get(leaf.Leaf.CRLDistributionPoints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); resp.StatusCode != http.StatusOK || ct != "application/pkix-crl" {
+		t.Errorf("CRL response %d %q", resp.StatusCode, ct)
+	}
+	if crl, err := x509.ParseRevocationList(der); err != nil {
+		t.Errorf("CRL: %v", err)
+	} else if err := crl.CheckSignatureFrom(s.ca.Certificate()); err != nil {
+		t.Errorf("CRL signature: %v", err)
+	}
+
 	st := s.Status()
 	if st == nil || st.Redirect != RedirectActive || st.Proxy != ProxyHealthy || st.CA == nil || len(st.CA.FingerprintSHA256) != 64 || st.Addr == "" {
 		t.Fatalf("status %+v", st)

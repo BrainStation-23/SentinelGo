@@ -141,6 +141,7 @@ type Service struct {
 	scope    atomic.Pointer[func(host, port string) bool]
 	pac      atomic.Pointer[[]byte]
 	hosts    atomic.Pointer[[2][]string] // intercept, bypass applied
+	mode     atomic.Pointer[string]      // direct_block applied (policy.DirectBlock*)
 	redirect atomic.Pointer[string]      // active, inactive, unsupported:<reason>
 	healthy  atomic.Bool
 	localOff atomic.Bool
@@ -175,8 +176,9 @@ func NewService(o ServiceOptions) *Service {
 		s.direct = newDirectBlock(open, resolve)
 	}
 	s.auditOnly.Store(true)
-	inactive := RedirectInactive
+	inactive, quic := RedirectInactive, policy.DirectBlockQUIC
 	s.redirect.Store(&inactive)
+	s.mode.Store(&quic)
 	none := func(string, string) bool { return false }
 	s.scope.Store(&none)
 	empty := []byte{}
@@ -218,6 +220,8 @@ func (s *Service) Apply(_ context.Context, c *policy.Compiled) {
 	pac := BuildPAC(s.ln.Addr().String(), in.Intercept, in.Bypass)
 	s.pac.Store(&pac)
 	s.hosts.Store(&[2][]string{in.Intercept, in.Bypass})
+	mode := in.Mode()
+	s.mode.Store(&mode)
 	s.auditOnly.Store(c.Modules.Files.IsAuditOnly())
 }
 
@@ -268,6 +272,7 @@ func (s *Service) startLocked() {
 	if t := s.opts.ProxyTestOptions; t != nil {
 		o.UpstreamRoots, o.AllowLocalTargets = t.UpstreamRoots, t.AllowLocalTargets
 	}
+	ca.SetCRLURL(CRLURL(ln.Addr().String()))
 	s.ca, s.ln, s.proxy = ca, ln, New(o)
 	s.pacURL = PACURL(ln.Addr().String())
 	if err := s.trust.Trust(ca); err != nil {
@@ -300,7 +305,7 @@ func (s *Service) stopLocked() {
 	_ = s.ln.Close()
 	s.wg.Wait()
 	if s.direct != nil {
-		s.direct.stop(DirectBlockInactive)
+		s.direct.stop(DirectBlockInactive, *s.mode.Load())
 	}
 	s.removeRedirect()
 	if s.pool != nil {
@@ -350,14 +355,16 @@ func (s *Service) syncDirectBlock(ctx context.Context, redirecting bool) {
 	if s.direct == nil {
 		return
 	}
-	hosts := s.hosts.Load()
+	hosts, mode := s.hosts.Load(), *s.mode.Load()
 	switch {
 	case !redirecting || hosts == nil || *s.redirect.Load() != RedirectActive:
-		s.direct.stop(DirectBlockInactive)
+		s.direct.stop(DirectBlockInactive, mode)
+	case mode == policy.DirectBlockOff:
+		s.direct.stop(DirectBlockOff, mode)
 	case s.auditOnly.Load():
-		s.direct.stop(DirectBlockAuditOnly)
+		s.direct.stop(DirectBlockAuditOnly, mode)
 	default:
-		s.direct.update(ctx, hosts[0], hosts[1])
+		s.direct.update(ctx, hosts[0], hosts[1], mode)
 	}
 }
 

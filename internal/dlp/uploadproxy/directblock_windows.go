@@ -76,8 +76,14 @@ func newWFPBlocker() (*wfpBlocker, error) {
 
 // Set swaps the block filters in one transaction: one filter per address
 // family, matching any of the addresses (conditions on one field are ORed)
-// on port 443 over TCP or UDP.
-func (b *wfpBlocker) Set(addrs []netip.Addr) error {
+// on port 443 over UDP, or TCP or UDP when tcp is set (strict, #451).
+func (b *wfpBlocker) Set(addrs []netip.Addr, tcp bool) error {
+	protocols := []wfp.Condition{{Field: wfp.FieldIPProtocol, Value: wfp.Uint8(wfp.ProtocolUDP)}}
+	name := "SentinelGo: QUIC to inspected sites"
+	if tcp {
+		protocols = append(protocols, wfp.Condition{Field: wfp.FieldIPProtocol, Value: wfp.Uint8(wfp.ProtocolTCP)})
+		name = "SentinelGo: direct uploads to inspected sites"
+	}
 	var v4, v6 []wfp.Condition
 	for _, a := range addrs {
 		c := wfp.Condition{Field: wfp.FieldIPRemoteAddress, Value: wfp.Prefix(netip.PrefixFrom(a, a.BitLen()))}
@@ -101,11 +107,9 @@ func (b *wfpBlocker) Set(addrs []netip.Addr) error {
 			if len(f.conds) == 0 {
 				continue
 			}
-			conds := slices.Concat(f.conds, []wfp.Condition{
-				{Field: wfp.FieldIPRemotePort, Value: wfp.Uint16(443)},
-				{Field: wfp.FieldIPProtocol, Value: wfp.Uint8(wfp.ProtocolTCP)},
-				{Field: wfp.FieldIPProtocol, Value: wfp.Uint8(wfp.ProtocolUDP)}})
-			id, err := b.s.AddFilter(wfp.Filter{Name: "SentinelGo: direct uploads to inspected sites", Layer: f.layer,
+			conds := slices.Concat(f.conds,
+				[]wfp.Condition{{Field: wfp.FieldIPRemotePort, Value: wfp.Uint16(443)}}, protocols)
+			id, err := b.s.AddFilter(wfp.Filter{Name: name, Layer: f.layer,
 				Sublayer: directSublayer, Weight: weightBlock, Action: wfp.Block, Conditions: conds})
 			if err != nil {
 				return err
