@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The generic SentinelGo MSI (#358): one package for every device, which an
+  MDM pushes with the device's enrollment token. Built by release.yml:
+
+    wix build installer/msi/sentinelgo.wxs -arch x64 -ext WixToolset.Util.wixext
+      -d Version=… -d ProductCode=… -d UpgradeCode=… -d AgentExe=…
+      -o sentinelgo-windows-amd64.msi
+
+  Version, ProductCode and UpgradeCode come from `go run ./scripts/msi -vars`.
+
+  Silent install with first-boot enrollment (#351):
+
+    msiexec /i sentinelgo-windows-amd64.msi /qn SERVER_URL=https://… ANON_KEY=… ENROLLMENT_TOKEN=…
+
+  - The binary goes to Program Files\SentinelGo, whose inherited ACL lets
+    users run it (the per-user DLP helpers are this binary) but not change it.
+  - The config stays at the agent's standard path, C:\SentinelGo\.sentinelgo,
+    as with the script installer: the lock file and the agent's state are
+    there too (config.WindowsConfigPath). It is SYSTEM and Administrators only.
+  - The MSI owns the service (no `sentinelgo -install`).
+  - With the three properties, `sentinelgo enroll` saves the token before the
+    service first starts. Without them (a manual install, an upgrade) nothing
+    is written, and an existing config.json is never touched.
+  - Uninstall removes the service and the binary and leaves the config folder
+    (the agent's identity, for a reinstall). It never unenrolls MDM (#356).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="SentinelGo Agent"
+           Manufacturer="BrainStation-23"
+           Version="$(var.Version)"
+           ProductCode="$(var.ProductCode)"
+           UpgradeCode="$(var.UpgradeCode)"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="SentinelGo Agent" />
+
+    <!-- The old version is removed first, so its service is gone before this
+         one installs; config.json stays, so the agent keeps its agent_id. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/BrainStation-23/SentinelGo" />
+
+    <!-- Set on the msiexec command line by the MDM. Hidden: never written to
+         the installer log. Secure: passed on to the elevated install. -->
+    <Property Id="SERVER_URL" Hidden="yes" Secure="yes" />
+    <Property Id="ANON_KEY" Hidden="yes" Secure="yes" />
+    <Property Id="ENROLLMENT_TOKEN" Hidden="yes" Secure="yes" />
+    <!-- The enrollment command line (it holds the token): hidden as well. -->
+    <Property Id="EnrollAgent" Hidden="yes" />
+
+    <Launch Condition="NOT ENROLLMENT_TOKEN OR (SERVER_URL AND ANON_KEY)"
+            Message="ENROLLMENT_TOKEN needs SERVER_URL and ANON_KEY too." />
+
+    <!-- A SentinelGo service this package didn't install (the script
+         installer, or a per-agent MSI): two can't share the service name. -->
+    <Property Id="OTHER_SERVICE">
+      <RegistrySearch Id="OtherService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\SentinelGo"
+                      Name="ImagePath" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR WIX_UPGRADE_DETECTED OR NOT OTHER_SERVICE"
+            Message="SentinelGo is already installed on this computer by another installer. Uninstall it first (as administrator: sentinelgo.exe -uninstall, or from Installed apps)." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="SentinelGo" />
+    </StandardDirectory>
+    <StandardDirectory Id="TARGETDIR">
+      <Directory Id="AGENTROOT" Name="SentinelGo">
+        <Directory Id="CONFIGFOLDER" Name=".sentinelgo" />
+      </Directory>
+    </StandardDirectory>
+    <!-- config.WindowsConfigPath's directory, wherever TARGETDIR points. -->
+    <SetDirectory Id="AGENTROOT" Value="C:\SentinelGo\" Sequence="both" />
+
+    <ComponentGroup Id="Agent">
+      <Component Id="AgentExe" Directory="INSTALLFOLDER" Bitness="always64" Guid="{5B0B6A63-3A0B-4E33-9E48-3C0F2F6C1B21}">
+        <File Id="AgentExe" Source="$(var.AgentExe)" Name="sentinelgo.exe" KeyPath="yes" />
+        <ServiceInstall Name="SentinelGo"
+                        DisplayName="SentinelGo Agent"
+                        Description="Cross-platform agent to collect OS info and report heartbeat to Supabase"
+                        Type="ownProcess"
+                        Start="auto"
+                        Account="LocalSystem"
+                        ErrorControl="normal"
+                        Arguments="-config &quot;[CONFIGFOLDER]config.json&quot;"
+                        Vital="yes">
+          <!-- Restart after a crash. A start that fails cleanly (no config,
+               ExitConfigInvalid) isn't a crash, so it doesn't loop. -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="60"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <!-- Wait="no": a service that can't start yet (installed without a
+             token) doesn't fail the install; the event log says why. -->
+        <ServiceControl Id="AgentService" Name="SentinelGo" Start="install" Stop="both" Remove="uninstall" Wait="no" />
+        <!-- The source `sentinelgo -install` registers (eventlog.InstallAsEventCreate). -->
+        <util:EventSource Name="SentinelGo" Log="Application"
+                          EventMessageFile="%SystemRoot%\System32\EventCreate.exe"
+                          SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
+      </Component>
+
+      <!-- SYSTEM and Administrators only, owned by Administrators, as
+           winsec.SecurePath sets it for the script installer. -->
+      <Component Id="AgentRoot" Directory="AGENTROOT" Bitness="always64" Guid="{2E1D7C4B-8A5F-4C0E-B0E7-6F8C2B9D4A13}">
+        <CreateFolder>
+          <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+        </CreateFolder>
+      </Component>
+      <Component Id="ConfigFolder" Directory="CONFIGFOLDER" Bitness="always64" Guid="{9C4E2A71-0D3B-4F6A-8E15-7B2C9D0E3F48}">
+        <CreateFolder>
+          <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+        </CreateFolder>
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="SentinelGo Agent" Level="1">
+      <ComponentGroupRef Id="Agent" />
+    </Feature>
+
+    <!-- First-boot enrollment: `sentinelgo enroll` writes enrollment.json
+         next to config.json (and does nothing when the agent already has a
+         config). Deferred and elevated, after the files and folders are in
+         place and before StartServices. WixSilentExec logs neither the
+         command line nor its output; a failure (e.g. an http:// SERVER_URL)
+         fails the install. An MSI custom action can't feed a process's
+         stdin, so the token is on the enroll command line (`-token -` isn't
+         usable here) for the second it runs, visible to administrators and
+         process auditing; it is single-use and bound to this device. -->
+    <SetProperty Id="EnrollAgent"
+                 Value="&quot;[#AgentExe]&quot; enroll -token &quot;[ENROLLMENT_TOKEN]&quot; -server-url &quot;[SERVER_URL]&quot; -anon-key &quot;[ANON_KEY]&quot; -config &quot;[CONFIGFOLDER]config.json&quot;"
+                 Before="EnrollAgent" Sequence="execute"
+                 Condition="ENROLLMENT_TOKEN AND NOT REMOVE" />
+    <CustomAction Id="EnrollAgent" BinaryRef="Wix4UtilCA_X64" DllEntry="WixSilentExec64"
+                  Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="EnrollAgent" After="InstallFiles" Condition="ENROLLMENT_TOKEN AND NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
