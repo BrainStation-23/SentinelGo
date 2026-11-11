@@ -22,7 +22,8 @@
   - With the three properties, `sentinelgo enroll` saves the token before the
     service first starts. Without them (a manual install, an upgrade) nothing
     is written, and an existing config.json is never touched.
-  - Uninstall removes the service and the binary and leaves the config folder
+  - Installed apps shows no Uninstall button (ARPNOREMOVE). Uninstall
+    (msiexec /x, or the MDM) removes the service and the binary and leaves the config folder
     (the agent's identity, for a reinstall). It never unenrolls MDM (#356).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -43,6 +44,12 @@
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- No Uninstall button in Installed apps / Programs and Features, so the
+         agent isn't removed casually. Removing it stays possible for the MDM
+         and for administrators (msiexec /x {ProductCode}); a standard user
+         can't uninstall a per-machine package anyway. Not tamper protection:
+         an administrator can always remove the service (#459 discussion). -->
+    <Property Id="ARPNOREMOVE" Value="1" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/BrainStation-23/SentinelGo" />
 
     <!-- Set on the msiexec command line by the MDM. Hidden: never written to

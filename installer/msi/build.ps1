@@ -13,6 +13,7 @@
   for what the .wxs was meant to produce:
     - ProductCode, UpgradeCode and ProductVersion are scripts/msi's;
     - the enrollment properties are hidden from logs and secure;
+    - Installed apps offers no Uninstall (ARPNOREMOVE);
     - enrollment runs deferred, elevated, without logging its command line,
       after InstallFiles and before StartServices.
 #>
@@ -66,6 +67,7 @@ foreach ($p in @(@("ProductCode", $vars.PRODUCT_CODE), @("UpgradeCode", $vars.UP
   $got = Get-Prop $p[0]
   if ($got -ne $p[1]) { $failed += "$($p[0]) is '$got', want '$($p[1])'" }
 }
+if ((Get-Prop "ARPNOREMOVE") -ne "1") { $failed += "ARPNOREMOVE isn't set: Installed apps would offer Uninstall" }
 $hidden = (Get-Prop "MsiHiddenProperties") -split ";"
 $secure = (Get-Prop "SecureCustomProperties") -split ";"
 foreach ($p in "SERVER_URL", "ANON_KEY", "ENROLLMENT_TOKEN") {

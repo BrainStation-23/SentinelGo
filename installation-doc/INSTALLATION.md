@@ -409,7 +409,7 @@ msiexec /i sentinelgo-windows-amd64.msi /qn SERVER_URL=https://<project>.supabas
 - The agent goes to `C:\Program Files\SentinelGo\sentinelgo.exe` and runs as the `SentinelGo` service. Its config stays at `C:\SentinelGo\.sentinelgo\config.json`, readable only by SYSTEM and Administrators.
 - Before the service first starts, the installer saves the token next to the config; the agent exchanges it for its own credentials and deletes it. The three properties are hidden from the installer log.
 - Without the properties (a manual install, or an upgrade), nothing is saved and an existing config is kept. A device installed without a token has the service installed but not running; the Application event log (source `SentinelGo`) says why.
-- A newer MSI upgrades in place and keeps the agent's identity. Uninstalling (`msiexec /x sentinelgo-windows-amd64.msi /qn`, or Installed apps) removes the service and the program and leaves `C:\SentinelGo\.sentinelgo`.
+- A newer MSI upgrades in place and keeps the agent's identity. Installed apps shows no Uninstall button for SentinelGo, so it isn't removed casually. The MDM or an administrator removes it with `msiexec /x sentinelgo-windows-amd64.msi /qn` (or `msiexec /x {ProductCode} /qn`; the code is in `sentinelgo-installers.json`). That removes the service and the program and leaves `C:\SentinelGo\.sentinelgo`.
 - It doesn't install over an agent installed by `install.bat` or a per-agent package: uninstall that first.
 - The MSI isn't Authenticode-signed yet, so SmartScreen warns when it is opened by hand. Check it against `SHA256SUMS` (it has a `.sig` like every asset). `sentinelgo-installers.json` lists the MSI's ProductCode and SHA-256 for deployment tools.
 
