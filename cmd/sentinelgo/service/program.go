@@ -222,7 +222,7 @@ func (p *Program) enrollThenStart(ctx context.Context) {
 			return
 		}
 		if n == 1 || errors.Is(err, enrollment.ErrRejected) {
-			log.Printf("First-boot enrollment: %v", err)
+			log.Printf("First-boot enrollment: %s", sanitize.ForLog(err.Error()))
 		}
 	}
 	if err := p.startIntegration(ctx); err != nil {
