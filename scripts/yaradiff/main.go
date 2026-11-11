@@ -72,7 +72,7 @@ func run(rulesPath, corpus, yaraBin string) (int, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		ms, err := prog.ScanReader(ctx, f, engine.File{Type: noType}) // externals as libyara gets them
 		if err != nil {
 			fmt.Printf("%s: engine error: %v\n", p, err)
