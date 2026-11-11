@@ -3,7 +3,6 @@ package walk
 import (
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -54,7 +53,7 @@ func TestUnder(t *testing.T) {
 
 func TestStat(t *testing.T) {
 	root := tree(t, map[string]string{"a.bin": "abc", "big.bin": "0123456789", "skip/x.bin": "x"})
-	env := Env{GOOS: runtime.GOOS, Getenv: os.Getenv, Exists: func(string) bool { return true }}
+	env := DefaultEnv()
 	o := Options{GOOS: runtime.GOOS, MaxFileBytes: 5,
 		Exclude: NewExcluder([]string{filepath.Join(root, "skip")}, "", env)}
 

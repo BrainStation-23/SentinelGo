@@ -4,6 +4,7 @@ package watch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -42,17 +43,12 @@ func TestStart_ReportsWrites(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(written), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(written, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	src := filepath.Join(outside, "moved.bin")
 	if err := os.WriteFile(src, []byte("y"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(root, "moved.bin")
-	if err := os.Rename(src, moved); err != nil {
-		t.Skipf("rename across temp folders: %v", err)
-	}
+	writeAndMove(t, written, src, moved)
 
 	want := map[string]bool{written: false, moved: false}
 	deadline := time.After(10 * time.Second)
@@ -76,5 +72,25 @@ func TestStart_NoRoots(t *testing.T) {
 	}
 	if w, err := Start(nil, Handler{}); w != nil || err == nil {
 		t.Fatalf("Start(nil) = %v, %v", w, err)
+	}
+}
+
+// writeAndMove writes written and renames src to moved from another
+// process: the watchers ignore the agent's own writes (FSEvents'
+// IgnoreSelf, the fanotify pid check).
+func writeAndMove(t *testing.T, written, src, moved string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if err := os.WriteFile(written, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(src, moved); err != nil {
+			t.Skipf("rename across temp folders: %v", err)
+		}
+		return
+	}
+	cmd := exec.Command("/bin/sh", "-c", `printf x > "$1" && mv "$2" "$3"`, "sh", written, src, moved)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("writer process: %v: %s", err, out)
 	}
 }
