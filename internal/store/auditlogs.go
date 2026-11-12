@@ -298,6 +298,20 @@ func (s *AuditLogStore) DeleteByIDs(ids []int64) error {
 	return nil
 }
 
+// Clear drops every queued row and returns how many there were. Used when
+// the server turned audit logs off (#466). The uploaded-batch ledger is kept.
+func (s *AuditLogStore) Clear() (int64, error) {
+	res, err := s.db.Exec("DELETE FROM audit_log_queue")
+	if err != nil {
+		return 0, fmt.Errorf("clear audit log queue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}
+
 // Close closes the underlying database connection.
 func (s *AuditLogStore) Close() error {
 	return s.db.Close()

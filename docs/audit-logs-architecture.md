@@ -300,7 +300,7 @@ The service is designed for seamless integration with the main SentinelGo agent:
 4. **Compression** - Batch compression for network efficiency
 5. **Filtering** - Client-side log filtering to reduce transmission volume
 6. **Metrics** - Collection and transmission metrics for monitoring
-7. **Dynamic configuration** - Runtime configuration updates
+7. **Dynamic configuration** - Partly done (#466): the server can turn audit logs off and on and set `log_flush_interval` at runtime; see [02-config-module.md](02-config-module.md#server-side-settings-server_config)
 
 ## Dependencies
 

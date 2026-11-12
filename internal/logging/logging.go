@@ -51,6 +51,22 @@ type LoggingIntegration struct {
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	started bool
+
+	// reschedule wakes collectionLoop to re-read the flush interval after the
+	// server changed it (#466). Buffered (1).
+	reschedule chan struct{}
+}
+
+// Reschedule makes the collection loop pick up a changed log_flush_interval
+// now instead of at its next tick. It never blocks.
+func (li *LoggingIntegration) Reschedule() {
+	if li == nil || li.reschedule == nil {
+		return
+	}
+	select {
+	case li.reschedule <- struct{}{}:
+	default:
+	}
 }
 
 // NewLoggingIntegration creates a new logging integration from the given config.
@@ -104,6 +120,7 @@ func NewLoggingIntegration(cfg *config.Config) (*LoggingIntegration, error) {
 		store:      auditStore,
 		checkpoint: cpStore,
 		window:     loadWindow(checkpointDir),
+		reschedule: make(chan struct{}, 1),
 	}
 	li.uploader = NewUploader(cfg, &li.stats)
 	li.uploader.window = li.window
@@ -182,6 +199,39 @@ func (li *LoggingIntegration) Stop() error {
 	return nil
 }
 
+// Discard stops collection like Stop but without the final upload, and drops
+// whatever is still queued: it is for when the server turned audit logs off
+// (#466) and would discard the uploads anyway. Checkpoints are saved, so
+// turning audit logs back on resumes collection from where it stopped.
+func (li *LoggingIntegration) Discard() error {
+	li.mu.Lock()
+	defer li.mu.Unlock()
+
+	if !li.started {
+		return nil
+	}
+
+	li.cancel()
+	li.wg.Wait()
+	li.started = false
+
+	n, clearErr := li.store.Clear()
+	if clearErr != nil {
+		log.Printf("[logging] warning: failed to drop queued audit logs: %v", clearErr)
+	} else if n > 0 {
+		log.Printf("[logging] dropped %d queued audit logs", n)
+	}
+	if err := li.store.Close(); err != nil {
+		log.Printf("[logging] warning: failed to close audit log store: %v", err)
+	}
+	if err := li.checkpoint.Save(); err != nil {
+		log.Printf("[logging] warning: failed to save checkpoint on stop: %v", err)
+	}
+
+	log.Printf("[logging] stopped, queue discarded")
+	return clearErr
+}
+
 // CollectLogsNow triggers an immediate collection cycle.
 func (li *LoggingIntegration) CollectLogsNow(ctx context.Context) error {
 	return li.runCollection(ctx)
@@ -223,6 +273,12 @@ func (li *LoggingIntegration) collectionLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-li.reschedule:
+			if next := li.cfg.GetLogFlushInterval(); next != interval {
+				log.Printf("[logging] flush interval changed %v -> %v", interval, next)
+				interval = next
+				ticker.Reset(interval)
+			}
 		case <-ticker.C:
 			if err := li.runCollection(ctx); err != nil {
 				log.Printf("[logging] collection cycle error: %v", err)

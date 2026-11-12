@@ -26,6 +26,7 @@ func PostEnqueue(ctx context.Context, c *supabase.Client, fn string, params any,
 			log.Printf("[%s] enqueue accepted but response parse failed: %v", logTag, err)
 		} else {
 			log.Printf("[%s] enqueued: msg_id=%d queue=%s", logTag, enqResp.MsgID, enqResp.Queue)
+			enqResp.ObserveConfig()
 		}
 		return nil
 	})

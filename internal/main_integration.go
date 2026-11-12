@@ -66,11 +66,23 @@ var (
 // collaborators it is given and drives their startup/shutdown ordering; the
 // concrete dependencies are supplied at construction time.
 type MainIntegration struct {
-	cfg            *config.Config
-	scheduler      *scheduler.Scheduler
-	authSvc        *authsvc.Service
+	cfg       *config.Config
+	scheduler *scheduler.Scheduler
+	authSvc   *authsvc.Service
+	// loggingService is the audit-log pipeline; nil while audit logs are off.
+	// The server can turn it on and off at runtime (#466), so it is read and
+	// written under loggingMu. loggingStopped is set by Stop so a late server
+	// config can't restart it during shutdown.
 	loggingService *logging.LoggingIntegration
-	taskManager    *tasksvc.TaskManager
+	loggingMu      sync.Mutex
+	loggingStopped bool
+	// runCtx is the context Start ran with; a server config that turns audit
+	// logs back on starts the pipeline on it.
+	runCtx context.Context
+	// serverCfgWG tracks the goroutines that reconcile the components with
+	// an applied server config; Stop waits for them.
+	serverCfgWG sync.WaitGroup
+	taskManager *tasksvc.TaskManager
 	// taskManagerCancel cancels the context the TaskManager Run goroutine runs
 	// on; taskManagerDone is closed when that goroutine returns. Stop uses them
 	// to stop and join Run before the task store is closed.
@@ -128,6 +140,7 @@ var ErrConfigInvalid = errors.New("configuration validation failed")
 // It orchestrates a fixed sequence of init steps; each step is a focused method
 // so the ordering is explicit and individually testable.
 func (mi *MainIntegration) Start(ctx context.Context) error {
+	mi.runCtx = ctx
 	mi.logStartup()
 
 	// Point the emergency log at the runtime directory (sibling of config.json)
@@ -188,6 +201,11 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start scheduler: %w", err)
 	}
 
+	// 9. Apply the server's agent settings from RPC replies (#466). Registered
+	// last, once every component it adjusts exists; a block sent earlier is
+	// applied from the next reply, since its version is still new then.
+	mi.watchServerConfig()
+
 	log.Printf("SentinelGo main integration started successfully")
 	return nil
 }
@@ -202,7 +220,12 @@ func (mi *MainIntegration) servicesDBPath() string {
 func (mi *MainIntegration) logStartup() {
 	log.Printf("Starting SentinelGo main integration...")
 	log.Printf("Config path: %s", sanitize.ForLog(mi.cfg.Path))
-	log.Printf("Audit logs enabled: %v", mi.cfg.AuditLogsEnabled)
+	log.Printf("Audit logs enabled: %v", mi.cfg.GetAuditLogsEnabled())
+	if v := mi.cfg.ServerConfigVersion(); v > 0 {
+		e := mi.cfg.Effective()
+		log.Printf("Server config v%d in effect: task_polling=%v log_flush=%v software_sync=%v services_sync=%v",
+			v, e.TaskPollingInterval, e.LogFlushInterval, e.SoftwareSyncInterval, e.ServicesSyncInterval)
+	}
 	log.Printf("Log storage enabled: %v", mi.cfg.LogStorageEnabled)
 	log.Printf("DLP enabled: %v", mi.cfg.DLPEnabled)
 }
@@ -415,9 +438,19 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 
 // startLoggingService starts the audit log collection pipeline when enabled.
 func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
-	if !mi.cfg.AuditLogsEnabled {
-		log.Printf("Audit logs disabled in config (audit_logs_enabled=%s)",
-			sanitize.ForLog(fmt.Sprintf("%v", mi.cfg.AuditLogsEnabled)))
+	mi.loggingMu.Lock()
+	defer mi.loggingMu.Unlock()
+	return mi.startLoggingServiceLocked(ctx)
+}
+
+// startLoggingServiceLocked is startLoggingService with loggingMu held.
+func (mi *MainIntegration) startLoggingServiceLocked(ctx context.Context) error {
+	if !mi.cfg.GetAuditLogsEnabled() {
+		if mi.cfg.AuditLogsDisabledByServer() {
+			log.Printf("Audit logs disabled by server")
+		} else {
+			log.Printf("Audit logs disabled in config (audit_logs_enabled=false)")
+		}
 		return nil
 	}
 
@@ -860,6 +893,9 @@ func (r *authTokenRefresher) RefreshToken(ctx context.Context) (string, error) {
 func (mi *MainIntegration) Stop() error {
 	log.Printf("Stopping SentinelGo main integration...")
 
+	// Stop applying server settings before the components they adjust go.
+	mi.unwatchServerConfig()
+
 	// Stop scheduler first (this will stop all tasks)
 	mi.scheduler.Stop()
 
@@ -896,12 +932,15 @@ func (mi *MainIntegration) Stop() error {
 		mi.dlpEvents = nil
 	}
 
-	// Stop audit log service
+	// Stop audit log service; a server config arriving now must not restart it.
+	mi.loggingMu.Lock()
+	mi.loggingStopped = true
 	if mi.loggingService != nil {
 		if err := mi.loggingService.Stop(); err != nil {
 			log.Printf("Warning: Failed to stop logging service: %v", err)
 		}
 	}
+	mi.loggingMu.Unlock()
 
 	// Close services store
 	if mi.servicesStore != nil {
@@ -995,9 +1034,11 @@ func (mi *MainIntegration) GetStatus() map[string]interface{} {
 	}
 
 	// Logging status
+	mi.loggingMu.Lock()
 	if mi.loggingService != nil {
 		status["logging"] = mi.loggingService.GetStatistics()
 	}
+	mi.loggingMu.Unlock()
 
 	// DLP status
 	if mi.dlpManager != nil {

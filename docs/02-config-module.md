@@ -89,7 +89,8 @@ agent never reports a version it is not actually running — see
 | `task_execution_interval`   | `Duration`  | `"5m0s"`               | Cadence of the task executor sweep.                    |
 | `task_db_path`              | `string`    | `""`                   | Override the SQLite task-store path (testing only).    |
 | `log_storage_enabled`       | `bool`      | `true`                 | Enables local audit-log persistence.                   |
-| `audit_logs_enabled`        | `bool`      | `true`                 | Enables the audit-log upload service.                  |
+| `audit_logs_enabled`        | `bool`      | `true`                 | Enables the audit-log upload service. `false` is a local kill switch the server cannot override. |
+| `server_config`             | `object`    | absent                 | Written by the agent: the last server-sent settings block. See [Server-side settings](#server-side-settings-server_config). |
 | `software_sync_enabled`     | `bool`      | `true`                 | Enables software-inventory upload.                     |
 | `dlp_enabled`               | `bool`      | `true`                 | Local DLP kill switch. `false` turns DLP off on this device whatever the server says. With `true`, DLP still stays off until the server sends an enabled policy. |
 | `yara_enabled`              | `bool`      | `true`                 | Local threat hunting (YARA) kill switch. `false` keeps scans and scan workers off on this device whatever the server says; the agent reports state `disabled` and the console shows it as "disabled locally". With `true`, scans still stay off until the server sends an enabled bundle. See [yara.md](yara.md). |
@@ -136,6 +137,33 @@ JSON file.
 and on demand. `main_integration.Start()` invokes
 `ValidateConfiguration` itself before the lock file is acquired (see
 [`docs/08`](08-project-overview.md#4-runtime-execution-flow)).
+
+## Server-side settings (`server_config`)
+
+The console can change some agent behaviour on enrolled devices
+(#466, sentinel-ops#902). `agent_get_tasks` and the `agent_enqueue*`
+replies carry a `config` block (see
+[supabase-api-contract.md](supabase-api-contract.md#server-sent-agent-settings)).
+The agent applies a block only when its `version` is newer than the one
+it applied last, saves it in `config.json` as `server_config` (so a
+restart keeps it) and logs one line per changed value. Running
+components follow within one task poll; nothing restarts.
+
+| Server key                | Overrides                  | Clamp       | Effect at runtime |
+|---------------------------|----------------------------|-------------|-------------------|
+| `audit_logs_enabled`      | `audit_logs_enabled` (ANDed) | —         | `false`: the audit-log pipeline stops, its upload queue is dropped, checkpoints are kept ("Audit logs disabled by server"). `true` again: collection restarts from the checkpoints. |
+| `task_polling_interval`   | `task_polling_interval`    | 10s – 24h   | The task loop resets its ticker. |
+| `log_flush_interval`      | `log_flush_interval`       | 30s – 24h   | The log collection loop resets its ticker. |
+| `software_sync_interval`  | `update_interval`          | 5m – 24h    | The scheduler retimes `software-sync`. |
+| `services_sync_interval`  | `services_update_interval` | 5m – 24h    | The scheduler retimes `services-collect`. |
+
+The local fields are never rewritten: the getters (`GetTaskPollingInterval`,
+`GetAuditLogsEnabled`, ..., `Effective`) return the server's value when it
+sent one, else the local one. A local `audit_logs_enabled: false` is a
+kill switch the server cannot turn back on (like `dlp_enabled`). Delete
+`server_config` from `config.json` and restart to fall back to the local
+values until the next block arrives. One-shot CLI commands never apply a
+block; only the running service does.
 
 ## Persistence
 

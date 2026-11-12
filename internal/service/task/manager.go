@@ -42,6 +42,22 @@ type TaskManager struct {
 	// owner (MainIntegration.Stop) closes again after joining Run.
 	closeOnce sync.Once
 	closeErr  error
+
+	// reschedule wakes the task loop to re-read the polling interval after
+	// the server changed it (#466). Buffered (1); nil in bare test literals.
+	reschedule chan struct{}
+}
+
+// Reschedule makes the running task loop pick up a changed
+// task_polling_interval now instead of at its next tick. It never blocks.
+func (tm *TaskManager) Reschedule() {
+	if tm == nil || tm.reschedule == nil {
+		return
+	}
+	select {
+	case tm.reschedule <- struct{}{}:
+	default:
+	}
 }
 
 // NewTaskManager creates a new integrated task manager.
@@ -71,6 +87,7 @@ func NewTaskManager(cfg *config.Config) (*TaskManager, error) {
 		executorSvc:  executorSvc,
 		dbPath:       dbPath,
 		runningTasks: make(map[string]bool),
+		reschedule:   make(chan struct{}, 1),
 	}, nil
 }
 
@@ -90,6 +107,7 @@ func NewTaskManagerWithPollingService(cfg *config.Config, pollingSvc *TaskPollin
 		executorSvc:  NewTaskExecutorService(cfg, pollingSvc),
 		dbPath:       cfg.TaskDBPath,
 		runningTasks: make(map[string]bool),
+		reschedule:   make(chan struct{}, 1),
 	}
 }
 
@@ -97,7 +115,7 @@ func NewTaskManagerWithPollingService(cfg *config.Config, pollingSvc *TaskPollin
 func (tm *TaskManager) Run(ctx context.Context) error {
 	log.Printf("TaskManager: Starting integrated task service")
 	log.Printf("TaskManager: Task polling enabled: %v", tm.cfg.EnableTaskPolling)
-	log.Printf("TaskManager: Polling interval: %v", time.Duration(tm.cfg.TaskPollingInterval))
+	log.Printf("TaskManager: Polling interval: %v", tm.cfg.GetTaskPollingInterval())
 	log.Printf("TaskManager: Execution interval: %v", time.Duration(tm.cfg.TaskExecutionInterval))
 
 	if tm.cfg.EnableTaskPolling {
@@ -109,11 +127,9 @@ func (tm *TaskManager) Run(ctx context.Context) error {
 }
 
 func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
-	pollingInterval := time.Duration(tm.cfg.TaskPollingInterval)
-	if pollingInterval <= 0 {
-		pollingInterval = 5 * time.Minute
-		log.Printf("TaskManager: Using default polling interval: %v", pollingInterval)
-	}
+	// The effective interval: the server's task_polling_interval when it sent
+	// one (#466), else config.json's, else 5m.
+	pollingInterval := tm.cfg.GetTaskPollingInterval()
 
 	executionInterval := time.Duration(tm.cfg.TaskExecutionInterval)
 	if executionInterval <= 0 {
@@ -138,11 +154,13 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 	// Between full polls, ask cheaply whether a task is queued and fetch it
 	// at once, so a queued task (e.g. DLP "Push now") arrives within a minute
 	// instead of at the next poll (sentinel-ops#472).
-	var checkC <-chan time.Time
-	if checkInterval := tm.cfg.GetTaskCheckInterval(); checkInterval < mainInterval {
-		check := time.NewTicker(checkInterval)
-		defer check.Stop()
-		checkC = check.C
+	// The check ticker always runs; a tick is skipped while the check
+	// interval is not below the polling interval, which the server may change.
+	checkInterval := tm.cfg.GetTaskCheckInterval()
+	check := time.NewTicker(checkInterval)
+	defer check.Stop()
+	checkC := check.C
+	if checkInterval < mainInterval {
 		log.Printf("TaskManager: Checking for queued tasks every %v", checkInterval)
 	}
 
@@ -150,6 +168,12 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-tm.reschedule:
+			if next := tm.cfg.GetTaskPollingInterval(); next != mainInterval {
+				log.Printf("TaskManager: polling interval changed %v -> %v", mainInterval, next)
+				mainInterval = next
+				ticker.Reset(mainInterval)
+			}
 		case <-ticker.C:
 			log.Printf("TaskManager: Polling for tasks...")
 			tm.pollTasks(ctx)
@@ -157,6 +181,9 @@ func (tm *TaskManager) runSequentialTaskLoop(ctx context.Context) {
 			log.Printf("TaskManager: Executing tasks...")
 			tm.executeTasks(ctx)
 		case <-checkC:
+			if checkInterval >= mainInterval {
+				continue
+			}
 			if tm.tasksPending(ctx, time.Now()) {
 				log.Printf("TaskManager: A task is queued; polling now")
 				tm.pollTasks(ctx)
