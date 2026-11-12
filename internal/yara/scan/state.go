@@ -151,6 +151,8 @@ type LocalStatus struct {
 	QueuedEvents int              `json:"queued_events"`
 	// DroppedEvents were dropped over the offline queue's cap.
 	DroppedEvents int64 `json:"dropped_events"`
+	// OnWrite is on-write scanning (#418); nil when it is off.
+	OnWrite *OnWriteStatus `json:"on_write,omitempty"`
 }
 
 // Workers is the scan worker pool's health.

@@ -102,6 +102,24 @@ func TestCapabilities_MDMTasks(t *testing.T) {
 	}
 }
 
+// yara_on_write_v1 is advertised on every OS: the watchers (fanotify,
+// ReadDirectoryChangesW, FSEvents) and the on-write pipeline ship in this
+// binary (#418). The backend sends an enabled on_write block only to agents
+// that report it (contract v1.1).
+func TestCapabilities_YARAOnWrite(t *testing.T) {
+	if yara.CapabilityOnWrite != "yara_on_write_v1" || !slices.Contains(AgentCapabilities, yara.CapabilityOnWrite) {
+		t.Fatalf("%s not in AgentCapabilities %q", yara.CapabilityOnWrite, AgentCapabilities)
+	}
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for _, os := range []string{"windows", "darwin", "linux"} {
+		goos = os
+		if !slices.Contains(Capabilities(), yara.CapabilityOnWrite) {
+			t.Errorf("%s: yara_on_write_v1 not advertised", os)
+		}
+	}
+}
+
 // yara_scan_v1 is advertised on every OS since scans work end to end (sync,
 // workers, walk, events, tasks: #416). The backend sends rules and yara-scan
 // tasks only to agents that report it.

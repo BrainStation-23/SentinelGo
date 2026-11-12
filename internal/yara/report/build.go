@@ -73,16 +73,16 @@ type Scan struct {
 }
 
 // NewScan starts a scan's reporting. id is the server's scan id for an
-// on-demand scan; "" mints one. dedupe is used for scheduled scans only:
-// on-demand scans always report, so admins can confirm a file is still
-// there.
+// on-demand scan; "" mints one. dedupe is used for scheduled and on-write
+// scans: on-demand scans always report, so admins can confirm a file is
+// still there.
 func NewScan(id, trigger, preset string, evidence yara.Evidence, dedupe Dedupe) *Scan {
 	if id == "" {
 		id = yara.NewID()
 	}
 	s := &Scan{ID: id, Trigger: trigger, Preset: preset, Started: time.Now().UTC(),
 		hashPaths: evidence.HashPaths(), owner: newOwnerCache().lookup, now: time.Now}
-	if trigger == yara.TriggerScheduled {
+	if trigger == yara.TriggerScheduled || trigger == yara.TriggerOnWrite {
 		s.dedupe = dedupe
 	}
 	return s

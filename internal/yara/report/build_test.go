@@ -202,3 +202,24 @@ func TestScan_RestoreProgress(t *testing.T) {
 		t.Fatalf("summary %+v", sum)
 	}
 }
+
+// On-write scans (#418) de-duplicate like scheduled ones: a file rewritten
+// with the same content, or already reported by a scheduled scan, isn't
+// reported again.
+func TestMatches_DedupeOnWrite(t *testing.T) {
+	d := memDedupe{}
+	r := result("/home/a/Downloads/x", hit("r1"))
+	sched := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	if evs, _ := sched.Matches(r); len(evs) != 1 {
+		t.Fatalf("scheduled: %d events", len(evs))
+	}
+	ow := testScan(yara.TriggerOnWrite, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	r.Hits = append(r.Hits, hit("r2"))
+	evs, err := ow.Matches(r)
+	if err != nil || len(evs) != 1 || evs[0].Match.Rule != "r2" || evs[0].Match.Trigger != yara.TriggerOnWrite {
+		t.Fatalf("on-write: %+v %v", evs, err)
+	}
+	if evs, _ := ow.Matches(r); len(evs) != 0 {
+		t.Fatalf("on-write again: %d events", len(evs))
+	}
+}
