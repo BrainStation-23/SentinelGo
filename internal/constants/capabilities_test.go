@@ -118,3 +118,15 @@ func TestCapabilities_YARAScan(t *testing.T) {
 		}
 	}
 }
+
+// admin_password_rotation_v1 is advertised on Windows only (#361).
+func TestCapabilities_AdminPasswordRotationOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityAdminPasswordRotation); got != want {
+			t.Errorf("%s: admin_password_rotation_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}

@@ -50,6 +50,12 @@ const CapabilityMDMSync = "mdm_sync_v1"
 // remove this deployment's MDM enrollment (#356).
 const CapabilityMDMUnenroll = "mdm_unenroll_v1"
 
+// CapabilityAdminPasswordRotation means the agent rotates a local admin
+// account's password and escrows it before setting it: the
+// agent_*_admin_password RPCs and the admin-password-rotate task (#361).
+// Windows only.
+const CapabilityAdminPasswordRotation = "admin_password_rotation_v1" // #nosec G101 - a capability name, not a credential
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -81,7 +87,7 @@ func Capabilities() []string {
 	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	case "windows":
-		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll)
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation)
 	}
 	return caps
 }

@@ -121,6 +121,10 @@ type Config struct {
 	// (#416). false keeps scans and scan workers off on this device whatever
 	// the server's bundle says; the agent reports state disabled.
 	YARAEnabled bool `json:"yara_enabled"`
+	// AdminPasswordRotationEnabled is the device-local kill switch for local
+	// admin password rotation (#361, Windows). false stops rotations whatever
+	// the server's policy says; the agent reports state disabled.
+	AdminPasswordRotationEnabled bool `json:"admin_password_rotation_enabled"`
 	// MDMHost is this deployment's MDM hostname, e.g. "mdm.example.com".
 	// The inventory compares it with the MDM a device is enrolled in, to tell
 	// our MDM from another one. Empty until the backend provides it.
@@ -248,6 +252,8 @@ func Load(path string) (*Config, error) {
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
 		DLPEnabled:             true,                      // DLP stays off until the server sends an enabled policy
 		YARAEnabled:            true,                      // scans stay off until the server sends an enabled bundle
+		// rotations stay off until the server sends an enabled policy
+		AdminPasswordRotationEnabled: true,
 	}
 
 	if path == "" {

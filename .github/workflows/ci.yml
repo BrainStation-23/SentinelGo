@@ -251,6 +251,19 @@ jobs:
           done
           tail -n +2 "$RUNNER_TEMP/coverage-root.out" >> coverage.out
 
+      # Local admin password rotation (#361): set a generated password on a
+      # throwaway local account with NetUserSetInfo and log on with it.
+      # Hosted Windows runners are elevated; the test skips itself
+      # otherwise, so make sure it really ran.
+      - name: Run admin password end-to-end test
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          SENTINELGO_ADMINPW_E2E: "1"
+        run: |
+          go test -count=1 -v -run 'TestWindowsHost_' ./internal/adminpassword/ | tee "$RUNNER_TEMP/adminpw-tests.log"
+          grep -q -- "--- PASS: TestWindowsHost_SetPasswordE2E " "$RUNNER_TEMP/adminpw-tests.log" || { echo "::error::TestWindowsHost_SetPasswordE2E did not run elevated"; exit 1; }
+
       # tools/dlprules (the DLP rules generator) is its own module, so ./...
       # above doesn't reach it. Linux only: it has no platform-specific code.
       - name: Run DLP rules generator tests
