@@ -172,6 +172,10 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// (#416).
 	mi.startYARA()
 
+	// 6d. Local admin password rotation with escrow (#361, Windows): before
+	// the task manager accepts admin-password-rotate.
+	mi.startAdminPassword()
+
 	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
@@ -869,6 +873,7 @@ func (mi *MainIntegration) Stop() error {
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
 	native.SetPackageSync(nil)
+	native.SetAdminPasswordRotator(nil)
 	native.SetUserNotifier(nil)
 	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)

@@ -57,6 +57,7 @@ replaced with defaults on the next load.
   "software_sync_enabled":    true,
   "dlp_enabled":              true,
   "yara_enabled":             true,
+  "admin_password_rotation_enabled": true,
   "edge_function_url":        ""
 }
 ```
@@ -92,6 +93,7 @@ agent never reports a version it is not actually running — see
 | `software_sync_enabled`     | `bool`      | `true`                 | Enables software-inventory upload.                     |
 | `dlp_enabled`               | `bool`      | `true`                 | Local DLP kill switch. `false` turns DLP off on this device whatever the server says. With `true`, DLP still stays off until the server sends an enabled policy. |
 | `yara_enabled`              | `bool`      | `true`                 | Local threat hunting (YARA) kill switch. `false` keeps scans and scan workers off on this device whatever the server says; the agent reports state `disabled` and the console shows it as "disabled locally". With `true`, scans still stay off until the server sends an enabled bundle. See [yara.md](yara.md). |
+| `admin_password_rotation_enabled` | `bool` | `true` | Local kill switch for local admin password rotation (Windows). `false` stops rotations on this device whatever the server says, and the agent reports state `disabled`. With `true`, nothing rotates until the server sends an enabled policy. See [admin-password-rotation.md](admin-password-rotation.md). |
 | `edge_function_url`         | `string`    | `""`                   | Optional override for the `agent-software` Edge Fn URL. |
 
 ## Duration fields
