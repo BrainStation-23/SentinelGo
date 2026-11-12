@@ -17,11 +17,11 @@ type Resolver func(ctx context.Context, host string) ([]netip.Addr, time.Duratio
 
 // Tuning; vars for tests.
 var (
-	minDNSTTL       = 30 * time.Second
-	maxDNSTTL       = 10 * time.Minute
-	dnsRetry        = time.Minute
-	addrRetention   = 30 * time.Minute // apps cache addresses past their TTL
-	resolveTimeout  = 5 * time.Second
+	minDNSTTL      = 30 * time.Second
+	maxDNSTTL      = 10 * time.Minute
+	dnsRetry       = time.Minute
+	addrRetention  = 30 * time.Minute // apps cache addresses past their TTL
+	resolveTimeout = 5 * time.Second
 )
 
 type hostEntry struct {

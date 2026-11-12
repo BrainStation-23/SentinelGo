@@ -27,4 +27,3 @@ func TestDNSResolve(t *testing.T) {
 		t.Errorf("missing name: %v", addrs)
 	}
 }
-
