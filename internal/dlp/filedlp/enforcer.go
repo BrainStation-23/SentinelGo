@@ -48,6 +48,10 @@ type Options struct {
 	// RequestException sends an exception request to the backend; nil
 	// means the dialog doesn't offer one.
 	RequestException func(context.Context, ExceptionRequest) error
+	// NetworkTaint cuts an egress app's network after it opened a file a
+	// file.upload policy would block (taint block, #427; Windows); nil
+	// means no taint blocks.
+	NetworkTaint NetworkTainter
 }
 
 // CapabilityBlockOverride tells the backend this agent asks for a reason on
@@ -73,12 +77,18 @@ type Health struct {
 	// overflowing (it has its own queue, so destination events never are).
 	TaintProcesses int    `json:"taint_processes,omitempty"`
 	TaintOverflows uint64 `json:"taint_overflows,omitempty"`
+	// TaintBlockDropped counts egress app opens not judged because the
+	// queue was full (taint blocks, #427).
+	TaintBlockDropped uint64 `json:"taint_block_dropped,omitempty"`
 	// Blocking is the permission hook that holds file creation while the
 	// agent decides (Linux, #333); nil where there is none.
 	Blocking *BlockingHealth `json:"blocking,omitempty"`
 	// DeepInspection is the upload channel's HTTPS inspection
 	// (uploadproxy.Status, #344); nil when it never started.
 	DeepInspection any `json:"deep_inspection,omitempty"`
+	// NetworkControl is the network controls' state (netctl.Status, #427);
+	// nil when they are off.
+	NetworkControl any `json:"network_control,omitempty"`
 }
 
 // Hook states.

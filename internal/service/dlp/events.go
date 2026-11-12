@@ -48,6 +48,7 @@ func (s *Service) SendEvents(ctx context.Context, evs []events.Event) error {
 			return nil
 		}
 		notEnqueued = !resp.Enqueued
+		resp.ObserveConfig()
 		return nil
 	})
 	if errors.Is(err, rpcutil.ErrPayloadDropped) {

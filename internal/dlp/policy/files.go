@@ -72,6 +72,9 @@ type FilesModule struct {
 	// Uploads configures the upload channel's HTTPS inspection (#344,
 	// backend Compliance-OS#532). Absent means off.
 	Uploads Uploads `json:"uploads"`
+	// NetworkControl blocks unsanctioned apps and taints apps that read
+	// sensitive files (#427, Compliance-OS#910; Windows). Absent means off.
+	NetworkControl NetworkControl `json:"network_control"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
@@ -188,6 +191,7 @@ func (m *FilesModule) normalize() {
 	m.ScanTimeoutMs = min(max(m.ScanTimeoutMs, MinScanTimeout), MaxScanTimeout)
 	m.CopyCorrelation.normalize()
 	m.Uploads.Inspection.normalize()
+	m.NetworkControl.normalize()
 	if len(m.Exceptions) > maxFileExceptions {
 		m.Exceptions = m.Exceptions[:maxFileExceptions]
 	}
@@ -377,9 +381,42 @@ type UploadInspection struct {
 	// Bypass are never decrypted, even when Intercept lists them (banking,
 	// health, government, pinned apps' hosts).
 	Bypass []string `json:"bypass"`
+	// DirectBlock is how hard the agent stops apps from reaching the
+	// intercepted sites around the proxy (#451): DirectBlockQUIC (the
+	// default, also for a missing or unknown value), DirectBlockStrict or
+	// DirectBlockOff. Read it through Mode.
+	DirectBlock string `json:"direct_block,omitempty"`
 
 	// DecodeError is why the block couldn't be read; inspection is then off.
 	DecodeError string `json:"-"`
+}
+
+// Direct block modes (modules.files.uploads.inspection.direct_block, #451).
+// The block only applies while the redirect is active and the module isn't
+// audit_only, in every mode.
+const (
+	// DirectBlockQUIC blocks only UDP 443 to the intercepted sites'
+	// addresses: QUIC clients fall back to TCP, which follows the PAC into
+	// the proxy. A CDN address shared with other sites costs them HTTP/3,
+	// not reachability.
+	DirectBlockQUIC = "quic"
+	// DirectBlockStrict blocks TCP and UDP 443: apps that ignore the proxy
+	// can't reach the sites at all, and nor can other sites on the same
+	// addresses.
+	DirectBlockStrict = "strict"
+	// DirectBlockOff adds no block: the PAC only.
+	DirectBlockOff = "off"
+)
+
+// Mode is the direct block mode: DirectBlockQUIC unless DirectBlock is
+// DirectBlockStrict or DirectBlockOff.
+func (u UploadInspection) Mode() string {
+	switch m := strings.ToLower(strings.TrimSpace(u.DirectBlock)); m {
+	case DirectBlockStrict, DirectBlockOff:
+		return m
+	default:
+		return DirectBlockQUIC
+	}
 }
 
 // Inspection list limits.
@@ -407,6 +444,7 @@ func (u *UploadInspection) normalize() {
 	}
 	u.Intercept = cleanHosts(u.Intercept)
 	u.Bypass = cleanHosts(u.Bypass)
+	u.DirectBlock = u.Mode()
 	if len(u.Intercept) == 0 {
 		u.Enabled = false // nothing to inspect
 	}

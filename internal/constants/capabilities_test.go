@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"slices"
 	"testing"
+
+	"sentinelgo/internal/yara"
 )
 
 func TestAgentCapabilities_Valid(t *testing.T) {
@@ -96,6 +98,66 @@ func TestCapabilities_MDMTasks(t *testing.T) {
 		enroll, unenroll := slices.Contains(caps, CapabilityMDMEnroll), slices.Contains(caps, CapabilityMDMUnenroll)
 		if enroll != want[0] || unenroll != want[1] {
 			t.Errorf("%s: enroll/unenroll = %v/%v, want %v", os, enroll, unenroll, want)
+		}
+	}
+}
+
+// yara_on_write_v1 is advertised on every OS: the watchers (fanotify,
+// ReadDirectoryChangesW, FSEvents) and the on-write pipeline ship in this
+// binary (#418). The backend sends an enabled on_write block only to agents
+// that report it (contract v1.1).
+func TestCapabilities_YARAOnWrite(t *testing.T) {
+	if yara.CapabilityOnWrite != "yara_on_write_v1" || !slices.Contains(AgentCapabilities, yara.CapabilityOnWrite) {
+		t.Fatalf("%s not in AgentCapabilities %q", yara.CapabilityOnWrite, AgentCapabilities)
+	}
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for _, os := range []string{"windows", "darwin", "linux"} {
+		goos = os
+		if !slices.Contains(Capabilities(), yara.CapabilityOnWrite) {
+			t.Errorf("%s: yara_on_write_v1 not advertised", os)
+		}
+	}
+}
+
+// yara_scan_v1 is advertised on every OS since scans work end to end (sync,
+// workers, walk, events, tasks: #416). The backend sends rules and yara-scan
+// tasks only to agents that report it.
+func TestCapabilities_YARAScan(t *testing.T) {
+	if yara.Capability != "yara_scan_v1" || !slices.Contains(AgentCapabilities, yara.Capability) {
+		t.Fatalf("%s not in AgentCapabilities %q", yara.Capability, AgentCapabilities)
+	}
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for _, os := range []string{"windows", "darwin", "linux"} {
+		goos = os
+		if !slices.Contains(Capabilities(), yara.Capability) {
+			t.Errorf("%s: yara_scan_v1 not advertised", os)
+		}
+	}
+}
+
+// admin_password_rotation_v1 is advertised on Windows only (#361).
+func TestCapabilities_AdminPasswordRotationOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityAdminPasswordRotation); got != want {
+			t.Errorf("%s: admin_password_rotation_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}
+
+// dlp_network_control_v1 is advertised on Windows only (#427): only WFP
+// applies the network controls.
+func TestCapabilities_DLPNetworkControlOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityDLPNetworkControl); got != want {
+			t.Errorf("%s: dlp_network_control_v1 advertised = %v, want %v", os, got, want)
 		}
 	}
 }

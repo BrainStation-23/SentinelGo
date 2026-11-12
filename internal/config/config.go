@@ -117,10 +117,24 @@ type Config struct {
 	// DLPEnabled is the device-local DLP kill switch. false turns DLP off on this
 	// device whatever the server-side policy says (for troubleshooting).
 	DLPEnabled bool `json:"dlp_enabled"`
+	// YARAEnabled is the device-local threat hunting (YARA) kill switch
+	// (#416). false keeps scans and scan workers off on this device whatever
+	// the server's bundle says; the agent reports state disabled.
+	YARAEnabled bool `json:"yara_enabled"`
+	// AdminPasswordRotationEnabled is the device-local kill switch for local
+	// admin password rotation (#361, Windows). false stops rotations whatever
+	// the server's policy says; the agent reports state disabled.
+	AdminPasswordRotationEnabled bool `json:"admin_password_rotation_enabled"`
 	// MDMHost is this deployment's MDM hostname, e.g. "mdm.example.com".
 	// The inventory compares it with the MDM a device is enrolled in, to tell
 	// our MDM from another one. Empty until the backend provides it.
 	MDMHost string `json:"mdm_host,omitempty"`
+
+	// ServerConfig is the agent-settings block last applied from the server
+	// (#466, sentinel-ops#902). Read it through the getters
+	// (GetTaskPollingInterval, GetAuditLogsEnabled, Effective, ...), never
+	// directly: it changes at runtime under serverMu.
+	ServerConfig *ServerConfig `json:"server_config,omitempty"`
 
 	// tokenMu guards concurrent token writes (SetTokens) and serialises
 	// SaveAtomic. Token refresh runs in its own goroutine while heartbeat,
@@ -128,6 +142,9 @@ type Config struct {
 	// and two concurrent SaveAtomic calls could collide on the temp file and
 	// persist a torn config. Unexported, so it is ignored by JSON (un)marshal.
 	tokenMu sync.Mutex
+	// serverMu guards ServerConfig. Writers hold tokenMu first (SaveAtomic
+	// marshals ServerConfig under tokenMu), then serverMu.
+	serverMu sync.RWMutex
 }
 
 // SetTokens atomically replaces the access and refresh tokens in memory.
@@ -153,12 +170,10 @@ func (c *Config) GetRefreshToken() string {
 	return c.RefreshToken
 }
 
-// GetSoftwareInfoUpdateInterval returns software update interval as time.Duration
+// GetSoftwareInfoUpdateInterval returns the software sync interval (default
+// 5m). A server-set software_sync_interval takes precedence (#466).
 func (c *Config) GetSoftwareInfoUpdateInterval() time.Duration {
-	if time.Duration(c.UpdateInterval) == 0 {
-		return 5 * time.Minute // Default fallback
-	}
-	return time.Duration(c.UpdateInterval)
+	return c.Effective().SoftwareSyncInterval
 }
 
 // GetAutoUpdateInterval returns how often to check for a new release.
@@ -182,33 +197,29 @@ func (c *Config) GetLogStorageEnabled() bool {
 	return c.LogStorageEnabled
 }
 
-// GetAuditLogsEnabled returns whether audit logs service is enabled
+// GetAuditLogsEnabled returns whether the audit logs service should run
+// (#466): the local audit_logs_enabled and the server's switch must both be
+// on. A local false is a kill switch the server cannot turn back on.
 func (c *Config) GetAuditLogsEnabled() bool {
-	return c.AuditLogsEnabled
+	return c.Effective().AuditLogsEnabled
 }
 
-// GetLogFlushInterval returns log collection interval as time.Duration
+// GetLogFlushInterval returns the log collection/upload interval (default
+// 5m). A server-set log_flush_interval takes precedence (#466).
 func (c *Config) GetLogFlushInterval() time.Duration {
-	if time.Duration(c.LogFlushInterval) == 0 {
-		return 5 * time.Minute // Default to 5 minutes
-	}
-	return time.Duration(c.LogFlushInterval)
+	return c.Effective().LogFlushInterval
 }
 
-// GetServicesUpdateInterval returns how often OS services are collected.
+// GetServicesUpdateInterval returns how often OS services are collected
+// (default 5m). A server-set services_sync_interval takes precedence (#466).
 func (c *Config) GetServicesUpdateInterval() time.Duration {
-	if time.Duration(c.ServicesUpdateInterval) == 0 {
-		return 5 * time.Minute
-	}
-	return time.Duration(c.ServicesUpdateInterval)
+	return c.Effective().ServicesSyncInterval
 }
 
-// GetTaskPollingInterval returns task polling interval as time.Duration
+// GetTaskPollingInterval returns the task polling interval (default 5m). A
+// server-set task_polling_interval takes precedence (#466).
 func (c *Config) GetTaskPollingInterval() time.Duration {
-	if time.Duration(c.TaskPollingInterval) == 0 {
-		return 5 * time.Minute // Default to 5 minutes
-	}
-	return time.Duration(c.TaskPollingInterval)
+	return c.Effective().TaskPollingInterval
 }
 
 // GetTaskCheckInterval returns how often the agent asks the server whether a
@@ -243,6 +254,9 @@ func Load(path string) (*Config, error) {
 		ServicesSyncEnabled:    true,                      // Enable services collection by default
 		ServicesUpdateInterval: Duration(5 * time.Minute), // Default services collection interval
 		DLPEnabled:             true,                      // DLP stays off until the server sends an enabled policy
+		YARAEnabled:            true,                      // scans stay off until the server sends an enabled bundle
+		// rotations stay off until the server sends an enabled policy
+		AdminPasswordRotationEnabled: true,
 	}
 
 	if path == "" {

@@ -1,3 +1,5 @@
+github.com/cawalch/go-yara v0.9.0 h1:ouekQP5zEJXI559FiBVZRTKk1ce6Vswzg+yiE/HEmT8=
+github.com/cawalch/go-yara v0.9.0/go.mod h1:k2ZxL/ecSu1bDI6itT7UwnvxO30ACkImPZb9sCQkI6o=
 github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/ebitengine/purego v0.11.3 h1:OB+JLpdm7ioymhyA+6s5kbb/uOuYycAgL8NNTFc5MLg=

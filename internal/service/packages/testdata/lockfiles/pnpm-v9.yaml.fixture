@@ -1,0 +1,33 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+importers:
+
+  .:
+    dependencies:
+      keyv:
+        specifier: ^4.0.0
+        version: 4.5.4
+
+packages:
+
+  '@babel/code-frame@7.24.2':
+    resolution: {integrity: sha512-abc}
+
+  keyv@4.5.4:
+    resolution: {integrity: sha512-def}
+
+  local-pkg@file:../local:
+    resolution: {directory: ../local, type: directory}
+
+snapshots:
+
+  '@babel/code-frame@7.24.2':
+    dependencies:
+      '@babel/highlight': 7.24.2
+
+  react-dom@18.2.0(react@18.2.0):
+    dependencies:
+      react: 18.2.0

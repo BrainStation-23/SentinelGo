@@ -82,7 +82,9 @@ type windowsEnforcer struct {
 	dropped, overflows, unreadable atomic.Uint64
 
 	// Process attribution and taint (#331): nil while off.
-	taint       atomic.Pointer[winTaint]
+	taint atomic.Pointer[winTaint]
+	// Taint blocks (#427): nil without Options.NetworkTaint.
+	egress      *egressTaints
 	taintFailed atomic.Bool            // the trace couldn't start; not tried again until restart
 	taintError  atomic.Pointer[string] // why
 
@@ -118,6 +120,12 @@ func New(o Options) Enforcer {
 	if o.ConfigDir != "" {
 		e.decider.SetRemediator((&remediator{dir: filepath.Join(o.ConfigDir, QuarantineDir), now: time.Now}).remediate)
 	}
+	if o.NetworkTaint != nil {
+		e.egress = newEgressTaints(e.decider, o.NetworkTaint, "windows", e.compiled.Load)
+		e.egress.procInfo = func(pid uint32) Process { p, _ := winProcessInfo(pid); return p }
+		e.egress.open = openSourceWin
+		e.egress.env = lowerEnv()
+	}
 	empty := []Destination{}
 	e.dests.Store(&empty)
 	return e
@@ -133,14 +141,22 @@ func (p winPoolScanner) Scan(ctx context.Context, f *os.File, size int64, timeou
 	return pool.Scan(ctx, f, size, timeout)
 }
 
-func (e *windowsEnforcer) Wants(m policy.FilesModule) bool { return wants(m, windowsChannels) }
+func (e *windowsEnforcer) Wants(m policy.FilesModule) bool {
+	return wants(m, windowsChannels) || e.taintsNetwork(m)
+}
+
+// taintsNetwork reports whether m turns taint blocks on and this enforcer
+// can start them.
+func (e *windowsEnforcer) taintsNetwork(m policy.FilesModule) bool {
+	return e.egress != nil && m.TaintsNetwork("windows")
+}
 
 func (e *windowsEnforcer) Apply(_ context.Context, c *policy.Compiled) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.compiled.Store(c)
 	e.decider.Apply(c)
-	if c == nil || !wants(c.Modules.Files, windowsChannels) {
+	if c == nil || !e.Wants(c.Modules.Files) {
 		e.stopLocked()
 		return
 	}
@@ -187,6 +203,13 @@ func (e *windowsEnforcer) startLocked() {
 	go e.pendingLoop(ctx, e.changes, e.queue)
 	for i := 0; i < winDecideWorkers; i++ {
 		go e.decideLoop(ctx, e.queue)
+	}
+	if e.egress != nil {
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.egress.run(ctx)
+		}()
 	}
 	log.Printf("DLP: file monitoring started (removable drives: scanned after the write)")
 }
@@ -610,7 +633,20 @@ func (e *windowsEnforcer) Capabilities() map[string]string {
 	e.mu.Lock()
 	state, workers := e.stateLocked()
 	e.mu.Unlock()
-	return channelCapabilities(e.compiled.Load(), windowsChannels, state, workers)
+	caps := channelCapabilities(e.compiled.Load(), windowsChannels, state, workers)
+	// Taint blocks need the trace: say why when it couldn't start (netctl
+	// reports the rest).
+	if c := e.compiled.Load(); c != nil && e.taintsNetwork(c.Modules.Files) && e.taintFailed.Load() {
+		if caps == nil {
+			caps = map[string]string{}
+		}
+		reason := "etw_error"
+		if r := e.taintError.Load(); r != nil {
+			reason = *r
+		}
+		caps[CapTaintBlock] = "unsupported:" + reason
+	}
+	return caps
 }
 
 func (e *windowsEnforcer) stateLocked() (string, scanworker.Health) {
@@ -639,6 +675,9 @@ func (e *windowsEnforcer) Health() *Health {
 	}
 	h := &Health{State: state, Mounts: len(*e.dests.Load()), Dropped: e.dropped.Load(), Overflows: e.overflows.Load(),
 		Unreadable: e.unreadable.Load(), Stats: e.decider.Stats(), Workers: workers}
+	if e.egress != nil {
+		h.TaintBlockDropped = e.egress.dropped.Load()
+	}
 	if t := e.taint.Load(); t != nil {
 		h.TaintProcesses = t.store.len()
 		if t.sess != nil {

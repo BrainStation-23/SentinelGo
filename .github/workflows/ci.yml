@@ -236,20 +236,47 @@ jobs:
       # workers as `nobody` the way the service does. Hosted runners allow
       # sudo. Root gets its own build cache, so the steps after this one (run
       # as the runner user) never meet root-owned cache files, and its
-      # coverage is added to this runner's report for SonarCloud.
+      # coverage is added to this runner's report for SonarCloud. The upload
+      # proxy's nftables backstop test (#426) runs here too.
       - name: Run file DLP tests as root
         if: runner.os == 'Linux'
         run: |
+          # The upload backstop's end-to-end test (#426) drives nftables.
+          command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables; }
           sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$RUNNER_TEMP/gocache-root" \
             "GOFLAGS=$(go env GOFLAGS)" CGO_ENABLED=0 \
             go test -timeout=5m -count=1 -v -coverprofile="$RUNNER_TEMP/coverage-root.out" -coverpkg=./... \
-            ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ | tee "$RUNNER_TEMP/root-tests.log"
+            ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ ./internal/dlp/uploadproxy/ | tee "$RUNNER_TEMP/root-tests.log"
           # The end-to-end tests skip themselves when they can't run: make
           # sure they really ran here.
-          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestEnforcer_QuarantineEndToEnd TestEnforcer_UntrustedDeviceEndToEnd TestEnforcer_TaintEndToEnd TestSandbox_Probe; do
+          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestEnforcer_QuarantineEndToEnd TestEnforcer_UntrustedDeviceEndToEnd TestEnforcer_TaintEndToEnd TestSandbox_Probe TestNftBackstop_EndToEnd; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/root-tests.log" || { echo "::error::$t did not run as root"; exit 1; }
           done
           tail -n +2 "$RUNNER_TEMP/coverage-root.out" >> coverage.out
+
+      # Local admin password rotation (#361): set a generated password on a
+      # throwaway local account with NetUserSetInfo and log on with it.
+      # Hosted Windows runners are elevated; the test skips itself
+      # otherwise, so make sure it really ran.
+      - name: Run admin password end-to-end test
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          SENTINELGO_ADMINPW_E2E: "1"
+        run: |
+          go test -count=1 -v -run 'TestWindowsHost_' ./internal/adminpassword/ | tee "$RUNNER_TEMP/adminpw-tests.log"
+          grep -q -- "--- PASS: TestWindowsHost_SetPasswordE2E " "$RUNNER_TEMP/adminpw-tests.log" || { echo "::error::TestWindowsHost_SetPasswordE2E did not run elevated"; exit 1; }
+
+      # DLP network controls (#427): the test binary blocks its own
+      # connections with WFP, checks loopback and an allowed destination
+      # still work, and removes the block. It skips itself without
+      # elevation, so make sure it really ran.
+      - name: Run network controls WFP test
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          go test -count=1 -v -run 'TestWFPRuleset' ./internal/dlp/netctl/ | tee "$RUNNER_TEMP/netctl-tests.log"
+          grep -q -- "--- PASS: TestWFPRuleset " "$RUNNER_TEMP/netctl-tests.log" || { echo "::error::TestWFPRuleset did not run elevated"; exit 1; }
 
       # tools/dlprules (the DLP rules generator) is its own module, so ./...
       # above doesn't reach it. Linux only: it has no platform-specific code.
@@ -301,6 +328,39 @@ jobs:
 
       - name: Build every release target
         run: make verify-cross
+
+  # ── the generic Windows MSI (#358) ───────────────────────────────────────────
+  # release.yml builds it only on a tag: build and check it here too, so a
+  # broken .wxs or scripts/msi shows up in its pull request, not at release.
+  # WiX is pinned; bump it together with release.yml's.
+  msi:
+    name: Build MSI
+    runs-on: windows-latest
+    needs: [changes, test]
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      needs.changes.outputs.go == 'true' && needs.test.result == 'success'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install WiX
+        shell: bash
+        run: |
+          dotnet tool install wix --version 4.0.6 --tool-path "$RUNNER_TEMP/wix"
+          "$RUNNER_TEMP/wix/wix" extension add --global WixToolset.Util.wixext/4.0.6
+
+      - name: Build and check the MSI
+        shell: pwsh
+        run: |
+          go build -trimpath -o build/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./installer/msi/build.ps1 -Tag v0.0.1 -AgentExe build/sentinelgo-windows-amd64.exe -Out build/sentinelgo-windows-amd64.msi -Wix "$env:RUNNER_TEMP/wix/wix.exe"
 
   sonarqube:
     name: SonarQube
@@ -354,7 +414,7 @@ jobs:
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
-    needs: [changes, static-checks, lint, security, test, build]
+    needs: [changes, static-checks, lint, security, test, build, msi]
     if: always()
     timeout-minutes: 5
     steps:

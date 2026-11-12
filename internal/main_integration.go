@@ -17,6 +17,7 @@ import (
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
+	"sentinelgo/internal/dlp/netctl"
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
@@ -66,11 +67,23 @@ var (
 // collaborators it is given and drives their startup/shutdown ordering; the
 // concrete dependencies are supplied at construction time.
 type MainIntegration struct {
-	cfg            *config.Config
-	scheduler      *scheduler.Scheduler
-	authSvc        *authsvc.Service
+	cfg       *config.Config
+	scheduler *scheduler.Scheduler
+	authSvc   *authsvc.Service
+	// loggingService is the audit-log pipeline; nil while audit logs are off.
+	// The server can turn it on and off at runtime (#466), so it is read and
+	// written under loggingMu. loggingStopped is set by Stop so a late server
+	// config can't restart it during shutdown.
 	loggingService *logging.LoggingIntegration
-	taskManager    *tasksvc.TaskManager
+	loggingMu      sync.Mutex
+	loggingStopped bool
+	// runCtx is the context Start ran with; a server config that turns audit
+	// logs back on starts the pipeline on it.
+	runCtx context.Context
+	// serverCfgWG tracks the goroutines that reconcile the components with
+	// an applied server config; Stop waits for them.
+	serverCfgWG sync.WaitGroup
+	taskManager *tasksvc.TaskManager
 	// taskManagerCancel cancels the context the TaskManager Run goroutine runs
 	// on; taskManagerDone is closed when that goroutine returns. Stop uses them
 	// to stop and join Run before the task store is closed.
@@ -87,6 +100,9 @@ type MainIntegration struct {
 	dlpManager    *dlp.Manager
 	dlpSyncer     *dlp.Syncer
 	dlpEvents     *store.DLPEventStore
+	// yara is threat hunting: ruleset sync, scan workers, scans and the
+	// event queue (#411-#416); nil when not started.
+	yara *yaraState
 	// mu protects sessions against concurrent access between notifyUser
 	// (which reads it) and Stop (which nils it).
 	mu sync.Mutex
@@ -125,6 +141,7 @@ var ErrConfigInvalid = errors.New("configuration validation failed")
 // It orchestrates a fixed sequence of init steps; each step is a focused method
 // so the ordering is explicit and individually testable.
 func (mi *MainIntegration) Start(ctx context.Context) error {
+	mi.runCtx = ctx
 	mi.logStartup()
 
 	// Point the emergency log at the runtime directory (sibling of config.json)
@@ -161,6 +178,18 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// notify-user).
 	mi.startDLP(ctx)
 
+	// 6b. Schedule the npm/PyPI/Composer inventory (#421).
+	mi.startPackageSync()
+
+	// 6c. Threat hunting (YARA): after auth and DLP (whose worker binary
+	// the scan workers share), before the task manager accepts yara-scan
+	// (#416).
+	mi.startYARA()
+
+	// 6d. Local admin password rotation with escrow (#361, Windows): before
+	// the task manager accepts admin-password-rotate.
+	mi.startAdminPassword()
+
 	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
@@ -172,6 +201,11 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		emergencylog.Record("startup", "scheduler failed to start: %v", err)
 		return fmt.Errorf("failed to start scheduler: %w", err)
 	}
+
+	// 9. Apply the server's agent settings from RPC replies (#466). Registered
+	// last, once every component it adjusts exists; a block sent earlier is
+	// applied from the next reply, since its version is still new then.
+	mi.watchServerConfig()
 
 	log.Printf("SentinelGo main integration started successfully")
 	return nil
@@ -187,7 +221,12 @@ func (mi *MainIntegration) servicesDBPath() string {
 func (mi *MainIntegration) logStartup() {
 	log.Printf("Starting SentinelGo main integration...")
 	log.Printf("Config path: %s", sanitize.ForLog(mi.cfg.Path))
-	log.Printf("Audit logs enabled: %v", mi.cfg.AuditLogsEnabled)
+	log.Printf("Audit logs enabled: %v", mi.cfg.GetAuditLogsEnabled())
+	if v := mi.cfg.ServerConfigVersion(); v > 0 {
+		e := mi.cfg.Effective()
+		log.Printf("Server config v%d in effect: task_polling=%v log_flush=%v software_sync=%v services_sync=%v",
+			v, e.TaskPollingInterval, e.LogFlushInterval, e.SoftwareSyncInterval, e.ServicesSyncInterval)
+	}
 	log.Printf("Log storage enabled: %v", mi.cfg.LogStorageEnabled)
 	log.Printf("DLP enabled: %v", mi.cfg.DLPEnabled)
 }
@@ -400,9 +439,19 @@ func (mi *MainIntegration) softwareSyncHandler() scheduler.TaskHandler {
 
 // startLoggingService starts the audit log collection pipeline when enabled.
 func (mi *MainIntegration) startLoggingService(ctx context.Context) error {
-	if !mi.cfg.AuditLogsEnabled {
-		log.Printf("Audit logs disabled in config (audit_logs_enabled=%s)",
-			sanitize.ForLog(fmt.Sprintf("%v", mi.cfg.AuditLogsEnabled)))
+	mi.loggingMu.Lock()
+	defer mi.loggingMu.Unlock()
+	return mi.startLoggingServiceLocked(ctx)
+}
+
+// startLoggingServiceLocked is startLoggingService with loggingMu held.
+func (mi *MainIntegration) startLoggingServiceLocked(ctx context.Context) error {
+	if !mi.cfg.GetAuditLogsEnabled() {
+		if mi.cfg.AuditLogsDisabledByServer() {
+			log.Printf("Audit logs disabled by server")
+		} else {
+			log.Printf("Audit logs disabled in config (audit_logs_enabled=false)")
+		}
 		return nil
 	}
 
@@ -464,13 +513,17 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {
+			// Network controls (#427, Windows): off until the bundle turns
+			// them on. The file hook finds the taints, the controller
+			// applies them.
+			netControls := netctl.New(netctl.Options{})
 			files := filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)})
+				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher), NetworkTaint: netControls})
 			// Upload inspection (#344): off until the bundle turns it on.
 			// On Linux the helpers set each user's desktop proxy (#426).
 			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
 				SessionProxy: sessionProxySetter(sup)})
-			enforcer := uploadproxy.WithUploads(files, uploads)
+			enforcer := netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
 			m.SetFiles(enforcer)
 			// Windows: the helpers hand over files on shares and sync folders (#330).
 			if fr, ok := sup.(interface{ SetFileReceiver(session.FileReceiver) }); ok {
@@ -845,15 +898,23 @@ func (r *authTokenRefresher) RefreshToken(ctx context.Context) (string, error) {
 func (mi *MainIntegration) Stop() error {
 	log.Printf("Stopping SentinelGo main integration...")
 
+	// Stop applying server settings before the components they adjust go.
+	mi.unwatchServerConfig()
+
 	// Stop scheduler first (this will stop all tasks)
 	mi.scheduler.Stop()
 
 	// Stop task manager: cancel and join its Run goroutine, then close its store
 	mi.stopTaskManager()
 	mi.stopLocalAdminExpiry()
+	// Threat hunting: cancel and checkpoint the scan, stop its workers,
+	// flush the event queue (#416).
+	mi.stopYARA()
 
 	// Stop DLP and the session helpers, then close the evidence queue
 	native.SetDLPPolicySync(nil)
+	native.SetPackageSync(nil)
+	native.SetAdminPasswordRotator(nil)
 	native.SetUserNotifier(nil)
 	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)
@@ -876,12 +937,15 @@ func (mi *MainIntegration) Stop() error {
 		mi.dlpEvents = nil
 	}
 
-	// Stop audit log service
+	// Stop audit log service; a server config arriving now must not restart it.
+	mi.loggingMu.Lock()
+	mi.loggingStopped = true
 	if mi.loggingService != nil {
 		if err := mi.loggingService.Stop(); err != nil {
 			log.Printf("Warning: Failed to stop logging service: %v", err)
 		}
 	}
+	mi.loggingMu.Unlock()
 
 	// Close services store
 	if mi.servicesStore != nil {
@@ -975,9 +1039,11 @@ func (mi *MainIntegration) GetStatus() map[string]interface{} {
 	}
 
 	// Logging status
+	mi.loggingMu.Lock()
 	if mi.loggingService != nil {
 		status["logging"] = mi.loggingService.GetStatistics()
 	}
+	mi.loggingMu.Unlock()
 
 	// DLP status
 	if mi.dlpManager != nil {

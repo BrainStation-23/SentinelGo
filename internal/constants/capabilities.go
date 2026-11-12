@@ -23,6 +23,9 @@ var AgentCapabilities = []string{
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
 	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
+	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
+	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
+	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on
@@ -47,6 +50,17 @@ const CapabilityMDMSync = "mdm_sync_v1"
 // CapabilityMDMUnenroll means the agent runs the mdm-unenroll native task:
 // remove this deployment's MDM enrollment (#356).
 const CapabilityMDMUnenroll = "mdm_unenroll_v1"
+
+// CapabilityAdminPasswordRotation means the agent rotates a local admin
+// account's password and escrows it before setting it: the
+// agent_*_admin_password RPCs and the admin-password-rotate task (#361).
+// Windows only.
+const CapabilityAdminPasswordRotation = "admin_password_rotation_v1" // #nosec G101 - a capability name, not a credential
+
+// CapabilityDLPNetworkControl means the agent applies the file DLP bundle's
+// modules.files.network_control: blocked apps and taint blocks through WFP
+// (#427, Compliance-OS#910). Windows only.
+const CapabilityDLPNetworkControl = "dlp_network_control_v1"
 
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
@@ -79,7 +93,8 @@ func Capabilities() []string {
 	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	case "windows":
-		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll)
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation,
+			CapabilityDLPNetworkControl)
 	}
 	return caps
 }

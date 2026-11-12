@@ -89,14 +89,20 @@ func HandleAuditLogsStandalone(cfg *config.Config) {
 func HandleAuditLogsStatus(cfg *config.Config) {
 	fmt.Println("Audit Logs Service Status")
 	fmt.Println("=========================")
-	fmt.Printf("Service Enabled: %v\n", cfg.AuditLogsEnabled)
+	fmt.Printf("Service Enabled: %v\n", cfg.GetAuditLogsEnabled())
 	fmt.Printf("Device ID: %s\n", cfg.DeviceID)
 	fmt.Printf("Agent Version: %s\n", cfg.CurrentVersion)
 	fmt.Printf("OS Type: %s\n", runtime.GOOS)
+	if v := cfg.ServerConfigVersion(); v > 0 {
+		fmt.Printf("Server Config Version: %d\n", v)
+	}
 
-	if cfg.AuditLogsEnabled {
+	switch {
+	case cfg.GetAuditLogsEnabled():
 		fmt.Println("\nStatus: Service is configured to run with the main agent")
-	} else {
+	case cfg.AuditLogsDisabledByServer():
+		fmt.Println("\nStatus: Service is stopped: audit logs disabled by server (console setting)")
+	default:
 		fmt.Println("\nStatus: Service is disabled. Enable via audit_logs_enabled in config")
 	}
 }

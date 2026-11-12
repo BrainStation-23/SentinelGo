@@ -47,7 +47,9 @@ func TestMain(m *testing.M) {
 		_ = serve(newPipeConn(os.Stdin, os.Stdout, true), desc+",probe="+probe())
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	cleanupExe() // once: tests share the staged binary
+	os.Exit(code)
 }
 
 // probe tries what the sandbox must stop.
@@ -170,7 +172,6 @@ func TestWindowsPool_Scan(t *testing.T) {
 	if res := p.Scan(context.Background(), f2, size2, 10*time.Second); res.Status != filescan.StatusScanned || len(res.Findings) != 0 {
 		t.Fatalf("second scan %+v", res)
 	}
-	t.Cleanup(cleanupExe)
 }
 
 // From inside a worker: no reading the user's files by path, no writing, no

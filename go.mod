@@ -2,9 +2,10 @@ module sentinelgo
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
+	github.com/cawalch/go-yara v0.9.0
 	github.com/ebitengine/purego v0.11.3
 	github.com/hoophq/alcatraz v0.23.0
 	github.com/rrethy/ahocorasick v1.0.0
