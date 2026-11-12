@@ -110,7 +110,11 @@ func TestDarwinEnforcer_ScansAfterWrite(t *testing.T) {
 		ev.Findings[0].Detector != "custom.keywords" {
 		t.Errorf("event %+v", ev)
 	}
-	if h := e.Health(); !strings.Contains(h.Workers.Sandbox, "rlimits") || h.Stats.Scans < 2 {
+	// The clean file's scan isn't ordered before the other file's event
+	// (FSEvents batches, each file waits out its own quiet period): wait
+	// for it rather than expect it already done.
+	eventually(t, "both files scanned", func() bool { return e.Health().Stats.Scans >= 2 })
+	if h := e.Health(); !strings.Contains(h.Workers.Sandbox, "rlimits") {
 		t.Errorf("health %+v", h)
 	}
 
