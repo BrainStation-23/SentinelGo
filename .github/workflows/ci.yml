@@ -267,6 +267,17 @@ jobs:
           go test -count=1 -v -run 'TestWindowsHost_' ./internal/adminpassword/ | tee "$RUNNER_TEMP/adminpw-tests.log"
           grep -q -- "--- PASS: TestWindowsHost_SetPasswordE2E " "$RUNNER_TEMP/adminpw-tests.log" || { echo "::error::TestWindowsHost_SetPasswordE2E did not run elevated"; exit 1; }
 
+      # DLP network controls (#427): the test binary blocks its own
+      # connections with WFP, checks loopback and an allowed destination
+      # still work, and removes the block. It skips itself without
+      # elevation, so make sure it really ran.
+      - name: Run network controls WFP test
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          go test -count=1 -v -run 'TestWFPRuleset' ./internal/dlp/netctl/ | tee "$RUNNER_TEMP/netctl-tests.log"
+          grep -q -- "--- PASS: TestWFPRuleset " "$RUNNER_TEMP/netctl-tests.log" || { echo "::error::TestWFPRuleset did not run elevated"; exit 1; }
+
       # tools/dlprules (the DLP rules generator) is its own module, so ./...
       # above doesn't reach it. Linux only: it has no platform-specific code.
       - name: Run DLP rules generator tests

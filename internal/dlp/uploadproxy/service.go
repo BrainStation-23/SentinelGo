@@ -39,6 +39,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sentinelgo/internal/dlp/addrbook"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
@@ -180,7 +181,7 @@ func NewService(o ServiceOptions) *Service {
 		open = func() (DirectBlocker, error) { return platformDirectBlocker(s.tports) }
 	}
 	if resolve == nil {
-		resolve = platformResolver
+		resolve = addrbook.System
 	}
 	if open != nil && resolve != nil {
 		s.direct = newDirectBlock(open, resolve)

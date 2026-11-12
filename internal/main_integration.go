@@ -20,6 +20,7 @@ import (
 	"sentinelgo/internal/dlp/notify"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/session"
+	"sentinelgo/internal/dlp/netctl"
 	"sentinelgo/internal/dlp/uploadproxy"
 	"sentinelgo/internal/emergencylog"
 	"sentinelgo/internal/localadmin"
@@ -518,7 +519,8 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 			// On Linux the helpers set each user's desktop proxy (#426).
 			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
 				SessionProxy: sessionProxySetter(sup)})
-			enforcer := uploadproxy.WithUploads(files, uploads)
+			// Network controls (#427, Windows): off until the bundle turns them on.
+			enforcer := netctl.With(uploadproxy.WithUploads(files, uploads), netctl.New(netctl.Options{}))
 			m.SetFiles(enforcer)
 			// Windows: the helpers hand over files on shares and sync folders (#330).
 			if fr, ok := sup.(interface{ SetFileReceiver(session.FileReceiver) }); ok {
