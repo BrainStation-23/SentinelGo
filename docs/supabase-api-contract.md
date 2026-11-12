@@ -16,6 +16,23 @@ This is how the Supabase gateway answers the requests the agent makes, and how `
 
 Storage paths are concatenated verbatim, with no escaping. The updater depends on these URLs never changing.
 
+## Server-sent agent settings
+
+`agent_get_tasks`, `agent_enqueue`, `agent_enqueue_inventory` and `agent_enqueue_audit_logs` add an optional `config` member to their reply (sentinel-ops#902, SentinelGo#466):
+
+```json
+"config": { "audit_logs_enabled": false, "task_polling_interval": "30s",
+            "log_flush_interval": "2m0s", "software_sync_interval": "15m0s",
+            "services_sync_interval": "15m0s", "version": 7 }
+```
+
+- `version` is monotonic. The agent applies a block only when it is newer than the last one it applied, and persists it as `server_config` in `config.json`.
+- Durations are Go-style (`"30s"`, `"15m0s"`, `"1h"`). The agent clamps them to `task_polling_interval` ≥ 10s, `log_flush_interval` ≥ 30s, the two syncs ≥ 5m, all ≤ 24h; a value that doesn't parse is ignored.
+- Unknown members are ignored, and a missing `config` (an older server) changes nothing.
+- `audit_logs_enabled: false` stops the agent's audit-log pipeline. A local `audit_logs_enabled: false` in `config.json` stays off whatever the server sends. While the setting is off the server also drops older agents' uploads and answers `{"enqueued": false, "disabled": true}`.
+
+See [02-config-module.md](02-config-module.md#server-side-settings-server_config) for how the agent applies each key.
+
 ## Error responses
 
 | # | Case | Expected status | Expected body | Classification | Verified |

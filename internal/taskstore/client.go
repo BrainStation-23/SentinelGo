@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sentinelgo/internal/remoteconfig"
 	"sentinelgo/internal/supabase"
 )
 
@@ -70,6 +71,9 @@ func (c *Client) GetTasks(ctx context.Context) (*AgentTasksResponse, error) {
 		}
 		return nil, err
 	}
+	// The most frequent call, so a settings change reaches the agent within
+	// one poll (#466).
+	remoteconfig.Observe(result.Config)
 	return &result, nil
 }
 

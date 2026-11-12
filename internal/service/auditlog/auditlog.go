@@ -69,6 +69,10 @@ func (s *AuditLogService) enqueue(ctx context.Context, body []byte) ([]byte, err
 	var raw []byte
 	err := c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), &raw,
 		supabase.WithHeader(headerXDeviceID, s.config.DeviceID))
+	if err == nil {
+		// The reply carries the server's agent settings (#466).
+		rpcutil.ObserveConfigIn(raw)
+	}
 	return raw, err
 }
 

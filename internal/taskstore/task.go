@@ -1,6 +1,7 @@
 package taskstore
 
 import (
+	"encoding/json"
 	"time"
 
 	"sentinelgo/internal/artifact"
@@ -54,4 +55,7 @@ type Task struct {
 type AgentTasksResponse struct {
 	ServerTime string `json:"server_time"`
 	Tasks      []Task `json:"tasks"`
+	// Config is the server's agent settings (sentinel-ops#902, #466),
+	// absent from older servers. GetTasks hands it to remoteconfig.
+	Config json.RawMessage `json:"config,omitempty"`
 }

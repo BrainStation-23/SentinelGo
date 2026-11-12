@@ -192,6 +192,59 @@ type Scheduler struct {
 	// tasks and taskOrder are frozen: the scheduler goroutines read them without
 	// the lock, so AddTask rejects further additions.
 	started bool
+	// pendingIntervals holds interval changes made by SetInterval after
+	// Start (guarded by mu); the periodic loop applies them on its next
+	// heartbeat, so tickers are only touched by that goroutine.
+	pendingIntervals map[string]time.Duration
+}
+
+// SetInterval changes how often task name runs (#466: the server sets the
+// software and services sync intervals at runtime). Before Start it sets the
+// interval directly; afterwards the running loop resets the task's ticker
+// within a second. The startup jitter is not applied again.
+func (s *Scheduler) SetInterval(name string, d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("task %s: interval must be positive, got %v", name, d)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[name]
+	if !ok {
+		return fmt.Errorf("task %s not found", name)
+	}
+	if !s.started {
+		task.Interval = d
+		return nil
+	}
+	if s.pendingIntervals == nil {
+		s.pendingIntervals = make(map[string]time.Duration)
+	}
+	s.pendingIntervals[name] = d
+	return nil
+}
+
+// applyPendingIntervals applies SetInterval changes to the running tickers.
+// Called only from runPeriodicTasks, the tickers' owner. A retimed task's
+// startup jitter (drawn from the old interval) is dropped: agents receive a
+// change at different polls, which spreads them already.
+func (s *Scheduler) applyPendingIntervals(tickers map[string]*time.Ticker, startAfter map[string]time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, d := range s.pendingIntervals {
+		task := s.tasks[name]
+		if task.Interval == d {
+			continue
+		}
+		log.Printf("Task %s interval changed %v -> %v", name, task.Interval, d)
+		task.Interval = d
+		delete(startAfter, name)
+		if t, ok := tickers[name]; ok {
+			t.Reset(d)
+		} else if task.Enabled {
+			tickers[name] = time.NewTicker(d)
+		}
+	}
+	s.pendingIntervals = nil
 }
 
 // NewScheduler creates a new task scheduler
@@ -487,6 +540,7 @@ func (s *Scheduler) runPeriodicTasks(ctx context.Context, cfg *config.Config, au
 			log.Printf("Scheduler stopping, shutting down all tasks")
 			return
 		case <-heartbeat.C:
+			s.applyPendingIntervals(tickers, startAfter)
 			for name, ticker := range tickers {
 				s.maybeDispatchTask(ctx, cfg, authSvc, name, ticker, startAfter)
 			}
