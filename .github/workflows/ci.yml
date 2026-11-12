@@ -236,17 +236,20 @@ jobs:
       # workers as `nobody` the way the service does. Hosted runners allow
       # sudo. Root gets its own build cache, so the steps after this one (run
       # as the runner user) never meet root-owned cache files, and its
-      # coverage is added to this runner's report for SonarCloud.
+      # coverage is added to this runner's report for SonarCloud. The upload
+      # proxy's nftables backstop test (#426) runs here too.
       - name: Run file DLP tests as root
         if: runner.os == 'Linux'
         run: |
+          # The upload backstop's end-to-end test (#426) drives nftables.
+          command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables; }
           sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$RUNNER_TEMP/gocache-root" \
             "GOFLAGS=$(go env GOFLAGS)" CGO_ENABLED=0 \
             go test -timeout=5m -count=1 -v -coverprofile="$RUNNER_TEMP/coverage-root.out" -coverpkg=./... \
-            ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ | tee "$RUNNER_TEMP/root-tests.log"
+            ./internal/dlp/filedlp/ ./internal/dlp/scanworker/ ./internal/dlp/uploadproxy/ | tee "$RUNNER_TEMP/root-tests.log"
           # The end-to-end tests skip themselves when they can't run: make
           # sure they really ran here.
-          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestEnforcer_QuarantineEndToEnd TestEnforcer_UntrustedDeviceEndToEnd TestEnforcer_TaintEndToEnd TestSandbox_Probe; do
+          for t in TestEnforcer_EndToEnd TestEnforcer_StopDuringScan TestEnforcer_QuarantineEndToEnd TestEnforcer_UntrustedDeviceEndToEnd TestEnforcer_TaintEndToEnd TestSandbox_Probe TestNftBackstop_EndToEnd; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/root-tests.log" || { echo "::error::$t did not run as root"; exit 1; }
           done
           tail -n +2 "$RUNNER_TEMP/coverage-root.out" >> coverage.out

@@ -1,28 +1,34 @@
 package uploadproxy
 
-// Blocking direct connections to the inspected sites (#427, Windows): the
-// PAC script only steers apps that honour the system proxy, so while the
-// redirect is active the agent also blocks direct 443 to the addresses the
-// intercept hosts resolve to, except from its own process (it is the
-// proxy). How much is blocked is the policy's direct_block mode (#451):
+// Blocking direct connections to the inspected sites (Windows: WFP, #427;
+// Linux: nftables, #426): the PAC script only steers apps that honour the
+// system proxy, so while the redirect is active the agent also blocks
+// direct 443 to the addresses the intercept hosts resolve to, except from
+// its own process (it is the proxy). How much is blocked is the policy's
+// direct_block mode (#451):
 //
 //   - quic (default): UDP 443 only. QUIC clients fall back to TCP, and TCP
 //     follows the PAC into the proxy. A shared CDN address costs other
 //     sites HTTP/3, not reachability.
-//   - strict: TCP and UDP 443. Apps that ignore the proxy can't upload to
-//     the sites around the inspection, but every site sharing an address
-//     with them breaks too, as do browsers before the PAC applies (WPAD
-//     resolves to DIRECT first) and the PAC's DIRECT fallback.
+//   - strict: TCP 443 too. On Windows it is refused: apps that ignore the
+//     proxy can't upload to the sites around the inspection, but every
+//     site sharing an address with them breaks too, as do browsers before
+//     the PAC applies (WPAD resolves to DIRECT first) and the PAC's DIRECT
+//     fallback. On Linux it is redirected into the proxy's transparent
+//     listener instead (transparent.go), which inspects the intercepted
+//     hosts by SNI and passes every other site through, so shared
+//     addresses cost nothing but the hop.
 //   - off: no block, the PAC only.
 //
-// The same rule holds for the later backstops (Linux nftables, macOS pf):
-// no TCP block by address for all processes except in strict.
+// The same rule holds for a later macOS pf backstop: no TCP block by
+// address for all processes except in strict.
 //
 // It is enforcement, so it only runs when the files module isn't
 // audit_only, and only while the redirect is active: when the proxy is
 // down, the emergency switch is on or inspection stops, the block goes
-// with the redirect. The filters live in a dynamic WFP session, so they
-// also go when the agent dies.
+// with the redirect. WFP filters live in a dynamic session, so they also go
+// when the agent dies; the nftables table doesn't, so it is removed on the
+// next start and on uninstall (platformDirectCleanup).
 //
 // Addresses are best effort: they come from resolving the exact intercept
 // hosts (a "*.example.com" pattern can't be resolved) and are refreshed on
@@ -51,6 +57,10 @@ type DirectBlocker interface {
 	Close() error
 }
 
+// tcpActioner is a DirectBlocker that says what it does with TCP 443
+// (TCPRefuse or TCPRedirect); blockers that don't refuse it.
+type tcpActioner interface{ TCPAction() string }
+
 // Resolver resolves host to its addresses and how long they stay valid.
 type Resolver func(ctx context.Context, host string) ([]netip.Addr, time.Duration, error)
 
@@ -69,7 +79,10 @@ type DirectBlockStatus struct {
 	// what is blocked while active: ["udp"] or ["tcp","udp"].
 	Mode      string   `json:"mode"`
 	Protocols []string `json:"protocols,omitempty"`
-	Addresses int      `json:"addresses"` // blocked addresses
+	// TCP is what happens to TCP 443 when it is in Protocols: refuse
+	// (Windows) or redirect into the proxy (Linux).
+	TCP       string `json:"tcp,omitempty"`
+	Addresses int    `json:"addresses"` // blocked addresses
 	// Unresolved counts intercept hosts with no address yet, and Patterns
 	// the wildcard patterns that can't be blocked by address.
 	Unresolved int `json:"unresolved"`
@@ -251,6 +264,12 @@ func (d *directBlock) update(ctx context.Context, intercept, bypass []string, mo
 	}
 	d.st = DirectBlockStatus{State: DirectBlockActive, Mode: mode, Protocols: protocols,
 		Addresses: len(addrs), Unresolved: unresolved, Patterns: patterns}
+	if tcp {
+		d.st.TCP = TCPRefuse
+		if a, ok := d.blocker.(tcpActioner); ok {
+			d.st.TCP = a.TCPAction()
+		}
+	}
 }
 
 // stop removes every block; state says why (inactive, off:audit_only,

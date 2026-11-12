@@ -54,11 +54,13 @@ var (
 	// ErrUnsupportedDesktop: the sessions' desktops have no proxy setting
 	// the agent knows (GNOME, KDE).
 	ErrUnsupportedDesktop = errors.New("unsupported_desktop")
+	// ErrNoNft: the Linux backstop needs the `nft` command (#426).
+	ErrNoNft = errors.New("no_nft")
 )
 
 // Reason is the capability reason for a Redirector or Truster error.
 func Reason(err error) string {
-	for _, e := range []error{ErrExistingProxy, ErrNeedsMDM, ErrNotImplemented, ErrNoSession, ErrUnsupportedDesktop} {
+	for _, e := range []error{ErrExistingProxy, ErrNeedsMDM, ErrNotImplemented, ErrNoSession, ErrUnsupportedDesktop, ErrNoNft} {
 		if errors.Is(err, e) {
 			return e.Error()
 		}

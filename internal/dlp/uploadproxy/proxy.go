@@ -42,6 +42,9 @@ type Options struct {
 	// PAC, when set, is served at /proxy.pac to clients asking the proxy
 	// directly (the system proxy's auto-config URL points here).
 	PAC func() []byte
+	// Mark, when not 0, is set on every connection the proxy makes (Linux
+	// SO_MARK), so the nftables backstop doesn't redirect them back to it.
+	Mark uint32
 }
 
 // Stats are the proxy's counters.
@@ -74,8 +77,19 @@ func New(o Options) *Proxy {
 		o.InScope = func(string, string) bool { return false }
 	}
 	d := &net.Dialer{Timeout: o.DialTimeout, KeepAlive: 30 * time.Second}
-	if !o.AllowLocalTargets {
-		d.Control = guardDial
+	mark, guard := o.Mark, !o.AllowLocalTargets
+	if mark != 0 || guard {
+		d.Control = func(network, address string, c syscall.RawConn) error {
+			if guard {
+				if err := guardDial(network, address, c); err != nil {
+					return err
+				}
+			}
+			if mark != 0 {
+				setMark(c, mark)
+			}
+			return nil
+		}
 	}
 	return &Proxy{
 		opts:     o,

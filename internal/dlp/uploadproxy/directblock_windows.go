@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
@@ -30,8 +31,16 @@ const (
 	weightBlock      = 1
 )
 
-// platformDirectBlocker opens the WFP blocker.
-var platformDirectBlocker = func() (DirectBlocker, error) { return newWFPBlocker() }
+// platformDirectBlocker opens the WFP blocker. Windows has no transparent
+// redirect (that needs a callout driver), so strict refuses TCP.
+var platformDirectBlocker = func(RedirectPorts) (DirectBlocker, error) { return newWFPBlocker() }
+
+// platformDirectCleanup: the filters live in a dynamic session, which
+// Windows removes when the agent dies.
+var platformDirectCleanup func() error
+
+// platformTransparent: no transparent redirect on Windows.
+var platformTransparent func() ([]net.Listener, RedirectPorts, OriginalDst, error)
 
 // platformResolver asks the Windows DNS client, which reports TTLs.
 var platformResolver Resolver = dnsResolve

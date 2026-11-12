@@ -95,6 +95,9 @@ func cleanupDLPHelpers() {
 	if err := uploadproxy.NewRedirector(filepath.Dir(config.GetDefaultConfigPath())).Remove(); err != nil {
 		log.Printf("Warning: failed to remove the DLP upload redirect: %v", err)
 	}
+	if err := uploadproxy.RemoveDirectBlock(); err != nil {
+		log.Printf("Warning: failed to remove the DLP upload direct block: %v", err)
+	}
 	if err := uploadproxy.NewTruster().Untrust(); err != nil {
 		log.Printf("Warning: failed to remove the DLP upload inspection CA: %v", err)
 	}

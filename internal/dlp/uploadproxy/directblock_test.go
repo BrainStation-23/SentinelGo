@@ -3,6 +3,7 @@ package uploadproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -187,12 +188,12 @@ func TestDirectBlockUpdate(t *testing.T) {
 	if !fb.blocksTCP() || fb.sets != 2 {
 		t.Errorf("strict: tcp %v, sets %d", fb.blocksTCP(), fb.sets)
 	}
-	if st := d.status(); st.Mode != "strict" || !slices.Equal(st.Protocols, []string{"tcp", "udp"}) {
+	if st := d.status(); st.Mode != "strict" || !slices.Equal(st.Protocols, []string{"tcp", "udp"}) || st.TCP != TCPRefuse {
 		t.Errorf("strict status %+v", st)
 	}
 	d.update(context.Background(), []string{"drive.example.com"}, []string{"login.example.com"}, policy.DirectBlockQUIC)
-	if fb.blocksTCP() || fb.sets != 3 {
-		t.Errorf("back to quic: tcp %v, sets %d", fb.blocksTCP(), fb.sets)
+	if fb.blocksTCP() || fb.sets != 3 || d.status().TCP != "" {
+		t.Errorf("back to quic: tcp %v, sets %d, status %+v", fb.blocksTCP(), fb.sets, d.status())
 	}
 
 	// Off closes the blocker.
@@ -301,5 +302,33 @@ func TestService_DirectBlock(t *testing.T) {
 	}
 	if st := s.Status().DirectBlock; st.State != DirectBlockInactive {
 		t.Errorf("after stop %+v", st)
+	}
+}
+
+// redirectingBlocker is a blocker that redirects TCP (the Linux backstop).
+type redirectingBlocker struct{ fakeBlocker }
+
+func (*redirectingBlocker) TCPAction() string { return TCPRedirect }
+
+// The status says what strict does to TCP: whatever the blocker reports.
+func TestDirectBlockUpdate_TCPAction(t *testing.T) {
+	dns := newFakeDNS()
+	dns.set("drive.example.com", "192.0.2.10")
+	rb := &redirectingBlocker{}
+	d := newDirectBlock(func() (DirectBlocker, error) { return rb, nil }, dns.resolve)
+	d.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockStrict)
+	if st := d.status(); st.State != DirectBlockActive || st.TCP != TCPRedirect {
+		t.Errorf("status %+v", st)
+	}
+}
+
+// Without the nft command the direct block is unsupported with that reason.
+func TestDirectBlockUpdate_NoNft(t *testing.T) {
+	dns := newFakeDNS()
+	dns.set("drive.example.com", "192.0.2.10")
+	d := newDirectBlock(func() (DirectBlocker, error) { return nil, fmt.Errorf("%w: nft not found", ErrNoNft) }, dns.resolve)
+	d.update(context.Background(), []string{"drive.example.com"}, nil, policy.DirectBlockQUIC)
+	if st := d.status(); st.State != "unsupported:no_nft" {
+		t.Errorf("status %+v", st)
 	}
 }
