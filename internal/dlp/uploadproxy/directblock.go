@@ -40,10 +40,9 @@ import (
 	"context"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
-	"time"
 
+	"sentinelgo/internal/dlp/addrbook"
 	"sentinelgo/internal/dlp/policy"
 )
 
@@ -62,7 +61,7 @@ type DirectBlocker interface {
 type tcpActioner interface{ TCPAction() string }
 
 // Resolver resolves host to its addresses and how long they stay valid.
-type Resolver func(ctx context.Context, host string) ([]netip.Addr, time.Duration, error)
+type Resolver = addrbook.Resolver
 
 // Direct block states in the status.
 const (
@@ -89,109 +88,14 @@ type DirectBlockStatus struct {
 	Patterns   int `json:"patterns"`
 }
 
-// Address book tuning; vars for tests.
-var (
-	minDNSTTL       = 30 * time.Second
-	maxDNSTTL       = 10 * time.Minute
-	dnsRetry        = time.Minute
-	addrRetention   = 30 * time.Minute // apps cache addresses past their TTL
-	resolveTimeout  = 5 * time.Second
-	maxBlockedAddrs = 2000
-)
-
-type hostEntry struct {
-	addrs map[netip.Addr]time.Time // address -> last seen
-	next  time.Time                // when to resolve again
-}
-
-// addressBook resolves hosts on their TTL and remembers recent addresses.
-type addressBook struct {
-	resolve Resolver
-	now     func() time.Time
-	hosts   map[string]*hostEntry
-}
-
-func newAddressBook(r Resolver) *addressBook {
-	return &addressBook{resolve: r, now: time.Now, hosts: map[string]*hostEntry{}}
-}
-
-// refresh resolves the hosts that are due and forgets hosts not listed.
-func (b *addressBook) refresh(ctx context.Context, hosts []string) {
-	want := map[string]bool{}
-	for _, h := range hosts {
-		want[h] = true
-	}
-	for h := range b.hosts {
-		if !want[h] {
-			delete(b.hosts, h)
-		}
-	}
-	now := b.now()
-	for _, h := range hosts {
-		e := b.hosts[h]
-		if e == nil {
-			e = &hostEntry{addrs: map[netip.Addr]time.Time{}}
-			b.hosts[h] = e
-		}
-		if !now.Before(e.next) {
-			b.resolveInto(ctx, h, e, now)
-		}
-	}
-}
-
-// resolveInto resolves h, records its addresses as seen now, schedules the
-// next lookup and forgets addresses not seen for addrRetention.
-func (b *addressBook) resolveInto(ctx context.Context, h string, e *hostEntry, now time.Time) {
-	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
-	addrs, ttl, err := b.resolve(rctx, h)
-	cancel()
-	e.next = now.Add(dnsRetry)
-	if err == nil {
-		for _, a := range addrs {
-			e.addrs[a.Unmap()] = now
-		}
-		e.next = now.Add(min(max(ttl, minDNSTTL), maxDNSTTL))
-	}
-	for a, seen := range e.addrs {
-		if now.Sub(seen) > addrRetention {
-			delete(e.addrs, a)
-		}
-	}
-}
-
-// addrs returns the addresses of hosts, sorted.
-func (b *addressBook) addrs(hosts []string) map[netip.Addr]bool {
-	out := map[netip.Addr]bool{}
-	for _, h := range hosts {
-		if e := b.hosts[h]; e != nil {
-			for a := range e.addrs {
-				out[a] = true
-			}
-		}
-	}
-	return out
-}
-
-// exactHosts splits a host list into exact names and a count of patterns.
-func exactHosts(list []string) (hosts []string, patterns int) {
-	for _, h := range list {
-		h = strings.ToLower(strings.TrimSpace(h))
-		switch {
-		case h == "":
-		case strings.HasPrefix(h, "*."):
-			patterns++
-		default:
-			hosts = append(hosts, h)
-		}
-	}
-	return hosts, patterns
-}
+// maxBlockedAddrs bounds the blocked addresses; a var for tests.
+var maxBlockedAddrs = 2000
 
 // directBlock keeps the blocker in step with the intercept hosts. update
 // and stop run on the watchdog (or after it stopped); status from anywhere.
 type directBlock struct {
 	open func() (DirectBlocker, error)
-	book *addressBook
+	book *addrbook.Book
 
 	mu         sync.Mutex
 	blocker    DirectBlocker
@@ -201,7 +105,7 @@ type directBlock struct {
 }
 
 func newDirectBlock(open func() (DirectBlocker, error), r Resolver) *directBlock {
-	return &directBlock{open: open, book: newAddressBook(r),
+	return &directBlock{open: open, book: addrbook.New(r),
 		st: DirectBlockStatus{State: DirectBlockInactive, Mode: policy.DirectBlockQUIC}}
 }
 
@@ -217,12 +121,12 @@ func (d *directBlock) update(ctx context.Context, intercept, bypass []string, mo
 	if tcp {
 		protocols = []string{"tcp", "udp"}
 	}
-	in, patterns := exactHosts(intercept)
-	out, _ := exactHosts(bypass)
-	d.book.refresh(ctx, append(slices.Clone(in), out...))
-	keep := d.book.addrs(out)
+	in, patterns := addrbook.ExactHosts(intercept)
+	out, _ := addrbook.ExactHosts(bypass)
+	d.book.Refresh(ctx, append(slices.Clone(in), out...))
+	keep := d.book.Addrs(out)
 	var addrs []netip.Addr
-	for a := range d.book.addrs(in) {
+	for a := range d.book.Addrs(in) {
 		if !keep[a] {
 			addrs = append(addrs, a)
 		}
@@ -231,12 +135,7 @@ func (d *directBlock) update(ctx context.Context, intercept, bypass []string, mo
 	if len(addrs) > maxBlockedAddrs {
 		addrs = addrs[:maxBlockedAddrs]
 	}
-	unresolved := 0
-	for _, h := range in {
-		if e := d.book.hosts[h]; e == nil || len(e.addrs) == 0 {
-			unresolved++
-		}
-	}
+	unresolved := d.book.Unresolved(in)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -52,14 +52,6 @@ var platformDirectBlocker = func(ports RedirectPorts) (DirectBlocker, error) {
 	return &nftBlocker{ports: ports}, nil
 }
 
-// platformResolver asks Go's resolver, which doesn't report TTLs: the
-// address book then looks again after minDNSTTL and keeps addresses for
-// addrRetention.
-var platformResolver Resolver = func(ctx context.Context, host string) ([]netip.Addr, time.Duration, error) {
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	return addrs, 0, err
-}
-
 // platformDirectCleanup removes a table a crashed agent left.
 var platformDirectCleanup = func() error { return removeNftTable() }
 

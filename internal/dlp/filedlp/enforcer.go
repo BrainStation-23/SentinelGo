@@ -79,6 +79,9 @@ type Health struct {
 	// DeepInspection is the upload channel's HTTPS inspection
 	// (uploadproxy.Status, #344); nil when it never started.
 	DeepInspection any `json:"deep_inspection,omitempty"`
+	// NetworkControl is the network controls' state (netctl.Status, #427);
+	// nil when they are off.
+	NetworkControl any `json:"network_control,omitempty"`
 }
 
 // Hook states.

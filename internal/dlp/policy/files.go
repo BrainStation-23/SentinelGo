@@ -72,6 +72,9 @@ type FilesModule struct {
 	// Uploads configures the upload channel's HTTPS inspection (#344,
 	// backend Compliance-OS#532). Absent means off.
 	Uploads Uploads `json:"uploads"`
+	// NetworkControl blocks unsanctioned apps and taints apps that read
+	// sensitive files (#427, Compliance-OS#910; Windows). Absent means off.
+	NetworkControl NetworkControl `json:"network_control"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
@@ -188,6 +191,7 @@ func (m *FilesModule) normalize() {
 	m.ScanTimeoutMs = min(max(m.ScanTimeoutMs, MinScanTimeout), MaxScanTimeout)
 	m.CopyCorrelation.normalize()
 	m.Uploads.Inspection.normalize()
+	m.NetworkControl.normalize()
 	if len(m.Exceptions) > maxFileExceptions {
 		m.Exceptions = m.Exceptions[:maxFileExceptions]
 	}

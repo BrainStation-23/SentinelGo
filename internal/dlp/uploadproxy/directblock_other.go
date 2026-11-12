@@ -9,9 +9,6 @@ import "net"
 // Network Extension, which the agent doesn't ship.
 var platformDirectBlocker func(RedirectPorts) (DirectBlocker, error)
 
-// platformResolver isn't used without a blocker.
-var platformResolver Resolver
-
 // platformDirectCleanup: nothing outlives the agent here.
 var platformDirectCleanup func() error
 

@@ -112,55 +112,6 @@ func (f *fakeBlocker) blocked() (bool, string) {
 	return f.open, strings.Join(s, ",")
 }
 
-func TestAddressBook(t *testing.T) {
-	dns := newFakeDNS()
-	dns.set("a.example", "192.0.2.1", "2001:db8::1")
-	b := newAddressBook(dns.resolve)
-	now := time.Unix(1_000_000, 0)
-	b.now = func() time.Time { return now }
-
-	b.refresh(context.Background(), []string{"a.example"})
-	if got := len(b.addrs([]string{"a.example"})); got != 2 {
-		t.Fatalf("addrs %d", got)
-	}
-	// Not due before the TTL; due after.
-	now = now.Add(30 * time.Second)
-	b.refresh(context.Background(), []string{"a.example"})
-	if dns.lookups["a.example"] != 1 {
-		t.Errorf("looked up before the TTL: %d", dns.lookups["a.example"])
-	}
-	now = now.Add(31 * time.Second)
-	dns.set("a.example", "192.0.2.2") // the CDN moved
-	b.refresh(context.Background(), []string{"a.example"})
-	if got := b.addrs([]string{"a.example"}); len(got) != 3 || !got[netip.MustParseAddr("192.0.2.1")] {
-		t.Errorf("old addresses kept for a while: %v", got)
-	}
-	// Past the retention the old ones go.
-	for range 40 {
-		now = now.Add(time.Minute)
-		b.refresh(context.Background(), []string{"a.example"})
-	}
-	if got := b.addrs([]string{"a.example"}); len(got) != 1 || !got[netip.MustParseAddr("192.0.2.2")] {
-		t.Errorf("after retention: %v", got)
-	}
-	// A failure retries after dnsRetry; an unlisted host is forgotten.
-	dns.fail["b.example"] = true
-	b.refresh(context.Background(), []string{"b.example"})
-	if _, ok := b.hosts["a.example"]; ok {
-		t.Error("unlisted host kept")
-	}
-	if b.hosts["b.example"].next != now.Add(dnsRetry) {
-		t.Error("failure not retried after dnsRetry")
-	}
-	// The TTL is clamped.
-	dns.ttl = time.Second
-	dns.set("c.example", "192.0.2.9")
-	b.refresh(context.Background(), []string{"c.example"})
-	if b.hosts["c.example"].next != now.Add(minDNSTTL) {
-		t.Error("short TTL not clamped")
-	}
-}
-
 func TestDirectBlockUpdate(t *testing.T) {
 	dns := newFakeDNS()
 	dns.set("drive.example.com", "192.0.2.10", "192.0.2.20", "2001:db8::a")
