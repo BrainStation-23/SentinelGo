@@ -169,7 +169,7 @@ func TestController_Enforces(t *testing.T) {
 	if !reflect.DeepEqual(st, want) {
 		t.Errorf("status %+v", st)
 	}
-	if caps := f.ctl.Capabilities(); caps[CapBlockedApps] != "supported" || caps[CapTaintBlock] != "unsupported:not_implemented" {
+	if caps := f.ctl.Capabilities(); caps[CapBlockedApps] != "supported" || caps[CapTaintBlock] != "supported" {
 		t.Errorf("caps %v", caps)
 	}
 
@@ -267,12 +267,18 @@ func TestController_Refreshes(t *testing.T) {
 }
 
 // fakeFiles is a file DLP enforcer for the wrapper.
-type fakeFiles struct{ applied int }
+type fakeFiles struct {
+	applied int
+	caps    map[string]string
+}
 
 func (f *fakeFiles) Apply(context.Context, *policy.Compiled) { f.applied++ }
 func (f *fakeFiles) Stop()                                   {}
 func (f *fakeFiles) Wants(policy.FilesModule) bool           { return false }
 func (f *fakeFiles) Capabilities() map[string]string {
+	if f.caps != nil {
+		return f.caps
+	}
 	return map[string]string{"file.removable": "supported"}
 }
 func (f *fakeFiles) CopyCorrelation() map[string]string { return nil }

@@ -57,6 +57,11 @@ const CapabilityMDMUnenroll = "mdm_unenroll_v1"
 // Windows only.
 const CapabilityAdminPasswordRotation = "admin_password_rotation_v1" // #nosec G101 - a capability name, not a credential
 
+// CapabilityDLPNetworkControl means the agent applies the file DLP bundle's
+// modules.files.network_control: blocked apps and taint blocks through WFP
+// (#427, Compliance-OS#910). Windows only.
+const CapabilityDLPNetworkControl = "dlp_network_control_v1"
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -88,7 +93,8 @@ func Capabilities() []string {
 	case "darwin":
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	case "windows":
-		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation)
+		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation,
+			CapabilityDLPNetworkControl)
 	}
 	return caps
 }

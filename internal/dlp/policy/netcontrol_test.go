@@ -74,3 +74,29 @@ func TestNetworkControl_BadBlock(t *testing.T) {
 		t.Errorf("module %+v", m)
 	}
 }
+
+func TestApp_MatchesExe(t *testing.T) {
+	env := map[string]string{"programfiles": `C:\Program Files`}
+	chrome := `C:\Program Files\Google\Chrome\Application\chrome.exe`
+	slack := `C:\Users\ana\AppData\Local\slack\app-4.41.105\slack.exe`
+	for _, tc := range []struct {
+		app  App
+		exe  string
+		want bool
+	}{
+		{App{Name: "chrome.exe"}, chrome, true},
+		{App{Name: "Chrome"}, chrome, true},
+		{App{Name: "chrom"}, chrome, false},
+		{App{Path: `%ProgramFiles%\Google\Chrome\Application\chrome.exe`}, chrome, true},
+		{App{Path: `c:\program files\google\chrome\application\CHROME.EXE`}, chrome, true},
+		{App{Path: `%LOCALAPPDATA%\slack\*\slack.exe`}, slack, true},
+		{App{Path: `%LOCALAPPDATA%\slack\*\slack.exe`}, `C:\Users\ana\AppData\Local\other\slack.exe`, false},
+		{App{Path: `C:\Tools\x.exe`}, `C:\Tools\x.exe.bak`, false},
+		{App{Signer: "Google LLC"}, chrome, false},
+		{App{Name: "chrome.exe"}, "", false},
+	} {
+		if got := tc.app.MatchesExe(tc.exe, env); got != tc.want {
+			t.Errorf("%+v vs %s: %v", tc.app, tc.exe, got)
+		}
+	}
+}

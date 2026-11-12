@@ -100,6 +100,7 @@ func TestMupPath(t *testing.T) {
 // folder under a profile is still a taint source.
 func TestWinTaint_SharesAndSyncFolders(t *testing.T) {
 	tk := &winTaint{store: newTaintStore(), writers: map[string]writerRef{}, profiles: `c:\users\`}
+	tk.sources.Store(true) // process_taint on
 	devs := []ntPrefix{{nt: `\Device\HarddiskVolume3`, dos: "C:"}}
 	tk.devices.Store(&devs)
 	tk.watched.Store(&[]string{})
@@ -235,6 +236,7 @@ func TestShareRoots_RealSources(t *testing.T) {
 func TestLearnSyncRoot_Bounded(t *testing.T) {
 	e := &windowsEnforcer{}
 	tk := &winTaint{store: newTaintStore(), writers: map[string]writerRef{}}
+	tk.sources.Store(true) // process_taint on
 	e.taint.Store(tk)
 	for i := range maxSyncRoots + 3 {
 		root := `D:\Sync` + string(rune('A'+i/26)) + string(rune('a'+i%26))

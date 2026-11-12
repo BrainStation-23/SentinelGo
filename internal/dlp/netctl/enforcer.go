@@ -7,6 +7,7 @@ package netctl
 
 import (
 	"context"
+	"strings"
 
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/ipc"
@@ -55,6 +56,9 @@ func (w *withControls) Capabilities() map[string]string {
 		out[k] = v
 	}
 	for k, v := range extra {
+		if k == CapTaintBlock && strings.HasPrefix(caps[k], "unsupported:") {
+			continue // the file hook knows why taint blocks can't run (no trace)
+		}
 		out[k] = v
 	}
 	return out

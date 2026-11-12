@@ -1,8 +1,10 @@
 // Package netctl applies the file DLP network controls (#427, contract
 // proposed on Compliance-OS#910): apps admins mark as unsanctioned get no
-// network access except to the allowed destinations. Windows only, through
-// WFP filters in a dynamic session (they go when the agent dies); other OSes
-// report the controls as unsupported.
+// network access except to the allowed destinations, and an egress app that
+// opened a sensitive file loses its new connections for a few minutes
+// (taint blocks: the file hook decides, TaintBlock applies). Windows only,
+// through WFP filters in a dynamic session (they go when the agent dies);
+// other OSes report the controls as unsupported.
 //
 // It is enforcement, so nothing is blocked while the files module is
 // audit_only: the status then says what would be blocked.
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/dlp/addrbook"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 )
 
@@ -48,14 +51,21 @@ const (
 // Capability names in the DLP status's capabilities.
 const (
 	CapBlockedApps = "network_control.blocked_apps"
-	CapTaintBlock  = "network_control.taint_block"
+	CapTaintBlock  = filedlp.CapTaintBlock
 )
 
 // Status is files.network_control in the DLP status report.
 type Status struct {
-	State             string      `json:"state"`
-	BlockedApps       AppsStatus  `json:"blocked_apps"`
-	AllowDestinations AllowStatus `json:"allow_destinations"`
+	State             string       `json:"state"`
+	BlockedApps       AppsStatus   `json:"blocked_apps"`
+	TaintBlocks       TaintsStatus `json:"taint_blocks"`
+	AllowDestinations AllowStatus  `json:"allow_destinations"`
+}
+
+// TaintsStatus counts the apps cut off now, and when the last one was.
+type TaintsStatus struct {
+	Active        int        `json:"active"`
+	LastStartedAt *time.Time `json:"last_started_at,omitempty"`
 }
 
 // AppsStatus says which blocked apps are applied (or would be, in audit
@@ -89,6 +99,7 @@ type Options struct {
 	// Exists reports whether an executable is installed.
 	Exists func(path string) bool
 	GOOS   string
+	Now    func() time.Time
 }
 
 // refreshEvery re-resolves the allowed hosts and looks for apps installed
@@ -108,6 +119,14 @@ type Controller struct {
 	st       Status
 	cancel   context.CancelFunc
 	done     chan struct{}
+
+	taints    map[string]taint // lower-case executable → its block
+	lastTaint time.Time
+}
+
+type taint struct {
+	exe   string
+	until time.Time
 }
 
 // New returns a Controller.
@@ -130,7 +149,10 @@ func New(o Options) *Controller {
 	if o.GOOS == "" {
 		o.GOOS = runtime.GOOS
 	}
-	return &Controller{opts: o, book: addrbook.New(o.Resolve), st: Status{State: StateInactive}}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	return &Controller{opts: o, book: addrbook.New(o.Resolve), st: Status{State: StateInactive}, taints: map[string]taint{}}
 }
 
 // Supported reports whether this OS can apply the controls.
@@ -138,7 +160,26 @@ func (c *Controller) Supported() bool { return c.opts.GOOS == "windows" && c.opt
 
 // Wants reports whether m turns a control on that this OS applies.
 func (c *Controller) Wants(m policy.FilesModule) bool {
-	return c.Supported() && len(m.NetworkControl.BlockedApps[c.opts.GOOS]) > 0 && m.ControlsNetwork(c.opts.GOOS)
+	return c.Supported() && m.ControlsNetwork(c.opts.GOOS)
+}
+
+// TaintBlock cuts exe's new connections until until (the file hook found it
+// opened a file a file.upload policy would block). Ignored while the
+// controls or taint blocks are off, or the module is audit-only.
+func (c *Controller) TaintBlock(exe string, until time.Time) {
+	c.mu.Lock()
+	cp := c.compiled
+	if cp == nil || !c.Supported() || !cp.Modules.Files.TaintsNetwork(c.opts.GOOS) || cp.Modules.Files.IsAuditOnly() || exe == "" {
+		c.mu.Unlock()
+		return
+	}
+	now := c.opts.Now()
+	c.taints[strings.ToLower(exe)] = taint{exe: exe, until: until}
+	c.lastTaint = now
+	c.mu.Unlock()
+	c.sync(context.Background())
+	// Lift it on time, not at the next refresh.
+	time.AfterFunc(until.Sub(now)+time.Second, func() { c.sync(context.Background()) })
 }
 
 // Apply switches to cp.
@@ -208,8 +249,10 @@ func (c *Controller) sync(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cp := c.compiled
-	if cp == nil || !c.Supported() || !cp.Modules.Files.ControlsNetwork(c.opts.GOOS) ||
-		len(cp.Modules.Files.NetworkControl.BlockedApps[c.opts.GOOS]) == 0 {
+	if cp == nil || !cp.Modules.Files.TaintsNetwork(c.opts.GOOS) || cp.Modules.Files.IsAuditOnly() {
+		clear(c.taints)
+	}
+	if cp == nil || !c.Supported() || !cp.Modules.Files.ControlsNetwork(c.opts.GOOS) {
 		c.closeLocked()
 		state := StateInactive
 		if cp != nil && cp.Modules.Files.Enabled && !cp.Modules.Files.NetworkControl.Enabled {
@@ -220,12 +263,18 @@ func (c *Controller) sync(ctx context.Context) {
 	}
 	m := cp.Modules.Files
 	rules, apps := c.wantedLocked(m)
+	tainted := c.taintedLocked(&rules)
 	allow := c.allowLocked(ctx, m.NetworkControl)
 	rules.Allow = allow.ranges
-	c.st = Status{BlockedApps: apps, AllowDestinations: allow.status}
+	c.st = Status{BlockedApps: apps, TaintBlocks: tainted, AllowDestinations: allow.status}
 	if m.IsAuditOnly() {
 		c.closeLocked()
 		c.st.State = StateAuditOnly
+		return
+	}
+	if len(rules.BlockApps) == 0 {
+		c.closeLocked() // nothing to block now (taint blocks only, none active)
+		c.st.State = StateActive
 		return
 	}
 	if c.rules == nil {
@@ -282,6 +331,34 @@ func (c *Controller) wantedLocked(m policy.FilesModule) (Rules, AppsStatus) {
 	return r, st
 }
 
+// taintedLocked adds the apps cut off now to r, forgets expired blocks and
+// counts the rest.
+func (c *Controller) taintedLocked(r *Rules) TaintsStatus {
+	now := c.opts.Now()
+	var st TaintsStatus
+	have := map[string]bool{}
+	for _, p := range r.BlockApps {
+		have[strings.ToLower(p)] = true
+	}
+	for k, t := range c.taints {
+		if !now.Before(t.until) {
+			delete(c.taints, k)
+			continue
+		}
+		st.Active++
+		if !have[k] {
+			have[k] = true
+			r.BlockApps = append(r.BlockApps, t.exe)
+		}
+	}
+	slices.SortFunc(r.BlockApps, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
+	if !c.lastTaint.IsZero() {
+		t := c.lastTaint.UTC()
+		st.LastStartedAt = &t
+	}
+	return st
+}
+
 type allowed struct {
 	ranges []netip.Prefix
 	status AllowStatus
@@ -333,11 +410,7 @@ func (c *Controller) Capabilities() map[string]string {
 	default:
 		caps[CapBlockedApps] = "supported"
 	}
-	if c.Supported() {
-		caps[CapTaintBlock] = "unsupported:not_implemented"
-	} else {
-		caps[CapTaintBlock] = "unsupported:not_on_windows"
-	}
+	caps[CapTaintBlock] = caps[CapBlockedApps] // the file hook overrides it when its trace can't run
 	return caps
 }
 
