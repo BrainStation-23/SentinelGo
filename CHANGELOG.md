@@ -13,6 +13,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.9] - 2026-11-12
+
 ### Added
 
 - Windows: DLP network controls, part 2: taint blocks (#427, Compliance-OS#910). With `network_control.taint_block` on, when an app in `egress_apps.windows` (matched by name, or by path with `%VAR%` and `*`) opens a file under the user profiles (AppData excluded, where browsers and chat clients open their own files) that a `file.upload` policy with action `block` or `block_override` matches, the app's new connections are refused for `minutes` (1–60, default 10), except to loopback and `allow_destinations`, and the user is told why. The file is scanned in the sandboxed workers through the verdict cache, and an app is judged again for the same file only after 10 minutes. One event per block: channel `file.upload`, `destination.type: "network"`, `correlation.method: "taint"` with the file's hash and name, and `network_block: {until, minutes}`; in audit-only the event is `monitored` with `would_have: "network_blocked"` and nothing is blocked. It uses the ETW trace process taint already runs (started for taint blocks alone too); when the trace can't start, `network_control.taint_block` says why. WFP matches an app and not a process, so a block covers every window of that app, and connections it already has stay open. A scan takes a moment, so a very fast upload can finish first. The status counts the active blocks and the last one (`files.network_control.taint_blocks`), and `files.taint_block_dropped` the opens dropped when the queue was full. The agent now advertises `dlp_network_control_v1` on Windows.
@@ -616,7 +618,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.8...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.9...HEAD
+[v4.0.9]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.8...v4.0.9
 [v4.0.8]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.7...v4.0.8
 [v4.0.7]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.6...v4.0.7
 [v4.0.6]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.5...v4.0.6
