@@ -45,6 +45,10 @@ const mupPrefix = `\Device\Mup\`
 type winTaint struct {
 	sess  *etwSession
 	store *taintStore
+	// sources: record opens as taint sources (process_taint); egress: hand
+	// user files under the profiles to the taint blocks (#427), or nil.
+	sources atomic.Bool
+	egress  atomic.Pointer[func(egressOpen)]
 
 	devices  atomic.Pointer[[]ntPrefix] // NT device → drive letter
 	profiles string                     // C:\Users\ (lower case)
@@ -68,8 +72,21 @@ var startTrace = startETW
 // reconcileTaint starts the trace when taint is on and a drive is watched or
 // the session helpers hand files over, and stops it otherwise.
 func (e *windowsEnforcer) reconcileTaint(c *policy.Compiled, watched []Destination) {
-	want := c != nil && c.Modules.Files.CopyCorrelation.ProcessTaint &&
+	sources := c != nil && c.Modules.Files.CopyCorrelation.ProcessTaint &&
 		(len(watched) > 0 || (!e.localOff.Load() && takesUserFiles(c.Modules.Files)))
+	blocks := c != nil && !e.localOff.Load() && e.taintsNetwork(c.Modules.Files)
+	want := sources || blocks
+	defer func() {
+		if t := e.taint.Load(); t != nil {
+			t.sources.Store(sources)
+			if blocks {
+				offer := e.egress.offer
+				t.egress.Store(&offer)
+			} else {
+				t.egress.Store(nil)
+			}
+		}
+	}()
 	t := e.taint.Load()
 	switch {
 	case want && t == nil:
@@ -219,8 +236,25 @@ func (t *winTaint) onOpen(o fileOpen) {
 		}
 	}
 	if t.profiles != "" && strings.HasPrefix(lower, t.profiles) {
-		t.store.record(int(o.pid), SourceRef{Path: path, Ino: pathKey(lower), At: now})
+		if t.sources.Load() {
+			t.store.record(int(o.pid), SourceRef{Path: path, Ino: pathKey(lower), At: now})
+		}
+		if offer := t.egress.Load(); offer != nil && userFile(lower) {
+			(*offer)(egressOpen{pid: o.pid, path: path, at: now})
+		}
 	}
+}
+
+// lowerEnv is the service's environment with lower-case names, for %VAR%
+// in egress_apps paths.
+func lowerEnv() map[string]string {
+	env := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			env[strings.ToLower(k)] = v
+		}
+	}
+	return env
 }
 
 func (t *winTaint) recordWriter(lower string, pid uint32, now time.Time) {

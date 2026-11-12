@@ -138,3 +138,74 @@ func (m FilesModule) ControlsNetwork(goos string) bool {
 	n := m.NetworkControl
 	return m.Enabled && m.DecodeError == "" && n.Enabled && (len(n.BlockedApps[goos]) > 0 || n.TaintBlock.Enabled)
 }
+
+// TaintsNetwork reports whether m turns taint blocks on for goos.
+func (m FilesModule) TaintsNetwork(goos string) bool {
+	return m.ControlsNetwork(goos) && m.NetworkControl.TaintBlock.Enabled
+}
+
+// MatchesExe reports whether a names the executable at exe: by name (the
+// file name, with or without ".exe") or by path. Paths compare without
+// case; %VAR% is expanded from env (lower-case names), and a variable env
+// lacks, such as a per-user %LOCALAPPDATA%, matches any folders. An entry
+// with only a signer or bundle id never matches (the agent can't check
+// signatures here).
+func (a App) MatchesExe(exe string, env map[string]string) bool {
+	if exe == "" {
+		return false
+	}
+	base := exe[strings.LastIndexAny(exe, `\/`)+1:]
+	if a.Name != "" && (strings.EqualFold(a.Name, base) || strings.EqualFold(a.Name+".exe", base)) {
+		return true
+	}
+	if a.Path == "" {
+		return false
+	}
+	return globFold(expandForMatch(strings.TrimSpace(a.Path), env), exe)
+}
+
+// expandForMatch replaces known %VAR% with their value and unknown ones
+// with "*".
+func expandForMatch(p string, env map[string]string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(p, '%')
+		j := -1
+		if i >= 0 {
+			j = strings.IndexByte(p[i+1:], '%')
+		}
+		if i < 0 || j < 0 {
+			b.WriteString(p)
+			return b.String()
+		}
+		b.WriteString(p[:i])
+		if v := env[strings.ToLower(p[i+1:i+1+j])]; v != "" {
+			b.WriteString(v)
+		} else {
+			b.WriteByte('*')
+		}
+		p = p[i+2+j:]
+	}
+}
+
+// globFold matches s against pattern without case, where "*" matches any
+// run of characters (separators too).
+func globFold(pattern, s string) bool {
+	pattern, s = strings.ToLower(pattern), strings.ToLower(s)
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for _, mid := range parts[1 : len(parts)-1] {
+		k := strings.Index(s, mid)
+		if k < 0 {
+			return false
+		}
+		s = s[k+len(mid):]
+	}
+	return strings.HasSuffix(s, parts[len(parts)-1])
+}

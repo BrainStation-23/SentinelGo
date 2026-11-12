@@ -194,6 +194,7 @@ func TestWindowsTaint_TraceRefused(t *testing.T) {
 
 func TestWinTaint_Paths(t *testing.T) {
 	tk := &winTaint{store: newTaintStore(), writers: map[string]writerRef{}, profiles: `c:\users\`}
+	tk.sources.Store(true) // process_taint on
 	devs := []ntPrefix{{nt: `\Device\HarddiskVolume3`, dos: "C:"}, {nt: `\Device\HarddiskVolume12`, dos: "E:"}}
 	tk.devices.Store(&devs)
 	roots := []string{`e:\`}
@@ -213,6 +214,30 @@ func TestWinTaint_Paths(t *testing.T) {
 	}
 	if _, ok := tk.writer(`E:\copy.txt`, now.Add(2*time.Minute), time.Minute); ok {
 		t.Error("a writer past the window")
+	}
+}
+
+// With taint blocks on (#427) user files under the profiles go to the
+// egress queue, AppData doesn't; without process_taint nothing is recorded
+// as a source.
+func TestWinTaint_EgressOpens(t *testing.T) {
+	tk := &winTaint{store: newTaintStore(), writers: map[string]writerRef{}, profiles: `c:\users\`}
+	devs := []ntPrefix{{nt: `\Device\HarddiskVolume3`, dos: "C:"}}
+	tk.devices.Store(&devs)
+	roots := []string{}
+	tk.watched.Store(&roots)
+	var got []egressOpen
+	offer := func(o egressOpen) { got = append(got, o) }
+	tk.egress.Store(&offer)
+
+	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume3\Users\ann\Documents\q3.xlsx`})
+	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume3\Users\ann\AppData\Local\Google\Chrome\User Data\Default\History`})
+	tk.onOpen(fileOpen{pid: 7, path: `\Device\HarddiskVolume3\Windows\notepad.exe`})
+	if len(got) != 1 || got[0].pid != 7 || got[0].path != `C:\Users\ann\Documents\q3.xlsx` {
+		t.Errorf("offered %+v", got)
+	}
+	if src := tk.store.sources(7, time.Time{}, time.Now(), time.Minute); len(src) != 0 {
+		t.Errorf("recorded sources without process_taint: %+v", src)
 	}
 }
 

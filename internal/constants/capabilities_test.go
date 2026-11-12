@@ -148,3 +148,16 @@ func TestCapabilities_AdminPasswordRotationOnWindowsOnly(t *testing.T) {
 		}
 	}
 }
+
+// dlp_network_control_v1 is advertised on Windows only (#427): only WFP
+// applies the network controls.
+func TestCapabilities_DLPNetworkControlOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityDLPNetworkControl); got != want {
+			t.Errorf("%s: dlp_network_control_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}

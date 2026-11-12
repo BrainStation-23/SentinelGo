@@ -22,6 +22,9 @@ const (
 	// was moved to the device's quarantine folder, or deleted.
 	ActionQuarantined = "quarantined"
 	ActionDeleted     = "deleted"
+	// NetworkBlocked is only a would_have: an egress app that read a
+	// sensitive file would have lost its network (taint block, #427).
+	NetworkBlocked = "network_blocked"
 )
 
 // Event is one flagged copy (or other channel action).
@@ -62,6 +65,15 @@ type Event struct {
 	// Override is the user's reason for an overridden event (1–1000
 	// characters). It is personal data: never logged.
 	Override *Override `json:"override,omitempty"`
+	// NetworkBlock is set on a taint block (#427, destination type
+	// "network"): the app's new connections are refused until Until.
+	NetworkBlock *NetworkBlock `json:"network_block,omitempty"`
+}
+
+// NetworkBlock is how long a taint block cuts an app's network.
+type NetworkBlock struct {
+	Until   time.Time `json:"until"`
+	Minutes int       `json:"minutes"`
 }
 
 // Override is what the user gave to go ahead with a blocked file.
@@ -88,7 +100,7 @@ type File struct {
 
 // Destination is where the file was going.
 type Destination struct {
-	Type        string `json:"type"` // removable, network_share, upload, cloud_sync
+	Type        string `json:"type"` // removable, network_share, upload, cloud_sync, network (taint block)
 	VolumeLabel string `json:"volume_label,omitempty"`
 	USB         *USB   `json:"usb,omitempty"`
 	ShareHost   string `json:"share_host,omitempty"`

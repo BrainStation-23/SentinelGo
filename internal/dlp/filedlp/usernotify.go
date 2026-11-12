@@ -36,6 +36,9 @@ const (
 	noticeBlocked = "blocked"
 	noticeRemoved = "removed"
 	noticeWarned  = "warned"
+	// noticeNetworkBlocked: an egress app lost its network after opening a
+	// sensitive file (taint block, #427).
+	noticeNetworkBlocked = "network_blocked"
 )
 
 // Notice timing; vars for tests.
@@ -100,7 +103,11 @@ func (s *notices) report(r Request, kind, sha string, findings []detect.Finding,
 	if sha != "" && s.retryLocked(r.Proc.UID+"|"+r.Dest.Channel+"|"+sha, now) {
 		return true // told already; this is a retry
 	}
-	key := noticeKey{uid: r.Proc.UID, kind: kind, dest: destLabel(r.Dest)}
+	dest := destLabel(r.Dest)
+	if r.Dest.Type == TypeNetwork {
+		dest = r.Proc.Name // the app that lost its network
+	}
+	key := noticeKey{uid: r.Proc.UID, kind: kind, dest: dest}
 	b := s.pending[key]
 	if b == nil {
 		b = &noticeBatch{detectors: map[string]bool{}, message: message}
@@ -187,6 +194,12 @@ func noticeText(key noticeKey, b *noticeBatch) (title, body string) {
 		body = fmt.Sprintf("%s copied to %s contain %s and were removed from it. Ask IT if you need to share this.", files, key.dest, what)
 		if n == 1 {
 			body = strings.NewReplacer(" contain ", " contains ", " were removed", " was removed").Replace(body)
+		}
+	case noticeNetworkBlocked:
+		title = fmt.Sprintf("SentinelOps paused %s's network access", key.dest)
+		body = fmt.Sprintf("%s opened %s, which contains %s. %s", key.dest, files, what, b.message)
+		if n > 1 {
+			body = strings.Replace(body, ", which contains ", ", which contain ", 1)
 		}
 	default:
 		title = "This file contains sensitive data"
