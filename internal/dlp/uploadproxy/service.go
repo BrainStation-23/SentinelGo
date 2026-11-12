@@ -81,7 +81,8 @@ type ServiceOptions struct {
 	Truster    Truster
 	// DirectBlocker and Resolver replace this OS's direct block (tests);
 	// where the OS has none (platformDirectBlocker nil) and no DirectBlocker
-	// is given, there is no direct block.
+	// is given, there is no direct block. On Linux the OS's block redirects
+	// TCP to the proxy's transparent listeners (#426 step 2).
 	DirectBlocker func() (DirectBlocker, error)
 	Resolver      Resolver
 	// SessionProxy reaches the session helpers, which set the per-user
@@ -148,6 +149,12 @@ type Service struct {
 
 	direct    *directBlock // nil where the OS has no direct block
 	auditOnly atomic.Bool
+
+	// The transparent listeners the Linux backstop redirects TCP to, and
+	// their ports (zero when there are none). Set in startLocked before the
+	// watchdog starts, read by it.
+	tlns   []net.Listener
+	tports RedirectPorts
 }
 
 // NewService returns a Service. It removes a redirect a crashed agent left.
@@ -166,8 +173,11 @@ func NewService(o ServiceOptions) *Service {
 		log.Printf("DLP: could not remove a stale upload redirect: %v", err)
 	}
 	open, resolve := o.DirectBlocker, o.Resolver
-	if open == nil {
-		open = platformDirectBlocker
+	if open == nil && platformDirectBlocker != nil {
+		if err := RemoveDirectBlock(); err != nil {
+			log.Printf("DLP: could not remove a stale direct block: %v", err)
+		}
+		open = func() (DirectBlocker, error) { return platformDirectBlocker(s.tports) }
 	}
 	if resolve == nil {
 		resolve = platformResolver
@@ -272,6 +282,9 @@ func (s *Service) startLocked() {
 	if t := s.opts.ProxyTestOptions; t != nil {
 		o.UpstreamRoots, o.AllowLocalTargets = t.UpstreamRoots, t.AllowLocalTargets
 	}
+	if platformTransparent != nil {
+		o.Mark = proxyMark // the backstop lets the proxy's own connections through
+	}
 	ca.SetCRLURL(CRLURL(ln.Addr().String()))
 	s.ca, s.ln, s.proxy = ca, ln, New(o)
 	s.pacURL = PACURL(ln.Addr().String())
@@ -292,6 +305,7 @@ func (s *Service) startLocked() {
 			log.Printf("DLP: upload proxy stopped: %v", err)
 		}
 	}()
+	s.startTransparentLocked()
 	go s.watchdog(ctx, ln.Addr().String())
 	log.Printf("DLP: upload inspection started on %s", ln.Addr())
 }
@@ -303,7 +317,11 @@ func (s *Service) stopLocked() {
 	s.running = false
 	s.cancel()
 	_ = s.ln.Close()
+	for _, l := range s.tlns {
+		_ = l.Close()
+	}
 	s.wg.Wait()
+	s.tlns, s.tports = nil, RedirectPorts{}
 	if s.direct != nil {
 		s.direct.stop(DirectBlockInactive, *s.mode.Load())
 	}
@@ -314,6 +332,37 @@ func (s *Service) stopLocked() {
 	}
 	s.healthy.Store(false)
 	log.Printf("DLP: upload inspection stopped")
+}
+
+// startTransparentLocked listens for the connections the Linux backstop
+// redirects (strict mode). Without them, strict refuses TCP instead.
+func (s *Service) startTransparentLocked() {
+	if platformTransparent == nil || s.direct == nil {
+		return
+	}
+	ls, ports, orig, err := platformTransparent()
+	if err != nil {
+		log.Printf("DLP: upload proxy transparent listener: %v", err)
+		return
+	}
+	s.tlns, s.tports = ls, ports
+	proxy := s.proxy
+	for _, l := range ls {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			logTransparentStop(proxy.ServeTransparent(l, orig))
+		}()
+	}
+}
+
+// RemoveDirectBlock removes a direct block that outlives the agent (the
+// Linux nftables table), for uninstall and after a crash.
+func RemoveDirectBlock() error {
+	if platformDirectCleanup == nil {
+		return nil
+	}
+	return platformDirectCleanup()
 }
 
 func (s *Service) untrustLocked() {
