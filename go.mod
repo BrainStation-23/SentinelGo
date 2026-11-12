@@ -11,7 +11,7 @@ require (
 	github.com/rrethy/ahocorasick v1.0.0
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/yusufpapurcu/wmi v1.2.4
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.61.1
 )
 
