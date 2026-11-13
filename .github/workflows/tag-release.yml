@@ -7,9 +7,9 @@ name: Tag Release
 # deleting a tag whose release failed.
 #
 # After tagging it opens a main -> dev pull request, so dev gets the new
-# [vX.Y.Z] heading before anything else merges from dev. Without it, the next
-# dev -> main merge puts dev's new [Unreleased] entries under the released
-# version (#211).
+# [vX.Y.Z] heading and loses the changelog.d/ fragments it released before
+# anything else merges from dev. Without it, the next dev -> main merge would
+# bring the released fragments back.
 #
 # The tag and the PR use RELEASE_PAT because a tag pushed or a PR opened with
 # GITHUB_TOKEN doesn't trigger other workflows. See release-trigger.yml for the
@@ -82,7 +82,7 @@ jobs:
           PR=$(gh pr list --base dev --head main --state open --json number --jq '.[0].number')
           if [ -z "$PR" ]; then
             gh pr create --base dev --head main --title "Merge $TAG back into dev" \
-              --body "Brings the [$TAG] changelog heading from main into dev, so the next dev -> main merge keeps new entries under [Unreleased]. Merge it with a merge commit, not squash."
+              --body "Brings the [$TAG] changelog section from main into dev and removes the changelog.d/ fragments it released, so the next dev -> main merge doesn't bring them back. Merge it with a merge commit, not squash."
           fi
           gh pr merge main --auto --merge || echo "::warning::Could not enable auto-merge on the main -> dev PR; merge it by hand."
           echo "Back-merge PR: $(gh pr view main --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
