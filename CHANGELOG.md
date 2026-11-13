@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Windows: DLP at-rest classification (#331 part 2). With the bundle's new `modules.files.at_rest` on, and process taint or taint blocks on (they are what use it), the agent scans the files in each user's Documents, Desktop and Downloads and their OneDrive, Dropbox, Box, Google Drive and iCloud Drive folders (or the folders `at_rest.folders.windows` lists; `~` is every profile, `%VAR%` and `*` are expanded, `at_rest.exclude` leaves folders out) ahead of time and keeps each verdict. When a program then opens or copies such a file, process taint and taint blocks take the stored verdict instead of scanning first, so a taint block starts as soon as the open is seen; those events carry `scan.verdict_source: "at_rest"`. Classification runs in its own sandboxed scan worker at background CPU and IO priority, within `max_cpu_percent` of one core (default 10), and pauses on battery (`skip_on_battery`, default on). After the first pass only new and changed files are read: the NTFS/ReFS change journal (USN) is read every 2 minutes, and the folders are walked again every `rescan_hours` (default 24), skipping unchanged files without reading them. A new policy version classifies everything again. Removable drives and network shares are never walked. The store (`dlp-at-rest.db` in the config folder, SYSTEM and Administrators only) keeps a hash of each path, the file's identity and, for files with findings, detector ids, counts, match hashes and the file's SHA-256: never content, masked matches or paths. Turning `at_rest` off deletes it. The DLP status reports `files.at_rest` (state, folders, files and sensitive files, last full pass, files read, errors, the journal per volume), `files.stats.at_rest` (verdicts taken from the store) and the capability `at_rest` (`unsupported:not_on_windows` on Linux and macOS, `unsupported:no_taint` without process taint or taint blocks). The agent now advertises `dlp_at_rest_v1` on Windows. Nothing changes until the backend sends the block.
+
 ## [v4.0.10] - 2026-11-13
 
 ### Fixed

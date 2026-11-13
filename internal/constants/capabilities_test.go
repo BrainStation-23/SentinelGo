@@ -161,3 +161,15 @@ func TestCapabilities_DLPNetworkControlOnWindowsOnly(t *testing.T) {
 		}
 	}
 }
+
+// dlp_at_rest_v1 is advertised on Windows only (#331 part 2).
+func TestCapabilities_DLPAtRestOnWindowsOnly(t *testing.T) {
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
+		goos = os
+		if got := slices.Contains(Capabilities(), CapabilityDLPAtRest); got != want {
+			t.Errorf("%s: dlp_at_rest_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}

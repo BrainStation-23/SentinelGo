@@ -89,6 +89,9 @@ type Health struct {
 	// NetworkControl is the network controls' state (netctl.Status, #427);
 	// nil when they are off.
 	NetworkControl any `json:"network_control,omitempty"`
+	// AtRest is at-rest classification's state (#331 part 2); nil where it
+	// never ran.
+	AtRest *AtRestStatus `json:"at_rest,omitempty"`
 }
 
 // Hook states.
@@ -130,6 +133,9 @@ func channelCapabilities(c *policy.Compiled, supported map[string]bool, state st
 		} else {
 			out[ch] = "unsupported:not_implemented"
 		}
+	}
+	if c.Modules.Files.WantsAtRest() {
+		out[CapAtRest] = "unsupported:not_on_windows" // the Windows hook reports its own
 	}
 	return out
 }

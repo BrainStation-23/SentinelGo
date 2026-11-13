@@ -88,6 +88,10 @@ type windowsEnforcer struct {
 	taintFailed atomic.Bool            // the trace couldn't start; not tried again until restart
 	taintError  atomic.Pointer[string] // why
 
+	// At-rest classification (#331 part 2): nil without a config folder.
+	atRest     *atRestRunner
+	atRestPool atomic.Pointer[scanworker.Pool]
+
 	// Sync folders learned from hand-overs (learnSyncRoot), for attribution.
 	rootsMu   sync.Mutex
 	syncRoots map[string]time.Time // lower-case root → last handed-over file
@@ -126,6 +130,7 @@ func New(o Options) Enforcer {
 		e.egress.open = openSourceWin
 		e.egress.env = lowerEnv()
 	}
+	e.newAtRest()
 	empty := []Destination{}
 	e.dests.Store(&empty)
 	return e
@@ -163,11 +168,14 @@ func (e *windowsEnforcer) Apply(_ context.Context, c *policy.Compiled) {
 	if !e.running {
 		e.startLocked()
 	}
-	if pool := e.pool.Load(); pool != nil {
-		if raw, err := json.Marshal(c.Bundle); err == nil {
-			pool.SetPolicy(raw)
-		}
+	raw, err := json.Marshal(c.Bundle)
+	if err != nil {
+		raw = nil
 	}
+	if pool := e.pool.Load(); pool != nil && raw != nil {
+		pool.SetPolicy(raw)
+	}
+	e.applyAtRest(raw)
 	select {
 	case e.kick <- struct{}{}:
 	default:
@@ -211,6 +219,7 @@ func (e *windowsEnforcer) startLocked() {
 			e.egress.run(ctx)
 		}()
 	}
+	e.startAtRest(ctx)
 	log.Printf("DLP: file monitoring started (removable drives: scanned after the write)")
 }
 
@@ -221,6 +230,7 @@ func (e *windowsEnforcer) stopLocked() {
 	e.running = false
 	e.cancel()
 	e.wg.Wait()
+	e.stopAtRest()
 	e.stopTaint()
 	e.wmu.Lock()
 	roots := make([]string, 0, len(e.watches))
@@ -646,6 +656,9 @@ func (e *windowsEnforcer) Capabilities() map[string]string {
 		}
 		caps[CapTaintBlock] = "unsupported:" + reason
 	}
+	if c := e.compiled.Load(); c != nil && caps != nil && c.Modules.Files.WantsAtRest() {
+		caps[CapAtRest] = e.atRestCapability(c, state)
+	}
 	return caps
 }
 
@@ -677,6 +690,11 @@ func (e *windowsEnforcer) Health() *Health {
 		Unreadable: e.unreadable.Load(), Stats: e.decider.Stats(), Workers: workers}
 	if e.egress != nil {
 		h.TaintBlockDropped = e.egress.dropped.Load()
+	}
+	if e.atRest != nil {
+		if c := e.compiled.Load(); c != nil && c.Modules.Files.WantsAtRest() {
+			h.AtRest = e.atRest.status()
+		}
 	}
 	if t := e.taint.Load(); t != nil {
 		h.TaintProcesses = t.store.len()

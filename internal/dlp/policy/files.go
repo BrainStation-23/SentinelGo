@@ -75,6 +75,10 @@ type FilesModule struct {
 	// NetworkControl blocks unsanctioned apps and taints apps that read
 	// sensitive files (#427, Compliance-OS#910; Windows). Absent means off.
 	NetworkControl NetworkControl `json:"network_control"`
+	// AtRest classifies the files in the user folders ahead of time, so
+	// taint knows a file is sensitive before it moves (#331 part 2;
+	// Windows). Absent means off.
+	AtRest AtRest `json:"at_rest"`
 
 	// DecodeError is why modules.files couldn't be read. The module is then
 	// off, and the rest of the bundle (the clipboard) is unaffected.
@@ -192,6 +196,7 @@ func (m *FilesModule) normalize() {
 	m.CopyCorrelation.normalize()
 	m.Uploads.Inspection.normalize()
 	m.NetworkControl.normalize()
+	m.AtRest.normalize()
 	if len(m.Exceptions) > maxFileExceptions {
 		m.Exceptions = m.Exceptions[:maxFileExceptions]
 	}
