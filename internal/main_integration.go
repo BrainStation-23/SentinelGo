@@ -517,11 +517,15 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 			// them on. The file hook finds the taints, the controller
 			// applies them.
 			netControls := netctl.New(netctl.Options{})
-			files := filedlp.New(filedlp.Options{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+			// The file channels' events are counted per channel for the
+			// status (pilot rollout, #430) on their way to the queue.
+			tally := filedlp.NewTally(sink, time.Now())
+			m.SetFileSummary(tally.Summary)
+			files := filedlp.New(filedlp.Options{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
 				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher), NetworkTaint: netControls})
 			// Upload inspection (#344): off until the bundle turns it on.
 			// On Linux the helpers set each user's desktop proxy (#426).
-			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: sink, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
 				SessionProxy: sessionProxySetter(sup)})
 			enforcer := netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
 			m.SetFiles(enforcer)

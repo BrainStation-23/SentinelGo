@@ -84,6 +84,7 @@ type Manager struct {
 	source       BundleSource
 	sup          session.Supervisor
 	files        filedlp.Enforcer // nil where file DLP has no hook
+	summary      func() *filedlp.Summary
 
 	mu       sync.Mutex
 	ctx      context.Context
@@ -187,6 +188,15 @@ func (m *Manager) SetFiles(e filedlp.Enforcer) {
 	m.files = e
 }
 
+// SetFileSummary gives the Manager the per-channel event counts to report
+// with the file hook's health (filedlp.Tally.Summary, #430). Call it before
+// Start; nil reports none.
+func (m *Manager) SetFileSummary(f func() *filedlp.Summary) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.summary = f
+}
+
 // Stop stops every helper. Later Apply calls only record the bundle.
 func (m *Manager) Stop() {
 	m.mu.Lock()
@@ -235,6 +245,11 @@ func (m *Manager) Snapshot() Snapshot {
 		s.FileCapabilities = m.files.Capabilities()
 		s.Files = m.files.Health()
 		s.CopyCorrelation = m.files.CopyCorrelation()
+		if s.Files != nil && m.summary != nil {
+			h := *s.Files // the enforcer's value is left alone
+			h.Summary = m.summary()
+			s.Files = &h
+		}
 	}
 	return s
 }
