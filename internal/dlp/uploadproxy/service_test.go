@@ -25,19 +25,30 @@ type fakeRedirector struct {
 	applied string
 	calls   []string
 	err     error
+	repair  int // the next Applies report this many repairs
 }
 
-func (f *fakeRedirector) Apply(url string) error {
+func (f *fakeRedirector) Apply(url string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
-		return f.err
+		return false, f.err
 	}
 	if f.applied != url {
 		f.calls = append(f.calls, "apply")
 	}
 	f.applied = url
-	return nil
+	if f.repair > 0 {
+		f.repair--
+		return true, nil
+	}
+	return false, nil
+}
+
+func (f *fakeRedirector) set(fn func(*fakeRedirector)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
 }
 
 func (f *fakeRedirector) Remove() error {
@@ -209,6 +220,41 @@ func TestService_ExistingProxyAndUntrusted(t *testing.T) {
 	}
 	if a, _ := r.state(); a != "" {
 		t.Errorf("redirected despite an existing proxy: %s", a)
+	}
+}
+
+// The redirect's status follows the last check (#477): a repair is counted
+// and stays active; a check that fails isn't reported active.
+func TestService_RedirectRepairsAndFailures(t *testing.T) {
+	r, tr := &fakeRedirector{}, &fakeTruster{}
+	s, _ := newTestService(t, r, tr)
+	s.Apply(context.Background(), compileBundle(t, inspectionBundle(`"drive.example.com"`)))
+	eventually(t, "the redirect", func() bool { return s.Status().Redirect == RedirectActive })
+	if n := s.Status().Stats.RedirectRepairs; n != 0 {
+		t.Errorf("repairs before any: %d", n)
+	}
+	r.set(func(f *fakeRedirector) { f.repair = 2 })
+	eventually(t, "two repairs", func() bool { return s.Status().Stats.RedirectRepairs == 2 })
+	if st := s.Status(); st.Redirect != RedirectActive {
+		t.Errorf("after a repair: %s", st.Redirect)
+	}
+	if got := s.Capability(); got != "supported" {
+		t.Errorf("capability after a repair: %s", got)
+	}
+	// Someone else's proxy took over: not active, and the reason shows.
+	r.set(func(f *fakeRedirector) { f.err = fmt.Errorf("%w: another auto-config URL is set", ErrExistingProxy) })
+	eventually(t, "existing proxy", func() bool { return s.Status().Redirect == "unsupported:existing_proxy" })
+	if got := s.Capability(); got != "unsupported:existing_proxy" {
+		t.Errorf("capability %s", got)
+	}
+	// Any other failure isn't active either.
+	r.set(func(f *fakeRedirector) { f.err = errors.New("access denied") })
+	eventually(t, "error", func() bool { return s.Status().Redirect == "unsupported:error" })
+	// Back in place: active again, the count kept.
+	r.set(func(f *fakeRedirector) { f.err = nil })
+	eventually(t, "active again", func() bool { return s.Status().Redirect == RedirectActive })
+	if n := s.Status().Stats.RedirectRepairs; n != 2 {
+		t.Errorf("repairs %d", n)
 	}
 }
 

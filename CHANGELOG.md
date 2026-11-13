@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Upload inspection: when something removed the system proxy setting that sends uploads through the inspection proxy, the agent didn't put it back and still reported it as in place, so uploads went past inspection unnoticed (#477). The agent now checks the setting itself every 10 seconds and applies it again: on Windows the machine's `AutoConfigURL` and the per-machine proxy policy, on macOS each network service's automatic proxy, including services added since. Running browsers pick up the change without a restart on Windows. When another product has set its own proxy there, the agent leaves it alone and reports `unsupported:existing_proxy` instead of `active`. The upload inspection stats gain `redirect_repairs`, the number of times the setting was put back, so a console can show that something keeps removing it.
+
 ## [v4.0.9] - 2026-11-12
 
 ### Added

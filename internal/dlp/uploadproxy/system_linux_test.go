@@ -38,7 +38,7 @@ func TestLinuxTruster(t *testing.T) {
 	if err := tr.Trust(ca); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("no anchor dir: %v", err)
 	}
-	if err := NewRedirector("").Apply("x"); !errors.Is(err, ErrNotImplemented) {
+	if _, err := NewRedirector("").Apply("x"); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("redirect: %v", err)
 	}
 }
