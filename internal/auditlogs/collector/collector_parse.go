@@ -10,6 +10,7 @@ package collector
 import (
 	"encoding/json"
 	"math"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +185,9 @@ type macLogShowEntry struct {
 	Category     string `json:"category"`
 	Subsystem    string `json:"subsystem"`
 	Process      string `json:"process"`
+	// ProcessImagePath is what `log show --style ndjson` actually emits; its
+	// base name stands in for Process when that is absent.
+	ProcessImagePath string `json:"processImagePath"`
 }
 
 // parseMacLogShowLine converts a single `log show --style ndjson` line into a
@@ -210,8 +214,12 @@ func parseMacLogShowLine(line []byte) (RawLogEntry, bool) {
 	if raw.Subsystem != "" {
 		entry.Metadata["subsystem"] = raw.Subsystem
 	}
-	if raw.Process != "" {
-		entry.Metadata["process"] = raw.Process
+	process := raw.Process
+	if process == "" && raw.ProcessImagePath != "" {
+		process = path.Base(raw.ProcessImagePath)
+	}
+	if process != "" {
+		entry.Metadata["process"] = process
 	}
 	return entry, true
 }

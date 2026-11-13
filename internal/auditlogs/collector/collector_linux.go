@@ -101,12 +101,22 @@ func (c *linuxCollector) Collect(ctx context.Context, checkpoint CheckpointData)
 	return allEntries, newCP, nil
 }
 
-// Subscribe streams high-priority journal entries (priority <= 3: err and above)
+// journalMatches limits journalctl to what can be sent (#484): priority err and
+// above (0-3), or any message from the auth and authpriv facilities (4, 10),
+// whose sign-in and account events the parser grades by message. Matches on
+// the same field are ORed, "+" ORs the two groups. (-p would AND with the
+// facility match, so the priorities are listed instead.)
+var journalMatches = []string{
+	"PRIORITY=0", "PRIORITY=1", "PRIORITY=2", "PRIORITY=3",
+	"+", "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10",
+}
+
+// Subscribe streams journalMatches entries (err and above, and auth events)
 // in real time using `journalctl -f`. It blocks until ctx is cancelled, at which
 // point the journalctl subprocess is terminated and the method returns nil.
 func (c *linuxCollector) Subscribe(ctx context.Context, ch chan<- RawLogEntry) error {
-	// -f follow, -n 0 start at the tail (no backlog), -p 3 priority err and above.
-	args := []string{"-o", "json", "--no-pager", "-q", "-f", "-n", "0", "-p", "3"}
+	// -f follow, -n 0 start at the tail (no backlog), only journalMatches.
+	args := append([]string{"-o", "json", "--no-pager", "-q", "-f", "-n", "0"}, journalMatches...)
 	rc, err := c.open(ctx, "journalctl", args...)
 	if err != nil {
 		return fmt.Errorf("open journalctl -f: %w", err)
@@ -148,6 +158,7 @@ func (c *linuxCollector) collectJournal(ctx context.Context, checkpoint Checkpoi
 	} else {
 		args = append(args, "--since", "1 hour ago")
 	}
+	args = append(args, journalMatches...)
 
 	rc, err := c.open(ctx, "journalctl", args...)
 	if err != nil {

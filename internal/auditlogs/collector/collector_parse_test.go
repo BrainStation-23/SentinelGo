@@ -134,6 +134,21 @@ func TestParseMacLogShowLine(t *testing.T) {
 	}
 }
 
+// TestParseMacLogShowLine_ProcessImagePath: real `log show --style ndjson`
+// output has processImagePath, not process; its base name is the process
+// the parser grades sign-in events by (#484).
+func TestParseMacLogShowLine_ProcessImagePath(t *testing.T) {
+	line := []byte(`{"timestamp":"2024-04-19 14:30:00.123456-0700","messageType":"Default",` +
+		`"eventMessage":"alice : 1 incorrect password attempt","processImagePath":"/usr/bin/sudo"}`)
+	entry, ok := parseMacLogShowLine(line)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if entry.Metadata["process"] != "sudo" {
+		t.Errorf("Metadata[process] = %q, want sudo", entry.Metadata["process"])
+	}
+}
+
 func TestParseMacLogShowLine_SkipsNonEntry(t *testing.T) {
 	// `log show` ndjson can contain metadata lines with no message/timestamp.
 	if _, ok := parseMacLogShowLine([]byte(`{"foo":"bar"}`)); ok {

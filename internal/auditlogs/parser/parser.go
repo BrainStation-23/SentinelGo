@@ -65,7 +65,7 @@ func (p *DefaultParser) Parse(entries []collector.RawLogEntry, cfg ParserConfig)
 			EventType:    mapEventType(raw),
 			OSType:       osType,
 			AgentVersion: cfg.AgentVersion,
-			Severity:     normalizeSeverity(raw.Severity),
+			Severity:     grade(raw),
 			Source:       raw.Source,
 			EventData:    eventData,
 		}

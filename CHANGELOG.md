@@ -13,6 +13,10 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- Audit logs: only `high` and `critical` events are sent (#484). The agent used to send nearly everything it collected (Windows System events down to Information, every Defender event, each process start and firewall connection, every journal entry, the macOS unified log with `--info`), which cost bandwidth, CPU, the local queue and server storage while burying what matters. Severity is the OS level, raised for security events the OS logs too low, then everything below `high` is dropped on the device and counted (`DroppedLowSeverity`, shown by `sentinelgo -logging-stats`); the checkpoint still moves past dropped rows. Re-graded: on Windows, Security 1102 (log cleared) and 4719 (audit policy changed) are critical, and 4625 (failed logon), account and local group changes (4720–4726, 4731–4734, 4738) and 4739 are high; System 104 (log cleared) is critical and 7045 (service installed) high; Defender detections, failed actions and protection turned off (1006, 1008, 1015, 1116, 1118, 1119, 5001, 5010, 5012) are critical, and actions taken and configuration changes (1007, 1117, 5004, 5007, 5013) high; PowerShell 4104 at Warning (suspicious script block), Task Scheduler 106 (task registered), Firewall 2003 (profile setting changed) and Remote Desktop 1149 (sign-in) are high. On Linux and macOS, sshd sign-ins and failed sign-ins (including `sshd-session`), sudo and su failures, and account and group changes (useradd, userdel, usermod, groupadd, groupdel, gpasswd, chpasswd, `passwd`) are high. The sources are queried for less: Windows channels ask for Level 1–2 plus those IDs (4624, 4634, 4648, 4672, 4656, 4663, 4670, 4688, 5156, 5157 and the time-service events are no longer collected); `journalctl` asks for priority err and above or the auth facilities; `log show` asks for errors, faults and the sudo, sshd and su processes, and reads the process from `processImagePath`, which `log show` actually emits. See `docs/WINDOWS_EVENT_LOG_CHANNELS.md`.
+
 ## [v4.0.10] - 2026-11-13
 
 ### Fixed

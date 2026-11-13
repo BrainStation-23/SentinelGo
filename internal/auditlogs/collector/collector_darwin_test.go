@@ -2,15 +2,17 @@
 
 package collector
 
-// These tests run only on macOS (the OS the darwinCollector targets). They never
-// invoke real `log show`: the `open` seam is replaced with a fake returning
-// canned ndjson, so collectOSLog is tested deterministically and offline.
+// These tests run only on macOS (the OS the darwinCollector targets). Apart from
+// TestOSLogPredicate_RealLogShow they never invoke real `log show`: the `open`
+// seam is replaced with a fake returning canned ndjson, so collectOSLog is
+// tested deterministically and offline.
 
 import (
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,5 +97,43 @@ func TestDarwinSources(t *testing.T) {
 	sources := NewCollector().Sources()
 	if len(sources) == 0 || sources[0] != "oslog" {
 		t.Errorf("expected 'oslog' first in sources, got %v", sources)
+	}
+}
+
+// TestDarwinCollectOSLog_OnlySendable: `log show` reads errors, faults and the
+// sign-in tools only, never info messages (#484).
+func TestDarwinCollectOSLog_OnlySendable(t *testing.T) {
+	var gotArgs []string
+	c := &darwinCollector{open: fakeOpen("", &gotArgs)}
+	if _, _, err := c.collectOSLog(context.Background(), CheckpointData{}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(gotArgs, " ")
+	if strings.Contains(joined, "--info") || strings.Contains(joined, "--debug") {
+		t.Errorf("log show args %q read info or debug messages", joined)
+	}
+	if !strings.Contains(joined, "--predicate "+oslogPredicate) {
+		t.Errorf("log show args %q lack the predicate", joined)
+	}
+}
+
+// TestOSLogPredicate_RealLogShow runs the predicate through the real `log
+// show`, so a syntax error fails here and not on devices.
+func TestOSLogPredicate_RealLogShow(t *testing.T) {
+	if _, err := exec.LookPath("log"); err != nil {
+		t.Skip("no log command")
+	}
+	out, err := exec.Command("log", "show", "--style", "ndjson", "--last", "2m", "--predicate", oslogPredicate).CombinedOutput()
+	if err != nil {
+		t.Fatalf("log show --predicate %q: %v\n%s", oslogPredicate, err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		e, ok := parseMacLogShowLine([]byte(line))
+		if !ok {
+			continue
+		}
+		if e.Severity == "6" || e.Severity == "7" {
+			t.Errorf("predicate let an info or debug message through: %+v", e)
+		}
 	}
 }

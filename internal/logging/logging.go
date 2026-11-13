@@ -317,7 +317,7 @@ func (li *LoggingIntegration) subscriptionLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			parsed := li.inWindow(li.parser.Parse([]collector.RawLogEntry{raw}, parserCfg))
+			parsed := li.keep(li.parser.Parse([]collector.RawLogEntry{raw}, parserCfg))
 			if len(parsed) == 0 {
 				continue
 			}
@@ -343,6 +343,8 @@ const maxDrainIterations = 100
 //
 // Correctness notes (audit fixes H1/H6 — this is a compliance agent, audit
 // events must not be silently dropped):
+//   - Only high and critical rows are queued (#484); the rest are counted
+//     (DroppedLowSeverity) and dropped, and the checkpoint moves past them.
 //   - The only time filter is the server's retention window (days, #437):
 //     rows the server would delete on arrival are dropped and counted. A
 //     downtime backlog inside the window is kept. (An earlier filter dropped
@@ -376,7 +378,7 @@ func (li *LoggingIntegration) runCollection(ctx context.Context) error {
 		// Parse and persist BEFORE advancing the checkpoint. The store dedups by
 		// hash, so a re-collect after a crash between Insert and checkpoint Save
 		// produces no duplicates.
-		parsed := li.inWindow(li.parser.Parse(entries, li.parserConfig()))
+		parsed := li.keep(li.parser.Parse(entries, li.parserConfig()))
 		if err := li.store.Insert(parsed); err != nil {
 			return fmt.Errorf("store insert: %w", err)
 		}
@@ -419,6 +421,27 @@ func (li *LoggingIntegration) runCollection(ctx context.Context) error {
 
 // inWindow drops rows dated outside the server's retention window (#437)
 // and counts them.
+// keep returns the logs that are queued for upload: high or critical (#484)
+// and inside the server's retention window (#437). The rest are counted and
+// dropped; the checkpoint still moves past them, so they're never re-read.
+func (li *LoggingIntegration) keep(logs []models.AuditLog) []models.AuditLog {
+	return li.inWindow(li.sendable(logs))
+}
+
+// sendable keeps the high and critical logs and counts the others (#484).
+func (li *LoggingIntegration) sendable(logs []models.AuditLog) []models.AuditLog {
+	kept := logs[:0]
+	for _, l := range logs {
+		if parser.Sendable(l.Severity) {
+			kept = append(kept, l)
+		}
+	}
+	if dropped := len(logs) - len(kept); dropped > 0 {
+		li.stats.addDroppedLowSeverity(int64(dropped))
+	}
+	return kept
+}
+
 func (li *LoggingIntegration) inWindow(logs []models.AuditLog) []models.AuditLog {
 	kept, dropped := li.window.filter(logs)
 	if dropped > 0 {
