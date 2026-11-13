@@ -200,7 +200,7 @@ sbom:
 changelog-check:
 	go run ./scripts/changelog -check
 
-# Move the [Unreleased] entries under a new dated heading. Trigger Release does
+# Fold the changelog.d/ fragments into a new dated heading. Trigger Release does
 # this for you; run it by hand to cut a release in your own PR, which Tag Release
 # tags when it merges: make changelog-release VERSION=v3.4.0
 changelog-release:

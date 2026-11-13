@@ -24,7 +24,7 @@ Print the queue (number, title, why it's in that order) before starting.
    ```
 2. **Understand it:** `gh issue view <n> --comments`. Read the code it touches. Follow `CLAUDE.md` rules (no cgo, all Supabase access via `internal/supabase`, tokens only via the `cfg` accessors, wrap Supabase calls in `DoWithAuthRetry`, platform files validated for all three OSes).
 3. **Fix it** with tests that fail before the fix and pass after. Keep the change scoped to the issue.
-4. **Changelog:** add an entry under `## [Unreleased]` in `CHANGELOG.md` (right subsection: Added / Changed / Fixed / Security), referencing the issue. The `Changelog` check is required.
+4. **Changelog:** add a fragment `changelog.d/<n>-<short-slug>.<type>.md` (type `added`, `changed`, `fixed`, `security`, `deprecated` or `removed`) holding the entry as a `- ` line that references the issue. Never edit `CHANGELOG.md`'s `[Unreleased]` (the check rejects it). The `Changelog` check is required. See `changelog.d/README.md`.
 5. **Verify locally before pushing** (everything except gosec is a required CI check):
    ```bash
    # CI runs `gofmt -s -l .`. On a Windows checkout every file has CRLF and

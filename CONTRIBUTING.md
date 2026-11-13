@@ -153,20 +153,25 @@ On top of those, the project rules in [Cross-platform rules](#cross-platform-rul
 
 ## Changelog entries
 
-[`CHANGELOG.md`](CHANGELOG.md) is the project's release notes: each release's section is published as its GitHub release description. Every pull request with a user-visible change adds a line under `## [Unreleased]`, in the matching group:
+[`CHANGELOG.md`](CHANGELOG.md) is the project's release notes: each release's section is published as its GitHub release description. Pull requests don't edit it. Every pull request with a user-visible change adds a **fragment**: a new file in [`changelog.d/`](changelog.d/README.md) named `<issue>-<a-few-words>.<type>.md`, holding the entry as a `- ` line. Releasing folds the fragments into `CHANGELOG.md`. Because no two pull requests edit the same file, they never conflict over the changelog and merge in any order without a rebase.
 
-| Group | For |
-|---|---|
-| `### Added` | New features, collectors, CLI flags, task handlers |
-| `### Changed` | Changes to existing behaviour or output |
-| `### Deprecated` | Features that will be removed in a later release |
-| `### Removed` | Features or files that are gone |
-| `### Fixed` | Bug fixes |
-| `### Security` | Vulnerability fixes and hardening. Include the CVE or GHSA ID once one is published. |
+```text
+changelog.d/484-audit-severity.changed.md
+- Audit logs: only high and critical events are sent (#484). ...
+```
 
-Write for someone running the agent, not for reviewers: say what changed for them, not which functions moved. For example, `- Updater: a binary that fails its checksum is deleted instead of left on disk.`
+| Type | Group | For |
+|---|---|---|
+| `added` | Added | New features, collectors, CLI flags, task handlers |
+| `changed` | Changed | Changes to existing behaviour or output |
+| `deprecated` | Deprecated | Features that will be removed in a later release |
+| `removed` | Removed | Features or files that are gone |
+| `fixed` | Fixed | Bug fixes |
+| `security` | Security | Vulnerability fixes and hardening. Include the CVE or GHSA ID once one is published. |
 
-If a PR has nothing to tell users (tests, CI, refactors, docs), label it `skip-changelog`. Dependabot PRs (`dependencies` label) are exempt automatically. The **Changelog** check enforces this and validates the file's format; run `make changelog-check` locally.
+Write for someone running the agent, not for reviewers: say what changed for them, not which functions moved. For example, `- Updater: a binary that fails its checksum is deleted instead of left on disk.` A change that belongs under two groups gets two fragments.
+
+If a PR has nothing to tell users (tests, CI, refactors, docs), label it `skip-changelog`. Dependabot PRs (`dependencies` label) are exempt automatically. The required **Changelog** check enforces this: a PR must add a fragment, every fragment must be well-formed, and `[Unreleased]` in `CHANGELOG.md` must stay empty. Run `make changelog-check` locally.
 
 ---
 
@@ -179,7 +184,7 @@ Before marking your PR ready for review, confirm:
 - [ ] `make check-no-cgo` passes (no `import "C"` introduced)
 - [ ] `gofmt -s -l .` prints nothing (all files formatted)
 - [ ] New behaviour is covered by tests where practical
-- [ ] User-visible changes have a [changelog entry](#changelog-entries) under `[Unreleased]` (or the PR is labelled `skip-changelog`)
+- [ ] User-visible changes have a [changelog fragment](#changelog-entries) in `changelog.d/` (or the PR is labelled `skip-changelog`)
 - [ ] Public functions and types have doc comments
 - [ ] The PR description explains *what* changed and *why*
 - [ ] Breaking changes are called out explicitly
