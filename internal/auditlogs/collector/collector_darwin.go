@@ -145,10 +145,11 @@ func (c *darwinCollector) Subscribe(_ context.Context, _ chan<- RawLogEntry) err
 }
 
 // oslogPredicate limits `log show` to what can be sent (#484): error and fault
-// messages, and the sign-in tools whose messages the parser grades (their
-// failures are logged at the default level). Info and debug messages are not
-// read at all (no --info).
-const oslogPredicate = `messageType == error OR messageType == fault OR process == "sudo" OR process == "sshd" OR process == "su"`
+// messages, and default-level messages from the sign-in tools whose messages
+// the parser grades (their failures are logged at the default level). With a
+// predicate, `log show` returns a process's info messages even without
+// --info, so the process clause names the level too.
+const oslogPredicate = `messageType == error OR messageType == fault OR (messageType == default AND (process == "sudo" OR process == "sshd" OR process == "su"))`
 
 // collectOSLog reads entries from the unified log via `log show`, resuming from
 // the saved timestamp checkpoint when present, otherwise from a one-hour lookback.
