@@ -45,34 +45,39 @@ func parseUSNRecords(buf []byte) (next int64, out []usnChange) {
 		}
 		rec := buf[off : off+recLen]
 		off += recLen
-		major := binary.LittleEndian.Uint16(rec[4:])
-		var ref [16]byte
-		var reason, attrs uint32
-		switch major {
-		case 2:
-			if len(rec) < 60 {
-				continue
-			}
-			copy(ref[:8], rec[8:16])
-			reason = binary.LittleEndian.Uint32(rec[40:])
-			attrs = binary.LittleEndian.Uint32(rec[52:])
-		case 3:
-			if len(rec) < 76 {
-				continue
-			}
-			copy(ref[:], rec[8:24])
-			reason = binary.LittleEndian.Uint32(rec[56:])
-			attrs = binary.LittleEndian.Uint32(rec[68:])
-		default:
-			continue // V4 range records and unknown versions
+		if c, ok := usnRecordChange(rec); ok {
+			out = append(out, c)
 		}
-		if attrs&fileAttributeDirectory != 0 || reason&usnReasonFileDelete != 0 {
-			continue
-		}
-		if reason&(usnReasonDataOverwrite|usnReasonDataExtend|usnReasonDataTruncation|usnReasonFileCreate|usnReasonRenameNewName) == 0 {
-			continue
-		}
-		out = append(out, usnChange{ref: ref})
 	}
 	return next, out
+}
+
+// usnRecordChange decodes one record: a file (not a folder) whose data
+// changed, or that was created or renamed in, and not deleted.
+func usnRecordChange(rec []byte) (usnChange, bool) {
+	var c usnChange
+	var reason, attrs uint32
+	switch binary.LittleEndian.Uint16(rec[4:]) {
+	case 2:
+		if len(rec) < 60 {
+			return c, false
+		}
+		copy(c.ref[:8], rec[8:16])
+		reason = binary.LittleEndian.Uint32(rec[40:])
+		attrs = binary.LittleEndian.Uint32(rec[52:])
+	case 3:
+		if len(rec) < 76 {
+			return c, false
+		}
+		copy(c.ref[:], rec[8:24])
+		reason = binary.LittleEndian.Uint32(rec[56:])
+		attrs = binary.LittleEndian.Uint32(rec[68:])
+	default:
+		return c, false // V4 range records and unknown versions
+	}
+	const written = usnReasonDataOverwrite | usnReasonDataExtend | usnReasonDataTruncation | usnReasonFileCreate | usnReasonRenameNewName
+	if attrs&fileAttributeDirectory != 0 || reason&usnReasonFileDelete != 0 || reason&written == 0 {
+		return c, false
+	}
+	return c, true
 }

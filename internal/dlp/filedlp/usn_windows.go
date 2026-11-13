@@ -182,28 +182,46 @@ func (j *usnJournal) Changes(ctx context.Context, roots []string, cursors map[st
 		if reason != "" {
 			continue // no journal: this volume is covered by the rescans only
 		}
-		cur, ok := cursors[v]
-		if !ok || cur.Journal != d.UsnJournalID || cur.Next < d.LowestValidUsn || cur.Next > d.NextUsn {
-			lost = true // a volume not walked yet, or a journal that lost track
-			next[v] = JournalCursor{Journal: d.UsnJournalID, Next: d.NextUsn}
-			continue
-		}
-		refs, pos, gone := readJournal(ctx, h, d, cur.Next)
-		if gone || len(refs) > maxJournalChanges {
+		refs, cur, ok := volumeChanges(ctx, h, d, cursors[v])
+		next[v] = cur
+		if !ok {
 			lost = true
-			next[v] = JournalCursor{Journal: d.UsnJournalID, Next: d.NextUsn}
 			continue
 		}
-		next[v] = JournalCursor{Journal: d.UsnJournalID, Next: pos}
-		for ref := range refs {
-			if p, ok := pathByID(h, ref); ok {
-				if _, in := walk.Under(p, roots, "windows"); in {
-					paths = append(paths, p)
-				}
-			}
-		}
+		paths = append(paths, pathsUnder(h, refs, roots)...)
 	}
 	return paths, next, lost
+}
+
+// volumeChanges reads one volume's changed files from its cursor. ok is
+// false when the journal can't say (a volume not walked yet, a new
+// journal, records overwritten, too many changes); the cursor then moves
+// to the journal's end.
+func volumeChanges(ctx context.Context, h windows.Handle, d usnJournalData, cur JournalCursor) (map[[16]byte]bool, JournalCursor, bool) {
+	end := JournalCursor{Journal: d.UsnJournalID, Next: d.NextUsn}
+	if cur.Journal != d.UsnJournalID || cur.Next < d.LowestValidUsn || cur.Next > d.NextUsn {
+		return nil, end, false
+	}
+	refs, pos, gone := readJournal(ctx, h, d, cur.Next)
+	if gone || len(refs) > maxJournalChanges {
+		return nil, end, false
+	}
+	return refs, JournalCursor{Journal: d.UsnJournalID, Next: pos}, true
+}
+
+// pathsUnder maps file references to paths, keeping those under roots.
+func pathsUnder(h windows.Handle, refs map[[16]byte]bool, roots []string) []string {
+	var out []string
+	for ref := range refs {
+		p, ok := pathByID(h, ref)
+		if !ok {
+			continue
+		}
+		if _, in := walk.Under(p, roots, "windows"); in {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // readJournal reads a volume's records from start up to the journal's end
