@@ -131,7 +131,10 @@ func TestWindowsEnforcer_ScansAfterWrite(t *testing.T) {
 		ev.Destination.VolumeLabel != "TEST" || ev.Findings[0].Detector != "custom.keywords" || ev.Action != events.ActionMonitored {
 		t.Errorf("event %+v file %+v", ev, ev.File)
 	}
-	if h := e.Health(); !strings.Contains(h.Workers.Sandbox, "job") || h.Stats.Scans < 2 {
+	// The clean file's scan isn't ordered before the other file's event
+	// (each file waits out its own quiet period): wait for it.
+	eventually(t, "both files scanned", func() bool { return e.Health().Stats.Scans >= 2 })
+	if h := e.Health(); !strings.Contains(h.Workers.Sandbox, "job") {
 		t.Errorf("health %+v", h)
 	}
 	if _, err := os.Stat(filepath.Join(drive, "report.txt")); err != nil {

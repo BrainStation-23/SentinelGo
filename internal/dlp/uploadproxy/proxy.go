@@ -54,6 +54,9 @@ type Stats struct {
 	Inspected   uint64 `json:"inspected"`
 	Blocked     uint64 `json:"blocked"`
 	Errors      uint64 `json:"errors"`
+	// RedirectRepairs counts the times the service found the system proxy
+	// setting removed and applied it again (#477); the proxy leaves it zero.
+	RedirectRepairs uint64 `json:"redirect_repairs"`
 }
 
 // Proxy is an HTTP proxy (CONNECT and absolute-URL requests) that inspects

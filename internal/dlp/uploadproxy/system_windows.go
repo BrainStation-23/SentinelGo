@@ -52,25 +52,25 @@ type winNote struct {
 
 func (r *winRedirector) notePath() string { return filepath.Join(r.dir, redirectNote) }
 
-func (r *winRedirector) Apply(pacURL string) error {
+func (r *winRedirector) Apply(pacURL string) (bool, error) {
 	if note, ok := r.readNote(); ok && note.PACURL == pacURL {
-		return nil // applied already
+		return r.check(pacURL)
 	}
 	if err := r.Remove(); err != nil {
-		return err
+		return false, err
 	}
 	if err := existingProxy(); err != nil {
-		return err
+		return false, err
 	}
 	note := winNote{PACURL: pacURL}
 	pk, _, err := registry.CreateKey(hklm, policyInternetSettings, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("proxy policy key: %w", err)
+		return false, fmt.Errorf("proxy policy key: %w", err)
 	}
 	defer func() { _ = pk.Close() }()
 	mk, err := registry.OpenKey(hklm, machineInternetSettings, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("machine Internet Settings: %w", err)
+		return false, fmt.Errorf("machine Internet Settings: %w", err)
 	}
 	defer func() { _ = mk.Close() }()
 	if v, _, err := pk.GetIntegerValue("ProxySettingsPerUser"); err == nil {
@@ -81,17 +81,94 @@ func (r *winRedirector) Apply(pacURL string) error {
 	}
 	// The note first: a crash between the two writes is then still undone.
 	if err := r.writeNote(note); err != nil {
-		return err
+		return false, err
 	}
 	if err := pk.SetDWordValue("ProxySettingsPerUser", 0); err != nil {
 		_ = r.Remove()
-		return fmt.Errorf("per-machine proxy settings: %w", err)
+		return false, fmt.Errorf("per-machine proxy settings: %w", err)
 	}
 	if err := mk.SetStringValue("AutoConfigURL", pacURL); err != nil {
 		_ = r.Remove()
-		return fmt.Errorf("auto-config URL: %w", err)
+		return false, fmt.Errorf("auto-config URL: %w", err)
 	}
-	return nil
+	notifyProxyChange()
+	return false, nil
+}
+
+// check is Apply once the note says pacURL is applied: it trusts the
+// registry, not the note (#477). Both values still ours: nothing to do and
+// nothing written (the watchdog calls this every watchdogEvery). One
+// missing (deleted by the Settings app, an update, another tool): it is
+// written again, and the note keeps the values from before the first Apply
+// so Remove still restores them. One set to something else: another product
+// owns the proxy now, so it is left alone, the same rule Remove follows.
+// existingProxy isn't asked: it counts our own ProxySettingsPerUser as a
+// proxy policy.
+func (r *winRedirector) check(pacURL string) (bool, error) {
+	perUser, hasPerUser := machineDWord(policyInternetSettings, "ProxySettingsPerUser")
+	auto := machineString(machineInternetSettings, "AutoConfigURL")
+	switch {
+	case hasPerUser && perUser != 0:
+		return false, fmt.Errorf("%w: proxy settings are per user again (policy)", ErrExistingProxy)
+	case auto != "" && auto != pacURL:
+		return false, fmt.Errorf("%w: another auto-config URL is set", ErrExistingProxy)
+	case hasPerUser && auto == pacURL:
+		return false, nil
+	}
+	if !hasPerUser {
+		pk, _, err := registry.CreateKey(hklm, policyInternetSettings, registry.SET_VALUE)
+		if err != nil {
+			return false, fmt.Errorf("proxy policy key: %w", err)
+		}
+		err = pk.SetDWordValue("ProxySettingsPerUser", 0)
+		_ = pk.Close()
+		if err != nil {
+			return false, fmt.Errorf("per-machine proxy settings: %w", err)
+		}
+	}
+	if auto == "" {
+		mk, err := registry.OpenKey(hklm, machineInternetSettings, registry.SET_VALUE)
+		if err != nil {
+			return false, fmt.Errorf("machine Internet Settings: %w", err)
+		}
+		err = mk.SetStringValue("AutoConfigURL", pacURL)
+		_ = mk.Close()
+		if err != nil {
+			return false, fmt.Errorf("auto-config URL: %w", err)
+		}
+	}
+	notifyProxyChange()
+	return true, nil
+}
+
+// machineDWord reads a DWORD under hklm; present reports that the value
+// exists. A value of another type counts as present and not ours.
+func machineDWord(path, name string) (v uint64, present bool) {
+	k, err := registry.OpenKey(hklm, path, registry.QUERY_VALUE)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = k.Close() }()
+	v, _, err = k.GetIntegerValue(name)
+	switch {
+	case err == nil:
+		return v, true
+	case errors.Is(err, registry.ErrNotExist):
+		return 0, false
+	default:
+		return ^uint64(0), true
+	}
+}
+
+// machineString reads a string under hklm; "" when missing or unreadable.
+func machineString(path, name string) string {
+	k, err := registry.OpenKey(hklm, path, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = k.Close() }()
+	v, _, _ := k.GetStringValue(name)
+	return v
 }
 
 func (r *winRedirector) Remove() error {
@@ -99,10 +176,14 @@ func (r *winRedirector) Remove() error {
 	if !ok {
 		return nil
 	}
-	if pk, err := registry.OpenKey(hklm, policyInternetSettings, registry.SET_VALUE); err == nil {
-		if note.HadPerUser {
+	if pk, err := registry.OpenKey(hklm, policyInternetSettings, registry.QUERY_VALUE|registry.SET_VALUE); err == nil {
+		cur, _, perr := pk.GetIntegerValue("ProxySettingsPerUser")
+		switch {
+		case (perr == nil && cur != 0) || (perr != nil && !errors.Is(perr, registry.ErrNotExist)):
+			// Someone changed it since: theirs now, leave it (as Apply does).
+		case note.HadPerUser:
 			_ = pk.SetDWordValue("ProxySettingsPerUser", note.PerUser)
-		} else {
+		default:
 			_ = pk.DeleteValue("ProxySettingsPerUser")
 		}
 		_ = pk.Close()
@@ -122,7 +203,28 @@ func (r *winRedirector) Remove() error {
 	if err := os.Remove(r.notePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove the redirect note: %w", err)
 	}
+	notifyProxyChange()
 	return nil
+}
+
+// WinINet options that make running apps reread the proxy settings.
+const (
+	internetOptionRefresh         = 37 // INTERNET_OPTION_REFRESH
+	internetOptionSettingsChanged = 39 // INTERNET_OPTION_SETTINGS_CHANGED
+)
+
+var procInternetSetOption = windows.NewLazySystemDLL("wininet.dll").NewProc("InternetSetOptionW")
+
+// notifyProxyChange tells WinINet the proxy settings changed, so running
+// browsers and WinINet apps pick up (or drop) the PAC without a restart.
+// Best effort, and only after a write. A seam for tests.
+var notifyProxyChange = func() {
+	if procInternetSetOption.Find() != nil {
+		return // no WinINet (Server Core): nothing caches the settings
+	}
+	for _, opt := range []uintptr{internetOptionSettingsChanged, internetOptionRefresh} {
+		_, _, _ = procInternetSetOption.Call(0, opt, 0, 0)
+	}
 }
 
 func (r *winRedirector) readNote() (winNote, bool) {

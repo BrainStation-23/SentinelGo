@@ -11,8 +11,8 @@ require (
 	github.com/rrethy/ahocorasick v1.0.0
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/yusufpapurcu/wmi v1.2.4
-	golang.org/x/sys v0.49.0
-	modernc.org/sqlite v1.61.1
+	golang.org/x/sys v0.50.0
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -26,7 +26,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )

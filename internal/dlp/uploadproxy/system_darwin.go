@@ -69,34 +69,116 @@ func enabled(out []byte) bool {
 	return false
 }
 
-func (r *macRedirector) Apply(pacURL string) error {
+// autoProxyURL is the URL in -getautoproxyurl output ("" when none).
+func autoProxyURL(out []byte) string {
+	for _, line := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(k) == "URL" {
+			if v = strings.TrimSpace(v); v != "(null)" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// foreignProxy reports another proxy on service s: a web or secure web
+// proxy, or an auto proxy at another URL than ours (auto is s's
+// -getautoproxyurl output).
+func foreignProxy(s string, auto []byte, pacURL string) bool {
+	if enabled(auto) && autoProxyURL(auto) != pacURL {
+		return true
+	}
+	for _, flag := range []string{"-getwebproxy", "-getsecurewebproxy"} {
+		if out, err := runNetworksetup(flag, s); err == nil && enabled(out) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *macRedirector) Apply(pacURL string) (bool, error) {
 	if n, ok := r.readNote(); ok && n.PACURL == pacURL {
-		return nil
+		return r.check(n)
 	}
 	if err := r.Remove(); err != nil {
-		return err
+		return false, err
 	}
 	svcs, err := services()
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, s := range svcs {
 		for _, flag := range []string{"-getwebproxy", "-getsecurewebproxy", "-getautoproxyurl"} {
 			if out, err := runNetworksetup(flag, s); err == nil && enabled(out) {
-				return fmt.Errorf("%w: %s on a network service", ErrExistingProxy, flag[4:])
+				return false, fmt.Errorf("%w: %s on a network service", ErrExistingProxy, flag[4:])
 			}
 		}
 	}
 	if err := r.writeNote(macNote{PACURL: pacURL, Services: svcs}); err != nil {
-		return err
+		return false, err
 	}
 	for _, s := range svcs {
 		if _, err := runNetworksetup("-setautoproxyurl", s, pacURL); err != nil {
 			_ = r.Remove()
-			return fmt.Errorf("set the auto proxy: %w", err)
+			return false, fmt.Errorf("set the auto proxy: %w", err)
 		}
 	}
-	return nil
+	return false, nil
+}
+
+// check is Apply once the note says n.PACURL is applied: it trusts the
+// network services, not the note (#477). The setting belongs to each
+// service, so turning it off in System Settings, or a service added since
+// (a USB adapter, a VPN), loses it. Each enabled service still pointing at
+// the PAC is left alone (reads only); one without it, and without another
+// proxy, gets it again and joins the note so Remove turns it off too; one
+// with another proxy is someone else's now: left alone, and Apply reports
+// ErrExistingProxy, as on Windows.
+func (r *macRedirector) check(n macNote) (bool, error) {
+	svcs, err := services()
+	if err != nil {
+		return false, err
+	}
+	var lost []string
+	var theirs error
+	for _, s := range svcs {
+		out, err := runNetworksetup("-getautoproxyurl", s)
+		if err != nil {
+			continue // can't tell: leave it until the next check
+		}
+		switch {
+		case enabled(out) && autoProxyURL(out) == n.PACURL:
+		case foreignProxy(s, out, n.PACURL):
+			theirs = fmt.Errorf("%w: another proxy on network service %q", ErrExistingProxy, s)
+		default:
+			lost = append(lost, s)
+		}
+	}
+	if len(lost) == 0 {
+		return false, theirs
+	}
+	known := map[string]bool{}
+	for _, s := range n.Services {
+		known[s] = true
+	}
+	added := false
+	for _, s := range lost {
+		if !known[s] {
+			n.Services, added = append(n.Services, s), true
+		}
+	}
+	if added {
+		// The note first, as in Apply: a crash is then still undone.
+		if err := r.writeNote(n); err != nil {
+			return false, err
+		}
+	}
+	for _, s := range lost {
+		if _, err := runNetworksetup("-setautoproxyurl", s, n.PACURL); err != nil {
+			return false, fmt.Errorf("set the auto proxy again: %w", err)
+		}
+	}
+	return true, theirs
 }
 
 func (r *macRedirector) Remove() error {
