@@ -10,6 +10,7 @@ import (
 
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/store"
 )
@@ -163,5 +164,47 @@ func TestDLP_ConfigFlag(t *testing.T) {
 	code, out, _ := runDLP(t, "", "status", "-config", cfg.Path)
 	if code != 0 || !strings.Contains(out, "sha256:test") {
 		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// dlp status shows file DLP's emergency switch and quarantine (#430), with
+// counts only, never the quarantined files' names.
+func TestDLPStatus_FilesSwitchAndQuarantine(t *testing.T) {
+	dlpTestConfig(t, true, 0)
+	cfg, _ := loadDefaultConfig()
+	dir := filepath.Dir(cfg.Path)
+
+	_, out, _ := runDLP(t, "", "status")
+	for _, want := range []string{"File DLP module:            enabled false, audit-only true, on_close_violation record",
+		"File DLP emergency switch:  off", "Quarantine:                 0 files"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, filedlp.OffSwitchFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	q := filepath.Join(dir, filedlp.QuarantineDir)
+	if err := os.MkdirAll(q, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"20261113T080000Z-1-2-secret-plan.docx", "20261113T090000Z-1-3-payroll.xlsx"} {
+		if err := os.WriteFile(filepath.Join(q, name), []byte("12345"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, out, _ = runDLP(t, "", "status")
+	if !strings.Contains(out, "File DLP emergency switch:  ON") || !strings.Contains(out, "Quarantine:                 2 files (10 bytes)") {
+		t.Errorf("status:\n%s", out)
+	}
+	_, js, _ := runDLP(t, "", "status", "-json")
+	var st DLPStatus
+	if err := json.Unmarshal([]byte(js), &st); err != nil || st.Files == nil || !st.Files.EmergencySwitch || st.Files.Quarantine.Files != 2 ||
+		st.Files.Quarantine.Oldest.IsZero() {
+		t.Errorf("json files = %s", js)
+	}
+	if strings.Contains(out, "secret-plan") || strings.Contains(js, "payroll") {
+		t.Error("status names a quarantined file")
 	}
 }

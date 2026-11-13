@@ -43,7 +43,7 @@ Someone with admin rights, encryption tools, a phone camera or a second operatin
 - **Held:** a new file created on a monitored drive or share by a copy program (`cp`, `mv`, `rsync`, `install`, `dd`, `tar`, and the common file managers). It is judged by the files that program has open for reading at that moment.
 - **Not held, judged after the write:** files written by any other program (an editor's "Save as", a shell redirect, a browser download), and existing files overwritten in place. `on_close_violation` (record, quarantine or delete) applies to those.
 - **Never held:** antivirus, indexers, thumbnailers and backup daemons. Backups to a USB drive with `rsync` are a copy: list backup drives as trusted devices.
-- **Fails open:** a slow scan (past `scan_timeout_ms`, at most 10 seconds), a flood of opens, a crash or a stalled event loop all end in "allow", counted in the status (`files.blocking`). The emergency switch `dlp-files-off` in the config directory turns blocking off within seconds.
+- **Fails open:** a slow scan (past `scan_timeout_ms`, at most 10 seconds), a flood of opens, a crash or a stalled event loop all end in "allow", counted in the status (`files.blocking`). The emergency switch `dlp-files-off` in the config directory turns blocking off within seconds. How to use it, and how to give back a quarantined file: [dlp-file-runbook.md](dlp-file-runbook.md).
 
 ## Overrides and exceptions
 

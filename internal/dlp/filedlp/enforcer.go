@@ -89,6 +89,9 @@ type Health struct {
 	// NetworkControl is the network controls' state (netctl.Status, #427);
 	// nil when they are off.
 	NetworkControl any `json:"network_control,omitempty"`
+	// Summary is each file channel's events since the agent started (#430),
+	// filled in by the DLP Manager from its Tally; nil without one.
+	Summary *Summary `json:"summary,omitempty"`
 }
 
 // Hook states.

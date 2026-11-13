@@ -17,6 +17,7 @@ import (
 	"sentinelgo/internal/dlp/channel/clipboard"
 	"sentinelgo/internal/dlp/detect"
 	"sentinelgo/internal/dlp/events"
+	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/store"
 )
@@ -35,6 +36,7 @@ type DLPStatus struct {
 	DetectorsSupported int               `json:"detectors_supported"`
 	Capabilities       map[string]string `json:"capabilities"`
 	Queue              *DLPQueueStatus   `json:"queue,omitempty"`
+	Files              *DLPFilesStatus   `json:"files,omitempty"`
 	Errors             []string          `json:"errors,omitempty"`
 }
 
@@ -58,6 +60,29 @@ type DLPPolicySummary struct {
 	Severity string   `json:"severity"`
 	Channels []string `json:"channels"`
 	Rules    int      `json:"rules"`
+}
+
+// DLPFilesStatus is file DLP's local state (#430): what support checks
+// before and after using the emergency switch.
+type DLPFilesStatus struct {
+	// From the cached bundle's modules.files (absent without one).
+	ModuleEnabled    *bool  `json:"module_enabled,omitempty"`
+	AuditOnly        *bool  `json:"audit_only,omitempty"`
+	OnCloseViolation string `json:"on_close_violation,omitempty"`
+	UntrustedDevices string `json:"untrusted_devices,omitempty"`
+	// EmergencySwitch is whether the dlp-files-off file exists.
+	EmergencySwitch     bool                `json:"emergency_switch"`
+	EmergencySwitchPath string              `json:"emergency_switch_path"`
+	Quarantine          DLPQuarantineStatus `json:"quarantine"`
+}
+
+// DLPQuarantineStatus is the quarantine folder: how many files it holds,
+// never their names.
+type DLPQuarantineStatus struct {
+	Path   string    `json:"path"`
+	Files  int       `json:"files"`
+	Bytes  int64     `json:"bytes"`
+	Oldest time.Time `json:"oldest,omitzero"`
 }
 
 // DLPQueueStatus is the evidence queue awaiting upload.
@@ -99,6 +124,7 @@ func dlpStatus(cfg *config.Config) DLPStatus {
 		}
 		st.Policy = ps
 	}
+	st.Files = filesStatus(dlpDir(cfg), b, &st.Errors)
 
 	dbPath := filepath.Join(dlpDir(cfg), store.DLPEventsDBName)
 	if _, err := os.Stat(dbPath); err == nil {
@@ -115,6 +141,48 @@ func dlpStatus(cfg *config.Config) DLPStatus {
 		}
 	}
 	return st
+}
+
+// filesStatus reads file DLP's local state: the cached bundle's files
+// module (b may be nil), the emergency switch and the quarantine folder.
+func filesStatus(dir string, b *policy.Bundle, errs *[]string) *DLPFilesStatus {
+	out := &DLPFilesStatus{
+		EmergencySwitchPath: filepath.Join(dir, filedlp.OffSwitchFile),
+		Quarantine:          DLPQuarantineStatus{Path: filepath.Join(dir, filedlp.QuarantineDir)},
+	}
+	if b != nil {
+		f := b.Modules.Files
+		enabled, audit := f.Enabled, f.IsAuditOnly()
+		out.ModuleEnabled, out.AuditOnly = &enabled, &audit
+		out.OnCloseViolation = orDefault(f.CopyCorrelation.OnCloseViolation, policy.ViolationRecord)
+		out.UntrustedDevices = orDefault(f.CopyCorrelation.UntrustedDevices, policy.UntrustedAllow)
+	}
+	if _, err := os.Lstat(out.EmergencySwitchPath); err == nil {
+		out.EmergencySwitch = true
+	}
+	entries, err := os.ReadDir(out.Quarantine.Path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		*errs = append(*errs, "quarantine folder: "+err.Error())
+	}
+	for _, e := range entries {
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		out.Quarantine.Files++
+		out.Quarantine.Bytes += fi.Size()
+		if t := fi.ModTime().UTC(); out.Quarantine.Oldest.IsZero() || t.Before(out.Quarantine.Oldest) {
+			out.Quarantine.Oldest = t
+		}
+	}
+	return out
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 // RunDLP runs `sentinelgo dlp <status|test|proxy> …` and returns the exit code.
@@ -187,6 +255,18 @@ func printDLPStatus(w io.Writer, st DLPStatus) {
 	}
 	if st.Queue != nil {
 		p("Evidence queue:             %d events (%d bytes), %d dropped over the cap", st.Queue.Events, st.Queue.Bytes, st.Queue.Dropped)
+	}
+	if f := st.Files; f != nil {
+		if f.ModuleEnabled != nil {
+			p("File DLP module:            enabled %v, audit-only %v, on_close_violation %s, untrusted_devices %s",
+				*f.ModuleEnabled, *f.AuditOnly, f.OnCloseViolation, f.UntrustedDevices)
+		}
+		sw := "off"
+		if f.EmergencySwitch {
+			sw = "ON (file DLP stopped on this device)"
+		}
+		p("File DLP emergency switch:  %s (%s)", sw, f.EmergencySwitchPath)
+		p("Quarantine:                 %d files (%d bytes) in %s", f.Quarantine.Files, f.Quarantine.Bytes, f.Quarantine.Path)
 	}
 	p("Session helpers:            see the service log (\"session helper connected\")")
 	for _, e := range st.Errors {

@@ -13,6 +13,11 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- File DLP pilot summary (#430). The DLP status's `files` block gains `summary`: for each file channel, the files recorded since the agent started (`events`), counted by `actions` (monitored, warned, blocked, overridden, quarantined, deleted) and by `would_have` (what audit-only stopped the agent doing: blocked, quarantined, deleted, network_blocked), the files quarantined or deleted (`remediated`), and the `detectors` that matched (at most 50 ids per channel, the rest in `detectors_other`). An event aggregated over several files counts as its `repeat_count`. Counters are totals since `since` (the agent's start), like `files.stats`, so the backend can chart a pilot ring's would-have-blocked numbers per channel and detector without reading the raw events; a newer `since` means the agent restarted. Nothing is sent that the events don't already carry: no file names or paths.
+- `sentinelgo dlp status` shows file DLP's local state: the cached bundle's files module (enabled, audit-only, `on_close_violation`, `untrusted_devices`), whether the emergency switch `dlp-files-off` is on, and how many files the quarantine folder holds and their size (never their names). New support runbook `docs/dlp-file-runbook.md`: the switches and their reach, the emergency switch per OS and what it doesn't stop (Windows blocked apps), the quarantine folder, and how to give a quarantined file back.
+
 ## [v4.0.10] - 2026-11-13
 
 ### Fixed

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/policy"
 )
@@ -158,5 +160,30 @@ func TestStatus_CopyCorrelationInCapabilities(t *testing.T) {
 	raw, _ = json.Marshal(st)
 	if strings.Contains(string(raw), "copy_correlation") {
 		t.Errorf("copy_correlation without a hook: %s", raw)
+	}
+}
+
+// The file health in a snapshot carries the per-channel summary (#430),
+// and only when the hook reports health.
+func TestManager_SnapshotCarriesFileSummary(t *testing.T) {
+	m := NewManager(true, fakeSource{b: filesBundle(false, true)}, &fakeSupervisor{})
+	m.SetFiles(&fakeFiles{})
+	tally := filedlp.NewTally(nil, time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC))
+	m.SetFileSummary(tally.Summary)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tally.Emit(events.Event{Channel: policy.ChannelFileRemovable, Action: events.ActionMonitored, WouldHave: events.ActionQuarantined})
+	snap := m.Snapshot()
+	if snap.Files == nil || snap.Files.Summary == nil || snap.Files.Mounts != 1 {
+		t.Fatalf("files %+v", snap.Files)
+	}
+	if c := snap.Files.Summary.Channels[policy.ChannelFileRemovable]; c.WouldHave[events.ActionQuarantined] != 1 {
+		t.Errorf("summary %+v", c)
+	}
+	st, _ := (&Syncer{agentVersion: "1"}).status(snap)
+	data, _ := json.Marshal(st)
+	if !strings.Contains(string(data), `"summary":{"since":"2026-11-13T00:00:00Z","channels":{"file.removable":`) {
+		t.Errorf("status %s", data)
 	}
 }
