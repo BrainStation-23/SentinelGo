@@ -2,16 +2,18 @@
 
 package collector
 
-// These tests run only on Linux (the OS the linuxCollector targets). They never
-// invoke real journalctl: the `open` seam is replaced with a fake that returns
-// canned output, so Collect/collectJournal are tested deterministically and
-// offline. File tailing is tested against real temp files.
+// These tests run only on Linux (the OS the linuxCollector targets). Apart from
+// TestJournalMatches_RealJournalctl they never invoke real journalctl: the
+// `open` seam is replaced with a fake that returns canned output, so
+// Collect/collectJournal are tested deterministically and offline. File
+// tailing is tested against real temp files.
 
 import (
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,5 +161,52 @@ func TestLinuxSources(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'journal' in sources, got %v", sources)
+	}
+}
+
+// TestLinuxCollectJournal_OnlySendable: collection and the real-time follow
+// both ask journalctl for err and above or auth events only (#484), with the
+// matches after the options.
+func TestLinuxCollectJournal_OnlySendable(t *testing.T) {
+	want := strings.Join(journalMatches, " ")
+	for name, cp := range map[string]CheckpointData{"first run": {}, "resume": {"journal_cursor": "c"}} {
+		var gotArgs []string
+		c := &linuxCollector{open: fakeOpen("", &gotArgs)}
+		if _, _, err := c.collectJournal(context.Background(), cp); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if joined := strings.Join(gotArgs, " "); !strings.HasSuffix(joined, " "+want) {
+			t.Errorf("%s: args %q don't end with the matches %q", name, joined, want)
+		}
+	}
+	var gotArgs []string
+	c := &linuxCollector{open: fakeOpen("", &gotArgs)}
+	if err := c.Subscribe(context.Background(), make(chan RawLogEntry, 1)); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(gotArgs, " ")
+	if !strings.HasSuffix(joined, " "+want) || strings.Contains(joined, " -p ") {
+		t.Errorf("follow args %q: want the matches %q and no -p", joined, want)
+	}
+}
+
+// TestJournalMatches_RealJournalctl runs the matches through the real
+// journalctl, so a syntax error fails here and not on devices.
+func TestJournalMatches_RealJournalctl(t *testing.T) {
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		t.Skip("no journalctl")
+	}
+	args := append([]string{"-o", "json", "--no-pager", "-q", "-n", "5", "--since", "1 hour ago"}, journalMatches...)
+	out, err := exec.Command("journalctl", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("journalctl %v: %v\n%s", args, err, out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		if _, _, ok := parseJournalLine([]byte(line)); !ok {
+			t.Errorf("unparseable journal line: %s", line)
+		}
 	}
 }
