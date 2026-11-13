@@ -58,12 +58,10 @@ internal/logging/uploader.go       - HTTPS batch uploader to the Supabase Edge F
 - Handles UTF-16 conversions and proper resource management
 - Supports real-time subscription and batch queries
 
-**Event Channels:**
-- Security (4624, 4625, 4672 - authentication events)
-- System (6005, 6006, 6008, 41 - system lifecycle)
-- Application
-- Windows Defender Operational
-- PowerShell Operational
+**Event Channels:** Security, System, Application, Defender, PowerShell, Task
+Scheduler, Firewall, Remote Desktop and Group Policy. Each is queried only for
+events that can be sent (Level 1–2 and the security event IDs the parser
+re-grades, #484); see [WINDOWS_EVENT_LOG_CHANNELS.md](WINDOWS_EVENT_LOG_CHANNELS.md).
 
 **Checkpointing:** Event Record ID for exact positioning
 
@@ -98,7 +96,8 @@ internal/logging/uploader.go       - HTTPS batch uploader to the Supabase Edge F
 
 **Normalization Features:**
 - Event type mapping (boot, shutdown, login, security, etc.)
-- Severity classification (critical, high, medium, low, info)
+- Severity classification (critical, high, medium, low, info): the OS level,
+  raised for known security events by event ID or message (`grade.go`, #484)
 - Category assignment (SYSTEM_LOG, SECURITY_LOG, AGENT_LOG, etc.)
 - JSON event data normalization with schema compliance
 
@@ -113,6 +112,11 @@ internal/logging/uploader.go       - HTTPS batch uploader to the Supabase Edge F
 - Timestamp format validation (RFC3339)
 - Category and severity validation
 - JSON structure validation
+
+**Severity filter (#484):** only `high` and `critical` logs are queued and
+uploaded; the backend is a compliance platform, not a log store. Lower rows are
+counted (`DroppedLowSeverity` in `sentinelgo -logging-stats`) and dropped, and
+the checkpoint moves past them.
 
 ### 4. Service Layer (service.go)
 

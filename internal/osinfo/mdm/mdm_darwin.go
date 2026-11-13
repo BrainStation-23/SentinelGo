@@ -16,6 +16,7 @@ var (
 	runCommandOutput = shared.RunCommandOutput
 	now              = time.Now
 	openFile         = func(name string) (*os.File, error) { return os.Open(name) } // #nosec G304 -- fixed system path
+	codeSignature    = func() *shared.AgentCodeSignature { return selfSignature() }
 )
 
 // tccDB is the system TCC database. Opening it needs Full Disk Access, even
@@ -51,6 +52,13 @@ func collect(ourHost string) *shared.MDMInfo {
 		info.ManagedSettings = managedSettings(info.ProfilePayloadTypes)
 	}
 	info.Grants.FullDiskAccess = fullDiskAccess()
+	// The agent's own code signature (#339), for the server's Full Disk
+	// Access grant. Full Disk Access is checked on every inventory, so a
+	// grant or revocation shows up without a restart.
+	info.Agent = &shared.MDMAgent{
+		CodeSignature:  codeSignature(),
+		FullDiskAccess: fdaState(info.Grants.FullDiskAccess),
+	}
 	return info
 }
 

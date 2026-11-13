@@ -144,6 +144,14 @@ func (c *darwinCollector) Subscribe(_ context.Context, _ chan<- RawLogEntry) err
 	return nil
 }
 
+// oslogPredicate limits `log show` to what can be sent (#484): error and fault
+// messages, and default-level messages from the sign-in tools whose messages
+// the parser grades (their failures are logged at the default level). Only
+// log messages (eventType logEvent): activities and signposts carry no
+// message type and match `messageType == default`, which let sudo's
+// OpenDirectory activities ("Retrieve User by ID") through.
+const oslogPredicate = `eventType == logEvent AND (messageType == error OR messageType == fault OR (messageType == default AND (process == "sudo" OR process == "sshd" OR process == "su")))`
+
 // collectOSLog reads entries from the unified log via `log show`, resuming from
 // the saved timestamp checkpoint when present, otherwise from a one-hour lookback.
 func (c *darwinCollector) collectOSLog(ctx context.Context, checkpoint CheckpointData) ([]RawLogEntry, CheckpointData, error) {
@@ -156,7 +164,7 @@ func (c *darwinCollector) collectOSLog(ctx context.Context, checkpoint Checkpoin
 	args := []string{
 		"show",
 		"--style", "ndjson",
-		"--info",
+		"--predicate", oslogPredicate,
 		"--start", start.Format(macLogShowTimeLayout),
 	}
 

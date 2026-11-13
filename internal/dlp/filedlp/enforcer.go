@@ -92,6 +92,9 @@ type Health struct {
 	// AtRest is at-rest classification's state (#331 part 2); nil where it
 	// never ran.
 	AtRest *AtRestStatus `json:"at_rest,omitempty"`
+	// Summary is each file channel's events since the agent started (#430),
+	// filled in by the DLP Manager from its Tally; nil without one.
+	Summary *Summary `json:"summary,omitempty"`
 }
 
 // Hook states.

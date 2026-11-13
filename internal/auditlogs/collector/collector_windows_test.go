@@ -2,14 +2,17 @@
 
 package collector
 
-// Pure-logic tests for the Windows collector. They run on the Windows host. The
-// event-reading path (EvtQuery/EvtRender) needs real OS handles and is covered
-// by integration runs, not here.
+// Tests for the Windows collector. They run on the Windows host. Reading and
+// rendering events is covered by integration runs; the queries are checked
+// against the real EvtQuery (TestChannels_QueriesAreValid).
 
 import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestGenerateSource(t *testing.T) {
@@ -72,24 +75,88 @@ func TestChannels_FirstRunQueriesAreBounded(t *testing.T) {
 
 // System events 35 and 24 match exactly one System query (#436): the Level 1-4
 // query excludes them and the time-service query collects them.
-func TestChannels_TimeServiceEventsCollectedOnce(t *testing.T) {
-	var matches int
+// TestSourceConstants keeps the exported source names (used by the parser to
+// grade events, #484) in step with the channel names they come from.
+func TestSourceConstants(t *testing.T) {
+	for channel, want := range map[string]string{
+		"Security": SourceWindowsSecurity,
+		"System":   SourceWindowsSystem,
+		"Microsoft-Windows-Windows Defender/Operational":                         SourceWindowsDefender,
+		"Microsoft-Windows-PowerShell/Operational":                               SourceWindowsPowerShell,
+		"Microsoft-Windows-TaskScheduler/Operational":                            SourceWindowsTaskScheduler,
+		"Microsoft-Windows-Windows Firewall With Advanced Security/Firewall":     SourceWindowsFirewall,
+		"Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational": SourceWindowsRemoteDesktop,
+	} {
+		if got := generateSource(channel); got != want {
+			t.Errorf("generateSource(%q) = %q, constant is %q", channel, got, want)
+		}
+	}
+	sources := map[string]bool{}
 	for _, ch := range channels {
-		if ch.name != "System" {
+		sources[ch.source] = true
+	}
+	for _, s := range []string{SourceWindowsSecurity, SourceWindowsSystem, SourceWindowsDefender,
+		SourceWindowsPowerShell, SourceWindowsTaskScheduler, SourceWindowsFirewall, SourceWindowsRemoteDesktop} {
+		if !sources[s] {
+			t.Errorf("no channel has source %q", s)
+		}
+	}
+}
+
+// TestChannels_QueriesAreValid runs every channel's query, as-is, after a
+// checkpoint and bounded for a first run, plus the real-time query, through
+// the real EvtQuery (#484). A channel the host lacks, or the Security log
+// without elevation, is skipped; an invalid XPath fails.
+func TestChannels_QueriesAreValid(t *testing.T) {
+	const (
+		errAccessDenied    = windows.Errno(5)
+		errInvalidQuery    = windows.Errno(15001)
+		errChannelNotFound = windows.Errno(15007)
+	)
+	type q struct{ channel, query string }
+	var qs []q
+	for _, ch := range channels {
+		qs = append(qs,
+			q{ch.name, ch.query},
+			q{ch.name, buildXPathQuery(ch.query, 12345)},
+			q{ch.name, buildFirstRunQuery(ch.query, 72*time.Hour)})
+	}
+	qs = append(qs, q{"Security", securityRealTimeQuery})
+	for _, c := range qs {
+		path, _ := windows.UTF16PtrFromString(c.channel)
+		query, _ := windows.UTF16PtrFromString(c.query)
+		h, _, err := procEvtQuery.Call(0, uintptr(unsafe.Pointer(path)), uintptr(unsafe.Pointer(query)),
+			EvtQueryChannelPath|EvtQueryForwardDirection)
+		if h != 0 {
+			_, _, _ = procEvtClose.Call(h)
 			continue
 		}
-		for _, id := range []string{"35", "24"} {
-			included := strings.Contains(ch.query, "EventID="+id+")") || strings.Contains(ch.query, "EventID="+id+" ")
-			excluded := strings.Contains(ch.query, "EventID!="+id)
-			levelQuery := strings.Contains(ch.query, "Level=4")
-			if (included || levelQuery) && !excluded {
-				matches++
-			}
+		switch err {
+		case errAccessDenied, errChannelNotFound:
+			t.Logf("skipped %s: %v", c.channel, err)
+		case errInvalidQuery:
+			t.Errorf("invalid query on %s: %s", c.channel, c.query)
+		default:
+			t.Errorf("EvtQuery on %s (%s): %v", c.channel, c.query, err)
 		}
 	}
-	if matches != 2 {
-		t.Errorf("events 35 and 24 match %d System queries in total, want 2 (one each)", matches)
+}
+
+// TestChannels_SystemQueryKeepsGradedEvents: the System query asks for errors
+// and the two events the parser grades up (#484).
+func TestChannels_SystemQueryKeepsGradedEvents(t *testing.T) {
+	for _, ch := range channels {
+		if ch.source != SourceWindowsSystem {
+			continue
+		}
+		for _, want := range []string{"Level=1", "Level=2", "EventID=104", "EventID=7045"} {
+			if !strings.Contains(ch.query, want) {
+				t.Errorf("System query %q lacks %s", ch.query, want)
+			}
+		}
+		return
 	}
+	t.Fatal("no System channel")
 }
 
 func TestApplyEventData(t *testing.T) {

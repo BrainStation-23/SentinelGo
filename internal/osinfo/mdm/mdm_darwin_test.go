@@ -3,10 +3,13 @@ package mdm
 import (
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"sentinelgo/internal/osinfo/shared"
 )
 
 // fakeTools stubs the commands collect runs and counts `profiles show`.
@@ -102,4 +105,70 @@ func TestCollect_ManagedSettingsAndFullDiskAccess(t *testing.T) {
 	if fda := collect("").Grants.FullDiskAccess; fda != nil {
 		t.Errorf("missing TCC.db: full disk access = %v, want unknown", *fda)
 	}
+}
+
+// The agent block carries the signature and the Full Disk Access state,
+// which is checked again on every inventory (#339).
+func TestCollect_AgentBlock(t *testing.T) {
+	fakeTools(t, "Enrolled via DEP: No\nMDM enrollment: No\n", "Client is not DEP enabled.")
+	prevSig := codeSignature
+	t.Cleanup(func() { codeSignature = prevSig })
+	team := "ABCDE12345"
+	want := &shared.AgentCodeSignature{Path: "/opt/sentinelgo/SentinelGo.app", Signature: SigDeveloperID, TeamID: &team}
+	codeSignature = func() *shared.AgentCodeSignature { return want }
+
+	info := collect("")
+	if info.Agent == nil || info.Agent.CodeSignature != want || info.Agent.FullDiskAccess != FDADenied {
+		t.Fatalf("agent = %+v", info.Agent)
+	}
+	openFile = func(string) (*os.File, error) { return os.Open(os.DevNull) }
+	if got := collect("").Agent.FullDiskAccess; got != FDAGranted {
+		t.Errorf("after a grant: full_disk_access = %q, want granted", got)
+	}
+}
+
+// The real Security framework on the test binary: `go test` binaries are
+// linker-signed ad hoc on Apple silicon and unsigned on Intel, never
+// Developer ID.
+func TestSelfSignature_Real(t *testing.T) {
+	if err := loadSecurity(); err != nil {
+		t.Fatalf("loadSecurity: %v", err)
+	}
+	sig := readSelfSignature()
+	if sig == nil {
+		t.Fatal("readSelfSignature returned nil")
+	}
+	exe, _ := os.Executable()
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	if sig.Path != exe {
+		t.Errorf("path = %q, want the test executable %q", sig.Path, exe)
+	}
+	if sig.TeamID != nil {
+		t.Errorf("team_id = %q on a test binary", *sig.TeamID)
+	}
+	switch sig.Signature {
+	case SigAdhoc:
+		if sig.Identifier == nil || *sig.Identifier == "" {
+			t.Error("ad-hoc signature without an identifier")
+		}
+		if sig.DesignatedRequirement == nil || !strings.Contains(*sig.DesignatedRequirement, "cdhash") {
+			t.Errorf("designated requirement = %v, want an implicit cdhash requirement", sig.DesignatedRequirement)
+		}
+	case SigUnsigned:
+		if sig.Identifier != nil || sig.DesignatedRequirement != nil {
+			t.Errorf("unsigned but identifier = %v, requirement = %v", sig.Identifier, sig.DesignatedRequirement)
+		}
+	default:
+		t.Errorf("signature = %q, want adhoc or unsigned for a go test binary", sig.Signature)
+	}
+	t.Logf("signature: %s, identifier: %v, requirement: %v", sig.Signature, deref(sig.Identifier), deref(sig.DesignatedRequirement))
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
 }

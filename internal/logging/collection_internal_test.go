@@ -45,7 +45,7 @@ func makeBatch(prefix string, n int, ts time.Time) []collector.RawLogEntry {
 			Source:     "fake",
 			EventID:    fmt.Sprintf("%s-%d", prefix, i),
 			RawMessage: fmt.Sprintf("%s message %d", prefix, i),
-			Severity:   "info",
+			Severity:   "error", // high: sent (#484)
 			Metadata:   map[string]string{},
 		}
 	}
@@ -125,5 +125,38 @@ func TestRunCollection_KeepsBacklogInWindow(t *testing.T) {
 	}
 	if len(pending) != 50 {
 		t.Errorf("stored %d old entries, want 50 (downtime backlog must be kept, not discarded)", len(pending))
+	}
+}
+
+// TestRunCollection_SendsOnlyHighAndCritical: rows below high severity are
+// counted and dropped, re-graded security events are kept, and the checkpoint
+// still moves past everything (#484).
+func TestRunCollection_SendsOnlyHighAndCritical(t *testing.T) {
+	now := time.Now()
+	entry := func(id, source, sev string) collector.RawLogEntry {
+		return collector.RawLogEntry{Timestamp: now, Source: source, EventID: id, RawMessage: id, Severity: sev, Metadata: map[string]string{}}
+	}
+	batch := []collector.RawLogEntry{
+		entry("a", "fake", "info"),
+		entry("b", "fake", "notice"),
+		entry("c", "fake", "warning"),
+		entry("d", "fake", "err"),
+		entry("e", "fake", "crit"),
+		entry("4625", collector.SourceWindowsSecurity, "6"), // failed logon, logged as Information
+		entry("1116", collector.SourceWindowsDefender, "4"), // malware detected, logged as Warning
+		entry("4634", collector.SourceWindowsSecurity, "6"), // logoff: routine
+	}
+	li := newTestIntegration(t, &fakeCollector{batches: [][]collector.RawLogEntry{batch}})
+	if err := li.runCollection(context.Background()); err != nil {
+		t.Fatalf("runCollection: %v", err)
+	}
+	if got, want := pendingCount(t, li.store), 4; got != want {
+		t.Errorf("queued %d rows, want %d (err, crit, 4625, 1116)", got, want)
+	}
+	if got, want := li.GetStatistics().DroppedLowSeverity, int64(4); got != want {
+		t.Errorf("DroppedLowSeverity = %d, want %d", got, want)
+	}
+	if n, ok := collector.CheckpointInt64(collector.CheckpointData(li.checkpoint.Get()), "n"); !ok || n != 1 {
+		t.Errorf("checkpoint n = %v, %v; want 1 (moved past the dropped rows)", n, ok)
 	}
 }
