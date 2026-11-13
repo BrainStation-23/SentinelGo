@@ -765,6 +765,10 @@ type MDMInfo struct {
 	ProfilePayloadTypes []string `json:"profile_payload_types,omitempty"`
 	// Grants are permissions the agent holds, typically granted by a profile.
 	Grants MDMGrants `json:"grants"`
+	// Agent is the running agent's own code signature and Full Disk Access
+	// state, macOS only (#339): the server builds the Full Disk Access
+	// grant (PPPC) from it (Compliance-OS#530). Nil on Windows and Linux.
+	Agent *MDMAgent `json:"agent,omitempty"`
 
 	// Windows (#355). The device's domain/Entra join is in identity_join.
 	// Eligible is false on editions and configurations that can't enroll
@@ -801,6 +805,37 @@ type MDMGrants struct {
 	// FullDiskAccess is true when the agent can read TCC-protected files,
 	// which on macOS needs Full Disk Access even as root.
 	FullDiskAccess *bool `json:"full_disk_access"`
+}
+
+// MDMAgent is the agent's own code identity and Full Disk Access state
+// (macOS, #339).
+type MDMAgent struct {
+	// CodeSignature is nil when the agent couldn't read its own signature.
+	CodeSignature *AgentCodeSignature `json:"code_signature"`
+	// FullDiskAccess is "granted", "denied" or "unknown", checked on every
+	// inventory (the same check as Grants.FullDiskAccess).
+	FullDiskAccess string `json:"full_disk_access"`
+}
+
+// AgentCodeSignature is the running agent's code signature, as macOS's
+// Security framework reports it for the process itself.
+type AgentCodeSignature struct {
+	// Path is the app bundle when the agent runs from one
+	// (…/SentinelGo.app/Contents/MacOS/sentinelgo), else the executable.
+	Path string `json:"path"`
+	// Identifier is the signing identifier (the bundle ID for a bundle);
+	// null when unsigned.
+	Identifier *string `json:"identifier"`
+	// TeamID is the Apple team ID, null unless Signature is developer_id.
+	TeamID *string `json:"team_id"`
+	// Signature is "developer_id", "adhoc" (including the Go linker's
+	// signature on Apple silicon), "unsigned", or "other" (signed with an
+	// Apple-issued certificate that isn't Developer ID, e.g. Apple
+	// Development).
+	Signature string `json:"signature"`
+	// DesignatedRequirement is the code's designated requirement as text
+	// (`codesign -d -r-`); null when unsigned.
+	DesignatedRequirement *string `json:"designated_requirement"`
 }
 
 // MDMIdentity holds the identifiers the backend links an MDM device to an
