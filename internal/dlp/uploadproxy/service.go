@@ -147,6 +147,7 @@ type Service struct {
 	redirect atomic.Pointer[string]      // active, inactive, unsupported:<reason>
 	healthy  atomic.Bool
 	localOff atomic.Bool
+	repairs  atomic.Uint64 // redirects put back after something removed them
 
 	direct    *directBlock // nil where the OS has no direct block
 	auditOnly atomic.Bool
@@ -438,8 +439,15 @@ func (s *Service) applyRedirect() {
 	s.mu.Lock()
 	url := s.pacURL
 	s.mu.Unlock()
+	// Active only when this check found (or put back) the setting in place.
 	state := RedirectActive
-	if err := s.redir.Apply(url); err != nil {
+	repaired, err := s.redir.Apply(url)
+	if repaired {
+		// Something removed it (#477): the count shows a repeat offender.
+		s.repairs.Add(1)
+		log.Printf("DLP: upload redirect was removed from the system proxy settings; applied again")
+	}
+	if err != nil {
 		state = unsupported + Reason(err)
 		if cur := s.redirect.Load(); cur == nil || *cur != state {
 			log.Printf("DLP: upload redirect not applied: %v", err)
@@ -519,6 +527,7 @@ func (s *Service) Status() *Status {
 			st.LastInspectionAt = &u
 		}
 	}
+	st.Stats.RedirectRepairs = s.repairs.Load()
 	if s.running && s.ln != nil {
 		st.Addr = s.ln.Addr().String()
 	}

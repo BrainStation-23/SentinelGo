@@ -9,7 +9,7 @@ func NewRedirector(string) Redirector { return noRedirector{} }
 
 func platformRedirector(ServiceOptions) Redirector { return noRedirector{} }
 
-func (noRedirector) Apply(string) error { return ErrNotImplemented }
+func (noRedirector) Apply(string) (bool, error) { return false, ErrNotImplemented }
 
 // Remove has nothing to undo here.
 func (noRedirector) Remove() error { return nil }

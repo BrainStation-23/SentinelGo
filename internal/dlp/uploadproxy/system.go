@@ -27,8 +27,11 @@ import (
 type Redirector interface {
 	// Apply sets pacURL as the system's proxy auto-config. It returns an
 	// error wrapping ErrExistingProxy, and changes nothing, when another
-	// proxy is configured.
-	Apply(pacURL string) error
+	// proxy is configured. Called again with the same URL it checks the
+	// setting is still in place (the watchdog calls it every watchdogEvery,
+	// so that check only reads) and puts back what something removed since:
+	// repaired reports that it did (#477).
+	Apply(pacURL string) (repaired bool, err error)
 	// Remove undoes Apply (and what a crashed agent left). Safe to call
 	// when nothing was applied.
 	Remove() error
@@ -84,13 +87,14 @@ var sessionProxyWait = 5 * time.Second
 // the sessions list.
 type sessionRedirector struct{ set SessionProxySetter }
 
-func (r sessionRedirector) Apply(pacURL string) error {
+// Apply never reports a repair: each helper keeps its own user's setting.
+func (r sessionRedirector) Apply(pacURL string) (bool, error) {
 	if r.set == nil {
-		return fmt.Errorf("%w: no session helpers to set the desktop proxy", ErrNotImplemented)
+		return false, fmt.Errorf("%w: no session helpers to set the desktop proxy", ErrNotImplemented)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionProxyWait)
 	defer cancel()
-	return sessionsResult(r.set(ctx, pacURL))
+	return false, sessionsResult(r.set(ctx, pacURL))
 }
 
 // Remove asks every helper to put its user's setting back. Failures stay

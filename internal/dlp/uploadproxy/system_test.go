@@ -40,7 +40,7 @@ func TestSessionRedirector(t *testing.T) {
 		}
 		return []string{""}
 	}}
-	if err := r.Apply("http://127.0.0.1:3129/proxy.pac"); err != nil {
+	if _, err := r.Apply("http://127.0.0.1:3129/proxy.pac"); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Remove(); err != nil { // per-session failures stay per session
@@ -49,7 +49,7 @@ func TestSessionRedirector(t *testing.T) {
 	if len(sent) != 2 || sent[1] != "" {
 		t.Errorf("sent %q", sent)
 	}
-	if err := (sessionRedirector{}).Apply("x"); !errors.Is(err, ErrNotImplemented) {
+	if _, err := (sessionRedirector{}).Apply("x"); !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("without helpers: %v", err)
 	}
 	if err := (sessionRedirector{}).Remove(); err != nil {
