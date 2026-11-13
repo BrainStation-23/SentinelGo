@@ -181,6 +181,7 @@ func inferSyslogSeverity(line string) string {
 type macLogShowEntry struct {
 	Timestamp    string `json:"timestamp"`
 	MessageType  string `json:"messageType"`
+	EventType    string `json:"eventType"` // logEvent, activityCreateEvent, signpostEvent, ...
 	EventMessage string `json:"eventMessage"`
 	Category     string `json:"category"`
 	Subsystem    string `json:"subsystem"`
@@ -198,6 +199,11 @@ func parseMacLogShowLine(line []byte) (RawLogEntry, bool) {
 		return RawLogEntry{}, false
 	}
 	if raw.EventMessage == "" && raw.Timestamp == "" {
+		return RawLogEntry{}, false
+	}
+	// Activities, signposts and the like aren't log messages: their
+	// eventMessage is an activity name and they have no messageType (#484).
+	if raw.EventType != "" && raw.EventType != "logEvent" {
 		return RawLogEntry{}, false
 	}
 

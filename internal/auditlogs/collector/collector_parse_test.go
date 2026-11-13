@@ -149,6 +149,24 @@ func TestParseMacLogShowLine_ProcessImagePath(t *testing.T) {
 	}
 }
 
+// TestParseMacLogShowLine_SkipsActivities: activity and signpost events are
+// not log messages and are skipped; log events and lines without an
+// eventType are kept (#484).
+func TestParseMacLogShowLine_SkipsActivities(t *testing.T) {
+	for eventType, keep := range map[string]bool{
+		"activityCreateEvent": false,
+		"signpostEvent":       false,
+		"logEvent":            true,
+		"":                    true,
+	} {
+		line := []byte(`{"timestamp":"2024-04-19 14:30:00.123456-0700","eventType":"` + eventType +
+			`","eventMessage":"Retrieve User by ID","processImagePath":"/usr/bin/sudo"}`)
+		if _, ok := parseMacLogShowLine(line); ok != keep {
+			t.Errorf("eventType %q: kept = %v, want %v", eventType, ok, keep)
+		}
+	}
+}
+
 func TestParseMacLogShowLine_SkipsNonEntry(t *testing.T) {
 	// `log show` ndjson can contain metadata lines with no message/timestamp.
 	if _, ok := parseMacLogShowLine([]byte(`{"foo":"bar"}`)); ok {
