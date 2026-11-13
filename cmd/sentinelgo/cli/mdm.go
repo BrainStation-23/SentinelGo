@@ -99,6 +99,15 @@ func printMDM(w io.Writer, info *shared.MDMInfo) {
 	p("ADE assigned:      %s", ade)
 	p("Bootstrap Token:   %s", tri(info.BootstrapTokenEscrowed))
 	p("Full Disk Access:  %s", tri(info.Grants.FullDiskAccess))
+	if a := info.Agent; a != nil && a.CodeSignature != nil {
+		s := a.CodeSignature
+		sig := s.Signature
+		if s.TeamID != nil {
+			sig += " (team " + *s.TeamID + ")"
+		}
+		p("Agent signature:   %s", sig)
+		p("Agent path:        %s", s.Path)
+	}
 	p("Managed settings:  %s", orDash(strings.Join(info.ManagedSettings, ", ")))
 	p("Serial:            %s", orDash(info.Identity.Serial))
 	p("Provisioning UDID: %s", orDash(info.Identity.ProvisioningUDID))

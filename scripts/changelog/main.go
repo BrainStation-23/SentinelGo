@@ -2,10 +2,14 @@
 //
 // Modes:
 //
-//	go run ./scripts/changelog -check             # fail if CHANGELOG.md is malformed
+//	go run ./scripts/changelog -check             # fail if CHANGELOG.md or a fragment is malformed
 //	go run ./scripts/changelog -extract v3.4.0    # print v3.4.0's notes (the GitHub release body)
-//	go run ./scripts/changelog -release v3.4.0    # move [Unreleased] entries under a new v3.4.0 heading
+//	go run ./scripts/changelog -release v3.4.0    # fold changelog.d/ into a new v3.4.0 heading
 //	go run ./scripts/changelog -latest            # print the newest released version
+//
+// Pull requests don't edit CHANGELOG.md: each adds a fragment file to
+// changelog.d/ (fragments.go), and -release folds them in. [Unreleased] in
+// CHANGELOG.md stays empty between releases, which -check enforces.
 //
 // The file follows Keep a Changelog (https://keepachangelog.com/en/1.1.0/):
 // an "## [Unreleased]" section first, then "## [vX.Y.Z] - YYYY-MM-DD" sections
@@ -23,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,6 +68,7 @@ type changelog struct {
 // options holds the command-line flags; exactly one mode must be set.
 type options struct {
 	path    string
+	dir     string // fragments
 	check   bool
 	latest  bool
 	extract string
@@ -73,6 +79,7 @@ type options struct {
 func main() {
 	var o options
 	flag.StringVar(&o.path, "file", "CHANGELOG.md", "changelog to operate on")
+	flag.StringVar(&o.dir, "dir", fragmentDir, "directory of changelog fragments")
 	flag.BoolVar(&o.check, "check", false, "validate the changelog structure")
 	flag.BoolVar(&o.latest, "latest", false, "print the newest released version")
 	flag.StringVar(&o.extract, "extract", "", "print the notes for this version")
@@ -108,7 +115,14 @@ func run(o options) error {
 		if err := cl.validate(); err != nil {
 			return fmt.Errorf("%s: %w", o.path, err)
 		}
-		fmt.Printf("%s: OK (%d releases)\n", o.path, len(cl.sections)-1)
+		if err := cl.checkUnreleasedEmpty(); err != nil {
+			return fmt.Errorf("%s: %w", o.path, err)
+		}
+		frags, err := loadFragments(o.dir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s: OK (%d releases, %d pending fragments in %s)\n", o.path, len(cl.sections)-1, len(frags), o.dir)
 		return nil
 	case o.latest:
 		version, err := cl.latest()
@@ -129,17 +143,29 @@ func run(o options) error {
 	}
 }
 
+// releaseFile folds the fragments into [Unreleased], moves it under the new
+// version, writes the file and deletes the fragments it used.
 func releaseFile(cl *changelog, o options) error {
 	if err := cl.validate(); err != nil {
 		return fmt.Errorf("%s: %w", o.path, err)
 	}
+	frags, err := loadFragments(o.dir)
+	if err != nil {
+		return err
+	}
+	cl.foldFragments(frags)
 	if err := cl.release(o.release, o.date); err != nil {
 		return err
 	}
 	if err := os.WriteFile(o.path, []byte(cl.String()), 0o644); err != nil { //nolint:gosec // G306: a tracked doc, not a secret
 		return err
 	}
-	fmt.Printf("%s: moved [Unreleased] to [%s] - %s\n", o.path, o.release, o.date)
+	for _, f := range frags {
+		if err := os.Remove(filepath.Join(o.dir, f.file)); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("%s: moved [Unreleased] and %d fragments to [%s] - %s\n", o.path, len(frags), o.release, o.date)
 	return nil
 }
 

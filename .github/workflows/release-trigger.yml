@@ -4,9 +4,10 @@ name: Trigger Release
 # ──────────────
 # One click starts a release; see RELEASE.md.
 #
-#   1. This workflow picks the next version, moves CHANGELOG.md's [Unreleased]
-#      entries under a new [vX.Y.Z] heading on a release/vX.Y.Z branch, and
-#      opens a "Release vX.Y.Z" pull request with auto-merge on.
+#   1. This workflow picks the next version, folds the changelog.d/ fragments
+#      into a new [vX.Y.Z] heading in CHANGELOG.md (deleting the fragments) on a
+#      release/vX.Y.Z branch, and opens a "Release vX.Y.Z" pull request with
+#      auto-merge on.
 #   2. The PR runs the normal required checks and merges itself.
 #   3. tag-release.yml sees the new version on main and pushes the tag.
 #   4. The tag runs release.yml, which publishes the [vX.Y.Z] section as the
@@ -117,7 +118,7 @@ jobs:
             exit 1
           fi
           if ! go run ./scripts/changelog -release "$TAG"; then
-            echo "::error file=CHANGELOG.md::Could not cut $TAG. Is [Unreleased] empty?"
+            echo "::error file=CHANGELOG.md::Could not cut $TAG. Are there no fragments in changelog.d/?"
             exit 1
           fi
           go run ./scripts/changelog -extract "$TAG" > "$RUNNER_TEMP/notes.md"

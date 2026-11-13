@@ -51,11 +51,8 @@ func (d *Decider) DecideNetworkTaint(ctx context.Context, r Request) (time.Time,
 	}
 	key := filescan.CacheKey{FileID: fileID(r.Ident), Size: r.Ident.Size, ModTime: r.Ident.ModTime,
 		ChangeTime: r.Ident.ChangeTime, PolicyVersion: c.Version}
-	source := "cache"
-	res, ok := d.cache.Get(key)
-	if ok {
-		d.cached.Add(1)
-	} else {
+	res, source, ok := d.known(key, r.Ident)
+	if !ok {
 		source = "scan"
 		res = d.scanner.Scan(ctx, r.File, r.Ident.Size, time.Duration(c.Modules.Files.ScanTimeoutMs)*time.Millisecond)
 		d.scans.Add(1)

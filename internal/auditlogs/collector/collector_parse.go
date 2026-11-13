@@ -10,6 +10,7 @@ package collector
 import (
 	"encoding/json"
 	"math"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -180,10 +181,14 @@ func inferSyslogSeverity(line string) string {
 type macLogShowEntry struct {
 	Timestamp    string `json:"timestamp"`
 	MessageType  string `json:"messageType"`
+	EventType    string `json:"eventType"` // logEvent, activityCreateEvent, signpostEvent, ...
 	EventMessage string `json:"eventMessage"`
 	Category     string `json:"category"`
 	Subsystem    string `json:"subsystem"`
 	Process      string `json:"process"`
+	// ProcessImagePath is what `log show --style ndjson` actually emits; its
+	// base name stands in for Process when that is absent.
+	ProcessImagePath string `json:"processImagePath"`
 }
 
 // parseMacLogShowLine converts a single `log show --style ndjson` line into a
@@ -194,6 +199,11 @@ func parseMacLogShowLine(line []byte) (RawLogEntry, bool) {
 		return RawLogEntry{}, false
 	}
 	if raw.EventMessage == "" && raw.Timestamp == "" {
+		return RawLogEntry{}, false
+	}
+	// Activities, signposts and the like aren't log messages: their
+	// eventMessage is an activity name and they have no messageType (#484).
+	if raw.EventType != "" && raw.EventType != "logEvent" {
 		return RawLogEntry{}, false
 	}
 
@@ -210,8 +220,12 @@ func parseMacLogShowLine(line []byte) (RawLogEntry, bool) {
 	if raw.Subsystem != "" {
 		entry.Metadata["subsystem"] = raw.Subsystem
 	}
-	if raw.Process != "" {
-		entry.Metadata["process"] = raw.Process
+	process := raw.Process
+	if process == "" && raw.ProcessImagePath != "" {
+		process = path.Base(raw.ProcessImagePath)
+	}
+	if process != "" {
+		entry.Metadata["process"] = process
 	}
 	return entry, true
 }

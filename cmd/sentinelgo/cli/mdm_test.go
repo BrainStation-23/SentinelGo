@@ -22,11 +22,15 @@ func fakeMDM(t *testing.T, info *shared.MDMInfo) *string {
 
 func TestRunMDM_Status(t *testing.T) {
 	yes, no := true, false
+	team := "ABCDE12345"
 	host := fakeMDM(t, &shared.MDMInfo{
 		Enrolled: true, UserApproved: true, EnrollmentType: "profile", Supervised: &no,
 		ServerURLHost: "mdm.example.com", IsOurServer: true, ADEAssigned: &no, BootstrapTokenEscrowed: nil,
 		ManagedSettings: []string{"filevault", "firewall"}, Grants: shared.MDMGrants{FullDiskAccess: &yes},
 		Identity: shared.MDMIdentity{Serial: "S1", ProvisioningUDID: "P1"},
+		Agent: &shared.MDMAgent{FullDiskAccess: "granted", CodeSignature: &shared.AgentCodeSignature{
+			Path: "/opt/sentinelgo/SentinelGo.app", Signature: "developer_id", TeamID: &team,
+		}},
 	})
 	var out, errOut bytes.Buffer
 	if code := RunMDM([]string{"status"}, &out, &errOut); code != 0 {
@@ -36,7 +40,8 @@ func TestRunMDM_Status(t *testing.T) {
 		t.Errorf("collector got host %q, want the config's mdm_host", *host)
 	}
 	for _, want := range []string{"Enrolled:          yes", "mdm.example.com (this deployment's MDM: yes)", "Bootstrap Token:   unknown",
-		"Full Disk Access:  yes", "Managed settings:  filevault, firewall", "Provisioning UDID: P1", "Hardware UUID:     -"} {
+		"Full Disk Access:  yes", "Managed settings:  filevault, firewall", "Provisioning UDID: P1", "Hardware UUID:     -",
+		"Agent signature:   developer_id (team ABCDE12345)", "Agent path:        /opt/sentinelgo/SentinelGo.app"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

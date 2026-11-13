@@ -62,6 +62,12 @@ const CapabilityAdminPasswordRotation = "admin_password_rotation_v1" // #nosec G
 // (#427, Compliance-OS#910). Windows only.
 const CapabilityDLPNetworkControl = "dlp_network_control_v1"
 
+// CapabilityDLPAtRest means the agent applies the file DLP bundle's
+// modules.files.at_rest: it classifies the files in the user folders ahead
+// of time, so process taint and taint blocks use a stored verdict (#331
+// part 2). Windows only.
+const CapabilityDLPAtRest = "dlp_at_rest_v1"
+
 // CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
 // enrollment state, ADE assignment and the provisioning UDID (#349).
 const CapabilityAppleMDMState = "apple_mdm_state_v1"
@@ -94,7 +100,7 @@ func Capabilities() []string {
 		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
 	case "windows":
 		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation,
-			CapabilityDLPNetworkControl)
+			CapabilityDLPNetworkControl, CapabilityDLPAtRest)
 	}
 	return caps
 }

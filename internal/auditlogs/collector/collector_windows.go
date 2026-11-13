@@ -74,22 +74,28 @@ func generateSource(channelName string) string {
 	return "windows_" + source
 }
 
-// levelUpTo3Query matches Error/Warning/Info-level events (Level 1-3),
-// shared by several channels that don't need per-event-ID filtering.
-const levelUpTo3Query = "*[System[(Level=1 or Level=2 or Level=3)]]"
+// Only high and critical audit logs are sent (#484), so each channel asks only
+// for events that can grade that high: Critical and Error levels (1-2), plus
+// the event IDs the parser re-grades (parser/grade.go). Each query is a
+// superset of what the filter keeps; the filter in the logging pipeline is
+// the guarantee.
+//
+// levelErrorQuery matches Critical and Error events (Level 1-2).
+const levelErrorQuery = "*[System[(Level=1 or Level=2)]]"
 
 // Windows Event Log XPath limits OR conditions to ~22 per expression.
-// The Security channel query is split into three groups (≤12 each) to stay
-// under that limit, using distinct cpKey values for independent checkpoints.
+// The Security channel is queried in three groups with distinct cpKey values
+// for independent checkpoints (the keys predate #484 and are kept so existing
+// checkpoints carry over).
 //
 // channels lists the Event Log channels and their XPath filters.
 var channels = []eventChannel{
-	// Security — group 0: authentication / logon / privilege (5 IDs)
+	// Security — group 0: failed logons.
 	{
 		name:   "Security",
 		source: generateSource("Security"),
 		cpKey:  generateSource("Security") + "_auth_record_id",
-		query:  "*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4648 or EventID=4672)]]",
+		query:  "*[System[(EventID=4625)]]",
 	},
 	// Security — group 1: user / group account management (11 IDs)
 	{
@@ -98,60 +104,58 @@ var channels = []eventChannel{
 		cpKey:  generateSource("Security") + "_user_record_id",
 		query:  "*[System[(EventID=4720 or EventID=4722 or EventID=4723 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4731 or EventID=4732 or EventID=4733 or EventID=4734 or EventID=4738)]]",
 	},
-	// Security — group 2: policy, process creation, network, object access (8 IDs)
+	// Security — group 2: log cleared, audit and domain policy changes.
 	{
 		name:   "Security",
 		source: generateSource("Security"),
 		cpKey:  generateSource("Security") + "_policy_record_id",
-		query:  "*[System[(EventID=4656 or EventID=4663 or EventID=4670 or EventID=4688 or EventID=4719 or EventID=4739 or EventID=5156 or EventID=5157)]]",
+		query:  "*[System[(EventID=1102 or EventID=4719 or EventID=4739)]]",
 	},
-	// System events 35 and 24 (time service) are collected by the next entry,
-	// so they're excluded here; otherwise every one was sent twice (#436).
+	// System: errors, the System log cleared (104) and new services (7045).
 	{
 		name:   "System",
 		source: generateSource("System"),
-		query:  "*[System[(Level=1 or Level=2 or Level=3 or Level=4) and EventID!=35 and EventID!=24]]",
-	},
-	{
-		name:   "System",
-		source: generateSource("System_Time_Service"),
-		cpKey:  generateSource("System_Time_Service") + "_record_id",
-		query:  "*[System[(EventID=35 or EventID=24)]]",
+		query:  "*[System[(Level=1 or Level=2 or EventID=104 or EventID=7045)]]",
 	},
 	{
 		name:   "Application",
 		source: generateSource("Application"),
-		query:  levelUpTo3Query,
+		query:  levelErrorQuery,
 	},
+	// Defender: detections, actions on them, and protection turned off or changed.
 	{
 		name:   "Microsoft-Windows-Windows Defender/Operational",
 		source: generateSource("Microsoft-Windows-Windows Defender/Operational"),
-		query:  "*",
+		query:  "*[System[(Level=1 or Level=2 or EventID=1006 or EventID=1007 or EventID=1008 or EventID=1015 or EventID=1116 or EventID=1117 or EventID=1118 or EventID=1119 or EventID=5001 or EventID=5004 or EventID=5007 or EventID=5010 or EventID=5012 or EventID=5013)]]",
 	},
+	// PowerShell: script blocks Windows flagged as suspicious (4104 at Warning).
 	{
 		name:   "Microsoft-Windows-PowerShell/Operational",
 		source: generateSource("Microsoft-Windows-PowerShell/Operational"),
-		query:  "*[System[(EventID=4103 or EventID=4104 or EventID=4105 or EventID=4106)]]",
+		query:  "*[System[(Level=1 or Level=2 or (EventID=4104 and Level=3))]]",
 	},
+	// Task Scheduler: a task registered (a common persistence step).
 	{
 		name:   "Microsoft-Windows-TaskScheduler/Operational",
 		source: generateSource("Microsoft-Windows-TaskScheduler/Operational"),
-		query:  "*[System[(EventID=100 or EventID=102 or EventID=103 or EventID=106 or EventID=141 or EventID=200 or EventID=201)]]",
+		query:  "*[System[(Level=1 or Level=2 or EventID=106)]]",
 	},
+	// Firewall: a profile setting changed (for example the firewall turned off).
 	{
 		name:   "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
 		source: generateSource("Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"),
-		query:  levelUpTo3Query,
+		query:  "*[System[(Level=1 or Level=2 or EventID=2003)]]",
 	},
+	// Remote Desktop: a remote sign-in.
 	{
 		name:   "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational",
 		source: generateSource("Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational"),
-		query:  "*[System[(EventID=1149 or EventID=261 or EventID=1158)]]",
+		query:  "*[System[(Level=1 or Level=2 or EventID=1149)]]",
 	},
 	{
 		name:   "Microsoft-Windows-GroupPolicy/Operational",
 		source: generateSource("Microsoft-Windows-GroupPolicy/Operational"),
-		query:  levelUpTo3Query,
+		query:  levelErrorQuery,
 	},
 }
 
@@ -244,9 +248,10 @@ func (c *windowsCollector) Collect(ctx context.Context, checkpoint CheckpointDat
 }
 
 // securityRealTimeQuery is the XPath filter used for real-time Security channel
-// subscription. It covers the most operationally significant auth events and stays
-// well under the Windows XPath OR-condition limit (~22).
-const securityRealTimeQuery = "*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4648 or EventID=4672 or EventID=4688 or EventID=4720 or EventID=4725 or EventID=4726 or EventID=5156 or EventID=5157)]]"
+// subscription: the Security events that grade high or critical (#484) and are
+// worth seeing before the next collection cycle. The periodic queries above
+// collect them too; the store de-duplicates.
+const securityRealTimeQuery = "*[System[(EventID=1102 or EventID=4625 or EventID=4719 or EventID=4720 or EventID=4722 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4732)]]"
 
 // Subscribe starts real-time subscription on the Security channel.
 func (c *windowsCollector) Subscribe(ctx context.Context, ch chan<- RawLogEntry) error {
@@ -301,7 +306,7 @@ func (c *windowsCollector) Subscribe(ctx context.Context, ch chan<- RawLogEntry)
 		}
 
 		// Read available events
-		entries := c.readEvents(handle, renderBuf, "windows_security")
+		entries := c.readEvents(handle, renderBuf, SourceWindowsSecurity)
 		for _, entry := range entries {
 			select {
 			case ch <- entry:

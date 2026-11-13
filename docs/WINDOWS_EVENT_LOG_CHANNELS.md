@@ -1,171 +1,73 @@
 # Windows Event Log Channels Being Captured
 
-## 🔐 Security Channel (3 Groups)
+Only **high** and **critical** audit logs are sent to the backend (#484). The
+backend is a compliance platform, not a log store, so routine events stay on
+the device.
 
-| Channel | Source | Event Types Captured |
-|---------|--------|---------------------|
-| **Security - Authentication** | `windows_security` | Logon/Logoff events (4624, 4625, 4634, 4648, 4672) |
-| **Security - User Management** | `windows_security` | Account creation/deletion/modification (4720-4738) |
-| **Security - Policy & Network** | `windows_security` | Process creation, network access, object access (4656-4739, 5156-5157) |
+The OS level alone doesn't say what matters: Windows logs failed logons and
+account changes at Information level and Defender detections at Warning level.
+So the agent:
 
-### Security Events Include:
-- **Login Success/Failure** (4624, 4625)
-- **Account Lockout** (4740)
-- **Logon Types** (4634, 4648, 4672)
-- **User Account Changes** (4720-4738)
-- **Process Creation** (4688)
-- **Network/ Object Access** (4656, 4663, 5156, 5157)
-- **Policy Changes** (4719, 4739)
+1. asks each channel only for Critical and Error events (Level 1–2) and the
+   event IDs listed below;
+2. grades each event: the Windows level, raised for the listed event IDs
+   (`internal/auditlogs/parser/grade.go`; a rule never lowers a severity);
+3. drops everything below `high` and counts it (`DroppedLowSeverity`,
+   `sentinelgo -logging-stats`).
 
----
+| Windows level | Severity | Sent |
+|---|---|---|
+| Level 1 (Critical) | `critical` | yes |
+| Level 2 (Error) | `high` | yes |
+| Level 3 (Warning) | `medium` | only when re-graded |
+| Level 4 (Information), Security log (0) | `info` | only when re-graded |
+| Level 5 (Verbose) | `info` | only when re-graded |
 
-## ⚙️ System Channel (2 Groups)
+## Security channel (3 queries)
 
-| Channel | Source | Event Types Captured |
-|---------|--------|---------------------|
-| **System - General** | `windows_system` | Critical, Error, Warning, Information events (Level 1-4) |
-| **System - Time Service** | `windows_system_time_service` | Time synchronization & timezone events (24, 35) |
+| Query | Source | Event IDs | Severity |
+|---|---|---|---|
+| Failed logons | `windows_security` | 4625 | high |
+| Accounts and groups | `windows_security` | 4720, 4722, 4723, 4724, 4725, 4726, 4738 (account created, enabled, password changed or reset, disabled, deleted, changed); 4731, 4732, 4733, 4734 (local group created, member added, member removed, group deleted) | high |
+| Policy | `windows_security` | 1102 (Security log cleared), 4719 (audit policy changed) | critical |
+| | | 4739 (domain policy changed) | high |
 
-### System Events Include:
-- **Critical System Errors** (Level 1)
-- **System Failures** (Level 2)
-- **System Warnings** (Level 3)
-- **System Information** (Level 4)
-- **Time Service Synchronization** (35)
-- **Time Zone Refresh** (24)
+The real-time subscription follows 1102, 4625, 4719, 4720, 4722, 4724, 4725,
+4726 and 4732. Collection picks them up too; the store de-duplicates.
 
----
+Not collected (routine, high volume): 4624 logon, 4634 logoff, 4648
+explicit-credential logon, 4672 special-privilege logon, 4656/4663/4670 object
+access, 4688 process creation, 5156/5157 Windows Filtering Platform
+connections.
 
-## 📱 Application Channel
+## Other channels
 
-| Channel | Source | Event Types Captured |
-|---------|--------|---------------------|
-| **Application** | `windows_application` | Critical, Error, Warning events (Level 1-3) |
+| Channel | Source | Collected | Re-graded |
+|---|---|---|---|
+| System | `windows_system` | Level 1–2, 104, 7045 | 104 (an event log cleared): critical; 7045 (service installed): high |
+| Application | `windows_application` | Level 1–2 | — |
+| Windows Defender | `windows_microsoft_windows_windows_defender_operational` | Level 1–2 and the IDs on the right | critical: 1006, 1015, 1116 (malware or suspicious behaviour detected), 1008, 1118, 1119 (action on malware failed), 5001 (real-time protection disabled), 5010, 5012 (scanning disabled); high: 1007, 1117 (action taken), 5004, 5007 (configuration changed), 5013 (tamper protection blocked a change) |
+| PowerShell | `windows_microsoft_windows_powershell_operational` | Level 1–2, 4104 at Warning | 4104 at Warning (script block Windows flagged as suspicious): high |
+| Task Scheduler | `windows_microsoft_windows_taskscheduler_operational` | Level 1–2, 106 | 106 (task registered): high |
+| Windows Firewall | `windows_microsoft_windows_windows_firewall_with_advanced_security_firewall` | Level 1–2, 2003 | 2003 (profile setting changed): high |
+| Remote Desktop | `windows_microsoft_windows_terminalservices_remoteconnectionmanager_operational` | Level 1–2, 1149 | 1149 (remote desktop sign-in): high |
+| Group Policy | `windows_microsoft_windows_grouppolicy_operational` | Level 1–2 | — |
 
-### Application Events Include:
-- **Application Crashes** (Level 1)
-- **Application Errors** (Level 2)
-- **Application Warnings** (Level 3)
-- **License Activation Failures** (8198)
-- **Software Installation Issues**
+The time-service events (System 24 and 35) are no longer collected.
 
----
+## Linux and macOS
 
-## 🛡️ Microsoft Services (6 Channels)
-
-| Channel | Source | Event Types Captured |
-|---------|--------|---------------------|
-| **Windows Defender** | `windows_microsoft_windows_windows_defender_operational` | All Defender events |
-| **PowerShell** | `windows_microsoft_windows_powershell_operational` | Script execution, module operations (4103-4106) |
-| **Task Scheduler** | `windows_microsoft_windows_taskscheduler_operational` | Task creation, execution, failures (100-201) |
-| **Windows Firewall** | `windows_microsoft_windows_windows_firewall_with_advanced_security_firewall` | Firewall rules, connections (Level 1-3) |
-| **Remote Desktop** | `windows_microsoft_windows_terminalservices_remoteconnectionmanager_operational` | RDP connections, disconnections (1149, 261, 1158) |
-| **Group Policy** | `windows_microsoft_windows_grouppolicy_operational` | Policy application, processing (Level 1-3) |
-
-### Microsoft Services Events Include:
-
-#### Windows Defender
-- **Threat Detections**
-- **Scan Results**
-- **Real-time Protection**
-- **Update Status**
-
-#### PowerShell
-- **Script Block Logging** (4103)
-- **Module Logging** (4104)
-- **Script Execution** (4105, 4106)
-
-#### Task Scheduler
-- **Task Registration** (100, 102)
-- **Task Execution** (103, 106)
-- **Task Completion** (200, 201)
-- **Task Failures** (141)
-
-#### Windows Firewall
-- **Rule Modifications**
-- **Connection Blocking**
-- **Security Events**
-
-#### Remote Desktop Services
-- **RDP Connections** (1149)
-- **Connection Failures** (261)
-- **RDP Disconnections** (1158)
-
-#### Group Policy
-- **Policy Application**
-- **Policy Processing Errors**
-- **Configuration Changes**
+- **Linux:** `journalctl` reads priority err and above (0–3) and the auth and
+  authpriv facilities. Files: `auth.log`, `syslog`, `messages`, `kern.log`.
+- **macOS:** `log show` reads `error` and `fault` messages and the `sudo`,
+  `sshd` and `su` processes (no `--info`). Files: `system.log`, `install.log`;
+  crash reports are critical.
+- On both, sign-ins and account changes are graded **high** by message:
+  sshd failed and accepted sign-ins (`sshd-session` from OpenSSH 9.8), sudo and
+  su failures, and useradd, userdel, usermod, groupadd, groupdel, gpasswd,
+  chpasswd and `passwd` password changes.
 
 ---
 
-## 📊 Summary for Management
-
-### Coverage Overview
-- **Total Channels**: **11** active monitoring channels
-- **Coverage Areas**: Security, System, Applications, Microsoft Services
-- **Event Types**: 50+ specific event IDs and all critical/warning levels
-
-### Severity Levels Captured
-| Windows Level | Severity | Description |
-|---------------|----------|-------------|
-| **Level 1** | `critical` | Critical system failures |
-| **Level 2** | `high` | Error conditions |
-| **Level 3** | `medium` | Warning conditions |
-| **Level 4** | `info` | Informational events |
-
-### Key Monitoring Capabilities
-
-#### 🔒 Security Monitoring
-- **Authentication Events**: Track all login attempts, successes, and failures
-- **Account Management**: Monitor user account creation, modification, and deletion
-- **Privilege Usage**: Track privilege escalation and policy violations
-- **Network Access**: Monitor file and network object access attempts
-
-#### ⚙️ System Health Monitoring
-- **Critical Errors**: System crashes and critical failures
-- **Performance Issues**: Resource exhaustion and service failures
-- **Time Synchronization**: NTP sync issues and timezone changes
-- **Service Status**: Windows service start/stop events
-
-#### 📱 Application Reliability
-- **Application Crashes**: Software failures and exceptions
-- **License Issues**: Windows activation and software licensing problems
-- **Installation Failures**: Software update and installation issues
-
-#### 🛡️ Microsoft Service Monitoring
-- **Antivirus Protection**: Windows Defender threat detection and scanning
-- **Script Execution**: PowerShell activity and security monitoring
-- **Scheduled Tasks**: Automated task execution and failures
-- **Network Security**: Firewall rule changes and connection blocking
-- **Remote Access**: RDP session monitoring and security
-- **Policy Compliance**: Group Policy application and processing
-
-### Compliance & Audit Benefits
-- **Complete Audit Trail**: All security-relevant events captured
-- **Regulatory Compliance**: Meets common audit requirements
-- **Incident Response**: Detailed event history for investigations
-- **Operational Visibility**: Comprehensive system health monitoring
-
----
-
-## 📈 Event Volume Estimates
-
-### High-Volume Channels
-- **Windows Defender**: Continuous threat monitoring
-- **System**: Ongoing system operations
-- **Security**: Authentication and access events
-
-### Medium-Volume Channels
-- **Application**: Application-specific events
-- **PowerShell**: Script execution events
-- **Task Scheduler**: Scheduled task executions
-
-### Low-Volume Channels
-- **Time Service**: Periodic synchronization events
-- **Group Policy**: Policy application events
-- **Remote Desktop**: Connection events
-
----
-
-*Last Updated: April 26, 2026*
-*Configuration File: `internal/auditlogs/collector/collector_windows.go`*
+*Configuration: `internal/auditlogs/collector/collector_windows.go` (queries),
+`internal/auditlogs/parser/grade.go` (grading).*

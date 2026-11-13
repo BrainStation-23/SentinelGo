@@ -1,8 +1,11 @@
 name: Changelog
 
-# Every pull request records its user-visible change under [Unreleased] in
-# CHANGELOG.md, which becomes the release notes. Changes with nothing to tell
-# users (CI, tests, refactors, dependency bumps) opt out with a label.
+# Every pull request records its user-visible change as a fragment file in
+# changelog.d/ (see changelog.d/README.md). Releasing folds the fragments into
+# CHANGELOG.md, which becomes the release notes. Pull requests don't edit
+# CHANGELOG.md's [Unreleased] section, so they never conflict there and merge
+# in any order without a rebase. Changes with nothing to tell users (CI,
+# tests, refactors, dependency bumps) opt out with a label.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -33,20 +36,29 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Validate CHANGELOG.md
+      # CHANGELOG.md's format, an empty [Unreleased], and every fragment's name
+      # and format.
+      - name: Validate CHANGELOG.md and changelog.d
         run: go run ./scripts/changelog -check
 
       # Dependency bumps are exempt by label and, independently, by author, so
-      # a Dependabot PR never blocks on a missing label.
-      - name: Require an entry
+      # a Dependabot PR never blocks on a missing label. The release PR
+      # (release/*, which folds the fragments into CHANGELOG.md) and the
+      # main -> dev back-merge (head main) carry no new entry by design.
+      - name: Require a fragment
         if: >-
           !contains(github.event.pull_request.labels.*.name, 'skip-changelog') &&
           !contains(github.event.pull_request.labels.*.name, 'dependencies') &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          github.head_ref != 'main' &&
+          !startsWith(github.head_ref, 'release/')
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --quiet "$BASE_SHA" HEAD -- CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::Add an entry under [Unreleased] in CHANGELOG.md, or label the PR 'skip-changelog' if it has no user-visible change."
+          added=$(git diff --name-only --diff-filter=A "$BASE_SHA"...HEAD -- 'changelog.d/*.md' | grep -v '^changelog.d/README.md$' || true)
+          if [ -z "$added" ]; then
+            echo "::error::Add a changelog fragment: a new file changelog.d/<issue>-<words>.<type>.md (type: added, changed, deprecated, removed, fixed or security) with a '- ' entry. See changelog.d/README.md. Label the PR 'skip-changelog' if it has no user-visible change."
             exit 1
           fi
+          echo "Fragments added:"
+          echo "$added"

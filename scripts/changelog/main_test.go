@@ -169,26 +169,28 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestRunModes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "CHANGELOG.md")
+	dir := filepath.Join(tmp, "changelog.d")
 	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(options{path: path, date: "2026-03-01"}); err == nil {
+	if err := run(options{path: path, dir: dir, date: "2026-03-01"}); err == nil {
 		t.Fatal("want error when no mode is given")
 	}
-	if err := run(options{path: path, check: true, latest: true}); err == nil {
+	if err := run(options{path: path, dir: dir, check: true, latest: true}); err == nil {
 		t.Fatal("want error when two modes are given")
 	}
-	if err := run(options{path: path, check: true}); err != nil {
-		t.Fatalf("-check: %v", err)
+	if err := run(options{path: path, dir: dir, check: true}); err == nil || !strings.Contains(err.Error(), "changelog.d") {
+		t.Fatalf("-check with entries under [Unreleased]: got %v, want an error pointing at changelog.d", err)
 	}
-	if err := run(options{path: path, latest: true}); err != nil {
+	if err := run(options{path: path, dir: dir, latest: true}); err != nil {
 		t.Fatalf("-latest: %v", err)
 	}
-	if err := run(options{path: path, extract: "v1.0.0"}); err != nil {
+	if err := run(options{path: path, dir: dir, extract: "v1.0.0"}); err != nil {
 		t.Fatalf("-extract: %v", err)
 	}
-	if err := run(options{path: path, release: "v1.2.0", date: "2026-03-01"}); err != nil {
+	if err := run(options{path: path, dir: dir, release: "v1.2.0", date: "2026-03-01"}); err != nil {
 		t.Fatalf("-release: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -197,5 +199,8 @@ func TestRunModes(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "## [v1.2.0] - 2026-03-01") {
 		t.Fatalf("release not written:\n%s", data)
+	}
+	if err := run(options{path: path, dir: dir, check: true}); err != nil {
+		t.Fatalf("-check after the release: %v", err)
 	}
 }

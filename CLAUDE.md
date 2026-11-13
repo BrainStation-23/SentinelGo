@@ -78,6 +78,7 @@ release/               Compiled binaries (never edit directly)
 - Keep error handling explicit; this is a long-running service
 - **Never log, store or print clipboard (or any DLP-scanned) content**, including in the emergency log and debug output. DLP evidence carries only detector ids, masked matches, hashes and lengths (an excerpt only when the bundle's `evidence_mode` is `full`)
 - Auth tokens auto-refresh; never assume a token is permanently valid. Wrap Supabase calls in `auth.Service.DoWithAuthRetry` so a 401 recovers the session once
+- **Changelog entries are fragments, never edits to `CHANGELOG.md`.** A PR with a user-visible change adds `changelog.d/<issue>-<words>.<type>.md` (type `added`/`changed`/`deprecated`/`removed`/`fixed`/`security`) with a `- ` entry; `[Unreleased]` stays empty and releasing folds the fragments in. The required Changelog check enforces it (`make changelog-check`); see `changelog.d/README.md`
 
 ## Cross-Platform Considerations
 

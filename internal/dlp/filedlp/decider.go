@@ -86,6 +86,9 @@ type Stats struct {
 	Timeouts    uint64 `json:"timeouts"`
 	Unscannable uint64 `json:"unscannable"`
 	Correlated  uint64 `json:"correlated"` // verdicts taken from a source file (process taint)
+	// AtRest counts verdicts taken from at-rest classification instead of
+	// a scan (#331 part 2).
+	AtRest uint64 `json:"at_rest,omitempty"`
 }
 
 // cacheSize is how many scan results the decider keeps.
@@ -108,8 +111,10 @@ type Decider struct {
 	asking     asking
 
 	requestException func(context.Context, ExceptionRequest) error
+	// atRest looks up a file version's at-rest verdict (#331 part 2).
+	atRest func(id Identity, policyVersion string) (filescan.Result, bool)
 
-	scans, cached, emitted, timeouts, unscannable, correlated atomic.Uint64
+	scans, cached, emitted, timeouts, unscannable, correlated, atRestHits atomic.Uint64
 }
 
 // NewDecider returns a Decider that scans with s and records events to sink.
@@ -146,6 +151,37 @@ func (d *Decider) SetSourceOpener(fn func(src SourceRef) (*os.File, Identity, er
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.openSource = fn
+}
+
+// SetAtRest gives the decider the at-rest verdicts: lookup returns the
+// stored verdict for a file version under a policy version. They are taken
+// after the in-memory cache and before a scan.
+func (d *Decider) SetAtRest(lookup func(id Identity, policyVersion string) (filescan.Result, bool)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.atRest = lookup
+}
+
+// known returns a verdict without scanning: from the cache, or from at-rest
+// classification. source is the event's verdict_source.
+func (d *Decider) known(key filescan.CacheKey, id Identity) (filescan.Result, string, bool) {
+	if res, ok := d.cache.Get(key); ok {
+		d.cached.Add(1)
+		return res, "cache", true
+	}
+	d.mu.Lock()
+	lookup := d.atRest
+	d.mu.Unlock()
+	if lookup == nil {
+		return filescan.Result{}, "", false
+	}
+	res, ok := lookup(id, key.PolicyVersion)
+	if !ok {
+		return filescan.Result{}, "", false
+	}
+	d.atRestHits.Add(1)
+	d.cache.Put(key, res)
+	return res, VerdictAtRest, true
 }
 
 // SetUserNotifier makes blocks, removals and warnings tell the user whose
@@ -190,7 +226,8 @@ func (d *Decider) Invalidate(id Identity) { d.cache.InvalidateFile(fileID(id)) }
 // Stats returns the counters.
 func (d *Decider) Stats() Stats {
 	return Stats{Scans: d.scans.Load(), Cached: d.cached.Load(), Events: d.emitted.Load(),
-		Timeouts: d.timeouts.Load(), Unscannable: d.unscannable.Load(), Correlated: d.correlated.Load()}
+		Timeouts: d.timeouts.Load(), Unscannable: d.unscannable.Load(), Correlated: d.correlated.Load(),
+		AtRest: d.atRestHits.Load()}
 }
 
 func fileID(id Identity) string {
@@ -277,14 +314,11 @@ func (d *Decider) Decide(ctx context.Context, r Request, canBlock bool) Verdict 
 
 	key := filescan.CacheKey{FileID: fileID(r.Ident), Size: r.Ident.Size, ModTime: r.Ident.ModTime,
 		ChangeTime: r.Ident.ChangeTime, PolicyVersion: c.Version}
-	source := "cache"
-	res, ok := filescan.Result{}, false
+	source, res, ok := "", filescan.Result{}, false
 	if !r.NoCache {
-		res, ok = d.cache.Get(key)
+		res, source, ok = d.known(key, r.Ident)
 	}
-	if ok {
-		d.cached.Add(1)
-	} else {
+	if !ok {
 		source = "scan"
 		timeout := time.Duration(c.Modules.Files.ScanTimeoutMs) * time.Millisecond
 		res = d.scanner.Scan(ctx, r.File, r.Ident.Size, timeout)
@@ -403,7 +437,7 @@ func (d *Decider) correlate(ctx context.Context, c *policy.Compiled, eng *detect
 			continue
 		}
 		key := filescan.CacheKey{FileID: fileID(ident), Size: ident.Size, ModTime: ident.ModTime, ChangeTime: ident.ChangeTime, PolicyVersion: c.Version}
-		res, ok := d.cache.Get(key)
+		res, _, ok := d.known(key, ident)
 		if !ok {
 			res = d.scanner.Scan(ctx, f, ident.Size, timeout)
 			d.scans.Add(1)

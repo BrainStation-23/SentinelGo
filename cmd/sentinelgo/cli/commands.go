@@ -176,6 +176,7 @@ func HandleLoggingStats() {
 		fmt.Printf("Logs Uploaded: %d\n", stats.LogsUploaded)
 		fmt.Printf("Upload Errors: %d\n", stats.UploadErrors)
 		fmt.Printf("Dropped (outside retention window): %d\n", stats.DroppedOutOfWindow)
+		fmt.Printf("Dropped (below high severity): %d\n", stats.DroppedLowSeverity)
 		return nil
 	})
 }

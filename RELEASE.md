@@ -16,8 +16,9 @@ SentinelGo follows [Semantic Versioning](https://semver.org). Tags look like
 
 ## Steps
 
-Every merged PR has already added its entry under `## [Unreleased]` in
-`CHANGELOG.md`. Releasing turns those entries into the new version's section.
+Every merged PR has already added its entry as a fragment file in
+[`changelog.d/`](changelog.d/README.md). Releasing folds those fragments into
+the new version's section of `CHANGELOG.md` and deletes them.
 
 ### 1. Trigger the release
 
@@ -28,10 +29,11 @@ Run **Trigger Release** (Actions → Trigger Release → Run workflow) on `main`
 - **dry run**: tick it to see the release notes in the run summary without
   opening a PR. Useful before the real run.
 
-The workflow moves the `[Unreleased]` entries under `## [v3.4.0] - <today>`,
-leaves an empty `[Unreleased]` above it, and opens a **Release v3.4.0** pull
-request from `release/v3.4.0` with auto-merge turned on. It fails if
-`[Unreleased]` is empty or the version is already tagged.
+The workflow folds the fragments in `changelog.d/` under `## [v3.4.0] - <today>`
+(grouped as Added, Changed, Deprecated, Removed, Fixed, Security, each group in
+file-name order), deletes them, leaves an empty `[Unreleased]` above it, and
+opens a **Release v3.4.0** pull request from `release/v3.4.0` with auto-merge
+turned on. It fails if there are no fragments or the version is already tagged.
 
 ### 2. The release PR merges
 
@@ -50,9 +52,9 @@ When the release PR merges, **Tag Release**
 ([`.github/workflows/tag-release.yml`](.github/workflows/tag-release.yml)) sees
 that the newest version in `CHANGELOG.md` has no tag and pushes `v3.4.0`.
 It then opens a `main` -> `dev` pull request with auto-merge on, so `dev` picks
-up the `[v3.4.0]` heading. Let it merge (with a merge commit) before the next
-`dev` -> `main` PR. Otherwise git places `dev`'s new entries under `[v3.4.0]`
-instead of `[Unreleased]`.
+up the `[v3.4.0]` section and drops the fragments it released. Let it merge
+(with a merge commit) before the next `dev` -> `main` PR. Otherwise that PR
+brings the released fragments back.
 
 You can also cut a release by hand: run
 `make changelog-release VERSION=v3.4.0` on a branch and merge it in a PR. Tag
@@ -141,9 +143,9 @@ only reproduce on a GitHub Actions runner.
 
 ## If something goes wrong
 
-- **Trigger Release says `[Unreleased]` is empty.** Nothing has changed since
-  the last release that needs one, or PRs were merged with `skip-changelog`.
-  Add entries in a PR first.
+- **Trigger Release says there is nothing to release.** `changelog.d/` has no
+  fragments: nothing has changed since the last release that needs one, or PRs
+  were merged with `skip-changelog`. Add fragments in a PR first.
 - **Trigger Release says `main` already has the section.** The release PR
   merged but no tag was pushed. Check the Tag Release run, fix the cause (for
   example an expired `RELEASE_PAT`), then run **Tag Release** manually.
