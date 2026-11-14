@@ -79,11 +79,14 @@ The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.ym
 3. Scans every built binary with `govulncheck -mode=binary`. Any reachable
    vulnerability, in the Go toolchain or a dependency, stops the release before
    anything is signed.
-4. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
+4. Code-signs the two macOS binaries if the `MACOS_CODESIGN_P12` secret is
+   set (see [macOS code signing](#macos-code-signing)). Without it they ship
+   unsigned, as before.
+5. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
-   CycloneDX SBOM per binary.
-5. Creates build provenance and SBOM attestations.
-6. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
+   CycloneDX SBOM per binary. These cover the code-signed macOS binaries.
+6. Creates build provenance and SBOM attestations.
+7. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
    description, plus all of the artifacts below.
 
 The backend syncs release assets from GitHub Releases, and agents pick up the
@@ -101,6 +104,57 @@ before replacing itself.
 | `install.sh`, `install.command`, `install.bat`, `sentinelgo-install.desktop` | Installers. They verify the binary against `SHA256SUMS` before installing. |
 | `THIRD_PARTY_NOTICES.txt` | Licenses of every linked dependency |
 | `INSTALLATION.md` | Per-OS install guide |
+
+## macOS code signing
+
+MDM profiles that give the agent permissions on a Mac (Full Disk Access,
+notifications) identify it by its code signature. An ad-hoc signature changes
+with every build, so those profiles need a certificate signature that stays the
+same across releases (#352).
+
+For now the certificate comes from our own internal CA, not Apple. MDM
+installs the CA's root certificate on managed Macs. Notarization doesn't
+apply: it needs a Developer ID certificate, and Gatekeeper only checks it on
+downloads that carry the quarantine flag, which MDM installs and `curl` don't
+set. A Developer ID Application certificate can replace the internal one
+later through the same secrets.
+
+| Secret | Value |
+|---|---|
+| `MACOS_CODESIGN_P12` | Base64 of a `.p12` holding the code-signing certificate (extended key usage `codeSigning`), its private key and the CA certificates above it |
+| `MACOS_CODESIGN_P12_PASSWORD` | The `.p12`'s password |
+
+If `MACOS_CODESIGN_P12` is set, the sign job runs on a macOS runner and
+[`scripts/macos-codesign.sh`](scripts/macos-codesign.sh) signs both macOS
+binaries. It uses the identifier `com.sentinelgo.agent` and the hardened
+runtime, and logs each binary's designated requirement. If it isn't set, the
+job runs on Linux, the release logs a warning, and the macOS binaries ship
+unsigned. Either way the release goes out.
+
+On the Mac, `install.sh`, `sentinelgo -install` and the updater keep a
+certificate signature that still verifies. They sign a binary ad-hoc only when
+it has no such signature, because an ad-hoc signature would replace it.
+
+To make a certificate from an internal CA with OpenSSL (key and CA handling
+are up to the CA's owner):
+
+```bash
+openssl req -new -newkey rsa:3072 -nodes -keyout codesign.key \
+  -subj "/CN=SentinelGo Code Signing/O=BrainStation-23" -out codesign.csr
+# Sign the CSR with the CA and these extensions:
+#   keyUsage = critical, digitalSignature
+#   extendedKeyUsage = critical, codeSigning
+#   basicConstraints = critical, CA:FALSE
+openssl pkcs12 -export -legacy -inkey codesign.key -in codesign.crt \
+  -certfile ca-chain.pem -out codesign.p12
+base64 < codesign.p12 | gh secret set MACOS_CODESIGN_P12
+gh secret set MACOS_CODESIGN_P12_PASSWORD
+```
+
+`-legacy` (OpenSSL 3) writes encryption that macOS's `security import`
+accepts. Keep the same certificate, or at least the same CA and subject, for
+as long as profiles pin it. A new certificate changes the designated
+requirement, and every profile built from the old one has to be rebuilt.
 
 ## Building locally
 
@@ -137,7 +191,9 @@ sha256sum -c --ignore-missing SHA256SUMS
 Build from a fresh clone with no local changes: Go records whether the working
 tree was modified, and that flag is part of the binary.
 
-Every binary should report `OK`. Releases up to and including v3.4.0 were
+Every binary should report `OK`, except the macOS binaries of a release that
+was code-signed in CI (#352): the signature is added after the build, so
+those differ from a rebuild by their code signature. Releases up to and including v3.4.0 were
 built before `-trimpath` was added; they embed the build machine's paths and
 only reproduce on a GitHub Actions runner.
 

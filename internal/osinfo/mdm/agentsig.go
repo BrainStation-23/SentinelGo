@@ -16,9 +16,9 @@ const (
 	SigDeveloperID = "developer_id"
 	SigAdhoc       = "adhoc"
 	SigUnsigned    = "unsigned"
-	// SigOther is a signature from an Apple-issued certificate that isn't
-	// Developer ID (Apple Development, for example). No PPPC profile is
-	// built from it.
+	// SigOther is a certificate signature that isn't Developer ID: another
+	// Apple-issued certificate (Apple Development, for example) or our
+	// internal CA's (#352). designated_requirement identifies it.
 	SigOther = "other"
 )
 
