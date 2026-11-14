@@ -33,8 +33,13 @@ var golden = []struct {
 	{"v1.2.3 v10.20.30-rc.1 1.0.0.12345", nil},
 	{"revenue grew 12.5% to $4,300,000 in Q3 2026, order #1234567890123", nil},
 	{"timestamp 1730123456789 port 8080 pid 41234", nil},
+	// Unix times in seconds are 10 digits but never a phone number.
+	{`{"create_time":1763112345.123,"t":1763112345}`, nil},
+	{"https://example.com/search?q=go&page=2&id=1234567890", nil},
+	// … while real numbers, with or without formatting, still are.
+	{"call 212-555-1234 or +1 1763112345", []string{"pii.phone=+1 1763112345", "pii.phone=212-555-1234"}},
 	// phone is opt-in because of this:
-	{"https://example.com/search?q=go&page=2&id=1234567890", []string{"pii.phone=1234567890"}},
+	{"https://example.com/search?q=go&page=2&id=2125551234", []string{"pii.phone=2125551234"}},
 }
 
 func TestGolden(t *testing.T) {

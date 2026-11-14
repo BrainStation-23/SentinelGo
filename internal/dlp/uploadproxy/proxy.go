@@ -375,7 +375,7 @@ func sameHost(hostHeader, host string) bool {
 // forward inspects an upload (when inspect is true) and sends the request to
 // upstream, or refuses it.
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream *url.URL, host string, inspect bool) {
-	if inspect && p.opts.Inspector != nil && hasBody(r) {
+	if inspect && p.opts.Inspector != nil && hasBody(r) && CarriesFile(r) {
 		p.inspected.Add(1)
 		p.lastInspection.Store(time.Now().UnixNano())
 		v, body, err := p.opts.Inspector.Inspect(r.Context(), r, host)

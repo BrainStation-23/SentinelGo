@@ -121,6 +121,23 @@ func New(ids []string) (s *Scanner, unknown []string) {
 	return s, unknown
 }
 
+// unixSeconds reports whether a phone match is a bare 10-digit number starting
+// with 1: a Unix time in seconds (2001–2033), everywhere in JSON, logs and
+// URLs. No phone number is written that way: a NANP area code (US, Canada)
+// never starts with 1, ten-digit mobiles elsewhere (India) start with 6–9,
+// and 11-digit numbers (China) aren't affected. "+1 …" keeps its "+".
+func unixSeconds(m string) bool {
+	if len(m) != 10 || m[0] != '1' {
+		return false
+	}
+	for i := 0; i < len(m); i++ {
+		if m[i] < '0' || m[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Find returns the PII in text, ordered by offset.
 func (s *Scanner) Find(text string) []Match {
 	if s == nil || s.disabled {
@@ -128,9 +145,14 @@ func (s *Scanner) Find(text string) []Match {
 	}
 	var out []Match
 	for _, r := range engine.Analyze(text, s.opts) {
-		if id, ok := s.idOf[r.EntityType]; ok {
-			out = append(out, Match{DetectorID: id, Start: r.Start, End: r.End})
+		id, ok := s.idOf[r.EntityType]
+		if !ok {
+			continue
 		}
+		if r.EntityType == entities.PhoneNumber && r.Start >= 0 && r.End <= len(text) && unixSeconds(text[r.Start:r.End]) {
+			continue
+		}
+		out = append(out, Match{DetectorID: id, Start: r.Start, End: r.End})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Start != out[j].Start {
