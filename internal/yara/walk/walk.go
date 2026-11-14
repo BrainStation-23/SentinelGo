@@ -22,7 +22,7 @@ const (
 	SkipCloud     = "cloud_placeholder" // content not on the device; reading would download it
 	SkipTooDeep   = "too_deep"          // below MaxDepth
 	SkipTCCDenied = "tcc_denied"        // macOS privacy (no Full Disk Access)
-	SkipUnchanged = "unchanged"         // skip cache: same file, same rules
+	SkipUnchanged = "unchanged"         // skip cache: same file, same rules, clean last time
 )
 
 // DefaultMaxDepth is how many folders below a root the walk goes.
@@ -56,9 +56,10 @@ type Options struct {
 	Mounts           []Mount
 	IncludeNetwork   bool
 	IncludeRemovable bool
-	// Cache, when set, skips files whose Key and Rules match the last
-	// scan. On-demand scans leave it nil so admins can confirm a match is
-	// still there.
+	// Cache, when set, skips files whose Key and Rules match the last scan
+	// and that were clean then. Files that matched are scanned again, so
+	// the scan can say the rule is still there (#496). On-demand scans
+	// leave it nil so admins can confirm a match is still there.
 	Cache *Cache
 	Rules string
 	Guard Guard
@@ -80,7 +81,11 @@ type File struct {
 	Size int64
 	// Key is the skip cache key; store the scan result under it.
 	Key Key
-	id  fileID
+	// MatchedBefore: the skip cache says the file, unchanged, matched in
+	// an earlier scan. If it can't be scanned now, the scan can't show its
+	// rules are gone.
+	MatchedBefore bool
+	id            fileID
 }
 
 // Stats count what a walk did.
@@ -267,9 +272,12 @@ func (w *walker) file(ctx context.Context, p string, info fs.FileInfo) error {
 	}
 	f := File{Path: p, Size: info.Size(), Key: keyOf(p, info), id: idOf(info)}
 	if w.o.Cache != nil {
-		if _, ok := w.o.Cache.Lookup(f.Key, w.o.Rules); ok {
-			w.skip(SkipUnchanged)
-			return nil
+		if r, ok := w.o.Cache.Lookup(f.Key, w.o.Rules); ok {
+			if r != Matched {
+				w.skip(SkipUnchanged)
+				return nil
+			}
+			f.MatchedBefore = true
 		}
 	}
 	if w.o.Guard != nil {

@@ -55,6 +55,7 @@ const (
 
 	MaxStatusBytes  = 64 << 10
 	MaxSkippedRules = 100 // per ruleset in a status
+	MaxRuleCounts   = 500 // scan_summary rule_counts (the server takes up to 1,000)
 	MaxErrorLen     = 200 // skipped-rule reasons and other error strings
 
 	MaxEventsPerCall = 500

@@ -94,6 +94,8 @@ func TestEvent_SummaryShape(t *testing.T) {
 		"event_id": evID, "kind": "scan_summary", "scan_id": schID, "trigger": "on_demand", "preset": "full",
 		"started_at": "2026-11-10T09:00:00Z", "state": "partial",
 		"files_scanned": 5.0, "files_skipped": 0.0, "errors": 0.0, "matches": 0.0, "truncated": true,
+		// not counted: null, never left out or [] (an empty list may clear alerts, #496)
+		"rule_counts": nil,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary JSON\n%s\nwant\n%v", data, want)
@@ -190,6 +192,16 @@ func TestScanSummary_ValidateRejects(t *testing.T) {
 		"state":   func(s *ScanSummary) { s.State = "running" },
 		"preset":  func(s *ScanSummary) { s.Preset = "deep" },
 		"count":   func(s *ScanSummary) { s.Errors = -1 },
+		"rule counts cap": func(s *ScanSummary) {
+			s.RuleCounts = make([]RuleCount, MaxRuleCounts+1)
+			for i := range s.RuleCounts {
+				s.RuleCounts[i] = RuleCount{Rule: "r", Files: 1}
+			}
+		},
+		"rule count rule":       func(s *ScanSummary) { s.RuleCounts = []RuleCount{{Files: 1}} },
+		"rule count long rule":  func(s *ScanSummary) { s.RuleCounts = []RuleCount{{Rule: strings.Repeat("r", MaxRuleLen+1)}} },
+		"rule count ruleset id": func(s *ScanSummary) { s.RuleCounts = []RuleCount{{RulesetID: "local", Rule: "r"}} },
+		"rule count files":      func(s *ScanSummary) { s.RuleCounts = []RuleCount{{Rule: "r", Files: -1}} },
 	} {
 		s := ok
 		fn(&s)

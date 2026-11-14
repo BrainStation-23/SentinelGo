@@ -212,6 +212,18 @@ func (s *ScanSummary) Validate() error {
 		return fmt.Errorf("%w: unknown preset %q", ErrInvalidEvent, s.Preset)
 	case s.FilesScanned < 0 || s.FilesSkipped < 0 || s.Errors < 0 || s.Matches < 0:
 		return fmt.Errorf("%w: negative count", ErrInvalidEvent)
+	case len(s.RuleCounts) > MaxRuleCounts:
+		return fmt.Errorf("%w: %d rule counts (max %d)", ErrInvalidEvent, len(s.RuleCounts), MaxRuleCounts)
+	}
+	for _, rc := range s.RuleCounts {
+		switch {
+		case rc.Rule == "" || len(rc.Rule) > MaxRuleLen:
+			return fmt.Errorf("%w: rule count rule must be 1-%d characters", ErrInvalidEvent, MaxRuleLen)
+		case rc.RulesetID != "" && !IsUUID(rc.RulesetID):
+			return fmt.Errorf("%w: rule count ruleset_id is not a UUID", ErrInvalidEvent)
+		case rc.Files < 0:
+			return fmt.Errorf("%w: negative rule count", ErrInvalidEvent)
+		}
 	}
 	return nil
 }

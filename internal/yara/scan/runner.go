@@ -551,6 +551,10 @@ func (r *Runner) scanFile(ctx context.Context, sp spec, rep *report.Scan, cache 
 	if out.Status != WorkerFailed {
 		c.workerFails = 0
 	}
+	if out.Status != Scanned && f.MatchedBefore {
+		// its rules can't be counted this time: the scan can't clear them
+		rep.MarkIncomplete()
+	}
 	switch out.Status {
 	case Scanned:
 	case Skipped:

@@ -65,6 +65,24 @@ type ScanSummary struct {
 	// Truncated: the scan hit the per-scan match event cap (#415), so not
 	// every match was sent.
 	Truncated bool `json:"truncated,omitempty"`
+	// RuleCounts lists every rule the scan found and in how many files,
+	// whether or not the match was sent (scheduled scans don't re-send
+	// matches already reported). The server clears a match alert only when
+	// a full scan's complete list leaves the rule out (contract v1.2,
+	// SentinelGo#496). nil (JSON null) means not counted; an empty list
+	// means nothing was found.
+	RuleCounts []RuleCount `json:"rule_counts"`
+	// RuleCountsTruncated: RuleCounts is incomplete, so it must not clear
+	// anything: the list was cut at MaxRuleCounts, or a file that matched
+	// in an earlier scan couldn't be scanned this time.
+	RuleCountsTruncated bool `json:"rule_counts_truncated,omitempty"`
+}
+
+// RuleCount is one rule a scan found and the number of files it matched.
+type RuleCount struct {
+	RulesetID string `json:"ruleset_id,omitempty"`
+	Rule      string `json:"rule"`
+	Files     int64  `json:"files"`
 }
 
 // statusBudget leaves room under the server's 64 KB for its own JSON
@@ -110,6 +128,9 @@ func (s Status) capped() Status {
 	}
 	if s.LastScan != nil {
 		ls := *s.LastScan
+		// The status carries the last scan's counts, not its rule list: up
+		// to 500 rules would not fit the 64 KB status.
+		ls.RuleCounts, ls.RuleCountsTruncated = nil, false
 		s.LastScan = &ls
 	}
 	return s

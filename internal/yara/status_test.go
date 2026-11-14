@@ -33,7 +33,7 @@ func TestStatus_EncodeShape(t *testing.T) {
 			"skipped_rules": []any{map[string]any{"rule": "APT_X", "line": 12.0, "reason": "unsupported_module:pe"}}}},
 		"last_scan": map[string]any{"scan_id": schID, "trigger": "scheduled", "preset": "quick",
 			"started_at": "2026-11-10T09:00:00Z", "finished_at": "2026-11-10T09:01:00Z", "state": "completed",
-			"files_scanned": 10.0, "files_skipped": 2.0, "errors": 0.0, "matches": 1.0},
+			"files_scanned": 10.0, "files_skipped": 2.0, "errors": 0.0, "matches": 1.0, "rule_counts": nil},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("status JSON\n%s\nwant\n%v", data, want)
@@ -44,6 +44,29 @@ func TestStatus_EncodeShape(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back, s) {
 		t.Fatalf("round trip:\n%+v\nwant\n%+v", back, s)
+	}
+}
+
+// The status's last scan leaves out the rule list (#496): up to 500 rules
+// would not fit the 64 KB status. The scan_summary event carries it.
+func TestStatus_LastScanWithoutRuleCounts(t *testing.T) {
+	ls := &ScanSummary{ScanID: schID, Trigger: TriggerScheduled, State: ScanCompleted,
+		RuleCounts: []RuleCount{{Rule: "r", Files: 1}}, RuleCountsTruncated: true}
+	data, err := Status{State: StateOK, LastScan: ls}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		LastScan map[string]any `json:"last_scan"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.LastScan["rule_counts"] != nil || got.LastScan["rule_counts_truncated"] != nil {
+		t.Fatalf("last_scan %v", got.LastScan)
+	}
+	if len(ls.RuleCounts) != 1 {
+		t.Fatal("Encode modified its input")
 	}
 }
 
