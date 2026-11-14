@@ -15,6 +15,7 @@ import (
 	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/dlp/session"
 	"sentinelgo/internal/dlp/uploadproxy"
+	"sentinelgo/internal/macsign"
 	"sentinelgo/internal/yara/scan"
 )
 
@@ -24,17 +25,14 @@ func HandleInstall(svc AgentService) {
 	if runtime.GOOS == "darwin" {
 		fmt.Println("Installing SentinelGo as launchd service...")
 
-		// Remove the quarantine flag macOS attaches to downloaded binaries, then
-		// re-codesign with an ad-hoc identity so Gatekeeper accepts the daemon
-		// without prompting the user to approve "unidentified developer" software.
-		// spctl --add registers the binary in the Gatekeeper allowlist.
+		// Remove the quarantine flag macOS attaches to downloaded binaries,
+		// sign ad-hoc unless the release already carries a certificate
+		// signature (#352), and register the binary with Gatekeeper, so the
+		// daemon starts without an "unidentified developer" prompt.
 		const binaryPath = "/opt/sentinelgo/sentinelgo"
-		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-		_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", binaryPath).Run()
-		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-		_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", binaryPath).Run()
-		// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-		_ = exec.Command(binpath.Resolve("spctl"), "--add", binaryPath).Run()
+		if macsign.PrepareBinary(binaryPath) {
+			fmt.Println("Keeping the binary's certificate signature.")
+		}
 
 		if err := createLaunchdPlist(); err != nil {
 			log.Fatalf("Failed to create launchd plist: %v", err)

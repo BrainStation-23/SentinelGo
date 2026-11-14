@@ -98,7 +98,7 @@ Asset naming (set by the release pipeline) still follows:
 | Platform | After successful stage |
 |----------|------------------------|
 | Linux | Binary already replaced; `os.Exit(1)` → systemd `Restart=on-failure` |
-| macOS | Binary replaced; ad-hoc re-codesign + `spctl --add`; `os.Exit(0)` → launchd KeepAlive |
+| macOS | Binary replaced; ad-hoc re-codesign unless it has a certificate signature that verifies (#352) + `spctl --add`; `os.Exit(0)` → launchd KeepAlive |
 | Windows | Running `.exe` is locked; write `sentinelgo_update.bat`, exit `0`; script moves `.new` into place and `sc start SentinelGo` |
 
 ## Retry

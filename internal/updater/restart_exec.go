@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"sentinelgo/internal/binpath"
+	"sentinelgo/internal/macsign"
 	"sentinelgo/internal/winsec"
 )
 
@@ -21,18 +22,16 @@ import (
 // rollbackFromBackup) that remains in installer.go; this file is excluded
 // from the coverage gate in sonar-project.properties for the same reason.
 
-// recodesignForGatekeeper re-signs the binary with an ad-hoc identity and
-// registers its new CDHash with Gatekeeper. Must be called after every atomic
-// replace on macOS: spctl --add stores the CDHash at install time, and the
-// replaced binary has a completely different hash, so without this launchd
-// cannot restart the updated binary (Gatekeeper rejects it silently).
+// recodesignForGatekeeper signs the binary ad-hoc, unless the release carries
+// a certificate signature (#352), and registers its new CDHash with
+// Gatekeeper. Must be called after every atomic replace on macOS: spctl --add
+// stores the CDHash at install time, and the replaced binary has a completely
+// different hash, so without this launchd cannot restart the updated binary
+// (Gatekeeper rejects it silently).
 func recodesignForGatekeeper(selfPath string) {
-	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	_ = exec.Command(binpath.Resolve("xattr"), "-d", "com.apple.quarantine", selfPath).Run()
-	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	_ = exec.Command(binpath.Resolve("codesign"), "--force", "--sign", "-", selfPath).Run()
-	// #nosec G204 - binpath.Resolve returns a fixed, verified absolute path or the literal name; not attacker input
-	_ = exec.Command(binpath.Resolve("spctl"), "--add", selfPath).Run()
+	if macsign.PrepareBinary(selfPath) {
+		log.Println("Updater: keeping the new binary's certificate signature")
+	}
 }
 
 // restart hands control to the OS service manager so the new binary runs.
