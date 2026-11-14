@@ -179,6 +179,42 @@ func TestWalk_UnchangedFilesSkipped(t *testing.T) {
 	}
 }
 
+// A file that matched last time is handed out again, marked, so the scan
+// can say its rule is still there (#496); clean files stay skipped.
+func TestWalk_MatchedFilesScannedAgain(t *testing.T) {
+	root := tree(t, map[string]string{"clean": "a", "hit": "b"})
+	cache, err := OpenCache(filepath.Join(t.TempDir(), "skip.bin"), runtime.GOOS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan := func() (map[string]bool, int64) {
+		t.Helper()
+		cache.BeginScan()
+		got := map[string]bool{}
+		st, err := Walk(context.Background(), Options{GOOS: runtime.GOOS, Roots: []string{root}, Cache: cache, Rules: "r1"},
+			func(f File) error {
+				name := filepath.Base(f.Path)
+				got[name] = f.MatchedBefore
+				r := Clean
+				if name == "hit" {
+					r = Matched
+				}
+				cache.Store(f.Key, "r1", r)
+				return nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, st.Skipped[SkipUnchanged]
+	}
+	if got, skipped := scan(); !reflect.DeepEqual(got, map[string]bool{"clean": false, "hit": false}) || skipped != 0 {
+		t.Fatalf("first scan %v, %d skipped", got, skipped)
+	}
+	if got, skipped := scan(); !reflect.DeepEqual(got, map[string]bool{"hit": true}) || skipped != 1 {
+		t.Fatalf("second scan %v, %d skipped", got, skipped)
+	}
+}
+
 func TestWalk_Mounts(t *testing.T) {
 	root := tree(t, map[string]string{"local/a": "a", "share/b": "b", "usb/c": "c"})
 	mounts := []Mount{{Path: filepath.Join(root, "share"), Network: true}, {Path: filepath.Join(root, "usb")}}

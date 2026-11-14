@@ -40,7 +40,9 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    removable drives (unless the limits include them), files over
    `max_file_bytes`, cloud placeholders whose content isn't on the device
    (reading would download them), and, for scheduled scans, files unchanged
-   since the last scan with the same rules (the skip cache).
+   and clean since the last scan with the same rules (the skip cache). A file
+   that matched last time is scanned again, so the scan can tell whether its
+   rule is still there (#496).
 5. **Scanning.** Each file is opened by the service (checking it is still the
    file listed) and its descriptor handed to a sandboxed scan worker, which
    reads it once to hash it and match it. Workers run with no network and no
@@ -57,6 +59,16 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    `yara-event-sync` task; an offline device sends them when it is back. At
    most 5,000 match events per scan; scheduled scans don't report a match
    (same file, path, rule and revision) already reported.
+7. **Rule counts** (contract v1.2, #496). `scan_summary.rule_counts` lists
+   every rule the scan found and in how many files,
+   `[{ruleset_id, rule, files}]`, including matches it didn't send again; it
+   is `[]` when the scan found nothing and `null` when nothing was counted.
+   At most 500 rules. `rule_counts_truncated` says the list can't show a rule
+   is gone: it was cut at 500, or a file that matched in an earlier scan
+   couldn't be scanned this time (read error, timeout, worker failure). The
+   server closes a match alert after a full scan only when a complete list
+   leaves the rule out (Compliance-OS#952). The status's `last_scan` leaves
+   the list out to stay under 64 KB.
 
 ## On-write scanning
 

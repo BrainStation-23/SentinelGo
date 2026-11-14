@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -36,6 +38,7 @@ type fakeScanner struct {
 	mu      sync.Mutex
 	scanned []string
 	entered chan struct{} // receives once per file when set
+	unread  string        // a file name that fails with ReadError
 }
 
 func (s *fakeScanner) ScanFile(ctx context.Context, _ ruleset.Rules, f walk.File, _ []string, _ time.Duration) FileOutcome {
@@ -52,8 +55,11 @@ func (s *fakeScanner) ScanFile(ctx context.Context, _ ruleset.Rules, f walk.File
 			return FileOutcome{Status: Skipped}
 		}
 	}
+	s.mu.Lock()
+	unread := s.unread
+	s.mu.Unlock()
 	data, err := os.ReadFile(f.Path)
-	if err != nil {
+	if err != nil || filepath.Base(f.Path) == unread {
 		return FileOutcome{Status: ReadError}
 	}
 	s.mu.Lock()
@@ -483,8 +489,68 @@ func TestScheduled_SkipCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := g.waitEnd(t)
-	if s.FilesScanned != 0 || s.FilesSkipped != 2 || s.State != yara.ScanCompleted {
+	// The clean file is skipped; the one that matched is scanned again, so
+	// the summary can say its rule is still there (#496).
+	if s.FilesScanned != 1 || s.FilesSkipped != 1 || s.State != yara.ScanCompleted {
 		t.Fatalf("second %+v", s)
+	}
+	want := []yara.RuleCount{{RulesetID: rsA, Rule: "test_marker", Files: 1}}
+	if !reflect.DeepEqual(s.RuleCounts, want) || s.RuleCountsTruncated {
+		t.Fatalf("second scan rule counts %+v (truncated %v)", s.RuleCounts, s.RuleCountsTruncated)
+	}
+}
+
+// A scan that finds nothing sends an empty rule list (not null), so the
+// server may clear the rule; one that can't re-read a file that matched
+// before says its counts are incomplete (#496).
+func TestScheduled_RuleCountsCleanAndIncomplete(t *testing.T) {
+	dir := files(t, "a.txt", "bad.txt")
+	sc := &fakeScanner{}
+	g := newRig(t, bundle(customSchedule(dir)), sc)
+	if err := g.r.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if s := g.waitEnd(t); len(s.RuleCounts) != 1 || s.RuleCountsTruncated {
+		t.Fatalf("first %+v", s)
+	}
+	waitIdle(t, g.r)
+
+	// The matched file can't be read: the rule isn't counted, and the
+	// summary says the list can't clear it.
+	sc.mu.Lock()
+	sc.unread = "bad.txt"
+	sc.mu.Unlock()
+	g.advance(25 * time.Hour)
+	if err := g.r.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	s := g.waitEnd(t)
+	if len(s.RuleCounts) != 0 || !s.RuleCountsTruncated || s.Errors != 1 {
+		t.Fatalf("unreadable matched file %+v", s)
+	}
+	waitIdle(t, g.r)
+
+	// The file is clean now: an empty, complete list.
+	if err := os.WriteFile(filepath.Join(dir, "bad.txt"), []byte("harmless now"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sc.mu.Lock()
+	sc.unread = ""
+	sc.mu.Unlock()
+	g.advance(25 * time.Hour)
+	if err := g.r.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	s = g.waitEnd(t)
+	if s.RuleCounts == nil || len(s.RuleCounts) != 0 || s.RuleCountsTruncated {
+		t.Fatalf("clean %+v", s)
+	}
+	data, err := json.Marshal(yara.Event{EventID: yara.NewID(), Summary: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"rule_counts":[]`)) {
+		t.Fatalf("an empty list must be sent as []: %s", data)
 	}
 }
 

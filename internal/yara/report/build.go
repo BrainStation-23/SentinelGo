@@ -70,7 +70,14 @@ type Scan struct {
 	found     int64 // matches found, reported or not
 	sent      int   // match events built
 	truncated bool
+
+	// rules counts the files each rule matched, reported or not
+	// (rule_counts, #496); incomplete says the counts can't clear a rule.
+	rules      map[ruleKey]int64
+	incomplete bool
 }
+
+type ruleKey struct{ rulesetID, rule string }
 
 // NewScan starts a scan's reporting. id is the server's scan id for an
 // on-demand scan; "" mints one. dedupe is used for scheduled and on-write
@@ -81,7 +88,8 @@ func NewScan(id, trigger, preset string, evidence yara.Evidence, dedupe Dedupe) 
 		id = yara.NewID()
 	}
 	s := &Scan{ID: id, Trigger: trigger, Preset: preset, Started: time.Now().UTC(),
-		hashPaths: evidence.HashPaths(), owner: newOwnerCache().lookup, now: time.Now}
+		hashPaths: evidence.HashPaths(), owner: newOwnerCache().lookup, now: time.Now,
+		rules: map[ruleKey]int64{}}
 	if trigger == yara.TriggerScheduled || trigger == yara.TriggerOnWrite {
 		s.dedupe = dedupe
 	}
@@ -92,14 +100,17 @@ func NewScan(id, trigger, preset string, evidence yara.Evidence, dedupe Dedupe) 
 // checkpoint of a scan the service stopped, so the scan continues under the
 // same id with the same counts and per-scan cap after a restart.
 type Progress struct {
-	Found     int64 `json:"found"`
-	Sent      int   `json:"sent"`
-	Truncated bool  `json:"truncated,omitempty"`
+	Found      int64            `json:"found"`
+	Sent       int              `json:"sent"`
+	Truncated  bool             `json:"truncated,omitempty"`
+	RuleCounts []yara.RuleCount `json:"rule_counts,omitempty"`
+	Incomplete bool             `json:"rule_counts_incomplete,omitempty"`
 }
 
 // Progress returns the scan's counts so far.
 func (s *Scan) Progress() Progress {
-	return Progress{Found: s.found, Sent: s.sent, Truncated: s.truncated}
+	rc, cut := s.ruleCounts()
+	return Progress{Found: s.found, Sent: s.sent, Truncated: s.truncated, RuleCounts: rc, Incomplete: cut}
 }
 
 // Restore continues an interrupted scan: it takes back the start time and
@@ -109,6 +120,52 @@ func (s *Scan) Restore(started time.Time, p Progress) {
 		s.Started = started.UTC()
 	}
 	s.found, s.sent, s.truncated = max(p.Found, 0), max(p.Sent, 0), p.Truncated
+	s.incomplete = p.Incomplete
+	for _, rc := range p.RuleCounts {
+		s.rules[ruleKey{rc.RulesetID, rc.Rule}] += max(rc.Files, 0)
+	}
+}
+
+// MarkIncomplete records that the rule counts can't show a rule is gone: a
+// file that matched in an earlier scan couldn't be scanned this time.
+func (s *Scan) MarkIncomplete() { s.incomplete = true }
+
+// count adds one file to each rule that matched it, past the cap only for
+// rules already counted.
+func (s *Scan) count(hits []Hit) {
+	seen := map[ruleKey]bool{}
+	for _, h := range hits {
+		k := ruleKey{strings.ToLower(h.RulesetID), yara.Truncate(h.Rule, yara.MaxRuleLen)}
+		if k.rule == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, ok := s.rules[k]; !ok && len(s.rules) >= yara.MaxRuleCounts {
+			s.incomplete = true
+			continue
+		}
+		s.rules[k]++
+	}
+}
+
+// ruleCounts returns the counts in a stable order, and whether they are
+// incomplete.
+func (s *Scan) ruleCounts() ([]yara.RuleCount, bool) {
+	out := make([]yara.RuleCount, 0, len(s.rules))
+	for k, n := range s.rules {
+		rc := yara.RuleCount{Rule: k.rule, Files: n}
+		if yara.IsUUID(k.rulesetID) {
+			rc.RulesetID = k.rulesetID
+		}
+		out = append(out, rc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RulesetID != out[j].RulesetID {
+			return out[i].RulesetID < out[j].RulesetID
+		}
+		return out[i].Rule < out[j].Rule
+	})
+	return out, s.incomplete
 }
 
 // Matches returns the events for a matched file: one per hit, minus hits
@@ -122,6 +179,7 @@ func (s *Scan) Matches(r FileResult) ([]yara.Event, error) {
 		return nil, fmt.Errorf("report: file result without a SHA-256")
 	}
 	s.found += int64(len(r.Hits))
+	s.count(r.Hits)
 	hits := r.Hits
 	var keys []string
 	if s.dedupe != nil {
@@ -192,12 +250,14 @@ func (s *Scan) Summary(state string, filesScanned, filesSkipped, errs int64) yar
 
 // SummaryBody is the summary without an event id, for the status.
 func (s *Scan) SummaryBody(state string, filesScanned, filesSkipped, errs int64) *yara.ScanSummary {
-	return &yara.ScanSummary{
+	sum := &yara.ScanSummary{
 		ScanID: s.ID, Trigger: s.Trigger, Preset: s.Preset,
 		StartedAt: s.Started, FinishedAt: s.now().UTC(), State: state,
 		FilesScanned: max(filesScanned, 0), FilesSkipped: max(filesSkipped, 0), Errors: max(errs, 0),
 		Matches: s.found, Truncated: s.truncated,
 	}
+	sum.RuleCounts, sum.RuleCountsTruncated = s.ruleCounts()
+	return sum
 }
 
 // pathEvidence returns the path (full mode), or its hash and extension.

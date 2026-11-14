@@ -2,6 +2,8 @@ package report
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -200,6 +202,66 @@ func TestScan_RestoreProgress(t *testing.T) {
 	sum := s.SummaryBody(yara.ScanCompleted, 1, 0, 0)
 	if !sum.StartedAt.Equal(started) || sum.Matches != 7 || !sum.Truncated {
 		t.Fatalf("summary %+v", sum)
+	}
+}
+
+// rule_counts (#496): every rule found, sent or not, once per file; cut at
+// the cap; kept across a restart; [] when nothing was found.
+func TestScan_RuleCounts(t *testing.T) {
+	d := memDedupe{}
+	s1 := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	if _, err := s1.Matches(result("/a", hit("r1"))); err != nil {
+		t.Fatal(err)
+	}
+	// A later scheduled scan finds the same match: not sent again, still counted.
+	s2 := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	evs, err := s2.Matches(result("/a", hit("r1"), hit("r1")))
+	if err != nil || len(evs) != 0 {
+		t.Fatalf("already reported: %d events, %v", len(evs), err)
+	}
+	if _, err := s2.Matches(result("/b", hit("r1"), hit("r2"))); err != nil {
+		t.Fatal(err)
+	}
+	sum := s2.SummaryBody(yara.ScanCompleted, 2, 0, 0)
+	want := []yara.RuleCount{{RulesetID: rsID, Rule: "r1", Files: 2}, {RulesetID: rsID, Rule: "r2", Files: 1}}
+	if !reflect.DeepEqual(sum.RuleCounts, want) || sum.RuleCountsTruncated {
+		t.Fatalf("rule counts %+v (truncated %v)", sum.RuleCounts, sum.RuleCountsTruncated)
+	}
+
+	// Restored after a restart, the counts go on.
+	s3 := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	s3.Restore(time.Time{}, s2.Progress())
+	if _, err := s3.Matches(result("/c", hit("r2"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := s3.SummaryBody(yara.ScanCompleted, 1, 0, 0).RuleCounts; got[1].Files != 2 || got[0].Files != 2 {
+		t.Fatalf("after restore %+v", got)
+	}
+
+	// Nothing found: an empty list, not null.
+	empty := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	if got := empty.SummaryBody(yara.ScanCompleted, 1, 0, 0).RuleCounts; got == nil || len(got) != 0 {
+		t.Fatalf("no matches: %#v", got)
+	}
+
+	// Incomplete: marked, or more rules than the cap.
+	inc := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeFull}, d)
+	inc.MarkIncomplete()
+	if !inc.SummaryBody(yara.ScanCompleted, 0, 0, 0).RuleCountsTruncated || !inc.Progress().Incomplete {
+		t.Fatal("MarkIncomplete not kept")
+	}
+	cut := testScan(yara.TriggerOnDemand, yara.Evidence{PathMode: yara.PathModeFull}, nil)
+	for i := range yara.MaxRuleCounts + 3 {
+		if _, err := cut.Matches(result("/f", hit(fmt.Sprintf("rule%d", i)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ev := cut.Summary(yara.ScanCompleted, 1, 0, 0)
+	if len(ev.Summary.RuleCounts) != yara.MaxRuleCounts || !ev.Summary.RuleCountsTruncated {
+		t.Fatalf("cap: %d counts, truncated %v", len(ev.Summary.RuleCounts), ev.Summary.RuleCountsTruncated)
+	}
+	if err := ev.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 
