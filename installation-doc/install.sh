@@ -276,9 +276,16 @@ setup_directories() {
         chmod 750 "$CONFIG_DIR" 2>/dev/null || true
         # Remove download quarantine flag and register with Gatekeeper so macOS
         # does not block the daemon with "cannot be verified for malware" on
-        # first run.
+        # first run. A release binary may carry a certificate signature from
+        # CI that MDM profiles pin (#352): keep it while it verifies, and sign
+        # ad-hoc only binaries without one (an ad-hoc sign would replace it).
         xattr -d com.apple.quarantine "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
-        codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        if codesign -dv --verbose=2 "$INSTALL_DIR/$BINARY_NAME" 2>&1 | grep -q '^Authority=' &&
+            codesign --verify --strict "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null; then
+            print_status "Keeping the binary's certificate signature"
+        else
+            codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
+        fi
         spctl --add "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
     elif [[ "$os" == "$OS_WINDOWS" ]]; then
         # Windows: Skip ownership change (handled by install.bat via icacls).
