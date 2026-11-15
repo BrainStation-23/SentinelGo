@@ -13,6 +13,19 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v4.0.12] - 2026-11-15
+
+### Fixed
+
+- File DLP (uploads): only files are checked now. Chat messages, form posts and
+  other web API calls to an inspected site are no longer treated as files, so a
+  policy no longer blocks typing "Hi" into ChatGPT. Files sent as multipart,
+  to object storage (Azure Blob, S3, Google resumable uploads, tus) or with a
+  file name are still checked, and the event shows the file name (#494).
+- DLP phone number detector: a bare 10-digit number starting with 1 (a Unix
+  timestamp) is no longer reported as a phone number (#494).
+- Threat hunting (YARA): a scheduled scan now scans a file that matched last time again, even when it hasn't changed, and every scan summary lists each rule it found and in how many files, including matches it doesn't send again. The console uses this list to close a match alert only after a full scan shows the rule is gone, instead of closing alerts for files that are still on the device (#496).
+
 ## [v4.0.11] - 2026-11-14
 
 ### Added
@@ -638,7 +651,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.11...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.12...HEAD
+[v4.0.12]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.11...v4.0.12
 [v4.0.11]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.10...v4.0.11
 [v4.0.10]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.9...v4.0.10
 [v4.0.9]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.8...v4.0.9
