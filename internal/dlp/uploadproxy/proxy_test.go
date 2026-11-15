@@ -248,26 +248,111 @@ func TestProxy_AuditOnlyAndClean(t *testing.T) {
 		t.Errorf("events %+v", evs)
 	}
 	// Clean: forwarded, no event.
-	resp, _ = post(t, f, up.srv.URL+"/upload", strings.NewReader(`{"text": "hello"}`), "application/json")
+	resp, _ = post(t, f, up.srv.URL+"/upload", strings.NewReader("hello"), "application/octet-stream")
 	if resp.StatusCode != http.StatusOK || len(f.sink.events()) != 1 {
 		t.Errorf("clean upload: status %d, %d events", resp.StatusCode, len(f.sink.events()))
 	}
 	noSpillLeft(t, f.spill)
 }
 
-// A raw (non-multipart) body is inspected as a whole; plain HTTP too.
+// A raw (non-multipart) file body is inspected as a whole; plain HTTP too.
 func TestProxy_RawBodyAndPlainHTTP(t *testing.T) {
 	up := newUpstream(t, true)
 	f := newFixture(t, up, bundle(false, "allow"), nil)
-	if resp, _ := post(t, f, up.srv.URL+"/api", strings.NewReader(`{"doc": "TOPSECRET"}`), "application/json"); resp.StatusCode != http.StatusForbidden {
+	if resp, _ := post(t, f, up.srv.URL+"/blob", strings.NewReader("TOPSECRET"), "application/octet-stream"); resp.StatusCode != http.StatusForbidden {
 		t.Errorf("raw body: %d", resp.StatusCode)
 	}
 	plain := newUpstream(t, false)
-	if resp, _ := post(t, f, plain.srv.URL+"/api", strings.NewReader("TOPSECRET"), "text/plain"); resp.StatusCode != http.StatusForbidden {
+	if resp, _ := post(t, f, plain.srv.URL+"/blob", strings.NewReader("TOPSECRET"), "text/csv"); resp.StatusCode != http.StatusForbidden {
 		t.Errorf("plain HTTP: %d", resp.StatusCode)
 	}
 	if len(plain.received()) != 0 {
 		t.Error("plain HTTP upload reached the site")
+	}
+}
+
+// A web app's API calls (a chat message, telemetry) and plain form fields
+// aren't files: forwarded without a decision, even when they match.
+func TestProxy_APIBodiesNotFiles(t *testing.T) {
+	up := newUpstream(t, true)
+	f := newFixture(t, up, bundle(false, "allow"), nil)
+	for _, ct := range []string{"application/json", "application/json; charset=utf-8", "text/plain;charset=UTF-8",
+		"application/x-www-form-urlencoded", "application/vnd.api+json", "application/grpc-web+proto"} {
+		if resp, _ := post(t, f, up.srv.URL+"/backend-api/conversation", strings.NewReader(`{"parts":["TOPSECRET"]}`), ct); resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: %d", ct, resp.StatusCode)
+		}
+	}
+	body, ct := multipartBody(t, nil, map[string]string{"prompt": "TOPSECRET"})
+	if resp, _ := post(t, f, up.srv.URL+"/form", body, ct); resp.StatusCode != http.StatusOK {
+		t.Errorf("multipart fields only: %d", resp.StatusCode)
+	}
+	if evs := f.sink.events(); len(evs) != 0 {
+		t.Errorf("events %+v", evs)
+	}
+	if st := f.proxy.Stats(); st.Inspected != 1 { // only the multipart body
+		t.Errorf("stats %+v", st)
+	}
+	noSpillLeft(t, f.spill)
+}
+
+// A file sent with an API-like type (a .json file stored in Azure Blob, or a
+// named attachment) is still a file, and its name reaches the event.
+func TestProxy_UploadSignals(t *testing.T) {
+	up := newUpstream(t, true)
+	f := newFixture(t, up, bundle(false, "allow"), nil)
+	for i, h := range []http.Header{
+		{"Content-Type": {"application/json"}, "X-Ms-Blob-Type": {"BlockBlob"}},
+		{"Content-Type": {"text/plain"}, "Content-Disposition": {`attachment; filename="q3.txt"`}},
+		{"Content-Type": {"application/x-www-form-urlencoded"}, "X-Goog-Upload-Command": {"upload, finalize"}},
+	} {
+		req, err := http.NewRequest(http.MethodPut, up.srv.URL+"/files/x", strings.NewReader(`{"TOPSECRET": 1}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = h
+		resp, err := f.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("case %d: %d", i, resp.StatusCode)
+		}
+	}
+	evs := f.sink.events()
+	if len(evs) != 3 || evs[1].File.Name == nil || *evs[1].File.Name != "q3.txt" {
+		t.Errorf("events %+v", evs)
+	}
+	noSpillLeft(t, f.spill)
+}
+
+func TestCarriesFile(t *testing.T) {
+	for _, c := range []struct {
+		target, ct string
+		h          map[string]string
+		want       bool
+	}{
+		{"https://chatgpt.com/backend-api/conversation", "application/json", nil, false},
+		{"https://chatgpt.com/ces/v1/t", "text/plain;charset=UTF-8", nil, false},
+		{"https://x.test/upload", "application/octet-stream", nil, true},
+		{"https://x.test/upload", "application/pdf", nil, true},
+		{"https://x.test/upload", "image/png", nil, true},
+		{"https://x.test/upload", "", nil, true},
+		{"https://x.test/upload", "not a type;;", nil, true},
+		{"https://bucket.s3.amazonaws.com/k?X-Amz-Signature=abc", "application/json", nil, true},
+		{"https://x.test/files", "application/json", map[string]string{"Tus-Resumable": "1.0.0"}, true},
+		{"https://x.test/files", "application/json", map[string]string{"Content-Disposition": "inline"}, false},
+	} {
+		r := httptest.NewRequest(http.MethodPost, c.target, strings.NewReader("x"))
+		if c.ct != "" {
+			r.Header.Set("Content-Type", c.ct)
+		}
+		for k, v := range c.h {
+			r.Header.Set(k, v)
+		}
+		if got := CarriesFile(r); got != c.want {
+			t.Errorf("%s %q %v: %v, want %v", c.target, c.ct, c.h, got, c.want)
+		}
 	}
 }
 

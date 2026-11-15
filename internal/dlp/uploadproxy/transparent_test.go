@@ -55,7 +55,7 @@ func (f *transparentFixture) do(t *testing.T, sni string, roots *x509.CertPool, 
 		t.Fatalf("TLS to the transparent listener: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	_, _ = fmt.Fprintf(conn, "%s /upload HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+	_, _ = fmt.Fprintf(conn, "%s /upload HTTP/1.1\r\nHost: %s\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		method, sni, len(body), body)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
