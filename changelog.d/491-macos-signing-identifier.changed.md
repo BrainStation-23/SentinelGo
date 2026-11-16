@@ -1,0 +1,1 @@
+- macOS: code-signed agent binaries now use the identifier `com.brainstation-23.sentinelgo`, the App ID registered with Apple, instead of `com.sentinelgo.agent` (#491). No release has been signed yet, so nothing on devices changes. The launchd label and the managed-preferences domain stay `com.sentinelgo.agent`.
