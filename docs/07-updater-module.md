@@ -75,27 +75,36 @@ Notes:
 
 ## Health check and rollback (#503)
 
-The backup stays until the new binary proves it works.
+An upgrade keeps the backup until the new binary proves it works. A
+server-approved downgrade (#505) isn't watched: it goes to an earlier release,
+which may predate this check and could never confirm itself.
 
 - **Marker.** `update_marker.json` (next to `config.json`, mode 0600) holds
-  `from_version`, `to_version`, the binary and backup paths, the deadline
-  (10 minutes), the boot attempts and when the new binary was last alive.
+  `from_version`, `to_version`, the binary, backup and health-file paths, the
+  deadline (10 minutes) and `give_up_at` (24 hours). The old binary writes it
+  once; afterwards it is only deleted, so the agent and the watchdog never
+  write the same file. Versions are compared as semver (`2.1.6` = `v2.1.6`).
 - **Watchdog.** Before restarting, the old binary copies itself to
   `sentinelgo-update-watchdog[.exe]` and starts it with
   `update-watchdog --marker <path>` so it survives the restart: as a
   transient systemd unit (`systemd-run`) on Linux, because systemd kills the
   agent's whole cgroup; in its own session on macOS, outside the process
   group launchd kills; detached (breaking away from a job when allowed) on
-  Windows. It logs to `update_watchdog.log` next to the marker. If it can't
-  start, the update still goes ahead, without automatic rollback.
+  Windows. It holds `update_watchdog.lock` (one watchdog per marker) and logs
+  to `update_watchdog.log`.
 - **New binary.** `StartHealthCheck` (first step of `MainIntegration.Start`)
-  counts each start in the marker and refreshes `alive_at` every 30 s. Once
-  the agent has signed in and an agent-info upload succeeded,
-  `ConfirmHealthy` (from the `agent-info-update` task) deletes the marker,
-  the backup and the watchdog copy; the watchdog then exits.
+  records each start (`attempts`, `booted_at`) in `update_health.json` and
+  refreshes `alive_at` every 30 s. When no watchdog holds the lock, for example
+  after a reboot, it starts one. Once the agent has signed in and an
+  agent-info upload succeeded, `ConfirmHealthy` (from the `agent-info-update`
+  task) deletes the marker, the health file, the backup and the watchdog copy,
+  and the watchdog exits. If deleting the marker fails, the 30 s ticker
+  retries it.
 - **Rollback.** The watchdog restores the backup when the new binary started
-  more than 3 times, or the deadline passed. On Linux and macOS it replaces
-  the file in place and restarts the service (`systemctl restart sentinelgo`,
+  more than 3 times, or when the deadline passed. The deadline is the
+  marker's, or 10 minutes after the latest start if that is later. On Linux
+  and macOS it replaces the file in place and restarts the service
+  (`systemctl restart sentinelgo`,
   `launchctl kickstart -k system/com.sentinelgo.agent`, after re-registering
   with Gatekeeper). On Windows it stops the service with `sc stop`, waits for
   the binary to unlock, then runs `sc start`. It writes
@@ -104,10 +113,13 @@ The backup stays until the new binary proves it works.
   until the server offers another one. The watchdog only restores
   `<exe>.backup` over `<exe>`, whatever the marker says.
 - **Offline.** If the deadline passes while the new binary is alive but the
-  watchdog can't reach the server either, the deadline moves on by 10 minutes,
-  for up to 24 hours. A marker older than that is stale and is removed.
+  watchdog can't reach the server either, the watchdog waits another
+  10 minutes (in memory), for up to 24 hours. A marker older than that is
+  stale and is removed.
 - **Never installed.** If the binary still matches the backup (e.g. the
   Windows swap didn't run), the watchdog just cleans up and records nothing.
+- **No stacking.** While an update waits for its health check, the agent
+  doesn't start another one.
 
 ## Release discovery
 

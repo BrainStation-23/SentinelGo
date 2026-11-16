@@ -2,24 +2,26 @@ package updater
 
 // Update health check and rollback (#503).
 //
-// A self-update keeps <exe>.backup until the new binary proves it works:
+// An upgrade keeps <exe>.backup until the new binary proves it works:
 //
 //  1. Before restarting, the old binary writes an update marker next to the
-//     config (from/to version, backup path, deadline, boot attempts) and
-//     starts a detached watchdog: a copy of itself running
-//     `sentinelgo update-watchdog --marker <path>`, outside the service so
-//     it survives the restart.
-//  2. Each start of the new binary counts a boot attempt in the marker and
-//     keeps marking itself alive while it runs.
+//     config (from/to version, paths, deadline) and starts a detached
+//     watchdog: a copy of itself running `sentinelgo update-watchdog --marker
+//     <path>`, outside the service so it survives the restart. The marker is
+//     written once and only ever deleted after that.
+//  2. Each start of the new binary records a boot attempt and its start time
+//     in its own health file, and marks itself alive while it runs. If no
+//     watchdog holds the watchdog lock (the device rebooted), it starts one.
 //  3. The new binary is healthy once it is signed in and its first
-//     agent-info RPC succeeded (ConfirmHealthy). It then deletes the marker
-//     and the backup, and the watchdog exits.
-//  4. If the deadline passes, or the binary has started more than
-//     MaxAttempts times, the watchdog puts the backup back, restarts the
-//     service and records the version as bad, so the update checks skip it
-//     until the server offers another version. A new binary that is running
-//     but can't reach the server while the watchdog can't either is given
-//     more time (the network, not the release, is down), up to GiveUpAt.
+//     agent-info RPC succeeded (ConfirmHealthy). It then deletes the marker,
+//     its health file and the backup, and the watchdog exits.
+//  4. If the binary started more than MaxAttempts times, or the deadline
+//     (the marker's, or HealthWindow after the latest start) passes, the
+//     watchdog puts the backup back, restarts the service and records the
+//     version as bad, so the update checks skip it until the server offers
+//     another version. A new binary that is running but can't reach the
+//     server while the watchdog can't either is given more time (the network,
+//     not the release, is down), up to GiveUpAt.
 
 import (
 	"bytes"
@@ -38,14 +40,17 @@ import (
 	"time"
 
 	"sentinelgo/internal/config"
+	"sentinelgo/internal/lockfile"
 	"sentinelgo/internal/sanitize"
 )
 
 // File names, next to config.json.
 const (
 	markerFileName   = "update_marker.json"
+	healthFileName   = "update_health.json"
 	rollbackFileName = "update_rollback.json"
-	watchdogLogName  = "update_watchdog.log"
+	watchdogLockName = "update_watchdog.lock"
+	WatchdogLogName  = "update_watchdog.log"
 )
 
 // Health check timing. HealthWindow covers a restart, sign-in, the startup
@@ -61,21 +66,30 @@ const (
 	watchdogReadErrMax = 60 // consecutive unreadable marker polls before giving up
 )
 
-// Marker is the update in progress, shared by the agent and the watchdog.
+// Marker is the update in progress. The old binary writes it once; the new
+// binary (healthy) or the watchdog (rollback) deletes it.
 type Marker struct {
 	FromVersion  string    `json:"from_version"`
 	ToVersion    string    `json:"to_version"`
 	ExePath      string    `json:"exe_path"`
 	BackupPath   string    `json:"backup_path"`
 	WatchdogPath string    `json:"watchdog_path,omitempty"`
+	HealthPath   string    `json:"health_path"`
 	RecordPath   string    `json:"rollback_record_path"`
 	ProbeURL     string    `json:"probe_url,omitempty"`
 	Created      time.Time `json:"created"`
 	Deadline     time.Time `json:"deadline"`
 	GiveUpAt     time.Time `json:"give_up_at"`
-	Attempts     int       `json:"attempts"`
 	MaxAttempts  int       `json:"max_attempts"`
-	AliveAt      time.Time `json:"alive_at,omitzero"`
+}
+
+// HealthState is written only by the new binary, so the agent and the
+// watchdog never write the same file.
+type HealthState struct {
+	Version  string    `json:"version"`
+	Attempts int       `json:"attempts"`
+	BootedAt time.Time `json:"booted_at"`
+	AliveAt  time.Time `json:"alive_at"`
 }
 
 // RollbackRecord is the version the watchdog rolled back from. The update
@@ -88,10 +102,11 @@ type RollbackRecord struct {
 	Logged          bool      `json:"logged"`
 }
 
-// healthMu serialises this process's marker writes (boot count, alive ticks,
-// confirmation).
+// This process's side of the health check. healthy: ConfirmHealthy saw the
+// agent work; confirmed: the marker is gone, nothing left to do.
 var (
 	healthMu  sync.Mutex
+	healthy   bool
 	confirmed bool
 )
 
@@ -110,6 +125,11 @@ func healthDir(cfg *config.Config) string {
 func markerPathFor(cfg *config.Config) string { return filepath.Join(healthDir(cfg), markerFileName) }
 func recordPathFor(cfg *config.Config) string { return filepath.Join(healthDir(cfg), rollbackFileName) }
 
+// watchdogLockPath is the lock a running watchdog holds, next to its marker.
+func watchdogLockPath(markerPath string) string {
+	return filepath.Join(filepath.Dir(markerPath), watchdogLockName)
+}
+
 // watchdogPathFor is the watchdog copy of the old binary, next to it. A
 // separate copy because on Windows a running .exe can't be deleted, and the
 // healthy new binary deletes the backup.
@@ -121,16 +141,23 @@ func watchdogPathFor(exe string) string {
 	return filepath.Join(filepath.Dir(exe), name)
 }
 
-// writeJSONAtomic writes v to path through a temp file and a rename, so a
-// reader never sees a half-written file.
+// writeJSONAtomic writes v to path through a temp file of its own and a
+// rename, so a reader never sees a half-written file.
 func writeJSONAtomic(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		return errors.Join(werr, cerr)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
@@ -139,30 +166,25 @@ func writeJSONAtomic(path string, v any) error {
 	return nil
 }
 
+func readJSON(path string, v any) error {
+	b, err := os.ReadFile(path) // #nosec G304 -- fixed names in the agent's config dir
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
 // ReadMarker reads the marker at path; fs.ErrNotExist means no update is
 // pending.
 func ReadMarker(path string) (*Marker, error) {
-	b, err := os.ReadFile(path) // #nosec G304 -- fixed name in the agent's config dir
-	if err != nil {
-		return nil, err
-	}
 	var m Marker
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, fmt.Errorf("update marker: %w", err)
+	if err := readJSON(path, &m); err != nil {
+		return nil, err
 	}
 	return &m, nil
-}
-
-func readRollbackRecord(path string) (*RollbackRecord, error) {
-	b, err := os.ReadFile(path) // #nosec G304 -- fixed name in the agent's config dir
-	if err != nil {
-		return nil, err
-	}
-	var r RollbackRecord
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, fmt.Errorf("rollback record: %w", err)
-	}
-	return &r, nil
 }
 
 // validate rejects a marker that would copy anything but <exe>.backup over
@@ -175,22 +197,23 @@ func (m *Marker) validate() error {
 		return fmt.Errorf("update marker: backup_path %q is not %q", m.BackupPath, m.ExePath+".backup")
 	case m.RecordPath == "" || !filepath.IsAbs(m.RecordPath):
 		return fmt.Errorf("update marker: rollback_record_path %q is not absolute", m.RecordPath)
+	case m.HealthPath == "" || !filepath.IsAbs(m.HealthPath):
+		return fmt.Errorf("update marker: health_path %q is not absolute", m.HealthPath)
 	}
 	return nil
 }
 
-// beginHealthWatch writes the marker and the watchdog copy for an update from
-// running to latest. On error nothing is left behind.
+// beginHealthWatch writes the marker and the watchdog copy for an upgrade
+// from running to `to`. On error nothing is left behind.
 func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now time.Time) (*Marker, string, error) {
 	exe, err := executablePath()
 	if err != nil {
 		return nil, "", err
 	}
-	exe, err = filepath.Abs(exe)
-	if err != nil {
+	if exe, err = filepath.Abs(exe); err != nil {
 		return nil, "", err
 	}
-	recordPath, err := filepath.Abs(recordPathFor(cfg))
+	dir, err := filepath.Abs(healthDir(cfg))
 	if err != nil {
 		return nil, "", err
 	}
@@ -198,7 +221,8 @@ func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now ti
 		FromVersion: running, ToVersion: to,
 		ExePath: exe, BackupPath: backupPath,
 		WatchdogPath: watchdogPathFor(exe),
-		RecordPath:   recordPath,
+		HealthPath:   filepath.Join(dir, healthFileName),
+		RecordPath:   filepath.Join(dir, rollbackFileName),
 		Created:      now.UTC(), Deadline: now.Add(HealthWindow).UTC(), GiveUpAt: now.Add(maxOfflineWait).UTC(),
 		MaxAttempts: MaxBootAttempts,
 	}
@@ -214,7 +238,8 @@ func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now ti
 	}
 	// #nosec G302 -- the watchdog is an executable copy of the agent
 	_ = os.Chmod(m.WatchdogPath, 0o755)
-	markerPath := markerPathFor(cfg)
+	_ = os.Remove(m.HealthPath) // from an earlier update
+	markerPath := filepath.Join(dir, markerFileName)
 	if err := writeJSONAtomic(markerPath, m); err != nil {
 		_ = os.Remove(m.WatchdogPath)
 		return nil, "", fmt.Errorf("write the update marker: %w", err)
@@ -246,6 +271,7 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 	if now.After(m.GiveUpAt) {
 		log.Printf("Updater: removing a stale update marker (%s -> %s)", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
 		_ = os.Remove(path)
+		_ = os.Remove(m.HealthPath)
 		return nil, false
 	}
 	return m, true
@@ -253,25 +279,24 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 
 // rolledBackVersion is the version this device rolled back from, or "".
 func rolledBackVersion(cfg *config.Config) string {
-	r, err := readRollbackRecord(recordPathFor(cfg))
-	if err != nil {
+	var r RollbackRecord
+	if readJSON(recordPathFor(cfg), &r) != nil {
 		return ""
 	}
 	return r.BadVersion
 }
 
-// StartHealthCheck runs at agent startup. It logs a rollback the watchdog
-// did (once), and when this binary is an update still waiting for its health
-// check, counts the boot attempt and keeps marking it alive until
-// ConfirmHealthy or ctx ends.
+// StartHealthCheck runs at agent startup. It logs a rollback the watchdog did
+// (once). When this binary is an upgrade still waiting for its health check,
+// it records the start, makes sure a watchdog runs (none survives a reboot),
+// and keeps marking itself alive, and retrying a failed confirmation, until
+// the check is done or ctx ends.
 func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 	logRollback(cfg)
 
-	healthMu.Lock()
 	path := markerPathFor(cfg)
 	m, err := ReadMarker(path)
-	if err != nil || m.ToVersion != config.Version {
-		healthMu.Unlock()
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// No update pending: remove a watchdog copy left behind
 			// (Windows can't delete it while it still runs).
@@ -281,14 +306,26 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 		}
 		return
 	}
-	m.Attempts++
-	m.AliveAt = time.Now().UTC()
-	if err := writeJSONAtomic(path, m); err != nil {
-		log.Printf("Updater: can't record boot attempt in the update marker: %v", err)
+	if !sameVersion(m.ToVersion, config.Version) {
+		return // the old binary: the watchdog handles it
 	}
-	log.Printf("Updater: running %s after an update from %s (start %d of %d); waiting for sign-in and the first agent-info upload before %s",
-		sanitize.ForLog(m.ToVersion), sanitize.ForLog(m.FromVersion), m.Attempts, m.MaxAttempts, m.Deadline.Format(time.RFC3339))
+
+	healthMu.Lock()
+	var h HealthState
+	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, config.Version) {
+		h = HealthState{Version: config.Version}
+	}
+	now := time.Now().UTC()
+	h.Attempts++
+	h.BootedAt, h.AliveAt = now, now
+	if err := writeJSONAtomic(m.HealthPath, h); err != nil {
+		log.Printf("Updater: can't record this start for the update health check: %v", err)
+	}
 	healthMu.Unlock()
+	log.Printf("Updater: running %s after an update from %s (start %d of %d); waiting for sign-in and the first agent-info upload",
+		sanitize.ForLog(m.ToVersion), sanitize.ForLog(m.FromVersion), h.Attempts, m.MaxAttempts)
+
+	ensureWatchdog(m, path)
 
 	go func() {
 		t := time.NewTicker(aliveInterval)
@@ -298,7 +335,7 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if !touchAlive(path) {
+				if !healthTick(m) {
 					return
 				}
 			}
@@ -306,61 +343,89 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 	}()
 }
 
-// touchAlive refreshes AliveAt; false once there is nothing left to watch.
-func touchAlive(path string) bool {
+// ensureWatchdog starts a watchdog unless one holds the watchdog lock.
+func ensureWatchdog(m *Marker, markerPath string) {
+	lock := lockfile.NewLockFileWithPath(watchdogLockPath(markerPath))
+	if err := lock.TryAcquire(); err != nil {
+		return // one is running (or the lock can't be taken: don't start a second)
+	}
+	_ = lock.Release()
+	if err := spawnWatchdogFn(m, markerPath); err != nil {
+		log.Printf("Updater: can't start the update watchdog: %v", err)
+		return
+	}
+	log.Printf("Updater: started the update watchdog (none was running)")
+}
+
+// healthTick marks the binary alive, or finishes a confirmation that failed
+// earlier; false once there is nothing left to do.
+func healthTick(m *Marker) bool {
 	healthMu.Lock()
 	defer healthMu.Unlock()
 	if confirmed {
 		return false
 	}
-	m, err := ReadMarker(path)
-	if err != nil || m.ToVersion != config.Version {
-		return !errors.Is(err, fs.ErrNotExist) && err != nil
+	if healthy {
+		return !finishConfirm(m)
 	}
-	m.AliveAt = time.Now().UTC()
-	if err := writeJSONAtomic(path, m); err != nil {
-		log.Printf("Updater: can't refresh the update marker: %v", err)
+	var h HealthState
+	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, config.Version) {
+		h = HealthState{Version: config.Version, Attempts: 1, BootedAt: time.Now().UTC()}
+	}
+	h.AliveAt = time.Now().UTC()
+	if err := writeJSONAtomic(m.HealthPath, h); err != nil {
+		log.Printf("Updater: can't refresh the update health file: %v", err)
 	}
 	return true
 }
 
 // ConfirmHealthy is called after the agent signed in and an agent-info RPC
-// succeeded. If this binary is an update waiting for that, it deletes the
-// marker and the backup, so the watchdog exits without rolling back.
+// succeeded. If this binary is an upgrade waiting for that, it deletes the
+// marker, its health file and the backup, so the watchdog exits without
+// rolling back. A failed deletion is retried from the alive ticker.
 func ConfirmHealthy(cfg *config.Config) {
 	healthMu.Lock()
 	defer healthMu.Unlock()
 	if confirmed {
 		return
 	}
-	path := markerPathFor(cfg)
-	m, err := ReadMarker(path)
+	m, err := ReadMarker(markerPathFor(cfg))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			confirmed = true
 		}
 		return
 	}
-	if m.ToVersion != config.Version {
+	if !sameVersion(m.ToVersion, config.Version) {
 		return
+	}
+	healthy = true
+	finishConfirm(m)
+}
+
+// finishConfirm deletes the update's files; true once the marker is gone.
+// Called with healthMu held.
+func finishConfirm(m *Marker) bool {
+	markerPath := filepath.Join(filepath.Dir(m.HealthPath), markerFileName)
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("Updater: can't remove the update marker (will retry): %v", err)
+		return false
 	}
 	confirmed = true
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		log.Printf("Updater: can't remove the update marker: %v", err)
-		return
-	}
+	_ = os.Remove(m.HealthPath)
 	if m.validate() == nil {
 		_ = os.Remove(m.BackupPath)
 	}
 	_ = os.Remove(m.WatchdogPath) // fails on Windows while it still runs; removed at the next start
 	log.Printf("Updater: update %s -> %s is healthy; backup removed", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+	return true
 }
 
 // logRollback logs a rollback once, so it shows in the uploaded agent log.
 func logRollback(cfg *config.Config) {
 	path := recordPathFor(cfg)
-	r, err := readRollbackRecord(path)
-	if err != nil || r.Logged {
+	var r RollbackRecord
+	if readJSON(path, &r) != nil || r.Logged {
 		return
 	}
 	log.Printf("Updater: UPDATE ROLLED BACK at %s: %s -> %s (%s). %s is skipped until the server offers another version.",
@@ -399,16 +464,23 @@ func defaultWatchdogDeps() watchdogDeps {
 // healthy (the marker is gone) or rolls it back. It returns a process exit
 // code.
 func RunWatchdog(markerPath string) int {
+	lock := lockfile.NewLockFileWithPath(watchdogLockPath(markerPath))
+	if err := lock.TryAcquire(); err != nil {
+		log.Printf("Update watchdog: another watchdog is running (%v); exiting", err)
+		return 0
+	}
+	defer func() { _ = lock.Release() }()
 	return runWatchdog(markerPath, defaultWatchdogDeps())
 }
 
 func runWatchdog(markerPath string, d watchdogDeps) int {
 	log.Printf("Update watchdog: watching %s", markerPath)
 	readErrs := 0
+	var extendedUntil time.Time // offline extensions, kept here: the marker isn't rewritten
 	for {
 		m, err := ReadMarker(markerPath)
 		if errors.Is(err, fs.ErrNotExist) {
-			log.Printf("Update watchdog: update confirmed healthy; exiting")
+			log.Printf("Update watchdog: no update pending (confirmed healthy); exiting")
 			return 0
 		}
 		if err != nil {
@@ -425,19 +497,27 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 			log.Printf("Update watchdog: %v; not acting on it", err)
 			return 1
 		}
+		var h HealthState
+		if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, m.ToVersion) {
+			h = HealthState{}
+		}
 		now := d.now()
+		deadline := m.Deadline
+		if !h.BootedAt.IsZero() && h.BootedAt.Add(HealthWindow).After(deadline) {
+			deadline = h.BootedAt.Add(HealthWindow) // a fresh window per start (e.g. after a reboot)
+		}
+		if extendedUntil.After(deadline) {
+			deadline = extendedUntil
+		}
 		reason := ""
 		switch {
-		case m.MaxAttempts > 0 && m.Attempts > m.MaxAttempts:
-			reason = fmt.Sprintf("started %d times without becoming healthy", m.Attempts)
-		case now.After(m.Deadline):
-			alive := !m.AliveAt.IsZero() && now.Sub(m.AliveAt) < aliveFresh
+		case m.MaxAttempts > 0 && h.Attempts > m.MaxAttempts:
+			reason = fmt.Sprintf("started %d times without becoming healthy", h.Attempts)
+		case now.After(deadline):
+			alive := !h.AliveAt.IsZero() && now.Sub(h.AliveAt) < aliveFresh
 			if alive && now.Before(m.GiveUpAt) && m.ProbeURL != "" && !d.networkUp(m.ProbeURL) {
 				log.Printf("Update watchdog: %s is running but the server is unreachable from here too; waiting longer", sanitize.ForLog(m.ToVersion))
-				m.Deadline = now.Add(HealthWindow).UTC()
-				if err := writeJSONAtomic(markerPath, m); err != nil {
-					log.Printf("Update watchdog: can't extend the deadline: %v", err)
-				}
+				extendedUntil = now.Add(HealthWindow)
 				d.sleep(watchdogPoll)
 				continue
 			}
@@ -463,6 +543,7 @@ func rollBack(markerPath string, m *Marker, reason string, d watchdogDeps) int {
 		// nothing to roll back, and the version isn't known to be bad.
 		log.Printf("Update watchdog: %s was never installed; cleaning up", sanitize.ForLog(m.ToVersion))
 		_ = os.Remove(markerPath)
+		_ = os.Remove(m.HealthPath)
 		_ = os.Remove(m.BackupPath)
 		return 0
 	}
@@ -485,6 +566,7 @@ func rollBack(markerPath string, m *Marker, reason string, d watchdogDeps) int {
 		log.Printf("Update watchdog: can't write the rollback record: %v", err)
 	}
 	_ = os.Remove(markerPath)
+	_ = os.Remove(m.HealthPath)
 	_ = os.Remove(m.BackupPath)
 	if err := d.restart(); err != nil {
 		log.Printf("Update watchdog: restarting the service failed: %v", err)

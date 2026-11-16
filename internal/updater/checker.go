@@ -167,18 +167,26 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
 
-	// The backup stays until the new binary proves healthy; a watchdog
-	// restores it otherwise (#503).
-	marker, markerPath, err := beginHealthWatch(cfg, running, latest.Version, backupPath, time.Now())
-	if err != nil {
-		_ = removeFile(newPath)
-		_ = removeFile(backupPath)
-		return fmt.Errorf("refusing to update without a health check: %w", err)
+	// For an upgrade the backup stays until the new binary proves healthy; a
+	// watchdog restores it otherwise (#503). A server-approved downgrade goes
+	// to an earlier release, which may predate the health check and could
+	// never confirm itself, so it isn't watched.
+	var marker *Marker
+	var markerPath string
+	if action == actionUpgrade {
+		marker, markerPath, err = beginHealthWatch(cfg, running, latest.Version, backupPath, time.Now())
+		if err != nil {
+			_ = removeFile(newPath)
+			_ = removeFile(backupPath)
+			return fmt.Errorf("refusing to update without a health check: %w", err)
+		}
 	}
 
 	if runtime.GOOS != "windows" {
 		if err := atomicReplace(newPath); err != nil {
-			endHealthWatch(marker, markerPath)
+			if marker != nil {
+				endHealthWatch(marker, markerPath)
+			}
 			if rbErr := rollbackFromBackup(backupPath); rbErr != nil {
 				return fmt.Errorf("atomic replace failed (%v) and rollback failed: %w", err, rbErr)
 			}
@@ -187,8 +195,13 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
+	if marker == nil {
+		fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
+		_ = removeFile(backupPath)
+		return restartFn(newPath)
+	}
 	if err := spawnWatchdogFn(marker, markerPath); err != nil {
-		log.Printf("Updater: warning - the update watchdog didn't start, so a broken %s won't be rolled back automatically: %v",
+		log.Printf("Updater: warning - the update watchdog didn't start; %s starts one at its first start: %v",
 			sanitize.ForLog(latest.Version), err)
 	}
 

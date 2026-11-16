@@ -29,7 +29,7 @@ func RunUpdateWatchdog(args []string, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "update-watchdog: --marker must be an absolute path")
 		return 2
 	}
-	logPath := filepath.Join(filepath.Dir(*marker), "update_watchdog.log")
+	logPath := filepath.Join(filepath.Dir(*marker), updater.WatchdogLogName)
 	// #nosec G302 G304 -- fixed name next to the marker in the agent's config dir
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 		defer func() { _ = f.Close() }()
