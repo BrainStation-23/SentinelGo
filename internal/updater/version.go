@@ -71,19 +71,53 @@ func cmpInt(a, b int) int {
 	}
 }
 
-// isNewerVersion reports whether candidate is a strictly newer release than
-// current. Both must be valid semantic versions; an error is returned when
-// either cannot be parsed (e.g. a "dev" build), in which case the caller should
-// skip the update rather than apply an unverifiable change. This blocks
-// downgrade attacks: an older or equal tag never triggers an update.
-func isNewerVersion(candidate, current string) (bool, error) {
+// compareVersions returns candidate.compare(current). Both must be valid
+// semantic versions; an error is returned when either cannot be parsed (e.g.
+// a "dev" build), in which case the caller should skip the update rather than
+// apply an unverifiable change.
+func compareVersions(candidate, current string) (int, error) {
 	c, err := parseSemver(candidate)
 	if err != nil {
-		return false, fmt.Errorf("candidate version: %w", err)
+		return 0, fmt.Errorf("candidate version: %w", err)
 	}
 	cur, err := parseSemver(current)
 	if err != nil {
-		return false, fmt.Errorf("current version: %w", err)
+		return 0, fmt.Errorf("current version: %w", err)
 	}
-	return c.compare(cur) > 0, nil
+	return c.compare(cur), nil
+}
+
+// isNewerVersion reports whether candidate is a strictly newer release than
+// current (see compareVersions for errors).
+func isNewerVersion(candidate, current string) (bool, error) {
+	c, err := compareVersions(candidate, current)
+	return c > 0, err
+}
+
+// updateAction is what CheckAndApply does with the server's latest release.
+type updateAction int
+
+const (
+	actionNone      updateAction = iota // equal, or older without approval
+	actionUpgrade                       // strictly newer
+	actionDowngrade                     // older, and the server set allow_downgrade
+)
+
+// decideUpdate picks the action for a release. Downgrades happen only when
+// the server explicitly asks (allow_downgrade, set during an admin-initiated,
+// audited rollback); otherwise an older or equal tag never triggers an
+// update, which blocks downgrade attacks. Either way the release must still
+// pass the SHA-256 and ed25519 signature checks.
+func decideUpdate(candidate, current string, allowDowngrade bool) (updateAction, error) {
+	c, err := compareVersions(candidate, current)
+	switch {
+	case err != nil:
+		return actionNone, err
+	case c > 0:
+		return actionUpgrade, nil
+	case c < 0 && allowDowngrade:
+		return actionDowngrade, nil
+	default:
+		return actionNone, nil
+	}
 }

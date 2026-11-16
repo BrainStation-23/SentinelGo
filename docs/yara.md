@@ -15,9 +15,15 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    every 15 minutes. Rule sources are downloaded from Storage, rejected unless
    their size and SHA-256 match the bundle, and compiled in a sandboxed scan
    worker. The last good rules stay in force through any failure and are
-   cached in `yara/` next to `config.json`, so scans work offline. Rules using
-   modules the engine doesn't support (`import "pe"`) are skipped one by one
-   and listed in the status; the rest of the ruleset still runs.
+   cached in `yara/` next to `config.json`, so scans work offline. The engine
+   has the `pe`, `hash`, `math`, `string` and `time` modules. Rules using
+   another module (`import "elf"`, `import "dotnet"`) are skipped one by one
+   and listed in the status; the rest of the ruleset still runs. For rulesets
+   that import `pe`, a Windows executable up to 64 MiB is read into memory and
+   scanned whole, so fields at the end of the file (`pe.signatures`,
+   `pe.calculate_checksum()`, resources, version info) are defined. Larger
+   executables are streamed, and those fields stay undefined, so rules that
+   test them don't match.
 2. **When.** Each schedule in the bundle runs every `every_hours`, at an
    offset within `jitter_minutes` derived from the agent id and schedule id:
    the same on every restart, different on every device, so a fleet doesn't

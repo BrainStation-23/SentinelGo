@@ -1,11 +1,11 @@
 module sentinelgo
 
-go 1.26.0
+go 1.27.0
 
-toolchain go1.26.11
+toolchain go1.27.4
 
 require (
-	github.com/cawalch/go-yara v0.9.0
+	github.com/cawalch/go-yara v0.10.0
 	github.com/ebitengine/purego v0.11.3
 	github.com/hoophq/alcatraz v0.23.0
 	github.com/rrethy/ahocorasick v1.0.0
@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/cawalch/go-pe v0.0.0-20261115152824-c75b66411b12 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect

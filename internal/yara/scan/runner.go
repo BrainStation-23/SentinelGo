@@ -757,8 +757,10 @@ func (r *Runner) skipCache() *walk.Cache {
 	return r.cache
 }
 
-// rulesKey identifies the ruleset set a scan uses (id and revision of each),
-// for the skip cache and checkpoints.
+// rulesKey identifies the ruleset set a scan uses (id and revision of each)
+// and the engine version, for the skip cache and checkpoints. A new engine
+// can compile rules the old one skipped (go-yara 0.10 added pe), so files
+// found clean by the old engine are scanned again.
 func rulesKey(a *ruleset.Active, ids []string) string {
 	rs := a.Bundle.RulesetsFor(ids)
 	parts := make([]string, 0, len(rs))
@@ -766,5 +768,5 @@ func rulesKey(a *ruleset.Active, ids []string) string {
 		parts = append(parts, fmt.Sprintf("%s@%d", strings.ToLower(r.ID), r.Revision))
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, ",")
+	return engine.Name + "@" + engine.EngineVersion() + ";" + strings.Join(parts, ",")
 }

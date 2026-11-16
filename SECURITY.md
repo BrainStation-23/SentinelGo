@@ -103,7 +103,7 @@ SentinelGo **does not protect against**:
 - Release binaries are cross-compiled with `CGO_ENABLED=0` (fully static, no C runtime dependency) and are reproducible; see [`RELEASE.md`](RELEASE.md).
 - Every release binary and installer is signed with Ed25519 (`scripts/sign`), listed in `SHA256SUMS`, and has a GitHub build-provenance attestation.
 - The updater (`internal/updater/`) asks the backend for the latest release through the `get_latest_agent_release` RPC and downloads the binary and its `.sig` from Supabase Storage. It installs the update only if:
-  - the version is strictly newer than the running one (no downgrades),
+  - the version is strictly newer than the running one, or older and the release row has `allow_downgrade` set (the backend sets it only during an audited, admin-initiated rollback); equal versions never install,
   - the SHA-256 matches the release manifest, and
   - the Ed25519 signature verifies against the public key compiled into the agent (`internal/updater/pubkey.go`). A missing or invalid signature is a hard failure.
 - The current binary is backed up first, the new one replaces it atomically, and a failed replace rolls back to the backup.

@@ -46,7 +46,7 @@ func TestSequentialPollingThenExecution(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done
+		t.Logf("TaskManager stopped late: %v", <-done)
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -201,7 +201,7 @@ func TestTaskManagerWithRealDatabaseOperations(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done
+		t.Logf("TaskManager stopped late: %v", <-done)
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -248,7 +248,7 @@ func TestTaskManagerErrorRecovery(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done
+		t.Logf("TaskManager stopped late: %v", <-done)
 		t.Error("TaskManager did not stop within expected time")
 	}
 
@@ -289,7 +289,7 @@ func TestTaskManagerMultipleCycles(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done
+		t.Logf("TaskManager stopped late: %v", <-done)
 		t.Error("TaskManager did not stop within expected time")
 	}
 

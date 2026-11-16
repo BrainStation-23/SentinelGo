@@ -45,7 +45,7 @@ By participating you agree to uphold it.
 
 **Prerequisites**
 
-- Go 1.26+
+- Go 1.27+
 - `make` (GNU Make)
 - Git
 

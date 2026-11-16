@@ -133,14 +133,17 @@ var externalNames = []string{"filename", "filepath", "extension", "filetype"}
 // failing), and the standard externals are declared at the end, unless the
 // source declares them itself. Blanking keeps every byte offset and line
 // number, so go-yara's positions stay those of the original source.
-func prepare(src string, supported map[string]bool) (string, error) {
+// imported holds the supported modules the source imports.
+func prepare(src string, supported map[string]bool) (out string, imported map[string]bool, err error) {
 	tl := scanTopLevel(src)
 	if tl.include {
-		return "", errInclude
+		return "", nil, errInclude
 	}
 	b := []byte(src)
+	imported = map[string]bool{}
 	for _, imp := range tl.imports {
 		if supported[imp.name] {
+			imported[imp.name] = true
 			continue
 		}
 		for i := imp.start; i < imp.end; i++ {
@@ -157,7 +160,7 @@ func prepare(src string, supported map[string]bool) (string, error) {
 		}
 	}
 	if decl.Len() == 0 {
-		return string(b), nil
+		return string(b), imported, nil
 	}
-	return string(b) + "\n" + decl.String() + "\n", nil
+	return string(b) + "\n" + decl.String() + "\n", imported, nil
 }

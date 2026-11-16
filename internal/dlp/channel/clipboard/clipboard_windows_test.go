@@ -110,7 +110,8 @@ func TestWindowsClipboard_BlocksLive(t *testing.T) {
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("Run: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run didn't return after cancel")
 	}
@@ -138,6 +139,8 @@ func TestWindowsClipboard_RestartAndManyCopies(t *testing.T) {
 			writeClip(t, "plain text "+string(rune('a'+i%26)), false)
 		}
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Logf("Run: %v", err)
+		}
 	}
 }
