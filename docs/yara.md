@@ -95,6 +95,17 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    resumed scan reports the whole run. On-write windows send the same fields.
    The status's `last_scan` and the inventory keep the counts and reasons but
    not the scope or problem files.
+9. **Scan progress** (contract v1.2, #498). When the bundle has
+   `scan_progress: {interval_seconds}` (the server adds it for agents that
+   report `yara_scan_report_v1` and accept the event), a running scheduled
+   or on-demand scan queues a `scan_progress` event at most once per
+   interval (2 minutes by default, never more than once a minute):
+   `{scan_id, trigger, preset, files_scanned, files_skipped, errors,
+   matches, root_index, roots_total, elapsed_seconds}`, no paths.
+   `root_index` counts folders from 0. The queue keeps only a scan's latest
+   progress until it is uploaded, and its `scan_summary` drops it. On-write
+   windows don't send progress, and neither does an agent whose bundle has
+   no `scan_progress`, so older servers never receive the kind.
 
 ## On-write scanning
 

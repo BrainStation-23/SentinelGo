@@ -11,6 +11,10 @@ import (
 const (
 	KindMatch       = "match"
 	KindScanSummary = "scan_summary"
+	// KindScanProgress is contract v1.2 (#498): sent only when the bundle
+	// has scan_progress, which the server adds for agents that report
+	// yara_scan_report_v1 and accept the kind.
+	KindScanProgress = "scan_progress"
 )
 
 // ErrInvalidEvent is returned by Validate. The server rejects a whole batch
@@ -44,39 +48,80 @@ type Match struct {
 	DetectedAt time.Time `json:"detected_at"`
 }
 
-// Event is one entry of agent_enqueue_yara_events: exactly one of Match and
-// Summary is set.
+// Event is one entry of agent_enqueue_yara_events: exactly one of Match,
+// Summary and Progress is set.
 type Event struct {
-	EventID string
-	Match   *Match
-	Summary *ScanSummary
+	EventID  string
+	Match    *Match
+	Summary  *ScanSummary
+	Progress *ScanProgress
+}
+
+// ScanProgress is a running scan's counts so far (contract v1.2, #498). It
+// carries no paths. Scheduled and on-demand scans only.
+type ScanProgress struct {
+	ScanID         string `json:"scan_id"`
+	Trigger        string `json:"trigger"`
+	Preset         string `json:"preset,omitempty"`
+	FilesScanned   int64  `json:"files_scanned"`
+	FilesSkipped   int64  `json:"files_skipped"`
+	Errors         int64  `json:"errors"`
+	Matches        int64  `json:"matches"`
+	RootIndex      int    `json:"root_index"` // the folder being scanned, from 0
+	RootsTotal     int    `json:"roots_total"`
+	ElapsedSeconds int64  `json:"elapsed_seconds"`
+}
+
+var errOneBody = fmt.Errorf("%w: exactly one of match, summary and progress must be set", ErrInvalidEvent)
+
+// bodies counts the bodies set.
+func (e Event) bodies() int {
+	n := 0
+	for _, set := range []bool{e.Match != nil, e.Summary != nil, e.Progress != nil} {
+		if set {
+			n++
+		}
+	}
+	return n
 }
 
 // Kind returns the event's kind.
 func (e Event) Kind() string {
-	if e.Match != nil {
+	switch {
+	case e.Match != nil:
 		return KindMatch
+	case e.Progress != nil:
+		return KindScanProgress
 	}
 	return KindScanSummary
 }
 
 // MarshalJSON writes the flat §3 shape: event_id, kind and the body's fields.
 func (e Event) MarshalJSON() ([]byte, error) {
-	switch {
-	case e.Match != nil && e.Summary == nil:
-		return json.Marshal(struct {
-			EventID string `json:"event_id"`
-			Kind    string `json:"kind"`
-			*Match
-		}{e.EventID, KindMatch, e.Match})
-	case e.Summary != nil && e.Match == nil:
-		return json.Marshal(struct {
-			EventID string `json:"event_id"`
-			Kind    string `json:"kind"`
-			*ScanSummary
-		}{e.EventID, KindScanSummary, e.Summary})
+	if e.bodies() != 1 {
+		return nil, errOneBody
 	}
-	return nil, fmt.Errorf("%w: exactly one of match and summary must be set", ErrInvalidEvent)
+	type head struct {
+		EventID string `json:"event_id"`
+		Kind    string `json:"kind"`
+	}
+	h := head{e.EventID, e.Kind()}
+	switch {
+	case e.Match != nil:
+		return json.Marshal(struct {
+			head
+			*Match
+		}{h, e.Match})
+	case e.Progress != nil:
+		return json.Marshal(struct {
+			head
+			*ScanProgress
+		}{h, e.Progress})
+	}
+	return json.Marshal(struct {
+		head
+		*ScanSummary
+	}{h, e.Summary})
 }
 
 // UnmarshalJSON reads the flat §3 shape (the on-disk queue stores events
@@ -97,6 +142,9 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	case KindScanSummary:
 		e.Summary = &ScanSummary{}
 		return json.Unmarshal(data, e.Summary)
+	case KindScanProgress:
+		e.Progress = &ScanProgress{}
+		return json.Unmarshal(data, e.Progress)
 	}
 	return fmt.Errorf("%w: unknown kind %q", ErrInvalidEvent, head.Kind)
 }
@@ -109,12 +157,30 @@ func (e Event) Validate() error {
 		return fmt.Errorf("%w: event_id is not a UUID", ErrInvalidEvent)
 	}
 	switch {
-	case e.Match != nil && e.Summary == nil:
+	case e.bodies() != 1:
+		return errOneBody
+	case e.Match != nil:
 		return e.Match.Validate()
-	case e.Summary != nil && e.Match == nil:
-		return e.Summary.Validate()
+	case e.Progress != nil:
+		return e.Progress.Validate()
 	}
-	return fmt.Errorf("%w: exactly one of match and summary must be set", ErrInvalidEvent)
+	return e.Summary.Validate()
+}
+
+// Validate checks a progress event like the server's _yara_valid_progress.
+func (p *ScanProgress) Validate() error {
+	switch {
+	case !IsUUID(p.ScanID):
+		return fmt.Errorf("%w: progress scan_id is not a UUID", ErrInvalidEvent)
+	case p.Trigger != TriggerScheduled && p.Trigger != TriggerOnDemand:
+		return fmt.Errorf("%w: progress for trigger %q", ErrInvalidEvent, p.Trigger)
+	case p.Preset != "" && !ValidPreset(p.Preset):
+		return fmt.Errorf("%w: unknown preset %q", ErrInvalidEvent, p.Preset)
+	case p.FilesScanned < 0 || p.FilesSkipped < 0 || p.Errors < 0 || p.Matches < 0 ||
+		p.RootIndex < 0 || p.RootsTotal < 0 || p.ElapsedSeconds < 0:
+		return fmt.Errorf("%w: negative progress count", ErrInvalidEvent)
+	}
+	return nil
 }
 
 // Validate checks a match against §3 and the server's limits.
