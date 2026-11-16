@@ -126,8 +126,9 @@ later through the same secrets.
 
 If `MACOS_CODESIGN_P12` is set, the sign job runs on a macOS runner and
 [`scripts/macos-codesign.sh`](scripts/macos-codesign.sh) signs both macOS
-binaries. It uses the identifier `com.sentinelgo.agent` and the hardened
-runtime, and logs each binary's designated requirement. If it isn't set, the
+binaries. It uses the identifier `com.brainstation-23.sentinelgo` (our App ID
+in the Apple Developer account, #491) and the hardened runtime, and logs each
+binary's designated requirement. If it isn't set, the
 job runs on Linux, the release logs a warning, and the macOS binaries ship
 unsigned. Either way the release goes out.
 
