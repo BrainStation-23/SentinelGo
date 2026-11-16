@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"sentinelgo/internal/yara"
 	"sentinelgo/internal/yara/walk"
@@ -143,5 +144,38 @@ func TestEndReason(t *testing.T) {
 		if got := endReason(c.err, c.cause, th); got != c.want {
 			t.Errorf("endReason(%v, %v) = %q, want %q", c.err, c.cause, got, c.want)
 		}
+	}
+}
+
+// An on-write window reports its throttle pauses and, for a file too large
+// to scan, its size.
+func TestReport_OnWriteWindow(t *testing.T) {
+	dir := files(t, "good.txt")
+	big := filepath.Join(dir, "big.iso")
+	if err := os.WriteFile(big, make([]byte, 2<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := newOWRig(t, onWriteBundle(dir), &fakeScanner{}, OnWriteOptions{})
+	g.guard.pause = 3 * time.Second
+	g.ow.Apply(g.active)
+	t0 := g.now
+	g.watch.changed(filepath.Join(dir, "good.txt"))
+	g.watch.changed(big)
+	g.drain(t, t0.Add(4*time.Second))
+	waitFor(t, "window counted", func() bool {
+		st := g.ow.Status()
+		return st != nil && st.Window != nil && st.Window.Scanned == 1 && st.Window.Skipped == 1
+	})
+	g.ow.windowDue(g.now.Add(DefaultOnWriteWindow))
+	sums := g.q.summaries()
+	if len(sums) != 1 {
+		t.Fatalf("%d summaries", len(sums))
+	}
+	s := sums[0]
+	if s.ThrottledSeconds != 3 || s.SkippedByReason[walk.SkipTooLarge] != 1 {
+		t.Fatalf("summary %+v", s)
+	}
+	if len(s.ProblemFiles) != 1 || s.ProblemFiles[0].Size != 2<<20 {
+		t.Fatalf("problem files %+v", s.ProblemFiles)
 	}
 }

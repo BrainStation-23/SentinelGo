@@ -136,3 +136,44 @@ func TestSetScope(t *testing.T) {
 		t.Fatalf("hashed scope %+v", hs)
 	}
 }
+
+// A checkpoint saved in full path mode, resumed in hashed mode, sends no
+// plain path.
+func TestCoverage_RestoreAppliesHashedMode(t *testing.T) {
+	full := testScan(yara.TriggerScheduled, fullMode, nil)
+	full.Problem("/home/a/secret.pdf", yara.ErrLocked, "busy", 0, true)
+	h := testScan(yara.TriggerScheduled, yara.Evidence{PathMode: yara.PathModeHashed}, nil)
+	h.Restore(time.Time{}, full.Progress())
+	p := h.SummaryBody(yara.ScanCompleted, 0, 0, 1).ProblemFiles
+	if len(p) != 1 || p[0].Path != nil || p[0].PathHash == nil || *p[0].PathHash != HashPath("/home/a/secret.pdf") || p[0].FileExt != "pdf" {
+		t.Fatalf("restored problem %+v", p)
+	}
+}
+
+// A scope too big for the summary is cut to its budget, and the summary,
+// with rule counts cut near the boundary, stays within 32 KB.
+func TestSummary_LargeScopeFits(t *testing.T) {
+	excl := make([]string, yara.MaxScopeExclusions)
+	for i := range excl {
+		excl[i] = fmt.Sprintf("/data/%03d/%s", i, strings.Repeat("x", 180))
+	}
+	s := testScan(yara.TriggerOnDemand, fullMode, nil)
+	s.SetScope([]string{"/data"}, excl, yara.Limits{}, nil)
+	for i := range yara.MaxRuleCounts {
+		if _, err := s.Matches(result("/f", hit(fmt.Sprintf("rule%03d", i)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := s.SummaryBody(yara.ScanCompleted, 1, 0, 0)
+	data, _ := json.Marshal(sum)
+	sc, _ := json.Marshal(sum.Scope)
+	if len(data) > yara.MaxSummaryBytes || len(sc) > scopeBudget || len(sum.Scope.Exclusions) == 0 || len(sum.Scope.Roots) != 1 {
+		t.Fatalf("summary %d bytes, scope %d bytes, %d exclusions", len(data), len(sc), len(sum.Scope.Exclusions))
+	}
+	if !sum.RuleCountsTruncated || len(sum.RuleCounts) == 0 {
+		t.Fatalf("rule counts %d, truncated %v", len(sum.RuleCounts), sum.RuleCountsTruncated)
+	}
+	if err := sum.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

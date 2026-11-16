@@ -375,7 +375,7 @@ func (ow *OnWrite) scan(path string) {
 		})
 		return
 	}
-	if err := cfg.guard.Wait(ctx); err != nil {
+	if err := ow.wait(ctx, cfg); err != nil {
 		return
 	}
 	out, err := ow.r.scanOne(ctx, prioOnWrite, cfg.active.Rules, f, cfg.ids, cfg.timeout)
@@ -424,6 +424,27 @@ func (ow *OnWrite) scan(path string) {
 	if o.Cache != nil {
 		o.Cache.Store(f.Key, cfg.rulesKey, result)
 	}
+}
+
+// throttledGuard is a guard that reports the time it paused (walk.Throttle).
+type throttledGuard interface{ Throttled() time.Duration }
+
+// wait waits for cfg's guard and adds the time it paused to the current
+// window's throttled_seconds. The guard outlives windows, so only the
+// pause of this wait is added.
+func (ow *OnWrite) wait(ctx context.Context, cfg *owConfig) error {
+	tg, _ := cfg.guard.(throttledGuard)
+	var before time.Duration
+	if tg != nil {
+		before = tg.Throttled()
+	}
+	err := cfg.guard.Wait(ctx)
+	if tg != nil {
+		if d := tg.Throttled() - before; d > 0 {
+			ow.count(cfg, func(w *owWindow) { w.rep.AddThrottled(d) })
+		}
+	}
+	return err
 }
 
 // count updates the current window, opening one for cfg's bundle if needed.

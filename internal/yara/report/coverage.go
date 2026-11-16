@@ -99,6 +99,11 @@ func (s *Scan) restoreProblem(p yara.ProblemFile, isErr bool) {
 	if len(c.Problems) >= yara.MaxProblemFiles {
 		return
 	}
+	// The checkpoint may come from a scan in full path mode: the evidence
+	// mode of this scan applies.
+	if p.Path != nil {
+		p.Path, p.PathHash, p.FileExt = s.pathEvidence(*p.Path)
+	}
 	if isErr {
 		c.Problems = append(c.Problems, yara.ProblemFile{})
 		copy(c.Problems[c.ProblemErrors+1:], c.Problems[c.ProblemErrors:])
@@ -141,14 +146,27 @@ func (s *Scan) SetScope(roots, exclusions []string, l yara.Limits, rulesets []ya
 			sc.Rulesets = append(sc.Rulesets, yara.ScopeRuleset{ID: strings.ToLower(r.ID), Revision: max(r.Revision, 0)})
 		}
 	}
-	// Exclusions go first if the scope is too big, then roots.
-	for len(scopeJSON(sc)) > yara.MaxScopeBytes && len(sc.Exclusions) > 0 {
-		sc.Exclusions = sc.Exclusions[:len(sc.Exclusions)/2]
-	}
-	for len(scopeJSON(sc)) > yara.MaxScopeBytes && len(sc.Roots) > 0 {
-		sc.Roots = sc.Roots[:len(sc.Roots)/2]
-	}
+	trimScope(sc, scopeBudget)
 	s.scope = sc
+}
+
+// scopeBudget is the scope's share of the 32 KB summary (the server takes
+// up to 64 KB, but the whole summary must stay within 32 KB).
+const scopeBudget = 16 << 10
+
+// trimScope cuts exclusions, then roots, until the scope's JSON is within
+// budget bytes.
+func trimScope(sc *yara.Scope, budget int) {
+	excl := sc.Exclusions
+	sc.Exclusions = excl[:longestFit(len(excl), func(n int) bool {
+		sc.Exclusions = excl[:n]
+		return len(scopeJSON(sc)) <= budget
+	})]
+	roots := sc.Roots
+	sc.Roots = roots[:longestFit(len(roots), func(n int) bool {
+		sc.Roots = roots[:n]
+		return len(scopeJSON(sc)) <= budget
+	})]
 }
 
 func (s *Scan) scopePaths(paths []string, maxN int) []string {
@@ -218,11 +236,17 @@ func fitSummary(sum *yara.ScanSummary) {
 		return
 	}
 	counts := sum.RuleCounts
+	sum.RuleCountsTruncated = true // measured with the flag set
 	sum.RuleCounts = counts[:longestFit(len(counts), func(n int) bool {
 		sum.RuleCounts = counts[:n]
 		return summarySize(sum) <= yara.MaxSummaryBytes
 	})]
-	sum.RuleCountsTruncated = true
+	if over := summarySize(sum) - yara.MaxSummaryBytes; over > 0 && sum.Scope != nil {
+		// Only the scope is left to cut (its own budget should prevent it).
+		sc := *sum.Scope
+		trimScope(&sc, max(len(scopeJSON(&sc))-over, 0))
+		sum.Scope = &sc
+	}
 }
 
 func summarySize(sum *yara.ScanSummary) int {
