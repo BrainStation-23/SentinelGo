@@ -95,10 +95,10 @@ func TestMatchCarriesNoBytes(t *testing.T) {
 }
 
 func TestPartialCompileSkipsUnsupportedModule(t *testing.T) {
-	src := `import "pe"
+	src := `import "elf"
 import "hash"
-rule needs_pe { condition: pe.number_of_sections > 1 }
-rule uses_needs_pe { condition: needs_pe }
+rule needs_elf { condition: elf.number_of_sections > 1 }
+rule uses_needs_elf { condition: needs_elf }
 rule bad_syntax { condition: ( }
 rule bad_semantic { condition: $nope }
 rule hashed { condition: hash.md5(0, filesize) == "x" }
@@ -108,10 +108,10 @@ rule hashed { condition: hash.md5(0, filesize) == "x" }
 		t.Errorf("rules = %d, want 2 (hashed, eicar_test)", p.RuleCount())
 	}
 	want := map[string]yara.SkippedRule{
-		"needs_pe":      {Rule: "needs_pe", Line: 3, Reason: "unsupported_module:pe"},
-		"uses_needs_pe": {Rule: "uses_needs_pe", Reason: "unsupported_module:pe"},
-		"bad_syntax":    {Rule: "bad_syntax", Reason: ReasonSyntax}, // line: where the parser recovered
-		"bad_semantic":  {Rule: "bad_semantic", Line: 6, Reason: ReasonSemantic},
+		"needs_elf":      {Rule: "needs_elf", Line: 3, Reason: "unsupported_module:elf"},
+		"uses_needs_elf": {Rule: "uses_needs_elf", Reason: "unsupported_module:elf"},
+		"bad_syntax":     {Rule: "bad_syntax", Reason: ReasonSyntax}, // line: where the parser recovered
+		"bad_semantic":   {Rule: "bad_semantic", Line: 6, Reason: ReasonSemantic},
 	}
 	if len(skipped) != len(want) {
 		t.Fatalf("skipped = %+v", skipped)

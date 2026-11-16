@@ -188,7 +188,7 @@ Full reference: [`docs/agent-commands-guide.md`](docs/agent-commands-guide.md)
 <summary><b>🔨 Build from source</b></summary>
 <br/>
 
-Requires Go 1.26 or newer. Every build is a `CGO_ENABLED=0` static binary, and all platforms cross-compile from a single machine.
+Requires Go 1.27 or newer. Every build is a `CGO_ENABLED=0` static binary, and all platforms cross-compile from a single machine.
 
 ```bash
 make build                 # dev build -> bin/sentinelgo[.exe]

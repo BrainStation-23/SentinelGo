@@ -212,7 +212,9 @@ func (c winChannel) Run(ctx context.Context, p *policy.Compiled, sink channel.Ev
 	select {
 	case <-ctx.Done():
 		_, _, _ = procPostMessageW.Call(hwnd, wmClose, 0, 0)
-		<-errc
+		if err := <-errc; err != nil {
+			log.Printf("DLP helper: clipboard window closed with %v", err)
+		}
 		return ctx.Err()
 	case err := <-errc:
 		return err

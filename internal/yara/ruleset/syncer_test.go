@@ -160,7 +160,7 @@ func TestSync_UnchangedThenChanged(t *testing.T) {
 	if h.s.Active() != nil || len(h.changes) != 0 || h.s.Status().State != yara.StateDisabled {
 		t.Fatalf("nothing published: active %+v status %+v", h.s.Active(), h.s.Status())
 	}
-	h.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}, rs{rsB, 3, []byte("import \"pe\"\nrule p { condition: pe.is_dll() }\n" + string(ruleSource("b")))}))
+	h.publish(makeBundle("v1", true, rs{rsA, 1, ruleSource("a")}, rs{rsB, 3, []byte("import \"elf\"\nrule e { condition: elf.type == elf.ET_EXEC }\n" + string(ruleSource("b")))}))
 	if err := h.s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestSync_UnchangedThenChanged(t *testing.T) {
 	}
 	st := h.s.Status()
 	if st.State != yara.StateOK || st.AppliedVersion != "v1" || len(st.Rulesets) != 2 ||
-		st.Rulesets[1].CompiledRules != 1 || st.Rulesets[1].SkippedRules[0].Reason != "unsupported_module:pe" {
+		st.Rulesets[1].CompiledRules != 1 || st.Rulesets[1].SkippedRules[0].Reason != "unsupported_module:elf" {
 		t.Fatalf("status %+v", st)
 	}
 	// The next poll sends the applied version, and nothing is reapplied.

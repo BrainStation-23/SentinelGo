@@ -70,7 +70,7 @@ func TestTaskManagerSequentialWorkflow(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done // wait for goroutine to exit before deferred Close() runs
+		t.Logf("TaskManager stopped late: %v", <-done) // wait for goroutine to exit before deferred Close() runs
 		t.Error("TaskManager did not stop within expected time")
 	}
 }
@@ -140,7 +140,7 @@ func TestTaskManagerDisabledPolling(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done // wait for goroutine to exit before deferred Close() runs
+		t.Logf("TaskManager stopped late: %v", <-done) // wait for goroutine to exit before deferred Close() runs
 		t.Error("TaskManager did not stop within expected time")
 	}
 }

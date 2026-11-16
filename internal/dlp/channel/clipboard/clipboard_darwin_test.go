@@ -66,7 +66,9 @@ func TestDarwinClipboard_BlocksLive(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Logf("Run: %v", err)
+	}
 }
 
 type recSinkDarwin struct{ n int }
