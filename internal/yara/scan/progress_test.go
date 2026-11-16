@@ -51,13 +51,20 @@ func TestProgress_SentPerInterval(t *testing.T) {
 	}
 }
 
+// Without the bundle's scan_progress block nothing is sent, even once a
+// default interval has passed while the scan runs: disabled, not just not due.
 func TestProgress_NotWithoutBundleBlock(t *testing.T) {
-	dir := files(t, "a.txt")
-	g := newRig(t, bundle(), &fakeScanner{})
-	g.advance(time.Hour)
+	dir := files(t, "a.txt", "b.txt")
+	sc := &fakeScanner{gate: make(chan struct{}), entered: make(chan struct{}, 10)}
+	g := newRig(t, bundle(), sc)
 	if _, err := g.r.StartOnDemand(yara.TaskParams{Preset: yara.PresetCustom, Paths: []string{dir}}); err != nil {
 		t.Fatal(err)
 	}
+	<-sc.entered // a.txt
+	g.advance(time.Hour)
+	sc.gate <- struct{}{}
+	<-sc.entered // b.txt: an hour of the scan has passed
+	sc.gate <- struct{}{}
 	g.waitEnd(t)
 	if n := len(g.q.progress()); n != 0 {
 		t.Fatalf("%d progress events from a server that doesn't take them", n)

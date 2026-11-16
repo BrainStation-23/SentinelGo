@@ -1,10 +1,12 @@
 package scan
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"sentinelgo/internal/yara"
+	"sentinelgo/internal/yara/walk"
 )
 
 func owProblem(path string) func(w *owWindow) {
@@ -68,5 +70,45 @@ func TestOnWrite_WindowBoundToBundle(t *testing.T) {
 	g.ow.count(oldCfg, owProblem(filepath.Join(dir, "old-3.txt")))
 	if st := g.ow.Status(); st != nil && st.Window != nil {
 		t.Errorf("a stale scan reopened a window: %+v", st.Window)
+	}
+}
+
+// A scan that began under the old bundle and found a match is dropped when
+// it finishes after the bundle changed; it must not be cached as clean (or
+// at all), or later scans would skip the file and never report the match.
+func TestOnWrite_StaleMatchNotCached(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.txt")
+	if err := os.WriteFile(bad, []byte("x "+marker+" x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sc := &fakeScanner{gate: make(chan struct{}), entered: make(chan struct{}, 10)}
+	full := onWriteBundle(dir)
+	g := newOWRig(t, full, sc, OnWriteOptions{})
+	g.ow.Apply(full)
+	oldCfg := g.cfg()
+
+	done := make(chan struct{})
+	go func() { defer close(done); g.ow.scan(bad) }()
+	<-sc.entered // the old bundle's scan holds the file
+
+	newer := onWriteBundle(dir)
+	newer.Bundle.Version = "v2"
+	newCfg := g.ow.config(newer)
+	g.ow.mu.Lock()
+	g.ow.cfg = newCfg
+	g.ow.mu.Unlock()
+	sc.gate <- struct{}{}
+	<-done
+
+	if m := g.q.matches(); len(m) != 0 {
+		t.Fatalf("stale scan queued %d matches", len(m))
+	}
+	f, _, err := walk.Stat(oldCfg.walk, bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, ok := g.ow.r.skipCache().Lookup(f.Key, oldCfg.rulesKey); ok {
+		t.Errorf("dropped stale result cached as %v: later scans would skip the match", res)
 	}
 }
