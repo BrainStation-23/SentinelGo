@@ -37,6 +37,7 @@ type updateFixture struct {
 	newBinary  []byte
 	restarted  []string // newPath values passed to restartFn
 	restartErr error
+	release    LatestRelease // what the fake RPC returns; tests may change it
 }
 
 // newUpdateFixture wires config.Version, PublicKey, executablePath and
@@ -68,13 +69,13 @@ func newUpdateFixture(t *testing.T, manifestSHA string) (*updateFixture, *config
 		manifestSHA = hex.EncodeToString(sum[:])
 	}
 	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, f.newBinary))
-	release := LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, SHA256: manifestSHA}
+	f.release = LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, SHA256: manifestSHA}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case rpcPath:
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]LatestRelease{release})
+			_ = json.NewEncoder(w).Encode([]LatestRelease{f.release})
 		case "/storage/v1/object/agent-releases/" + releaseAsset:
 			_, _ = w.Write(f.newBinary)
 		case "/storage/v1/object/agent-releases/" + releaseAsset + ".sig":

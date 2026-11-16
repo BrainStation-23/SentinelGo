@@ -46,7 +46,7 @@ or launchd, SYSTEM via the Windows service manager) on each managed device. It:
 |---|---|---|
 | **Network attacker** | Reads or changes traffic between device and backend | HTTPS only, TLS 1.2+, certificate verification (R2) |
 | **Unprivileged local user** | Writes files the agent reads (home directories, browser extensions, logs), names things, sets up `PATH` | Owner-only config (R3); parsers that validate input and are fuzzed; absolute paths for system binaries; values quoted before reaching a shell (R5) |
-| **Malicious update or supply-chain attacker** | Tries to get a tampered binary onto devices, or slip changes into the repository or its dependencies | Ed25519 signature and SHA-256 verified before install, downgrades refused, pinned and scanned dependencies, protected `main`, attested and reproducible builds (R4, R7) |
+| **Malicious update or supply-chain attacker** | Tries to get a tampered binary onto devices, or slip changes into the repository or its dependencies | Ed25519 signature and SHA-256 verified before install, downgrades refused unless the backend approves an audited rollback (only to an older signed release), pinned and scanned dependencies, protected `main`, attested and reproducible builds (R4, R7) |
 | **Rogue or misconfigured backend client** | Has an agent's credentials, or tries to read another agent's data | Per-agent credentials, short-lived JWTs, Row Level Security on the backend (R1) |
 
 ### Out of scope (stated in `SECURITY.md`)
@@ -79,7 +79,7 @@ or launchd, SYSTEM via the Windows service manager) on each managed device. It:
 | **B1** device ↔ backend | Telemetry, tasks, scripts, updates | HTTPS enforced at config load (`internal/config`); Go `crypto/tls` (TLS 1.2+, verified certificates); per-agent JWT with refresh; every call goes through `internal/supabase` with typed errors and one re-auth retry; RLS on the backend |
 | **B2** local users → agent | Files, logs, extension manifests, account and adapter names read by a privileged process | Parsers validate their input and are fuzz-tested (`*_fuzz_test.go`, scheduled fuzzing); values passed to PowerShell are quoted with `shared.PSQuote`; Go is memory-safe |
 | **B3** agent → OS commands | The agent runs system tools to collect data | `internal/binpath` resolves tools to fixed absolute paths in administrator-only directories, not via `PATH`; arguments are passed as argv; timeouts on every command |
-| **B4** release pipeline → devices | New agent binaries | Ed25519 signature (key compiled in, `internal/updater/pubkey.go`) and SHA-256 must both verify; strictly newer versions only; backup and rollback on a failed replace |
+| **B4** release pipeline → devices | New agent binaries | Ed25519 signature (key compiled in, `internal/updater/pubkey.go`) and SHA-256 must both verify; strictly newer versions only, or an older signed release when the backend sets `allow_downgrade` for an admin-initiated rollback (#505); equal versions never reinstall; backup and rollback on a failed replace |
 
 ## 5. Secure-design principles
 
@@ -88,7 +88,7 @@ How the [Saltzer and Schroeder principles](https://en.wikipedia.org/wiki/Saltzer
 | Principle | How SentinelGo applies it |
 |---|---|
 | **Economy of mechanism** | One static binary, no cgo, no runtime dependencies. All backend access goes through one package (`internal/supabase`), and no third-party Supabase SDKs are used. |
-| **Fail-safe defaults** | Updates fail closed: no checksum, no signature, an older version or no backup means no update. A non-HTTPS backend URL is rejected at startup. |
+| **Fail-safe defaults** | Updates fail closed: no checksum, no signature, an older version without the backend's `allow_downgrade` approval, or no backup means no update. A rollback still needs the checksum and signature. A non-HTTPS backend URL is rejected at startup. |
 | **Complete mediation** | Every backend request carries the agent's JWT and is checked by RLS on the backend. Every update is verified, every time. |
 | **Open design** | The source, threat model and release process are public. Security rests on keys (the signing key, per-agent secrets), not on secrecy of the design. |
 | **Separation of privilege** | The release signing key exists only as a CI secret, and releases are produced only by the release workflow after all checks pass. Changes reach `main` only through pull requests that pass the required checks, with no bypass for anyone. |
