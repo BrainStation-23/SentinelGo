@@ -80,7 +80,9 @@ The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.ym
    vulnerability, in the Go toolchain or a dependency, stops the release before
    anything is signed.
 4. Code-signs the two macOS binaries if the `MACOS_CODESIGN_P12` secret is
-   set (see [macOS code signing](#macos-code-signing)). Without it they ship
+   set, and notarizes them with Apple when that's a Developer ID certificate
+   and the `APPLE_NOTARY_*` secrets are set (see
+   [macOS code signing](#macos-code-signing)). Without them the binaries ship
    unsigned, as before.
 5. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
@@ -112,17 +114,28 @@ notifications) identify it by its code signature. An ad-hoc signature changes
 with every build, so those profiles need a certificate signature that stays the
 same across releases (#352).
 
-For now the certificate comes from our own internal CA, not Apple. MDM
-installs the CA's root certificate on managed Macs. Notarization doesn't
-apply: it needs a Developer ID certificate, and Gatekeeper only checks it on
-downloads that carry the quarantine flag, which MDM installs and `curl` don't
-set. A Developer ID Application certificate can replace the internal one
-later through the same secrets.
+The certificate is either our **Developer ID Application** certificate from
+Apple (team `MG2L3YQ533`; how to get it is in #491) or one from an internal
+CA whose root MDM installs on managed Macs. Only a Developer ID signature can
+be notarized, and only it gets Apple's secure timestamp.
 
 | Secret | Value |
 |---|---|
 | `MACOS_CODESIGN_P12` | Base64 of a `.p12` holding the code-signing certificate (extended key usage `codeSigning`), its private key and the CA certificates above it |
 | `MACOS_CODESIGN_P12_PASSWORD` | The `.p12`'s password |
+| `APPLE_NOTARY_KEY_P8` | Contents of the App Store Connect API team key (`AuthKey_….p8`, access *Developer*) |
+| `APPLE_NOTARY_KEY_ID` | That key's Key ID |
+| `APPLE_NOTARY_ISSUER_ID` | The Issuer ID shown above the team keys |
+
+[`scripts/macos-notarize.sh`](scripts/macos-notarize.sh) then submits both
+binaries to Apple with `notarytool` and waits up to 30 minutes. A bare binary
+can't be stapled, so Gatekeeper looks the ticket up online by the binary's
+code hash. Notarizing doesn't change the files. If Apple rejects them, the
+script prints Apple's log and the release stops. If Apple doesn't answer in
+time, the release goes out signed with a warning, and the same binaries can be
+notarized afterwards (`xcrun notarytool submit` on the released files).
+Without the `APPLE_NOTARY_*` secrets, or with an internal CA certificate,
+notarization is skipped.
 
 If `MACOS_CODESIGN_P12` is set, the sign job runs on a macOS runner and
 [`scripts/macos-codesign.sh`](scripts/macos-codesign.sh) signs both macOS
