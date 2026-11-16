@@ -121,3 +121,14 @@ func decideUpdate(candidate, current string, allowDowngrade bool) (updateAction,
 		return actionNone, nil
 	}
 }
+
+// sameVersion reports whether a and b name the same release; unparseable
+// versions compare as strings.
+func sameVersion(a, b string) bool {
+	x, errA := parseSemver(a)
+	y, errB := parseSemver(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return x.compare(y) == 0
+}

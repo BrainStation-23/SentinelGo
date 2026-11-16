@@ -85,8 +85,8 @@ func TestCheckAndApply_Downgrade(t *testing.T) {
 			if got := len(f.restarted) == 1; got != tc.wantRestart {
 				t.Fatalf("restarted = %v, want restart %v", f.restarted, tc.wantRestart)
 			}
-			assertNotExist(t, f.self+".backup", "backup")
 			if !tc.wantRestart {
+				assertNotExist(t, f.self+".backup", "backup")
 				if got := mustReadFile(t, f.self); !bytes.Equal(got, f.oldBinary) {
 					t.Errorf("self must be untouched, got %q", got)
 				}

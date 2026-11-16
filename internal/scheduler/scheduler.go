@@ -775,6 +775,9 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 	if sendErr != nil {
 		return sendErr
 	}
+	// Signed in and an inventory RPC succeeded: a fresh self-update is
+	// healthy, so its backup can go (#503).
+	updater.ConfirmHealthy(cfg)
 
 	powerWindow.Commit(powerMark)
 	agentInfoMu.Lock()

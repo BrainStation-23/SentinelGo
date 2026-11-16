@@ -17,6 +17,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == cli.DLPSessionCommand {
 		os.Exit(cli.RunDLPSession())
 	}
+	// The update watchdog (#503): started detached by a self-update from a copy
+	// of the old binary; restores it if the new one isn't healthy in time.
+	if len(os.Args) > 1 && os.Args[1] == cli.UpdateWatchdogCommand {
+		os.Exit(cli.RunUpdateWatchdog(os.Args[2:], os.Stderr))
+	}
 	// A file DLP scan worker: started by the service, sandboxed, no config.
 	if len(os.Args) > 1 && os.Args[1] == cli.DLPScanCommand {
 		os.Exit(cli.RunDLPScan())
