@@ -32,8 +32,9 @@ func RunUpdateWatchdog(args []string, stderr io.Writer) int {
 	logPath := filepath.Join(filepath.Dir(*marker), updater.WatchdogLogName)
 	// #nosec G302 G304 -- fixed name next to the marker in the agent's config dir
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-		defer func() { _ = f.Close() }()
+		prev := log.Writer()
 		log.SetOutput(f)
+		defer func() { log.SetOutput(prev); _ = f.Close() }()
 	}
 	return updater.RunWatchdog(*marker)
 }

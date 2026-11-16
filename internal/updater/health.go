@@ -236,8 +236,8 @@ func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now ti
 		_ = os.Remove(m.WatchdogPath)
 		return nil, "", fmt.Errorf("copy the watchdog: %w", err)
 	}
-	// #nosec G302 -- the watchdog is an executable copy of the agent
-	_ = os.Chmod(m.WatchdogPath, 0o755)
+	// Only the service account runs the watchdog.
+	_ = os.Chmod(m.WatchdogPath, 0o700)
 	_ = os.Remove(m.HealthPath) // from an earlier update
 	markerPath := filepath.Join(dir, markerFileName)
 	if err := writeJSONAtomic(markerPath, m); err != nil {
@@ -497,35 +497,11 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 			log.Printf("Update watchdog: %v; not acting on it", err)
 			return 1
 		}
-		var h HealthState
-		if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, m.ToVersion) {
-			h = HealthState{}
-		}
 		now := d.now()
-		deadline := m.Deadline
-		if !h.BootedAt.IsZero() && h.BootedAt.Add(HealthWindow).After(deadline) {
-			deadline = h.BootedAt.Add(HealthWindow) // a fresh window per start (e.g. after a reboot)
-		}
-		if extendedUntil.After(deadline) {
-			deadline = extendedUntil
-		}
-		reason := ""
-		switch {
-		case m.MaxAttempts > 0 && h.Attempts > m.MaxAttempts:
-			reason = fmt.Sprintf("started %d times without becoming healthy", h.Attempts)
-		case now.After(deadline):
-			alive := !h.AliveAt.IsZero() && now.Sub(h.AliveAt) < aliveFresh
-			if alive && now.Before(m.GiveUpAt) && m.ProbeURL != "" && !d.networkUp(m.ProbeURL) {
-				log.Printf("Update watchdog: %s is running but the server is unreachable from here too; waiting longer", sanitize.ForLog(m.ToVersion))
-				extendedUntil = now.Add(HealthWindow)
-				d.sleep(watchdogPoll)
-				continue
-			}
-			if alive {
-				reason = "running but not signed in with a successful agent-info upload within the health window"
-			} else {
-				reason = "not running and not healthy within the health window"
-			}
+		reason, offline := judge(m, readHealthState(m), now, extendedUntil, d.networkUp)
+		if offline {
+			log.Printf("Update watchdog: %s is running but the server is unreachable from here too; waiting longer", sanitize.ForLog(m.ToVersion))
+			extendedUntil = now.Add(HealthWindow)
 		}
 		if reason == "" {
 			d.sleep(watchdogPoll)
@@ -533,6 +509,42 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 		}
 		return rollBack(markerPath, m, reason, d)
 	}
+}
+
+// readHealthState is the new binary's health file, or zero when it is
+// missing or for another version.
+func readHealthState(m *Marker) HealthState {
+	var h HealthState
+	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, m.ToVersion) {
+		return HealthState{}
+	}
+	return h
+}
+
+// judge returns why the update must be rolled back now ("" to keep
+// waiting), and whether to wait longer because the network is down.
+func judge(m *Marker, h HealthState, now, extendedUntil time.Time, networkUp func(string) bool) (reason string, offline bool) {
+	if m.MaxAttempts > 0 && h.Attempts > m.MaxAttempts {
+		return fmt.Sprintf("started %d times without becoming healthy", h.Attempts), false
+	}
+	deadline := m.Deadline
+	if !h.BootedAt.IsZero() && h.BootedAt.Add(HealthWindow).After(deadline) {
+		deadline = h.BootedAt.Add(HealthWindow) // a fresh window per start (e.g. after a reboot)
+	}
+	if extendedUntil.After(deadline) {
+		deadline = extendedUntil
+	}
+	if !now.After(deadline) {
+		return "", false
+	}
+	alive := !h.AliveAt.IsZero() && now.Sub(h.AliveAt) < aliveFresh
+	if !alive {
+		return "not running and not healthy within the health window", false
+	}
+	if now.Before(m.GiveUpAt) && m.ProbeURL != "" && !networkUp(m.ProbeURL) {
+		return "", true
+	}
+	return "running but not signed in with a successful agent-info upload within the health window", false
 }
 
 // rollBack restores the backup, records the bad version and restarts the
@@ -605,13 +617,17 @@ func fileSHA256(path string) ([]byte, error) {
 // replaceWithBackup copies the backup over the binary through a temp file and
 // a rename (Linux, macOS: the running file can be replaced).
 func replaceWithBackup(m *Marker) error {
+	info, err := os.Stat(m.BackupPath)
+	if err != nil {
+		return err
+	}
 	tmp := m.ExePath + ".rollback"
 	if err := copyFile(m.BackupPath, tmp); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	// #nosec G302 -- the agent binary must be executable
-	if err := os.Chmod(tmp, 0o755); err != nil {
+	// The backup has the binary's original mode (createBackup copies it).
+	if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

@@ -124,14 +124,7 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return nil
 	}
 
-	if bad := rolledBackVersion(cfg); bad != "" && sameVersion(bad, latest.Version) {
-		log.Printf("Updater: skipping %s: it was rolled back on this device after failing its health check; waiting for another version",
-			sanitize.ForLog(latest.Version))
-		return nil
-	}
-	if m, pending := pendingUpdate(cfg, time.Now()); pending {
-		log.Printf("Updater: update %s -> %s is still waiting for its health check; not updating again yet",
-			sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+	if heldBack(cfg, latest.Version) {
 		return nil
 	}
 
@@ -207,6 +200,23 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 
 	fmt.Printf("Update verified and staged: %s -> %s (backup kept until it is healthy)\n", running, latest.Version)
 	return restartFn(newPath)
+}
+
+// heldBack reports whether the update health check (#503) holds this
+// version back: it was rolled back on this device, or an earlier update is
+// still waiting for its health check.
+func heldBack(cfg *config.Config, version string) bool {
+	if bad := rolledBackVersion(cfg); bad != "" && sameVersion(bad, version) {
+		log.Printf("Updater: skipping %s: it was rolled back on this device after failing its health check; waiting for another version",
+			sanitize.ForLog(version))
+		return true
+	}
+	if m, pending := pendingUpdate(cfg, time.Now()); pending {
+		log.Printf("Updater: update %s -> %s is still waiting for its health check; not updating again yet",
+			sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+		return true
+	}
+	return false
 }
 
 // CheckAndApplyWithRetry performs an update check and apply with exponential
