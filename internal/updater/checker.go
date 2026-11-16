@@ -77,8 +77,9 @@ var connectivityClient = httpx.NewClient(10 * time.Second)
 // Test seams: restart exits the process and dialTimeout reaches real hosts on
 // port 443, so tests swap these for fakes.
 var (
-	restartFn   = restart
-	dialTimeout = net.DialTimeout
+	restartFn       = restart
+	dialTimeout     = net.DialTimeout
+	spawnWatchdogFn = spawnWatchdog
 )
 
 // CheckAndApply checks for a newer release via Supabase RPC and applies the
@@ -117,6 +118,17 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return nil
 	}
 
+	if bad := rolledBackVersion(cfg); bad != "" && sameVersion(bad, latest.Version) {
+		log.Printf("Updater: skipping %s: it was rolled back on this device after failing its health check; waiting for another version",
+			sanitize.ForLog(latest.Version))
+		return nil
+	}
+	if m, pending := pendingUpdate(cfg, time.Now()); pending {
+		log.Printf("Updater: update %s -> %s is still waiting for its health check; not updating again yet",
+			sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+		return nil
+	}
+
 	if latest.SHA256 == "" {
 		return fmt.Errorf("refusing to update to %s: no SHA256 in release manifest",
 			sanitize.ForLog(latest.Version))
@@ -144,8 +156,18 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
 
+	// The backup stays until the new binary proves healthy; a watchdog
+	// restores it otherwise (#503).
+	marker, markerPath, err := beginHealthWatch(cfg, running, latest.Version, backupPath, time.Now())
+	if err != nil {
+		_ = removeFile(newPath)
+		_ = removeFile(backupPath)
+		return fmt.Errorf("refusing to update without a health check: %w", err)
+	}
+
 	if runtime.GOOS != "windows" {
 		if err := atomicReplace(newPath); err != nil {
+			endHealthWatch(marker, markerPath)
 			if rbErr := rollbackFromBackup(backupPath); rbErr != nil {
 				return fmt.Errorf("atomic replace failed (%v) and rollback failed: %w", err, rbErr)
 			}
@@ -154,9 +176,12 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
-	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
-	_ = removeFile(backupPath)
+	if err := spawnWatchdogFn(marker, markerPath); err != nil {
+		log.Printf("Updater: warning - the update watchdog didn't start, so a broken %s won't be rolled back automatically: %v",
+			sanitize.ForLog(latest.Version), err)
+	}
 
+	fmt.Printf("Update verified and staged: %s -> %s (backup kept until it is healthy)\n", running, latest.Version)
 	return restartFn(newPath)
 }
 
