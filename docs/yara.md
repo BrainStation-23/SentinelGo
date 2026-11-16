@@ -99,7 +99,7 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    `scan_progress: {interval_seconds}` (the server adds it for agents that
    report `yara_scan_report_v1` and accept the event), a running scheduled
    or on-demand scan queues a `scan_progress` event at most once per
-   interval (2 minutes by default, never more than once a minute):
+   interval (2 minutes by default, never more often than every 2 minutes):
    `{scan_id, trigger, preset, files_scanned, files_skipped, errors,
    matches, root_index, roots_total, elapsed_seconds}`, no paths.
    `root_index` counts folders from 0. The queue keeps only a scan's latest

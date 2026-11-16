@@ -38,3 +38,29 @@ func TestYARAEventStore_ProgressReplaced(t *testing.T) {
 		t.Fatalf("after the summary %+v", rows)
 	}
 }
+
+// Re-adding a progress event that is still queued (a retry) is a no-op: it
+// keeps its place, so the cap still evicts it before newer rows.
+func TestYARAEventStore_ProgressRetryKeepsOrder(t *testing.T) {
+	s, _ := newYARAStore(t)
+	s.SetLimits(2, 1<<20, 10)
+	p := yaraProgress(1, yaraSummary(0).Summary.ScanID)
+	m := yaraSummary(5)
+	m.Summary.ScanID = "c0b1c2d3-3333-4e5f-8a9b-0123456789ab" // another scan
+	for _, evs := range [][]yara.Event{{p}, {m}, {p}} {
+		if err := s.Add(evs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, _ := s.Pending(10)
+	if len(rows) != 2 || rows[0].Event.EventID != p.EventID || rows[1].Event.EventID != m.EventID {
+		t.Fatalf("after the retry %+v", rows)
+	}
+	if err := s.Add([]yara.Event{yaraSummary(6)}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.Pending(10)
+	if len(rows) != 2 || rows[0].Event.EventID != m.EventID {
+		t.Fatalf("the cap evicted the wrong row: %+v", rows)
+	}
+}

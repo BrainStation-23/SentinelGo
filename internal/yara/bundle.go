@@ -50,7 +50,7 @@ type ScanProgressConfig struct {
 // agent uses whatever the bundle says.
 const (
 	DefaultProgressInterval = 2 * time.Minute
-	MinProgressInterval     = time.Minute
+	MinProgressInterval     = 2 * time.Minute // #498: at most every 2 minutes
 )
 
 // ProgressInterval is how often a running scan sends scan_progress, or 0

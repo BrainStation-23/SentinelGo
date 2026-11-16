@@ -2,6 +2,7 @@ package filescan
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"unicode/utf8"
 )
@@ -88,6 +89,11 @@ func sniff(head []byte) sniffed {
 	if typ, ok := matchMagic(head, strongMagic); ok {
 		return sniffed{kind: kindBinary, typ: typ}
 	}
+	if hasPEHeader(head) {
+		// Before the text test: a DOS stub can look like UTF-16LE, and a
+		// PE typed as text would skip YARA's whole-file pe scan.
+		return sniffed{kind: kindBinary, typ: "executable.pe"}
+	}
 	if enc, ok := textEncoding(head); ok {
 		return sniffed{kind: kindText, typ: "text." + enc.name(), enc: enc}
 	}
@@ -95,6 +101,18 @@ func sniff(head []byte) sniffed {
 		return sniffed{kind: kindBinary, typ: typ}
 	}
 	return sniffed{kind: kindBinary, typ: "binary"}
+}
+
+// hasPEHeader reports an "MZ" file whose e_lfanew (offset 0x3c) points at
+// the "PE\0\0" signature within head: a real PE image, whatever its DOS
+// stub looks like. A bare "MZ" stays a weak match (plain ASCII text can
+// start with it).
+func hasPEHeader(head []byte) bool {
+	if len(head) < 0x40 || head[0] != 'M' || head[1] != 'Z' {
+		return false
+	}
+	off := int64(binary.LittleEndian.Uint32(head[0x3c:]))
+	return off >= 4 && off+4 <= int64(len(head)) && string(head[off:off+4]) == "PE\x00\x00"
 }
 
 // textEncoding decides whether head is text, and in which encoding. Without a

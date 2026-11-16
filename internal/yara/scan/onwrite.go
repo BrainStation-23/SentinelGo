@@ -448,9 +448,34 @@ func (ow *OnWrite) wait(ctx context.Context, cfg *owConfig) error {
 }
 
 // count updates the current window, opening one for cfg's bundle if needed.
+// A window belongs to the bundle that opened it (its rules and evidence
+// mode), so:
+//   - a scan that started with a bundle no longer in force is dropped: it
+//     must not reopen a window with the old evidence mode after Apply
+//     closed it;
+//   - a window opened by another bundle is ended first (Apply swaps the
+//     configuration before it closes the window), so a path is never added
+//     to a report with another evidence mode.
+//
+// ow.mu is taken inside winMu; nothing takes them in the other order.
 func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) {
+	var ended *owWindow
+	defer func() {
+		if ended != nil {
+			ow.finishWindow(ended)
+		}
+	}()
 	ow.winMu.Lock()
 	defer ow.winMu.Unlock()
+	ow.mu.Lock()
+	current := ow.cfg
+	ow.mu.Unlock()
+	if current == nil || current.active != cfg.active {
+		return // stale: the bundle changed while this file was scanned
+	}
+	if ow.win != nil && ow.win.active != cfg.active {
+		ended, ow.win = ow.win, nil
+	}
 	if ow.win == nil {
 		b := cfg.active.Bundle
 		ow.win = &owWindow{active: cfg.active, opened: ow.r.o.Now(),
@@ -477,9 +502,14 @@ func (ow *OnWrite) closeWindow() {
 	w := ow.win
 	ow.win = nil
 	ow.winMu.Unlock()
-	if w == nil {
-		return
+	if w != nil {
+		ow.finishWindow(w)
 	}
+}
+
+// finishWindow sends an ended window's summary; the caller has already
+// detached it from ow.win.
+func (ow *OnWrite) finishWindow(w *owWindow) {
 	if c := ow.r.skipCache(); c != nil {
 		if err := c.Save(); err != nil {
 			log.Printf("YARA: %v", err)
