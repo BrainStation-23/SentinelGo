@@ -386,9 +386,9 @@ func (s poolScanner) ScanFile(ctx context.Context, rules ruleset.Rules, f walk.F
 	fh, err := walk.Open(f)
 	switch {
 	case errors.Is(err, walk.ErrChanged), errors.Is(err, fs.ErrNotExist):
-		return scan.FileOutcome{Status: scan.Skipped}
+		return scan.FileOutcome{Status: scan.Skipped, Reason: yara.SkipChanged}
 	case err != nil:
-		return scan.FileOutcome{Status: scan.ReadError}
+		return scan.FileOutcome{Status: scan.ReadError, Reason: walk.ErrorReason(err), Detail: walk.ErrorDetail(err)}
 	}
 	defer func() { _ = fh.Close() }()
 	res := s.pool.ScanYARA(ctx, r, scanworker.YARAScan{File: fh, Size: f.Size, Path: f.Path, RulesetIDs: ids, Timeout: timeout})
@@ -396,9 +396,9 @@ func (s poolScanner) ScanFile(ctx context.Context, rules ruleset.Rules, f walk.F
 	case scanworker.YARAScanned:
 		return scan.FileOutcome{Status: scan.Scanned, SHA256: res.SHA256, Size: res.Size, Matches: res.Matches}
 	case scanworker.YARATimeout:
-		return scan.FileOutcome{Status: scan.Skipped}
+		return scan.FileOutcome{Status: scan.Skipped, Reason: yara.SkipTimeout}
 	case scanworker.YARAReadError:
-		return scan.FileOutcome{Status: scan.ReadError}
+		return scan.FileOutcome{Status: scan.ReadError, Reason: yara.ErrRead}
 	case scanworker.YARANoRules:
 		return scan.FileOutcome{Status: scan.NoRules}
 	}

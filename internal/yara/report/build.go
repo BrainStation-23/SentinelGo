@@ -75,6 +75,11 @@ type Scan struct {
 	// (rule_counts, #496); incomplete says the counts can't clear a rule.
 	rules      map[ruleKey]int64
 	incomplete bool
+
+	// The contract v1.2 report (#497).
+	cov       Coverage
+	scope     *yara.Scope
+	endReason string
 }
 
 type ruleKey struct{ rulesetID, rule string }
@@ -105,12 +110,14 @@ type Progress struct {
 	Truncated  bool             `json:"truncated,omitempty"`
 	RuleCounts []yara.RuleCount `json:"rule_counts,omitempty"`
 	Incomplete bool             `json:"rule_counts_incomplete,omitempty"`
+	Coverage   Coverage         `json:"coverage,omitzero"`
 }
 
 // Progress returns the scan's counts so far.
 func (s *Scan) Progress() Progress {
 	rc, cut := s.ruleCounts()
-	return Progress{Found: s.found, Sent: s.sent, Truncated: s.truncated, RuleCounts: rc, Incomplete: cut}
+	return Progress{Found: s.found, Sent: s.sent, Truncated: s.truncated, RuleCounts: rc, Incomplete: cut,
+		Coverage: s.coverage()}
 }
 
 // Restore continues an interrupted scan: it takes back the start time and
@@ -124,6 +131,7 @@ func (s *Scan) Restore(started time.Time, p Progress) {
 	for _, rc := range p.RuleCounts {
 		s.rules[ruleKey{rc.RulesetID, rc.Rule}] += max(rc.Files, 0)
 	}
+	s.restoreCoverage(p.Coverage)
 }
 
 // MarkIncomplete records that the rule counts can't show a rule is gone: a
@@ -257,6 +265,7 @@ func (s *Scan) SummaryBody(state string, filesScanned, filesSkipped, errs int64)
 		Matches: s.found, Truncated: s.truncated,
 	}
 	sum.RuleCounts, sum.RuleCountsTruncated = s.ruleCounts()
+	s.fill(sum)
 	return sum
 }
 

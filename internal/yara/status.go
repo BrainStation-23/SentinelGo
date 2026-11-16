@@ -76,6 +76,54 @@ type ScanSummary struct {
 	// anything: the list was cut at MaxRuleCounts, or a file that matched
 	// in an earlier scan couldn't be scanned this time.
 	RuleCountsTruncated bool `json:"rule_counts_truncated,omitempty"`
+
+	// Contract v1.2 report (#497), all optional. SkippedByReason sums to
+	// FilesSkipped and ErrorsByReason to Errors.
+	SkippedByReason map[string]int64 `json:"skipped_by_reason,omitempty"`
+	ErrorsByReason  map[string]int64 `json:"errors_by_reason,omitempty"`
+	// EndReason says why the scan stopped early; empty when it completed.
+	EndReason        string `json:"end_reason,omitempty"`
+	BytesScanned     int64  `json:"bytes_scanned,omitempty"`
+	ThrottledSeconds int64  `json:"throttled_seconds,omitempty"`
+	Scope            *Scope `json:"scope,omitempty"`
+	// ProblemFiles is a sample of the files the scan couldn't read or
+	// skipped for a reason an admin can act on (errors first).
+	ProblemFiles []ProblemFile `json:"problem_files,omitempty"`
+}
+
+// Scope is what a scan covered: folders, exclusions, limits and rulesets.
+// In hashed path mode the folders are path hashes, like match paths.
+type Scope struct {
+	Roots      []string       `json:"roots"`
+	Exclusions []string       `json:"exclusions"`
+	Limits     ScopeLimits    `json:"limits"`
+	Rulesets   []ScopeRuleset `json:"rulesets"`
+}
+
+// ScopeLimits are the bundle limits the scan ran under.
+type ScopeLimits struct {
+	MaxFileBytes     int64 `json:"max_file_bytes"`
+	PerFileTimeoutMS int   `json:"per_file_timeout_ms"`
+	MaxScanMinutes   int   `json:"max_scan_minutes"`
+	MaxFilesPerScan  int   `json:"max_files_per_scan"`
+}
+
+// ScopeRuleset is one ruleset the scan used.
+type ScopeRuleset struct {
+	ID       string `json:"id"`
+	Revision int    `json:"revision"`
+}
+
+// ProblemFile is one file (or folder) a scan couldn't scan. It follows the
+// path evidence rules of a match: in hashed mode PathHash and FileExt only.
+// Detail is the OS error text, never file content.
+type ProblemFile struct {
+	Path     *string `json:"path,omitempty"`
+	PathHash *string `json:"path_hash,omitempty"`
+	FileExt  string  `json:"file_ext,omitempty"`
+	Reason   string  `json:"reason"`
+	Detail   string  `json:"detail,omitempty"`
+	Size     int64   `json:"size,omitempty"`
 }
 
 // RuleCount is one rule a scan found and the number of files it matched.
@@ -126,14 +174,22 @@ func (s Status) capped() Status {
 		}
 		s.Rulesets[i] = r
 	}
-	if s.LastScan != nil {
-		ls := *s.LastScan
-		// The status carries the last scan's counts, not its rule list: up
-		// to 500 rules would not fit the 64 KB status.
-		ls.RuleCounts, ls.RuleCountsTruncated = nil, false
-		s.LastScan = &ls
-	}
+	s.LastScan = s.LastScan.Brief()
 	return s
+}
+
+// Brief is the summary without its lists, for the status and the
+// inventory: their counts, not up to 500 rules (they would not fit the
+// 64 KB status), and no paths (scope and problem files go with the
+// scan_summary event only).
+func (s *ScanSummary) Brief() *ScanSummary {
+	if s == nil {
+		return nil
+	}
+	b := *s
+	b.RuleCounts, b.RuleCountsTruncated = nil, false
+	b.Scope, b.ProblemFiles = nil, nil
+	return &b
 }
 
 // dropSkipped halves the longest skipped-rule list. It reports false when
@@ -175,7 +231,7 @@ type Summary struct {
 
 // SummaryOf condenses a status.
 func SummaryOf(st Status) Summary {
-	s := Summary{State: st.State, AppliedVersion: st.AppliedVersion, Rulesets: len(st.Rulesets), LastScan: st.LastScan}
+	s := Summary{State: st.State, AppliedVersion: st.AppliedVersion, Rulesets: len(st.Rulesets), LastScan: st.LastScan.Brief()}
 	for _, r := range st.Rulesets {
 		s.CompiledRules += r.CompiledRules
 		s.SkippedRules += len(r.SkippedRules)
