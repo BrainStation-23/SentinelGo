@@ -310,27 +310,57 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 		return nil, false
 	}
 	if now.After(m.GiveUpAt) {
+		_ = os.Remove(m.HealthPath)
+		if !sameVersion(m.ToVersion, config.Version) {
+			// The update isn't what runs: the watchdog rolled it back but
+			// couldn't save the record or rename the marker, or the update
+			// never stayed installed. Keep blocking that version: move the
+			// marker to the rolled-back name (freeing the slot for the next
+			// update), or leave it where it is if even that fails.
+			log.Printf("Updater: %s didn't stay installed; it stays blocked on this device", sanitize.ForLog(m.ToVersion))
+			if err := os.Rename(path, filepath.Join(filepath.Dir(path), rolledBackMarkerName)); err != nil {
+				log.Printf("Updater: keeping the update marker so %s isn't installed again: %v", sanitize.ForLog(m.ToVersion), err)
+			}
+			return nil, false
+		}
 		log.Printf("Updater: removing a stale update marker (%s -> %s)", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
 		_ = os.Remove(path)
-		_ = os.Remove(m.HealthPath)
 		return nil, false
 	}
 	return m, true
 }
 
-// rolledBackVersion is the version this device rolled back from, or "": the
-// rollback record's, else the renamed marker's when the record couldn't be
-// written.
-func rolledBackVersion(cfg *config.Config) string {
+// rolledBackVersions are the versions this device must not install again:
+// the rollback record's, the renamed marker's (a rollback whose record
+// couldn't be written), and a marker left in place past GiveUpAt whose
+// version isn't the one running. All of them count, so an older record
+// can't hide a newer failure.
+func rolledBackVersions(cfg *config.Config, now time.Time) []string {
+	var out []string
 	var r RollbackRecord
 	if readJSON(recordPathFor(cfg), &r) == nil && r.BadVersion != "" {
-		return r.BadVersion
+		out = append(out, r.BadVersion)
 	}
 	var m Marker
-	if readJSON(filepath.Join(healthDir(cfg), rolledBackMarkerName), &m) == nil {
-		return m.ToVersion
+	if readJSON(filepath.Join(healthDir(cfg), rolledBackMarkerName), &m) == nil && m.ToVersion != "" {
+		out = append(out, m.ToVersion)
 	}
-	return ""
+	var kept Marker
+	if readJSON(markerPathFor(cfg), &kept) == nil && kept.ToVersion != "" &&
+		now.After(kept.GiveUpAt) && !sameVersion(kept.ToVersion, config.Version) {
+		out = append(out, kept.ToVersion)
+	}
+	return out
+}
+
+// rolledBack reports whether version is one of rolledBackVersions.
+func rolledBack(cfg *config.Config, version string, now time.Time) bool {
+	for _, bad := range rolledBackVersions(cfg, now) {
+		if sameVersion(bad, version) {
+			return true
+		}
+	}
+	return false
 }
 
 // StartHealthCheck runs at agent startup. It logs a rollback the watchdog did
