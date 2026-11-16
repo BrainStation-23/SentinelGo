@@ -24,8 +24,8 @@ const (
 )
 
 var yaraTestRules = []yara.RuleSource{
-	{ID: rsEICAR, Revision: 2, Source: []byte(`import "pe"
-rule needs_pe { condition: pe.is_dll() }
+	{ID: rsEICAR, Revision: 2, Source: []byte(`import "elf"
+rule needs_elf { condition: elf.type == elf.ET_EXEC }
 rule eicar : test { strings: $sig = "YARA-TEST-MARKER" condition: $sig and filename == "eicar.com" }`)},
 	{ID: rsSlow, Revision: 1, Source: []byte(`rule slow { strings: $a = /(a+)+b/ condition: $a }`)},
 }
@@ -59,7 +59,7 @@ func TestYARAPool_CompileAndScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v (health %+v)", err, p.Health())
 	}
-	if len(res) != 2 || res[0].Rules != 1 || len(res[0].Skipped) != 1 || res[0].Skipped[0].Reason != "unsupported_module:pe" || res[1].Rules != 1 {
+	if len(res) != 2 || res[0].Rules != 1 || len(res[0].Skipped) != 1 || res[0].Skipped[0].Reason != "unsupported_module:elf" || res[1].Rules != 1 {
 		t.Fatalf("compiled %+v", res)
 	}
 	content := "x " + yaraEICAR
