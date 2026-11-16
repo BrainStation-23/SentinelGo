@@ -113,6 +113,9 @@ type Progress struct {
 	Coverage   Coverage         `json:"coverage,omitzero"`
 }
 
+// Found is how many matches the scan found so far, reported or not.
+func (s *Scan) Found() int64 { return s.found }
+
 // Progress returns the scan's counts so far.
 func (s *Scan) Progress() Progress {
 	rc, cut := s.ruleCounts()

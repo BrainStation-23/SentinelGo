@@ -513,8 +513,14 @@ func (r *Runner) run(ctx context.Context, j *job) {
 		Cache: cache, Rules: sp.RulesKey, Guard: guard, Resume: resumeFrom,
 		Problem: func(p walk.Problem) { rep.Problem(p.Path, p.Reason, p.Detail, p.Size, p.Error) },
 	}
+	interval := b.ProgressInterval()
+	nextProgress := j.started.Add(interval)
 	stats, err := walk.Walk(ctx, o, func(f walk.File) error {
 		j.files.Add(1)
+		if now := r.o.Now(); interval > 0 && !now.Before(nextProgress) {
+			r.sendProgress(sp, j, rep, c, f, now)
+			nextProgress = now.Add(interval)
+		}
 		return r.scanFile(ctx, sp, rep, cache, f, timeout, &c)
 	})
 	c.skipped += stats.FilesSkipped()
@@ -564,6 +570,18 @@ func (r *Runner) run(ctx context.Context, j *job) {
 	}
 	log.Printf("YARA: scan %s %s: %d files scanned, %d skipped, %d errors, %d matches%s",
 		sp.ScanID, state, c.scanned, c.skipped, c.errors, sum.Summary.Matches, why)
+}
+
+// sendProgress queues a scan_progress with the counts so far (#498). The
+// store keeps only a scan's latest one until it is uploaded.
+func (r *Runner) sendProgress(sp spec, j *job, rep *report.Scan, c counts, f walk.File, now time.Time) {
+	p := &yara.ScanProgress{ScanID: sp.ScanID, Trigger: sp.Trigger, Preset: sp.Preset,
+		FilesScanned: c.scanned, FilesSkipped: c.skipped + f.Skipped, Errors: c.errors + f.Errors,
+		Matches: rep.Found(), RootIndex: f.Root, RootsTotal: len(sp.Roots),
+		ElapsedSeconds: int64(max(now.Sub(j.started), 0) / time.Second)}
+	if err := r.o.Queue.Add([]yara.Event{{EventID: yara.NewID(), Progress: p}}); err != nil {
+		log.Printf("YARA: could not queue the progress of scan %s: %v", sp.ScanID, err)
+	}
 }
 
 // endReason says why a scan stopped early (summary end_reason), from the

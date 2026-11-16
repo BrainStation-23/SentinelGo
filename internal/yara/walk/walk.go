@@ -101,7 +101,11 @@ type File struct {
 	// an earlier scan. If it can't be scanned now, the scan can't show its
 	// rules are gone.
 	MatchedBefore bool
-	id            fileID
+	// Root is the index in Options.Roots of the root the file is under;
+	// Skipped and Errors are the walk's counts so far (scan progress, #498).
+	Root            int
+	Skipped, Errors int64
+	id              fileID
 }
 
 // Stats count what a walk did.
@@ -149,6 +153,7 @@ type walker struct {
 	resume  string // skip files up to this path in walk order ("" when passed)
 	root    int
 	lastOut string
+	skipped int64 // the sum of st.Skipped
 }
 
 // Walk lists the files under o.Roots and calls fn for each, in a stable
@@ -303,6 +308,7 @@ func (w *walker) file(ctx context.Context, p string, info fs.FileInfo) error {
 			return err
 		}
 	}
+	f.Root, f.Skipped, f.Errors = w.root, w.skipped, w.st.Errors
 	if err := w.fn(f); err != nil {
 		return err
 	}
@@ -350,6 +356,7 @@ func (w *walker) fold(p string) string {
 // it is expected (excluded, links, unchanged).
 func (w *walker) skip(p, reason string, size int64) {
 	w.st.Skipped[reason]++
+	w.skipped++
 	if w.o.Problem != nil && !expectedSkip[reason] {
 		w.o.Problem(Problem{Path: p, Reason: reason, Size: size})
 	}

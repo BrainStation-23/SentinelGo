@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 )
 
 // Errors Decode returns. The ruleset sync (#411) reports the first two as
@@ -35,6 +36,33 @@ type Bundle struct {
 	// OnWrite is contract v1.1 (#418): scan files as they are written into
 	// watched folders. nil (an older backend) means off.
 	OnWrite *OnWrite `json:"on_write,omitempty"`
+	// ScanProgress is contract v1.2 (#498): the server takes scan_progress
+	// events from this agent. nil (an older backend) means don't send them.
+	ScanProgress *ScanProgressConfig `json:"scan_progress,omitempty"`
+}
+
+// ScanProgressConfig is the bundle's scan_progress block.
+type ScanProgressConfig struct {
+	IntervalSeconds int `json:"interval_seconds"`
+}
+
+// Progress interval bounds: the server's default, and the shortest the
+// agent uses whatever the bundle says.
+const (
+	DefaultProgressInterval = 2 * time.Minute
+	MinProgressInterval     = time.Minute
+)
+
+// ProgressInterval is how often a running scan sends scan_progress, or 0
+// when the server doesn't take it.
+func (b *Bundle) ProgressInterval() time.Duration {
+	if b == nil || b.ScanProgress == nil {
+		return 0
+	}
+	if b.ScanProgress.IntervalSeconds <= 0 {
+		return DefaultProgressInterval
+	}
+	return max(time.Duration(b.ScanProgress.IntervalSeconds)*time.Second, MinProgressInterval)
 }
 
 // OnWrite configures on-write scanning (contract v1.1, #418).

@@ -91,7 +91,9 @@ func (s *YARAEventStore) SetLimits(maxRows int, maxBytes int64, maxReported int)
 	s.maxRows, s.maxBytes, s.maxReported = maxRows, maxBytes, maxReported
 }
 
-// Add queues events. An event_id already queued is ignored.
+// Add queues events. An event_id already queued is ignored. A scan's
+// scan_progress replaces its progress not uploaded yet, and its
+// scan_summary drops it (the server ignores progress for a finished scan).
 func (s *YARAEventStore) Add(evs []yara.Event) error {
 	if len(evs) == 0 {
 		return nil
@@ -107,6 +109,13 @@ func (s *YARAEventStore) Add(evs []yara.Event) error {
 		if err != nil {
 			return fmt.Errorf("encode YARA event: %w", err)
 		}
+		if id := progressScanID(ev); id != "" {
+			if _, err := tx.Exec(`DELETE FROM yara_event_queue
+				WHERE json_extract(event_json, '$.kind') = ? AND json_extract(event_json, '$.scan_id') = ?`,
+				yara.KindScanProgress, id); err != nil {
+				return fmt.Errorf("replace YARA scan progress: %w", err)
+			}
+		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO yara_event_queue (event_id, event_json, bytes, stored_at)
 			VALUES (?, ?, ?, ?)`, ev.EventID, string(data), len(data), now); err != nil {
 			return fmt.Errorf("insert YARA event: %w", err)
@@ -116,6 +125,18 @@ func (s *YARAEventStore) Add(evs []yara.Event) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// progressScanID is the scan whose queued progress ev supersedes: a
+// progress or a summary event's scan, else "".
+func progressScanID(ev yara.Event) string {
+	switch {
+	case ev.Progress != nil:
+		return ev.Progress.ScanID
+	case ev.Summary != nil:
+		return ev.Summary.ScanID
+	}
+	return ""
 }
 
 // enforceCap deletes the oldest rows while the queue is over a cap, and adds
