@@ -22,7 +22,7 @@ Package layout:
 | `checker.go` | Discover latest release, compare versions, orchestrate apply, startup check |
 | `downloader.go` | Authenticated Storage download, SHA256 + ed25519 verify |
 | `installer.go` | Backup, atomic replace, OS-specific restart |
-| `version.go` | Semver parse / strictly-newer comparison |
+| `version.go` | Semver parse / update decision (newer, or server-approved older) |
 | `pubkey.go` | Embedded ed25519 public key (matches CI `SENTINELGO_SIGNING_KEY`) |
 
 ## Triggers
@@ -43,7 +43,7 @@ Order is deliberate (verify before replace; version not persisted before restart
 
 ```
 1. fetchLatestRelease  → RPC get_latest_agent_release(p_platform, p_arch)
-2. Compare latest.Version to compiled-in config.Version (strictly newer only)
+2. Compare latest.Version to compiled-in config.Version (newer, or older with allow_downgrade)
 3. Require SHA256 in the RPC row (refuse otherwise)
 4. createBackup        → <exe>.backup
 5. downloadAndVerify   → Storage agent-releases/<asset> + <.sig>
@@ -57,8 +57,12 @@ Notes:
 - Comparison uses **`config.Version`**, not a stale `cfg.CurrentVersion`.
   On load, `config.Load` sets `CurrentVersion = Version` so reporting matches
   the binary that is actually running.
-- Downgrades and equal tags never apply. Unparseable versions (e.g. `"dev"`)
-  skip the update.
+- Equal tags never apply. An older tag applies only when the RPC row has
+  `allow_downgrade: true`, which the backend sets during an audited,
+  admin-initiated rollback; the agent logs
+  `Rolling back: vA -> vB (server-approved downgrade)`. The SHA-256 and
+  signature checks are the same. A missing field (older backend) means false.
+  Unparseable versions (e.g. `"dev"`) skip the update.
 - Fail closed: missing `.sig`, bad signature, or checksum mismatch aborts and
   cleans up the staged file / backup as appropriate.
 - On Unix replace failure, `rollbackFromBackup` restores the previous binary.
@@ -71,8 +75,8 @@ Notes:
 // Auth: Authorization Bearer <agent JWT>, apikey <anon key>
 ```
 
-`LatestRelease` fields used by the agent: `version`, `asset_path`, `sha256`
-(plus metadata such as `published_at`, `asset_name`, `size`).
+`LatestRelease` fields used by the agent: `version`, `asset_path`, `sha256`,
+`allow_downgrade` (plus metadata such as `published_at`, `asset_name`, `size`).
 
 Empty RPC result → no release configured yet; skip quietly.
 
