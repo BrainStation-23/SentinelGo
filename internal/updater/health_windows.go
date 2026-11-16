@@ -50,6 +50,10 @@ func restartService() error {
 	return nil
 }
 
+// startService starts the service; sc fails harmlessly (1056) when it is
+// already running.
+func startService() error { return restartService() }
+
 // spawnWatchdog starts the watchdog detached from the service process (like
 // the update script), breaking away from a job object when the service runs
 // in one.

@@ -51,6 +51,14 @@ const (
 	rollbackFileName = "update_rollback.json"
 	watchdogLockName = "update_watchdog.lock"
 	WatchdogLogName  = "update_watchdog.log"
+	// transitionLockName is held by whichever process ends the update: the
+	// agent confirming it healthy or the watchdog rolling it back, so only
+	// one of them completes.
+	transitionLockName = "update_transition.lock"
+	// rolledBackMarkerName is the marker renamed after a rollback whose
+	// record couldn't be written (a full disk): a rename needs no new space,
+	// and it still names the bad version.
+	rolledBackMarkerName = "update_rolledback_marker.json"
 )
 
 // Health check timing. HealthWindow covers a restart, sign-in, the startup
@@ -64,6 +72,12 @@ const (
 	aliveFresh         = 2 * time.Minute
 	watchdogPoll       = 5 * time.Second
 	watchdogReadErrMax = 60 // consecutive unreadable marker polls before giving up
+	// How long each side waits for the transition lock. The agent retries a
+	// confirmation from its alive ticker, so it waits briefly; the watchdog
+	// retries at its next poll.
+	confirmLockWait  = 2 * time.Second
+	rollbackLockWait = 30 * time.Second
+	lockRetry        = 100 * time.Millisecond
 )
 
 // Marker is the update in progress. The old binary writes it once; the new
@@ -128,6 +142,33 @@ func recordPathFor(cfg *config.Config) string { return filepath.Join(healthDir(c
 // watchdogLockPath is the lock a running watchdog holds, next to its marker.
 func watchdogLockPath(markerPath string) string {
 	return filepath.Join(filepath.Dir(markerPath), watchdogLockName)
+}
+
+// transitionLockPath is the lock that confirm and rollback share.
+func transitionLockPath(markerPath string) string {
+	return filepath.Join(filepath.Dir(markerPath), transitionLockName)
+}
+
+// acquireTransition takes the transition lock, retrying for up to wait. The
+// lock is an OS file lock, so it works across the agent and the watchdog.
+func acquireTransition(markerPath string, wait time.Duration) (*lockfile.LockFile, error) {
+	lock := lockfile.NewLockFileWithPath(transitionLockPath(markerPath))
+	deadline := time.Now().Add(wait)
+	for {
+		err := lock.TryAcquire()
+		if err == nil {
+			return lock, nil
+		}
+		if !errors.Is(err, lockfile.ErrAlreadyRunning) || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		time.Sleep(lockRetry)
+	}
+}
+
+// sameUpdate reports whether a and b describe the same update.
+func sameUpdate(a, b *Marker) bool {
+	return a.Created.Equal(b.Created) && a.FromVersion == b.FromVersion && a.ToVersion == b.ToVersion && a.ExePath == b.ExePath
 }
 
 // watchdogPathFor is the watchdog copy of the old binary, next to it. A
@@ -277,13 +318,19 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 	return m, true
 }
 
-// rolledBackVersion is the version this device rolled back from, or "".
+// rolledBackVersion is the version this device rolled back from, or "": the
+// rollback record's, else the renamed marker's when the record couldn't be
+// written.
 func rolledBackVersion(cfg *config.Config) string {
 	var r RollbackRecord
-	if readJSON(recordPathFor(cfg), &r) != nil {
-		return ""
+	if readJSON(recordPathFor(cfg), &r) == nil && r.BadVersion != "" {
+		return r.BadVersion
 	}
-	return r.BadVersion
+	var m Marker
+	if readJSON(filepath.Join(healthDir(cfg), rolledBackMarkerName), &m) == nil {
+		return m.ToVersion
+	}
+	return ""
 }
 
 // StartHealthCheck runs at agent startup. It logs a rollback the watchdog did
@@ -403,10 +450,30 @@ func ConfirmHealthy(cfg *config.Config) {
 	finishConfirm(m)
 }
 
-// finishConfirm deletes the update's files; true once the marker is gone.
-// Called with healthMu held.
+// finishConfirm deletes the update's files; true once there is nothing left
+// to do. Called with healthMu held. It holds the transition lock, so a
+// watchdog can't roll the same update back while it runs; if the watchdog
+// already did (the marker is gone or is another update's), it leaves
+// everything alone.
 func finishConfirm(m *Marker) bool {
 	markerPath := filepath.Join(filepath.Dir(m.HealthPath), markerFileName)
+	lock, err := acquireTransition(markerPath, confirmLockWait)
+	if err != nil {
+		log.Printf("Updater: the update watchdog is busy; confirming later: %v", err)
+		return false
+	}
+	defer func() { _ = lock.Release() }()
+	cur, err := ReadMarker(markerPath)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && !sameUpdate(cur, m)) {
+		log.Printf("Updater: update %s -> %s was already ended by the watchdog; nothing to confirm",
+			sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+		confirmed = true
+		return true
+	}
+	if err != nil {
+		log.Printf("Updater: can't read the update marker (will retry): %v", err)
+		return false
+	}
 	if err := os.Remove(markerPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("Updater: can't remove the update marker (will retry): %v", err)
 		return false
@@ -449,6 +516,10 @@ type watchdogDeps struct {
 	install func(m *Marker) error
 	// restart starts the service again with the restored binary.
 	restart func() error
+	// start starts the service if it isn't running (a no-op error if it is).
+	start func() error
+	// lock takes the transition lock; nil release when it can't.
+	lock func(markerPath string) (release func(), err error)
 }
 
 func defaultWatchdogDeps() watchdogDeps {
@@ -457,6 +528,14 @@ func defaultWatchdogDeps() watchdogDeps {
 		networkUp: func(u string) bool { return CheckInternetWithHTTP(u) },
 		install:   installBackup,
 		restart:   restartService,
+		start:     startService,
+		lock: func(markerPath string) (func(), error) {
+			l, err := acquireTransition(markerPath, rollbackLockWait)
+			if err != nil {
+				return nil, err
+			}
+			return func() { _ = l.Release() }, nil
+		},
 	}
 }
 
@@ -507,7 +586,26 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 			d.sleep(watchdogPoll)
 			continue
 		}
-		return rollBack(markerPath, m, reason, d)
+		// Roll back only while holding the transition lock, and only if the
+		// agent didn't confirm this update healthy in the meantime.
+		release, err := d.lock(markerPath)
+		if err != nil {
+			log.Printf("Update watchdog: the agent is confirming the update; checking again: %v", err)
+			d.sleep(watchdogPoll)
+			continue
+		}
+		cur, err := ReadMarker(markerPath)
+		if errors.Is(err, fs.ErrNotExist) {
+			release()
+			log.Printf("Update watchdog: the update was confirmed healthy just now; exiting")
+			return 0
+		}
+		if err != nil || !sameUpdate(cur, m) {
+			release()
+			d.sleep(watchdogPoll)
+			continue
+		}
+		return rollBack(markerPath, m, reason, d, release)
 	}
 }
 
@@ -548,15 +646,25 @@ func judge(m *Marker, h HealthState, now, extendedUntil time.Time, networkUp fun
 }
 
 // rollBack restores the backup, records the bad version and restarts the
-// service.
-func rollBack(markerPath string, m *Marker, reason string, d watchdogDeps) int {
+// service. It is called holding the transition lock and calls release
+// before starting the service, so the restored agent never waits on it.
+func rollBack(markerPath string, m *Marker, reason string, d watchdogDeps, release func()) int {
+	var once sync.Once
+	unlock := func() { once.Do(release) }
+	defer unlock()
 	if same, err := sameContent(m.BackupPath, m.ExePath); err == nil && same {
 		// The update never got installed (e.g. the Windows swap didn't run):
-		// nothing to roll back, and the version isn't known to be bad.
+		// nothing to roll back, and the version isn't known to be bad. The
+		// agent may not be running at all (the Windows update script starts
+		// it only after a successful swap), so start it.
 		log.Printf("Update watchdog: %s was never installed; cleaning up", sanitize.ForLog(m.ToVersion))
 		_ = os.Remove(markerPath)
 		_ = os.Remove(m.HealthPath)
 		_ = os.Remove(m.BackupPath)
+		unlock()
+		if err := d.start(); err != nil {
+			log.Printf("Update watchdog: starting the service: %v (fine if it is already running)", err)
+		}
 		return 0
 	}
 	log.Printf("Update watchdog: ROLLING BACK %s -> %s: %s", sanitize.ForLog(m.ToVersion), sanitize.ForLog(m.FromVersion), reason)
@@ -570,16 +678,25 @@ func rollBack(markerPath string, m *Marker, reason string, d watchdogDeps) int {
 	}
 	if err != nil {
 		log.Printf("Update watchdog: rollback failed; backup kept at %s", m.BackupPath)
+		unlock()
 		_ = d.restart()
 		return 1
 	}
 	rec := RollbackRecord{BadVersion: m.ToVersion, RestoredVersion: m.FromVersion, Reason: reason, At: d.now().UTC()}
 	if err := writeJSONAtomic(m.RecordPath, rec); err != nil {
+		// The record is what keeps the update checks from installing the
+		// bad version again. Without it, keep that guard: rename the marker
+		// (no new disk space needed), or keep it in place as a last resort.
 		log.Printf("Update watchdog: can't write the rollback record: %v", err)
+		if rerr := os.Rename(markerPath, filepath.Join(filepath.Dir(markerPath), rolledBackMarkerName)); rerr != nil {
+			log.Printf("Update watchdog: keeping the update marker so %s isn't installed again: %v", sanitize.ForLog(m.ToVersion), rerr)
+		}
+	} else {
+		_ = os.Remove(markerPath)
 	}
-	_ = os.Remove(markerPath)
 	_ = os.Remove(m.HealthPath)
 	_ = os.Remove(m.BackupPath)
+	unlock()
 	if err := d.restart(); err != nil {
 		log.Printf("Update watchdog: restarting the service failed: %v", err)
 		return 1
