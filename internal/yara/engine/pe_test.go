@@ -146,9 +146,12 @@ func TestPEModuleUTF16LookingStubStillScannedWhole(t *testing.T) {
 
 // farHeaderPE is a 200 KiB PE whose PE header starts at 12 KiB, past the
 // 8 KiB the engine sniffs, after a DOS stub that reads as UTF-16LE text.
-func farHeaderPE() []byte {
+func farHeaderPE() []byte { return farHeaderPESized(200 << 10) }
+
+// farHeaderPESized is farHeaderPE with the given size.
+func farHeaderPESized(size int) []byte {
 	const at = 0x3000
-	src := minimalPE(200 << 10)
+	src := minimalPE(size)
 	img := make([]byte, len(src))
 	copy(img, src[:0x40])
 	copy(img[at:], src[0x40:0x200]) // PE signature, COFF, optional header, sections
@@ -197,5 +200,18 @@ func TestMZTextWithoutPESignatureStaysText(t *testing.T) {
 	got := matchedRules(scan(t, p, string(txt), File{Path: "notes.txt", Size: int64(len(txt))}))
 	if got["typed_pe"] || got["pe_header"] {
 		t.Errorf("MZ text matched %v, want no PE rules", got)
+	}
+}
+
+// The filetype external is right for a far-header PE whatever the ruleset
+// imports and however small the file is (#515 review).
+func TestFiletypeForFarHeaderPEWithoutPEImport(t *testing.T) {
+	p, _ := compile(t, filetypeRule, Options{})
+	for _, size := range []int{40 << 10, 200 << 10} {
+		img := farHeaderPESized(size)
+		got := matchedRules(scan(t, p, string(img), File{Path: "a.exe", Size: int64(size)}))
+		if !got["typed_pe"] {
+			t.Errorf("size %d: filetype not executable.pe (matched %v)", size, got)
+		}
 	}
 }
