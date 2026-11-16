@@ -13,6 +13,14 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- macOS: code-signed agent binaries now use the identifier
+  `com.brainstation-23.sentinelgo`, the App ID registered with Apple, instead
+  of `com.sentinelgo.agent` (#491). No release has been signed yet, so nothing
+  on devices changes. The launchd label and the managed-preferences domain stay
+  `com.sentinelgo.agent`.
+
 ## [v4.0.12] - 2026-11-15
 
 ### Fixed

@@ -11,14 +11,15 @@
 # certificate from our internal CA, whose root MDM installs on managed Macs;
 # a Developer ID Application identity drops in the same way later.
 #
-# The identifier never changes: profiles that grant the agent permissions
-# (Full Disk Access, notifications) pin it with the certificate.
+# The identifier is the App ID registered in the Apple Developer account
+# (#491) and never changes: profiles that grant the agent permissions (Full
+# Disk Access, notifications) pin it with the certificate.
 #
 # The certificate is imported into a throwaway keychain that is deleted on
 # exit, so nothing outlives the job.
 set -euo pipefail
 
-IDENTIFIER="com.sentinelgo.agent"
+IDENTIFIER="com.brainstation-23.sentinelgo"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "macos-codesign: needs macOS (codesign)" >&2
