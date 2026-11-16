@@ -323,7 +323,10 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 		r = br
 	}
 	var data []byte
-	whole := p.scanWhole(f) || (farPE && p.scanWhole(File{Type: typePE, Size: f.Size}))
+	// A far PE is read whole whatever the ruleset imports or the file's size
+	// (up to MaxWholePEBytes): only the whole file can confirm it, and the
+	// filetype external must say executable.pe for every rule.
+	whole := p.scanWhole(f) || (farPE && f.Size <= MaxWholePEBytes)
 	if whole {
 		var err error
 		if data, err = readWhole(ctx, r, f.Size); err != nil {
