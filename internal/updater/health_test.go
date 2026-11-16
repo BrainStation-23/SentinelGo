@@ -349,8 +349,8 @@ func TestStartHealthCheck_LogsRollbackOnce(t *testing.T) {
 	if err := readJSON(recPath, &r); err != nil || !r.Logged {
 		t.Errorf("record = %+v, %v; want logged", r, err)
 	}
-	if got := rolledBackVersion(cfg); got != "v2.0.0" {
-		t.Errorf("rolledBackVersion = %q", got)
+	if !rolledBack(cfg, "v2.0.0", time.Now()) {
+		t.Error("v2.0.0 isn't reported as rolled back")
 	}
 }
 
@@ -623,11 +623,60 @@ func TestWatchdog_RecordWriteFailureKeepsGuard(t *testing.T) {
 	}
 	assertNotExist(t, markerPath, "marker")
 	cfg := &config.Config{Path: filepath.Join(filepath.Dir(markerPath), "config.json")}
-	if got := rolledBackVersion(cfg); got != "v2.0.0" {
-		t.Fatalf("rolledBackVersion = %q, want v2.0.0 from the renamed marker", got)
+	if !rolledBack(cfg, "v2.0.0", time.Now()) {
+		t.Fatal("v2.0.0 isn't blocked by the renamed marker")
 	}
 	if !heldBack(cfg, "2.0.0") {
 		t.Error("the rolled-back version isn't held back")
+	}
+}
+
+// An older rollback record must not hide a newer failure whose record
+// couldn't be written (the renamed marker): both versions stay blocked.
+func TestWatchdog_RecordWriteFailureWithOlderRecord(t *testing.T) {
+	markerPath, m, w := watchdogSetup(t, func(m *Marker) {
+		m.RecordPath = filepath.Join(filepath.Dir(m.ExePath), "missing-dir", rollbackFileName)
+	})
+	dir := filepath.Dir(markerPath)
+	if err := writeJSONAtomic(filepath.Join(dir, rollbackFileName), RollbackRecord{BadVersion: "v1.5.0", RestoredVersion: "v1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if code := runWatchdog(markerPath, w.deps()); code != 0 || w.installs != 1 {
+		t.Fatalf("exit %d, installs %d; want a rollback", code, w.installs)
+	}
+	cfg := &config.Config{Path: filepath.Join(dir, "config.json")}
+	for _, v := range []string{"v1.5.0", m.ToVersion} {
+		if !heldBack(cfg, v) {
+			t.Errorf("%s isn't held back", v)
+		}
+	}
+}
+
+// If the marker can't even be renamed after a rollback, it stays in place.
+// Past GiveUpAt it no longer holds every update back, but the version it
+// names (which isn't the one running) stays blocked, and its marker moves
+// aside so the next update can write its own.
+func TestHeldBack_KeptMarkerPastGiveUpStillBlocksBadVersion(t *testing.T) {
+	resetHealthState(t)
+	dir := t.TempDir()
+	cfg := &config.Config{Path: filepath.Join(dir, "config.json")}
+	prev := config.Version
+	config.Version = "v1.0.0" // the restored binary
+	t.Cleanup(func() { config.Version = prev })
+	m := Marker{FromVersion: "v1.0.0", ToVersion: "v2.0.0", GiveUpAt: time.Now().Add(-time.Minute)}
+	markerPath := filepath.Join(dir, markerFileName)
+	if err := writeJSONAtomic(markerPath, m); err != nil {
+		t.Fatal(err)
+	}
+	if !heldBack(cfg, "v2.0.0") {
+		t.Error("the version of a kept marker past GiveUpAt isn't held back")
+	}
+	if heldBack(cfg, "v3.0.0") {
+		t.Error("a stale marker still holds every update back")
+	}
+	assertNotExist(t, markerPath, "marker")
+	if !rolledBack(cfg, "v2.0.0", time.Now()) {
+		t.Error("v2.0.0 isn't blocked after the marker moved aside")
 	}
 }
 

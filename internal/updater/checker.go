@@ -217,7 +217,7 @@ func startHealthWatch(cfg *config.Config, running, to, backupPath string) (*Mark
 // version back: it was rolled back on this device, or an earlier update is
 // still waiting for its health check.
 func heldBack(cfg *config.Config, version string) bool {
-	if bad := rolledBackVersion(cfg); bad != "" && sameVersion(bad, version) {
+	if rolledBack(cfg, version, time.Now()) {
 		log.Printf("Updater: skipping %s: it was rolled back on this device after failing its health check; waiting for another version",
 			sanitize.ForLog(version))
 		return true
