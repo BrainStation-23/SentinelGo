@@ -122,6 +122,9 @@ var (
 	healthMu  sync.Mutex
 	healthy   bool
 	confirmed bool
+	// watching: this binary is an upgrade whose alive ticker runs
+	// (StartHealthCheck), so a confirmation can be retried from it.
+	watching bool
 )
 
 // healthDir is where the marker and rollback record live: next to the config,
@@ -310,24 +313,49 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 		return nil, false
 	}
 	if now.After(m.GiveUpAt) {
-		_ = os.Remove(m.HealthPath)
-		if !sameVersion(m.ToVersion, config.Version) {
-			// The update isn't what runs: the watchdog rolled it back but
-			// couldn't save the record or rename the marker, or the update
-			// never stayed installed. Keep blocking that version: move the
-			// marker to the rolled-back name (freeing the slot for the next
-			// update), or leave it where it is if even that fails.
-			log.Printf("Updater: %s didn't stay installed; it stays blocked on this device", sanitize.ForLog(m.ToVersion))
-			if err := os.Rename(path, filepath.Join(filepath.Dir(path), rolledBackMarkerName)); err != nil {
-				log.Printf("Updater: keeping the update marker so %s isn't installed again: %v", sanitize.ForLog(m.ToVersion), err)
-			}
-			return nil, false
-		}
-		log.Printf("Updater: removing a stale update marker (%s -> %s)", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
-		_ = os.Remove(path)
-		return nil, false
+		return retireExpired(path, m)
 	}
 	return m, true
+}
+
+// retireExpired handles a marker past GiveUpAt, holding the transition lock
+// so it can't race a watchdog that is rolling the same update back (which
+// would then delete a newer update's files). It reports pending (no update
+// now) while the lock is busy, the marker changed, or the marker is the
+// only record of a version that must stay blocked.
+func retireExpired(path string, m *Marker) (*Marker, bool) {
+	lock, err := acquireTransition(path, confirmLockWait)
+	if err != nil {
+		log.Printf("Updater: the update watchdog is busy; not updating yet: %v", err)
+		return m, true
+	}
+	defer func() { _ = lock.Release() }()
+	cur, err := ReadMarker(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	if err != nil || !sameUpdate(cur, m) {
+		return m, true // changed meanwhile: decide on the next check
+	}
+	_ = os.Remove(m.HealthPath)
+	if !sameVersion(m.ToVersion, config.Version) {
+		// The update isn't what runs: the watchdog rolled it back but
+		// couldn't save the record or rename the marker, or the update
+		// never stayed installed. Keep blocking that version: move the
+		// marker to the rolled-back name (freeing the slot for the next
+		// update), or leave it where it is if even that fails.
+		log.Printf("Updater: %s didn't stay installed; it stays blocked on this device", sanitize.ForLog(m.ToVersion))
+		if err := os.Rename(path, filepath.Join(filepath.Dir(path), rolledBackMarkerName)); err != nil {
+			// The marker is the only record of the bad version: a new
+			// update would overwrite it, so no update until it moves.
+			log.Printf("Updater: keeping the update marker so %s isn't installed again; updates wait until it can be moved: %v", sanitize.ForLog(m.ToVersion), err)
+			return m, true
+		}
+		return nil, false
+	}
+	log.Printf("Updater: removing a stale update marker (%s -> %s)", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+	_ = os.Remove(path)
+	return nil, false
 }
 
 // rolledBackVersions are the versions this device must not install again:
@@ -398,6 +426,7 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 	if err := writeJSONAtomic(m.HealthPath, h); err != nil {
 		log.Printf("Updater: can't record this start for the update health check: %v", err)
 	}
+	watching = true
 	healthMu.Unlock()
 	log.Printf("Updater: running %s after an update from %s (start %d of %d); waiting for sign-in and the first agent-info upload",
 		sanitize.ForLog(m.ToVersion), sanitize.ForLog(m.FromVersion), h.Attempts, m.MaxAttempts)
@@ -470,6 +499,15 @@ func ConfirmHealthy(cfg *config.Config) {
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			confirmed = true
+			return
+		}
+		if watching {
+			// A transient read error (e.g. a Windows sharing violation):
+			// the agent is healthy, so let the alive ticker finish the
+			// confirmation (finishConfirm re-reads the marker) before the
+			// watchdog's deadline, instead of waiting for the next upload.
+			log.Printf("Updater: can't read the update marker to confirm the update (will retry): %v", err)
+			healthy = true
 		}
 		return
 	}
@@ -631,6 +669,14 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 			return 0
 		}
 		if err != nil || !sameUpdate(cur, m) {
+			release()
+			d.sleep(watchdogPoll)
+			continue
+		}
+		// Decide again on what the new binary wrote up to now: one that
+		// started after the deadline and before the lock was taken gets its
+		// fresh health window.
+		if reason, _ = judge(cur, readHealthState(cur), d.now(), extendedUntil, d.networkUp); reason == "" {
 			release()
 			d.sleep(watchdogPoll)
 			continue
