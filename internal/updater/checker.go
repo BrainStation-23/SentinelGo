@@ -26,6 +26,10 @@ type LatestRelease struct {
 	SHA256      string    `json:"sha256"`
 	Size        int64     `json:"size"`
 	ContentType string    `json:"content_type"`
+	// AllowDowngrade is set by the server only during an admin-initiated
+	// rollback: install Version even though it is older than the running
+	// one. Missing (older servers) means false.
+	AllowDowngrade bool `json:"allow_downgrade"`
 }
 
 var updateMutex sync.Mutex
@@ -88,7 +92,9 @@ var (
 // Order of operations is deliberate:
 //  1. Compare against the COMPILED-IN running version (config.Version), not the
 //     persisted cfg.CurrentVersion.
-//  2. Only update on a strictly-newer semantic version (blocks downgrades).
+//  2. Only update on a strictly-newer semantic version, or an older one the
+//     server explicitly approved (allow_downgrade, an audited rollback).
+//     Equal versions are a no-op.
 //  3. Require a SHA256 checksum (from RPC) and an ed25519 signature (from Storage).
 //  4. Download and verify BEFORE replacing anything.
 //  5. Replace + restart via the OS service manager.
@@ -106,13 +112,13 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	}
 
 	running := config.Version
-	newer, err := isNewerVersion(latest.Version, running)
+	action, err := decideUpdate(latest.Version, running, latest.AllowDowngrade)
 	if err != nil {
 		// Cannot compare versions (e.g. a "dev" build). Skip.
 		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
 		return nil
 	}
-	if !newer {
+	if action == actionNone {
 		fmt.Printf("Already up to date (running %s, latest %s)\n",
 			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
 		return nil
@@ -134,7 +140,12 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 			sanitize.ForLog(latest.Version))
 	}
 
-	fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	if action == actionDowngrade {
+		log.Printf("Rolling back: %s -> %s (server-approved downgrade)",
+			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	} else {
+		fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	}
 
 	backupPath, err := createBackup()
 	if err != nil {
