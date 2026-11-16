@@ -399,7 +399,7 @@ func (ow *OnWrite) scan(path string) {
 	}
 	result := walk.Clean
 	var queueErr error
-	ow.count(cfg, func(w *owWindow) {
+	counted := ow.count(cfg, func(w *owWindow) {
 		w.scanned++
 		w.rep.AddBytes(out.Size)
 		if len(out.Matches) == 0 {
@@ -417,6 +417,9 @@ func (ow *OnWrite) scan(path string) {
 			queueErr = err
 		}
 	})
+	if !counted {
+		return // stale result dropped: not cached, so the file is scanned again with the current rules
+	}
 	if queueErr != nil {
 		log.Printf("YARA: on-write: match events not queued: %v", queueErr)
 		return // not cached: the next scan reports it again
@@ -457,8 +460,10 @@ func (ow *OnWrite) wait(ctx context.Context, cfg *owConfig) error {
 //     configuration before it closes the window), so a path is never added
 //     to a report with another evidence mode.
 //
+// It reports whether fn ran; a dropped result must not be cached either.
+//
 // ow.mu is taken inside winMu; nothing takes them in the other order.
-func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) {
+func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) bool {
 	var ended *owWindow
 	defer func() {
 		if ended != nil {
@@ -471,7 +476,7 @@ func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) {
 	current := ow.cfg
 	ow.mu.Unlock()
 	if current == nil || current.active != cfg.active {
-		return // stale: the bundle changed while this file was scanned
+		return false // stale: the bundle changed while this file was scanned
 	}
 	if ow.win != nil && ow.win.active != cfg.active {
 		ended, ow.win = ow.win, nil
@@ -483,6 +488,7 @@ func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) {
 		ow.win.rep.SetScope(cfg.roots, cfg.excl, b.Limits, b.RulesetsFor(cfg.ids))
 	}
 	fn(ow.win)
+	return true
 }
 
 // windowDue ends the window once it is Window old.

@@ -143,3 +143,59 @@ func TestPEModuleUTF16LookingStubStillScannedWhole(t *testing.T) {
 		t.Errorf("matched %v, want pe_full_input", got)
 	}
 }
+
+// farHeaderPE is a 200 KiB PE whose PE header starts at 12 KiB, past the
+// 8 KiB the engine sniffs, after a DOS stub that reads as UTF-16LE text.
+func farHeaderPE() []byte {
+	const at = 0x3000
+	src := minimalPE(200 << 10)
+	img := make([]byte, len(src))
+	copy(img, src[:0x40])
+	copy(img[at:], src[0x40:0x200]) // PE signature, COFF, optional header, sections
+	le := binary.LittleEndian
+	le.PutUint32(img[0x3c:], at)         // e_lfanew
+	opt := at + 4 + 20                   // after "PE\0\0" and the COFF header
+	le.PutUint32(img[opt+60:], at+0x200) // SizeOfHeaders
+	sec := opt + 0xe0
+	le.PutUint32(img[sec+20:], at+0x200) // PointerToRawData
+	img[at+0x200] = 0xc3
+	for i := 2; i+1 < 0x3c; i += 2 {
+		img[i], img[i+1] = 'A', 0
+	}
+	for i := 0x40; i+1 < at; i += 2 {
+		img[i], img[i+1] = 'A', 0
+	}
+	return img
+}
+
+const filetypeRule = `rule typed_pe { condition: filetype == "executable.pe" }
+`
+
+// A PE whose header is past the sniffed 8 KiB is confirmed from the whole
+// file: typed executable.pe and scanned whole (no evasion by a long stub).
+func TestPEModuleHeaderBeyondSniffWindow(t *testing.T) {
+	img := farHeaderPE()
+	if typ := filescan.SniffType(img[:sniffBytes]); typ == "executable.pe" {
+		t.Fatalf("test image too easy: the head alone sniffs as %q", typ)
+	}
+	p, _ := compile(t, peRules+filetypeRule, Options{})
+	got := matchedRules(scan(t, p, string(img), File{Path: "a.exe", Size: int64(len(img))}))
+	for _, r := range []string{"pe_header", "pe_full_input", "typed_pe"} {
+		if !got[r] {
+			t.Errorf("matched %v, want %s", got, r)
+		}
+	}
+}
+
+// Text that starts with "MZ" and whose bytes at e_lfanew point past the head,
+// but with no PE signature there, stays text. Text has no zero bytes, so the
+// smallest such offset is 0x01010101 (16 MiB) and the file must be larger.
+func TestMZTextWithoutPESignatureStaysText(t *testing.T) {
+	txt := []byte(strings.Repeat("MZ is not a PE. ", 17<<20/16))
+	binary.LittleEndian.PutUint32(txt[0x3c:], 0x01010101) // no zero bytes, so still text
+	p, _ := compile(t, peRules+filetypeRule, Options{})
+	got := matchedRules(scan(t, p, string(txt), File{Path: "notes.txt", Size: int64(len(txt))}))
+	if got["typed_pe"] || got["pe_header"] {
+		t.Errorf("MZ text matched %v, want no PE rules", got)
+	}
+}

@@ -11,6 +11,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -237,6 +238,9 @@ type program struct {
 	wholePE bool
 }
 
+// typePE is filescan's type for a PE image.
+const typePE = "executable.pe"
+
 // go-yara's reader scans keep only the first streamPrefix bytes for the pe
 // module: fields past it (signatures, checksum, resources, version info, and
 // imports/exports stored late in the file) are undefined, so rules testing
@@ -250,7 +254,30 @@ const (
 
 // scanWhole reports whether f is scanned from one whole-file buffer.
 func (p *program) scanWhole(f File) bool {
-	return p.wholePE && f.Type == "executable.pe" && f.Size > streamPrefix && f.Size <= MaxWholePEBytes
+	return p.wholePE && f.Type == typePE && f.Size > streamPrefix && f.Size <= MaxWholePEBytes
+}
+
+// peOffset is e_lfanew, the offset of the "PE\0\0" signature, in an "MZ"
+// file's DOS header; ok is false for anything else.
+func peOffset(b []byte) (off int64, ok bool) {
+	if len(b) < 0x40 || b[0] != 'M' || b[1] != 'Z' {
+		return 0, false
+	}
+	return int64(binary.LittleEndian.Uint32(b[0x3c:])), true
+}
+
+// peOffsetBeyond reports an "MZ" head whose PE signature offset is past the
+// head but inside a file of size bytes, so only the whole file can say
+// whether it's a PE.
+func peOffsetBeyond(head []byte, size int64) bool {
+	off, ok := peOffset(head)
+	return ok && off+4 > int64(len(head)) && off+4 <= size
+}
+
+// hasPESignature reports a whole "MZ" file with "PE\0\0" at e_lfanew.
+func hasPESignature(data []byte) bool {
+	off, ok := peOffset(data)
+	return ok && off >= 4 && off+4 <= int64(len(data)) && string(data[off:off+4]) == "PE\x00\x00"
 }
 
 // readWhole reads up to n bytes of r, checking ctx between chunks. A file
@@ -285,11 +312,26 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 	if f.Size > 0 {
 		r = io.LimitReader(r, f.Size)
 	}
+	// farPE: an "MZ" file whose PE signature offset lies past the sniffed
+	// head, so SniffType couldn't confirm it (and may have typed it as text).
+	farPE := false
 	if f.Type == "" {
 		br := bufio.NewReaderSize(r, sniffBytes)
 		head, _ := br.Peek(sniffBytes) // a short file returns what it has
 		f.Type = filescan.SniffType(head)
+		farPE = f.Type != typePE && peOffsetBeyond(head, f.Size)
 		r = br
+	}
+	var data []byte
+	whole := p.scanWhole(f) || (farPE && p.scanWhole(File{Type: typePE, Size: f.Size}))
+	if whole {
+		var err error
+		if data, err = readWhole(ctx, r, f.Size); err != nil {
+			return nil, err
+		}
+		if farPE && hasPESignature(data) {
+			f.Type = typePE
+		}
 	}
 	s := p.prog.NewScanner(
 		compiler.WithMatchData(0),
@@ -300,11 +342,8 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 	defer s.Close()
 	var res *compiler.ScanResult
 	var err error
-	if p.scanWhole(f) {
-		var data []byte
-		if data, err = readWhole(ctx, r, f.Size); err == nil {
-			res, err = s.ScanWithContext(ctx, data)
-		}
+	if whole {
+		res, err = s.ScanWithContext(ctx, data)
 	} else {
 		res, err = s.ScanReaderWithContext(ctx, r)
 	}
