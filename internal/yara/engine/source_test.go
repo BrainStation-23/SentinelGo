@@ -42,9 +42,12 @@ import "time"`
 
 func TestPrepareKeepsLines(t *testing.T) {
 	src := "import \"pe\"\nimport \"hash\"\nrule r { condition: true }"
-	out, err := prepare(src, map[string]bool{"hash": true})
+	out, imported, err := prepare(src, map[string]bool{"hash": true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(imported, map[string]bool{"hash": true}) {
+		t.Errorf("imported = %v, want only hash (pe is unsupported here)", imported)
 	}
 	if !strings.HasPrefix(out, "           \nimport \"hash\"\nrule r") {
 		t.Errorf("prepared = %q", out)

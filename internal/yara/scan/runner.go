@@ -71,6 +71,27 @@ type FileOutcome struct {
 	SHA256  string
 	Size    int64
 	Matches []engine.Match
+	// Reason refines Skipped (yara.SkipTimeout, yara.SkipChanged) and
+	// ReadError (yara.ErrAccessDenied, yara.ErrLocked, yara.ErrRead) for
+	// the scan summary; Detail is the OS error text, without the path.
+	Reason string
+	Detail string
+}
+
+// reason is the outcome's skip or error reason, with a default per status.
+func (o FileOutcome) reason() string {
+	if o.Reason != "" {
+		return o.Reason
+	}
+	switch o.Status {
+	case Skipped:
+		return yara.SkipTimeout
+	case ReadError:
+		return yara.ErrRead
+	case NoRules:
+		return yara.EndNoRules
+	}
+	return yara.ErrWorkerFailed
 }
 
 // FileScanner opens a listed file and has a sandboxed worker scan it with
@@ -472,6 +493,7 @@ func (r *Runner) run(ctx context.Context, j *job) {
 			c.scanned, c.skipped, c.errors, tcc = in.Scanned, in.Skipped, in.Errors, in.TCCDenied
 		}
 	}
+	rep.SetScope(sp.Roots, sp.Exclusions, b.Limits, b.RulesetsFor(sp.RulesetIDs))
 	log.Printf("YARA: %s %s scan %s started (%d folders)", sp.Trigger, sp.Preset, sp.ScanID, len(sp.Roots))
 
 	var cache *walk.Cache
@@ -489,6 +511,7 @@ func (r *Runner) run(ctx context.Context, j *job) {
 		MaxFileBytes: limits.MaxFileBytes, Mounts: r.o.Mounts(),
 		IncludeNetwork: limits.IncludeNetworkMounts, IncludeRemovable: limits.IncludeRemovable,
 		Cache: cache, Rules: sp.RulesKey, Guard: guard, Resume: resumeFrom,
+		Problem: func(p walk.Problem) { rep.Problem(p.Path, p.Reason, p.Detail, p.Size, p.Error) },
 	}
 	stats, err := walk.Walk(ctx, o, func(f walk.File) error {
 		j.files.Add(1)
@@ -496,6 +519,13 @@ func (r *Runner) run(ctx context.Context, j *job) {
 	})
 	c.skipped += stats.FilesSkipped()
 	c.errors += stats.Errors
+	for reason, n := range stats.Skipped {
+		rep.Skip(reason, n)
+	}
+	for reason, n := range stats.ErrorsBy {
+		rep.Fail(reason, n)
+	}
+	rep.AddThrottled(guard.Throttled())
 	tcc = tcc || stats.TCCDenied
 	if cache != nil {
 		if serr := cache.Save(); serr != nil {
@@ -519,6 +549,7 @@ func (r *Runner) run(ctx context.Context, j *job) {
 	default:
 		state = yara.ScanFailed
 	}
+	rep.SetEndReason(endReason(err, cause, guard))
 	sum := rep.Summary(state, c.scanned, c.skipped, c.errors)
 	if qerr := r.o.Queue.Add([]yara.Event{sum}); qerr != nil {
 		log.Printf("YARA: could not queue the summary of scan %s: %v", sp.ScanID, qerr)
@@ -533,6 +564,44 @@ func (r *Runner) run(ctx context.Context, j *job) {
 	}
 	log.Printf("YARA: scan %s %s: %d files scanned, %d skipped, %d errors, %d matches%s",
 		sp.ScanID, state, c.scanned, c.skipped, c.errors, sum.Summary.Matches, why)
+}
+
+// endReason says why a scan stopped early (summary end_reason), from the
+// walk's error and the scan's cancel cause; "" when it completed.
+func endReason(err, cause error, guard *walk.Throttle) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, walk.ErrPartial):
+		if guard.Limit != "" {
+			return guard.Limit
+		}
+		return yara.EndTimeLimit
+	case errors.Is(err, errWorkers):
+		return yara.EndWorkerFailure
+	case errors.Is(err, errNoRules):
+		return yara.EndNoRules
+	case errors.Is(cause, errCancelled), errors.Is(cause, errPreempted):
+		return yara.EndCancelled
+	case errors.Is(cause, errDisabled):
+		return yara.EndDisabled
+	case errors.Is(cause, errShutdown):
+		return yara.EndShutdown
+	}
+	return yara.EndError
+}
+
+// noteOutcome records a file the worker didn't scan in the report: its
+// skip or error reason, and the file in the problem sample.
+func noteOutcome(rep *report.Scan, f walk.File, out FileOutcome) {
+	reason := out.reason()
+	isErr := out.Status != Skipped
+	if isErr {
+		rep.Fail(reason, 1)
+	} else {
+		rep.Skip(reason, 1)
+	}
+	rep.Problem(f.Path, reason, out.Detail, f.Size, isErr)
 }
 
 func errOr(cause, err error) error {
@@ -559,20 +628,24 @@ func (r *Runner) scanFile(ctx context.Context, sp spec, rep *report.Scan, cache 
 	case Scanned:
 	case Skipped:
 		c.skipped++
+		noteOutcome(rep, f, out)
 		return nil
 	case ReadError:
 		c.errors++
+		noteOutcome(rep, f, out)
 		return nil
 	case NoRules:
 		return errNoRules
 	default:
 		c.errors++
+		noteOutcome(rep, f, out)
 		if c.workerFails++; c.workerFails >= maxWorkerFailures {
 			return errWorkers
 		}
 		return nil
 	}
 	c.scanned++
+	rep.AddBytes(out.Size)
 	result := walk.Clean
 	if len(out.Matches) > 0 {
 		result = walk.Matched
@@ -584,6 +657,7 @@ func (r *Runner) scanFile(ctx context.Context, sp spec, rep *report.Scan, cache 
 		if err != nil {
 			log.Printf("YARA: scan %s: match events not queued: %v", sp.ScanID, err)
 			c.errors++
+			rep.Fail(yara.ErrQueue, 1)
 			return nil // not cached: the next scan reports it again
 		}
 	}
@@ -683,8 +757,10 @@ func (r *Runner) skipCache() *walk.Cache {
 	return r.cache
 }
 
-// rulesKey identifies the ruleset set a scan uses (id and revision of each),
-// for the skip cache and checkpoints.
+// rulesKey identifies the ruleset set a scan uses (id and revision of each)
+// and the engine version, for the skip cache and checkpoints. A new engine
+// can compile rules the old one skipped (go-yara 0.10 added pe), so files
+// found clean by the old engine are scanned again.
 func rulesKey(a *ruleset.Active, ids []string) string {
 	rs := a.Bundle.RulesetsFor(ids)
 	parts := make([]string, 0, len(rs))
@@ -692,5 +768,5 @@ func rulesKey(a *ruleset.Active, ids []string) string {
 		parts = append(parts, fmt.Sprintf("%s@%d", strings.ToLower(r.ID), r.Revision))
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, ",")
+	return engine.Name + "@" + engine.EngineVersion() + ";" + strings.Join(parts, ",")
 }

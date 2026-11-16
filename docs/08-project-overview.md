@@ -75,7 +75,7 @@ sentinelgo/
 ├── installation-doc/               OS-specific install scripts and INSTALLATION.md.
 ├── docs/                           This directory.
 ├── Makefile                        Build, test, cross-compile, pre-release gate.
-└── go.mod                          Module path: `sentinelgo`; requires Go 1.26+.
+└── go.mod                          Module path: `sentinelgo`; requires Go 1.27+.
 ```
 
 ## 3. High-level architecture

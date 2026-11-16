@@ -140,7 +140,8 @@ func TestEnforcer_StopReleasesHeldOpens(t *testing.T) {
 	go func() { _, err := cp(secret, filepath.Join(stick, "x.txt")); done <- err }()
 	e.Stop()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("cp returned after Stop: %v", err)
 	case <-time.After(15 * time.Second):
 		t.Fatal("cp still held after Stop")
 	}

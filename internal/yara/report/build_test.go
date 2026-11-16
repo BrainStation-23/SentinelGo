@@ -257,8 +257,13 @@ func TestScan_RuleCounts(t *testing.T) {
 		}
 	}
 	ev := cut.Summary(yara.ScanCompleted, 1, 0, 0)
-	if len(ev.Summary.RuleCounts) != yara.MaxRuleCounts || !ev.Summary.RuleCountsTruncated {
-		t.Fatalf("cap: %d counts, truncated %v", len(ev.Summary.RuleCounts), ev.Summary.RuleCountsTruncated)
+	// Cut at the cap, and then to fit the 32 KB summary (#497).
+	n := len(ev.Summary.RuleCounts)
+	if n == 0 || n > yara.MaxRuleCounts || !ev.Summary.RuleCountsTruncated {
+		t.Fatalf("cap: %d counts, truncated %v", n, ev.Summary.RuleCountsTruncated)
+	}
+	if data, _ := json.Marshal(ev); len(data) > yara.MaxSummaryBytes+200 {
+		t.Fatalf("summary is %d bytes", len(data))
 	}
 	if err := ev.Validate(); err != nil {
 		t.Fatal(err)

@@ -31,7 +31,7 @@ import (
 // information (TestPinnedVersionMatchesGoMod keeps the two in step).
 const (
 	goYaraModule  = "github.com/cawalch/go-yara"
-	pinnedVersion = "v0.9.0"
+	pinnedVersion = "v0.10.0"
 )
 
 // Name is the engine name the bundle's engine.name refers to.
@@ -161,7 +161,7 @@ func (g *goYara) Compile(ctx context.Context, id string, src []byte) (Program, [
 	for name := range c.GetOptions().Modules {
 		supported[name] = true
 	}
-	source, err := prepare(string(src), supported)
+	source, imported, err := prepare(string(src), supported)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -191,7 +191,7 @@ func (g *goYara) Compile(ctx context.Context, id string, src []byte) (Program, [
 	case n == 0:
 		return nil, skipped, ErrNoRules
 	}
-	return &program{prog: prog, ns: id}, skipped, nil
+	return &program{prog: prog, ns: id, wholePE: imported["pe"]}, skipped, nil
 }
 
 // skippedRules maps go-yara's ignored rules to the status's skipped rules
@@ -232,6 +232,47 @@ func reason(ig compiler.IgnoredRule, earlier map[string]string) string {
 type program struct {
 	prog *compiler.CompiledProgram
 	ns   string
+	// wholePE: the ruleset imports pe, so PE files are scanned from one
+	// buffer holding the whole file (see scanWhole).
+	wholePE bool
+}
+
+// go-yara's reader scans keep only the first streamPrefix bytes for the pe
+// module: fields past it (signatures, checksum, resources, version info, and
+// imports/exports stored late in the file) are undefined, so rules testing
+// them never match. PE files between streamPrefix and MaxWholePEBytes are
+// read into memory and scanned whole instead; larger ones still stream. The
+// worker's memory limit is 1 GiB and it scans one file at a time.
+const (
+	streamPrefix    = 64 << 10
+	MaxWholePEBytes = 64 << 20
+)
+
+// scanWhole reports whether f is scanned from one whole-file buffer.
+func (p *program) scanWhole(f File) bool {
+	return p.wholePE && f.Type == "executable.pe" && f.Size > streamPrefix && f.Size <= MaxWholePEBytes
+}
+
+// readWhole reads up to n bytes of r, checking ctx between chunks. A file
+// that shrank returns what it has.
+func readWhole(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	const chunk = 1 << 20
+	buf := make([]byte, n)
+	var off int64
+	for off < n {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m, err := io.ReadFull(r, buf[off:min(off+chunk, n)])
+		off += int64(m)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf[:off], nil
 }
 
 func (p *program) RuleCount() int { return p.prog.GetRuleCount() }
@@ -257,7 +298,16 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 		compiler.WithExternalVariables(externals(f)),
 	)
 	defer s.Close()
-	res, err := s.ScanReaderWithContext(ctx, r)
+	var res *compiler.ScanResult
+	var err error
+	if p.scanWhole(f) {
+		var data []byte
+		if data, err = readWhole(ctx, r, f.Size); err == nil {
+			res, err = s.ScanWithContext(ctx, data)
+		}
+	} else {
+		res, err = s.ScanReaderWithContext(ctx, r)
+	}
 	if err != nil {
 		return nil, err
 	}

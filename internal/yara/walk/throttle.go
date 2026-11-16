@@ -41,7 +41,13 @@ type Throttle struct {
 	battery     bool
 	BatteryWait time.Duration // time spent paused on battery
 	CPUWait     time.Duration // time spent paused for the CPU budget
+	// Limit is the limit that stopped the scan (yara.EndFileLimit or
+	// yara.EndTimeLimit), once Wait returned ErrLimitReached.
+	Limit string
 }
+
+// Throttled is the time spent paused, on battery or for the CPU budget.
+func (t *Throttle) Throttled() time.Duration { return t.BatteryWait + t.CPUWait }
 
 type cpuSample struct {
 	at  time.Time
@@ -85,9 +91,11 @@ func (t *Throttle) Wait(ctx context.Context) error {
 
 func (t *Throttle) overLimit() error {
 	if t.limits.MaxFilesPerScan > 0 && t.files >= t.limits.MaxFilesPerScan {
+		t.Limit = yara.EndFileLimit
 		return ErrLimitReached
 	}
 	if t.limits.MaxScanMinutes > 0 && t.now().Sub(t.start) >= time.Duration(t.limits.MaxScanMinutes)*time.Minute {
+		t.Limit = yara.EndTimeLimit
 		return ErrLimitReached
 	}
 	return nil
