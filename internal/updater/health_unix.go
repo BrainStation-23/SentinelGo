@@ -48,6 +48,24 @@ func restartService() error {
 	return nil
 }
 
+// startService starts the agent's service unless it is running already
+// (launchctl kickstart without -k and systemctl start leave a running
+// service alone).
+func startService() error {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		// #nosec G204 -- fixed tool path and label
+		cmd = exec.Command(binpath.Resolve("launchctl"), "kickstart", "system/"+launchdLabel)
+	} else {
+		// #nosec G204 -- fixed tool path and unit name
+		cmd = exec.Command(binpath.Resolve("systemctl"), "start", linuxServiceName)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %w (%s)", cmd.Args[0], err, out)
+	}
+	return nil
+}
+
 // spawnWatchdog starts the watchdog so it outlives the agent's restart. On
 // Linux it runs as a transient systemd unit: systemd kills every process in
 // the agent's own cgroup when the agent exits. Elsewhere (macOS, or Linux

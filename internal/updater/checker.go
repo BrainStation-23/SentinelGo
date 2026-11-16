@@ -167,11 +167,10 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	var marker *Marker
 	var markerPath string
 	if action == actionUpgrade {
-		marker, markerPath, err = beginHealthWatch(cfg, running, latest.Version, backupPath, time.Now())
-		if err != nil {
+		if marker, markerPath, err = startHealthWatch(cfg, running, latest.Version, backupPath); err != nil {
 			_ = removeFile(newPath)
 			_ = removeFile(backupPath)
-			return fmt.Errorf("refusing to update without a health check: %w", err)
+			return err
 		}
 	}
 
@@ -193,13 +192,25 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		_ = removeFile(backupPath)
 		return restartFn(newPath)
 	}
-	if err := spawnWatchdogFn(marker, markerPath); err != nil {
-		log.Printf("Updater: warning - the update watchdog didn't start; %s starts one at its first start: %v",
-			sanitize.ForLog(latest.Version), err)
-	}
 
 	fmt.Printf("Update verified and staged: %s -> %s (backup kept until it is healthy)\n", running, latest.Version)
 	return restartFn(newPath)
+}
+
+// startHealthWatch writes the update marker and starts the watchdog, before
+// the binary is touched: a new binary that can't start can't start a
+// watchdog either, so without one nothing would roll it back. On error
+// nothing is left behind and the update must not go ahead.
+func startHealthWatch(cfg *config.Config, running, to, backupPath string) (*Marker, string, error) {
+	marker, markerPath, err := beginHealthWatch(cfg, running, to, backupPath, time.Now())
+	if err != nil {
+		return nil, "", fmt.Errorf("refusing to update without a health check: %w", err)
+	}
+	if err := spawnWatchdogFn(marker, markerPath); err != nil {
+		endHealthWatch(marker, markerPath)
+		return nil, "", fmt.Errorf("refusing to update: the update watchdog didn't start: %w", err)
+	}
+	return marker, markerPath, nil
 }
 
 // heldBack reports whether the update health check (#503) holds this

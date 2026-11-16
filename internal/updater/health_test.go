@@ -36,19 +36,24 @@ func stubSpawn(t *testing.T) *[]string {
 
 // ── CheckAndApply with the health watch ─────────────────────────────────────
 
-func TestCheckAndApply_WatchdogSpawnFailureStillUpdates(t *testing.T) {
+// Without a running watchdog nothing could roll back a new binary that
+// can't start, so the update doesn't go ahead.
+func TestCheckAndApply_WatchdogSpawnFailureRefusesUpdate(t *testing.T) {
 	f, cfg := newUpdateFixture(t, "")
 	f.spawnErr = errors.New("no systemd-run")
-	if err := CheckAndApply(t.Context(), cfg); err != nil {
-		t.Fatalf("CheckAndApply() error: %v", err)
+	err := CheckAndApply(t.Context(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "watchdog didn't start") {
+		t.Fatalf("CheckAndApply() = %v, want a refusal", err)
 	}
-	if len(f.restarted) != 1 {
-		t.Errorf("restarted = %v, want one restart", f.restarted)
+	if len(f.restarted) != 0 {
+		t.Errorf("restarted = %v, want none", f.restarted)
 	}
-	// The marker stays: the new binary starts a watchdog and cleans up.
-	if _, err := ReadMarker(filepath.Join(f.cfgDir, markerFileName)); err != nil {
-		t.Errorf("marker: %v", err)
+	if got := mustReadFile(t, f.self); !bytes.Equal(got, f.oldBinary) {
+		t.Errorf("binary replaced: %q", got)
 	}
+	assertNotExist(t, filepath.Join(f.cfgDir, markerFileName), "marker")
+	assertNotExist(t, f.self+".backup", "backup")
+	assertNotExist(t, watchdogPathFor(f.self), "watchdog copy")
 }
 
 func TestCheckAndApply_DowngradeIsNotWatched(t *testing.T) {
@@ -260,14 +265,75 @@ func TestConfirmHealthy_RetriesFailedCleanup(t *testing.T) {
 	if !healthTick(m) {
 		t.Fatal("healthTick gave up while the marker remains")
 	}
+	// The marker is readable and removable again.
 	if err := os.RemoveAll(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(markerPath, m); err != nil {
 		t.Fatal(err)
 	}
 	if healthTick(m) || !confirmed {
 		t.Fatal("healthTick didn't finish the confirmation once the marker could go")
 	}
+	assertNotExist(t, markerPath, "marker")
 	assertNotExist(t, m.BackupPath, "backup")
+}
 
+// While the watchdog holds the transition lock (rolling back), the agent
+// doesn't confirm; the alive ticker retries once the lock is free.
+func TestConfirmHealthy_WaitsWhileWatchdogHoldsLock(t *testing.T) {
+	cfg, markerPath, m := healthSetup(t)
+	held, err := acquireTransition(markerPath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ConfirmHealthy(cfg) // waits confirmLockWait, then gives up for now
+	if _, err := ReadMarker(markerPath); err != nil {
+		t.Fatalf("marker removed while the watchdog held the lock: %v", err)
+	}
+	if _, err := os.Stat(m.BackupPath); err != nil {
+		t.Fatalf("backup removed while the watchdog held the lock: %v", err)
+	}
+	_ = held.Release()
+	if healthTick(m) || !confirmed {
+		t.Fatal("the confirmation wasn't retried once the lock was free")
+	}
+	assertNotExist(t, markerPath, "marker")
+	assertNotExist(t, m.BackupPath, "backup")
+}
+
+// The watchdog rolled the update back while the agent was confirming: the
+// agent leaves the restored state alone.
+func TestFinishConfirm_AfterRollbackLeavesFilesAlone(t *testing.T) {
+	_, markerPath, m := healthSetup(t)
+	if err := os.Remove(markerPath); err != nil { // the watchdog's rollback
+		t.Fatal(err)
+	}
+	healthMu.Lock()
+	ok := finishConfirm(m)
+	healthMu.Unlock()
+	if !ok || !confirmed {
+		t.Fatal("finishConfirm kept retrying after the update ended")
+	}
+	if _, err := os.Stat(m.BackupPath); err != nil {
+		t.Errorf("backup removed after a rollback: %v", err)
+	}
+	// Another update's marker isn't this one's to remove either.
+	resetHealthState(t)
+	other := *m
+	other.Created = m.Created.Add(time.Hour)
+	if err := writeJSONAtomic(markerPath, &other); err != nil {
+		t.Fatal(err)
+	}
+	healthMu.Lock()
+	ok = finishConfirm(m)
+	healthMu.Unlock()
+	if !ok {
+		t.Fatal("finishConfirm kept retrying on another update's marker")
+	}
+	if _, err := ReadMarker(markerPath); err != nil {
+		t.Errorf("another update's marker removed: %v", err)
+	}
 }
 
 func TestStartHealthCheck_LogsRollbackOnce(t *testing.T) {
@@ -298,6 +364,10 @@ type fakeWatchdog struct {
 	installs   int
 	installErr error
 	restarts   int
+	starts     int
+	// onLock runs when the watchdog takes the transition lock (the real
+	// one, not waiting), e.g. to confirm the update just before it.
+	onLock func()
 }
 
 func (w *fakeWatchdog) deps() watchdogDeps {
@@ -319,6 +389,17 @@ func (w *fakeWatchdog) deps() watchdogDeps {
 			return replaceWithBackup(m)
 		},
 		restart: func() error { w.restarts++; return nil },
+		start:   func() error { w.starts++; return nil },
+		lock: func(markerPath string) (func(), error) {
+			if w.onLock != nil {
+				w.onLock()
+			}
+			l, err := acquireTransition(markerPath, 0)
+			if err != nil {
+				return nil, err
+			}
+			return func() { _ = l.Release() }, nil
+		},
 	}
 }
 
@@ -478,8 +559,76 @@ func TestWatchdog_UpdateNeverInstalled(t *testing.T) {
 	if code := runWatchdog(markerPath, w.deps()); code != 0 || w.installs != 0 || w.restarts != 0 {
 		t.Fatalf("exit %d, installs %d, restarts %d; want a cleanup only", code, w.installs, w.restarts)
 	}
+	// The service may be down (the Windows script starts it only after a
+	// successful swap): it is started, not left stopped.
+	if w.starts != 1 {
+		t.Errorf("starts = %d, want 1", w.starts)
+	}
 	assertNotExist(t, markerPath, "marker")
 	assertNotExist(t, m.RecordPath, "rollback record")
+}
+
+// The agent confirmed the update healthy just before the watchdog took the
+// transition lock: no rollback.
+func TestWatchdog_ConfirmedBeforeLockDoesNotRollBack(t *testing.T) {
+	markerPath, m, w := watchdogSetup(t, nil)
+	w.onLock = func() { _ = os.Remove(markerPath) }
+	if code := runWatchdog(markerPath, w.deps()); code != 0 || w.installs != 0 || w.restarts != 0 {
+		t.Fatalf("exit %d, installs %d, restarts %d; want a quiet exit", code, w.installs, w.restarts)
+	}
+	if got := mustReadFile(t, m.ExePath); string(got) != "broken new agent" {
+		t.Errorf("binary changed: %q", got)
+	}
+	assertNotExist(t, m.RecordPath, "rollback record")
+}
+
+// While the agent holds the transition lock (confirming), the watchdog
+// doesn't roll back; it acts once the lock is free and the update is still
+// unconfirmed.
+func TestWatchdog_WaitsForTransitionLock(t *testing.T) {
+	markerPath, m, w := watchdogSetup(t, nil)
+	held, err := acquireTransition(markerPath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	w.onSleep = func(int) {
+		if !released && w.installs == 0 && w.now.After(m.Deadline) {
+			_ = held.Release()
+			released = true
+		}
+	}
+	t.Cleanup(func() { _ = held.Release() })
+	// Past the deadline the first lock attempt fails; the poll after it
+	// releases the lock.
+	w.now = m.Deadline.Add(time.Minute)
+	code := runWatchdog(markerPath, w.deps())
+	if !released || w.sleeps == 0 {
+		t.Fatalf("rolled back without waiting for the lock (sleeps %d)", w.sleeps)
+	}
+	assertRolledBack(t, markerPath, m, w, code, "not running")
+}
+
+// If the rollback record can't be written, the bad version stays blocked:
+// the marker is renamed rather than deleted.
+func TestWatchdog_RecordWriteFailureKeepsGuard(t *testing.T) {
+	markerPath, m, w := watchdogSetup(t, func(m *Marker) {
+		m.RecordPath = filepath.Join(filepath.Dir(m.ExePath), "missing-dir", rollbackFileName)
+	})
+	if code := runWatchdog(markerPath, w.deps()); code != 0 || w.installs != 1 || w.restarts != 1 {
+		t.Fatalf("exit %d, installs %d, restarts %d; want a rollback", code, w.installs, w.restarts)
+	}
+	if got := mustReadFile(t, m.ExePath); string(got) != "good old agent" {
+		t.Errorf("binary = %q, want the backup", got)
+	}
+	assertNotExist(t, markerPath, "marker")
+	cfg := &config.Config{Path: filepath.Join(filepath.Dir(markerPath), "config.json")}
+	if got := rolledBackVersion(cfg); got != "v2.0.0" {
+		t.Fatalf("rolledBackVersion = %q, want v2.0.0 from the renamed marker", got)
+	}
+	if !heldBack(cfg, "2.0.0") {
+		t.Error("the rolled-back version isn't held back")
+	}
 }
 
 func TestWatchdog_InstallFailureKeepsBackup(t *testing.T) {

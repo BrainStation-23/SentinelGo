@@ -91,15 +91,23 @@ which may predate this check and could never confirm itself.
   agent's whole cgroup; in its own session on macOS, outside the process
   group launchd kills; detached (breaking away from a job when allowed) on
   Windows. It holds `update_watchdog.lock` (one watchdog per marker) and logs
-  to `update_watchdog.log`.
+  to `update_watchdog.log`. It starts before the binary is replaced; if it
+  can't start, the update doesn't go ahead, because a new binary that can't
+  start couldn't start a watchdog either.
 - **New binary.** `StartHealthCheck` (first step of `MainIntegration.Start`)
   records each start (`attempts`, `booted_at`) in `update_health.json` and
   refreshes `alive_at` every 30 s. When no watchdog holds the lock, for example
   after a reboot, it starts one. Once the agent has signed in and an
-  agent-info upload succeeded, `ConfirmHealthy` (from the `agent-info-update`
-  task) deletes the marker, the health file, the backup and the watchdog copy,
-  and the watchdog exits. If deleting the marker fails, the 30 s ticker
-  retries it.
+  agent-info upload the server accepted (a payload it rejects with a 4xx
+  doesn't count), `ConfirmHealthy` (from the `agent-info-update` task)
+  deletes the marker, the health file, the backup and the watchdog copy, and
+  the watchdog exits. If deleting the marker fails, the 30 s ticker retries
+  it.
+- **Confirm or roll back, never both.** The agent confirming and the watchdog
+  rolling back each hold `update_transition.lock` (an OS file lock) and
+  re-read the marker under it. Whoever gets it first ends the update; the
+  other finds the marker gone (or another update's) and leaves the files
+  alone.
 - **Rollback.** The watchdog restores the backup when the new binary started
   more than 3 times, or when the deadline passed. The deadline is the
   marker's, or 10 minutes after the latest start if that is later. On Linux
@@ -108,7 +116,10 @@ which may predate this check and could never confirm itself.
   `launchctl kickstart -k system/com.sentinelgo.agent`, after re-registering
   with Gatekeeper). On Windows it stops the service with `sc stop`, waits for
   the binary to unlock, then runs `sc start`. It writes
-  `update_rollback.json`. The restored agent logs the rollback once, so it
+  `update_rollback.json`. If that write fails (a full disk), it renames the
+  marker to `update_rolledback_marker.json` instead, which needs no new
+  space and still names the bad version; if even that fails, the marker
+  stays, which holds updates back until `give_up_at`. The restored agent logs the rollback once, so it
   reaches the uploaded agent log, and the update checks skip that version
   until the server offers another one. The watchdog only restores
   `<exe>.backup` over `<exe>`, whatever the marker says.
@@ -117,7 +128,9 @@ which may predate this check and could never confirm itself.
   10 minutes (in memory), for up to 24 hours. A marker older than that is
   stale and is removed.
 - **Never installed.** If the binary still matches the backup (e.g. the
-  Windows swap didn't run), the watchdog just cleans up and records nothing.
+  Windows swap didn't run), the watchdog cleans up, records nothing, and
+  starts the service in case it is down (`sc start`, `systemctl start`,
+  `launchctl kickstart`, which leave a running service alone).
 - **No stacking.** While an update waits for its health check, the agent
   doesn't start another one.
 

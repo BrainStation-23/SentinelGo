@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"sentinelgo/internal/sanitize"
 	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
+	"sentinelgo/internal/service/rpcutil"
 	swsvc "sentinelgo/internal/service/software"
 	"sentinelgo/internal/updater"
 )
@@ -763,21 +765,21 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 	sysInfo.PowerTelemetry = telemetry
 
 	agentSvc := agentsvc.NewAgentService()
+	// Report a payload the server rejects (4xx) as an error: it must not
+	// count as the successful upload the update health check waits for.
+	sctx := rpcutil.ReportDroppedPayloads(tctx)
 	var sendErr error
 	if authSvc == nil {
-		sendErr = agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+		sendErr = agentSvc.UpdateAgentInfo(sctx, cfg, sysInfo)
 	} else {
 		// On a 401 mid-run, recover the session (refresh→login) and retry once.
-		sendErr = authSvc.DoWithAuthRetry(tctx, cfg, func() error {
-			return agentSvc.UpdateAgentInfo(tctx, cfg, sysInfo)
+		sendErr = authSvc.DoWithAuthRetry(sctx, cfg, func() error {
+			return agentSvc.UpdateAgentInfo(sctx, cfg, sysInfo)
 		})
 	}
-	if sendErr != nil {
-		return sendErr
+	if err := afterAgentInfoSend(cfg, sendErr); err != nil {
+		return err
 	}
-	// Signed in and an inventory RPC succeeded: a fresh self-update is
-	// healthy, so its backup can go (#503).
-	updater.ConfirmHealthy(cfg)
 
 	powerWindow.Commit(powerMark)
 	agentInfoMu.Lock()
@@ -785,6 +787,28 @@ func handleAgentInfoUpdate(ctx context.Context, cfg *config.Config, authSvc *aut
 	agentLastForce = time.Now()
 	agentInfoMu.Unlock()
 	return nil
+}
+
+// confirmHealthyFn is updater.ConfirmHealthy, swapped in tests.
+var confirmHealthyFn = updater.ConfirmHealthy
+
+// afterAgentInfoSend handles the agent-info upload's result. Accepted: the
+// agent is signed in and an inventory RPC succeeded, so a fresh self-update
+// is healthy and its backup can go (#503). Rejected by the server (4xx): it
+// is dropped as before (nil, so it isn't resent every tick until the next
+// change or forced resend) but proves nothing about the update. Any other
+// error is returned.
+func afterAgentInfoSend(cfg *config.Config, sendErr error) error {
+	switch {
+	case sendErr == nil:
+		confirmHealthyFn(cfg)
+		return nil
+	case errors.Is(sendErr, rpcutil.ErrPayloadDropped):
+		log.Printf("Scheduler: the server rejected the agent info; it doesn't count for the update health check")
+		return nil
+	default:
+		return sendErr
+	}
 }
 
 func handleSoftwareSync(ctx context.Context, cfg *config.Config, authSvc *authsvc.Service) error {
