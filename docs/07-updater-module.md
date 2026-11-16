@@ -23,6 +23,7 @@ Package layout:
 | `downloader.go` | Authenticated Storage download, SHA256 + ed25519 verify |
 | `installer.go` | Backup, atomic replace, OS-specific restart |
 | `version.go` | Semver parse / update decision (newer, or server-approved older) |
+| `health.go` (+ `health_unix.go`, `health_windows.go`) | Update marker, health confirmation, the update watchdog and its rollback |
 | `pubkey.go` | Embedded ed25519 public key (matches CI `SENTINELGO_SIGNING_KEY`) |
 
 ## Triggers
@@ -44,12 +45,17 @@ Order is deliberate (verify before replace; version not persisted before restart
 ```
 1. fetchLatestRelease  → RPC get_latest_agent_release(p_platform, p_arch)
 2. Compare latest.Version to compiled-in config.Version (newer, or older with allow_downgrade)
+   → skip a version this device rolled back from, and wait while an earlier
+     update still waits for its health check
 3. Require SHA256 in the RPC row (refuse otherwise)
 4. createBackup        → <exe>.backup
 5. downloadAndVerify   → Storage agent-releases/<asset> + <.sig>
                        → SHA256 match + ed25519.Verify(PublicKey)
-6. atomicReplace       → Unix only (Windows stages .new for post-exit swap)
-7. restart             → exit; launchd / systemd / SCM relaunches
+6. beginHealthWatch    → update_marker.json next to the config, and
+                         sentinelgo-update-watchdog[.exe] (a copy of the old binary)
+7. atomicReplace       → Unix only (Windows stages .new for post-exit swap)
+8. spawnWatchdog       → `update-watchdog --marker …`, outside the service
+9. restart             → exit; launchd / systemd / SCM relaunches
 ```
 
 Notes:
@@ -66,6 +72,42 @@ Notes:
 - Fail closed: missing `.sig`, bad signature, or checksum mismatch aborts and
   cleans up the staged file / backup as appropriate.
 - On Unix replace failure, `rollbackFromBackup` restores the previous binary.
+
+## Health check and rollback (#503)
+
+The backup stays until the new binary proves it works.
+
+- **Marker.** `update_marker.json` (next to `config.json`, mode 0600) holds
+  `from_version`, `to_version`, the binary and backup paths, the deadline
+  (10 minutes), the boot attempts and when the new binary was last alive.
+- **Watchdog.** Before restarting, the old binary copies itself to
+  `sentinelgo-update-watchdog[.exe]` and starts it with
+  `update-watchdog --marker <path>` so it survives the restart: as a
+  transient systemd unit (`systemd-run`) on Linux, because systemd kills the
+  agent's whole cgroup; in its own session on macOS, outside the process
+  group launchd kills; detached (breaking away from a job when allowed) on
+  Windows. It logs to `update_watchdog.log` next to the marker. If it can't
+  start, the update still goes ahead, without automatic rollback.
+- **New binary.** `StartHealthCheck` (first step of `MainIntegration.Start`)
+  counts each start in the marker and refreshes `alive_at` every 30 s. Once
+  the agent has signed in and an agent-info upload succeeded,
+  `ConfirmHealthy` (from the `agent-info-update` task) deletes the marker,
+  the backup and the watchdog copy; the watchdog then exits.
+- **Rollback.** The watchdog restores the backup when the new binary started
+  more than 3 times, or the deadline passed. On Linux and macOS it replaces
+  the file in place and restarts the service (`systemctl restart sentinelgo`,
+  `launchctl kickstart -k system/com.sentinelgo.agent`, after re-registering
+  with Gatekeeper). On Windows it stops the service with `sc stop`, waits for
+  the binary to unlock, then runs `sc start`. It writes
+  `update_rollback.json`. The restored agent logs the rollback once, so it
+  reaches the uploaded agent log, and the update checks skip that version
+  until the server offers another one. The watchdog only restores
+  `<exe>.backup` over `<exe>`, whatever the marker says.
+- **Offline.** If the deadline passes while the new binary is alive but the
+  watchdog can't reach the server either, the deadline moves on by 10 minutes,
+  for up to 24 hours. A marker older than that is stale and is removed.
+- **Never installed.** If the binary still matches the backup (e.g. the
+  Windows swap didn't run), the watchdog just cleans up and records nothing.
 
 ## Release discovery
 

@@ -70,8 +70,5 @@ func spawnWatchdog(m *Marker, markerPath string) error {
 	}
 	// The job doesn't allow breakaway; without a kill-on-close job the
 	// watchdog still survives the service's exit.
-	if err := start(base); err != nil {
-		return err
-	}
-	return nil
+	return start(base)
 }
