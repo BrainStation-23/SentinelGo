@@ -125,6 +125,7 @@ type OnWrite struct {
 type owConfig struct {
 	active   *ruleset.Active
 	roots    []string
+	excl     []string     // the bundle's on-write exclusions, for the summary's scope
 	walk     walk.Options // per-file checks (Cache and Guard unset)
 	ids      []string
 	rulesKey string
@@ -233,7 +234,7 @@ func (ow *OnWrite) config(a *ruleset.Active) *owConfig {
 	}
 	l := b.Limits
 	return &owConfig{
-		active: a, roots: roots, ids: ids, rulesKey: rulesKey(a, ids),
+		active: a, roots: roots, excl: b.OnWrite.Exclusions.For(env.GOOS), ids: ids, rulesKey: rulesKey(a, ids),
 		timeout: time.Duration(l.PerFileTimeoutMS) * time.Millisecond,
 		walk: walk.Options{GOOS: env.GOOS, Exclude: walk.NewExcluder(b.OnWrite.Exclusions.For(env.GOOS), ow.r.o.ExcludeDir, env),
 			MaxFileBytes: l.MaxFileBytes, Mounts: ow.r.o.Mounts(),
@@ -360,13 +361,21 @@ func (ow *OnWrite) scan(path string) {
 	case errors.Is(err, fs.ErrNotExist):
 		return // a temp file, gone again: nothing reached the disk to scan
 	case err != nil:
-		ow.count(cfg, func(w *owWindow) { w.errors++ })
+		ow.count(cfg, func(w *owWindow) {
+			w.errors++
+			w.rep.Fail(yara.ErrList, 1)
+			w.rep.Problem(path, yara.ErrList, walk.ErrorDetail(err), 0, true)
+		})
 		return
 	case reason != "":
-		ow.count(cfg, func(w *owWindow) { w.skipped++ })
+		ow.count(cfg, func(w *owWindow) {
+			w.skipped++
+			w.rep.Skip(reason, 1)
+			w.rep.Problem(path, reason, "", f.Size, false)
+		})
 		return
 	}
-	if err := cfg.guard.Wait(ctx); err != nil {
+	if err := ow.wait(ctx, cfg); err != nil {
 		return
 	}
 	out, err := ow.r.scanOne(ctx, prioOnWrite, cfg.active.Rules, f, cfg.ids, cfg.timeout)
@@ -376,16 +385,23 @@ func (ow *OnWrite) scan(path string) {
 	switch out.Status {
 	case Scanned:
 	case Skipped:
-		ow.count(cfg, func(w *owWindow) { w.skipped++ })
+		ow.count(cfg, func(w *owWindow) {
+			w.skipped++
+			noteOutcome(w.rep, f, out)
+		})
 		return
 	default: // read error, worker failure, no rules
-		ow.count(cfg, func(w *owWindow) { w.errors++ })
+		ow.count(cfg, func(w *owWindow) {
+			w.errors++
+			noteOutcome(w.rep, f, out)
+		})
 		return
 	}
 	result := walk.Clean
 	var queueErr error
 	ow.count(cfg, func(w *owWindow) {
 		w.scanned++
+		w.rep.AddBytes(out.Size)
 		if len(out.Matches) == 0 {
 			return
 		}
@@ -397,6 +413,7 @@ func (ow *OnWrite) scan(path string) {
 		}
 		if err != nil {
 			w.errors++
+			w.rep.Fail(yara.ErrQueue, 1)
 			queueErr = err
 		}
 	})
@@ -409,13 +426,36 @@ func (ow *OnWrite) scan(path string) {
 	}
 }
 
+// throttledGuard is a guard that reports the time it paused (walk.Throttle).
+type throttledGuard interface{ Throttled() time.Duration }
+
+// wait waits for cfg's guard and adds the time it paused to the current
+// window's throttled_seconds. The guard outlives windows, so only the
+// pause of this wait is added.
+func (ow *OnWrite) wait(ctx context.Context, cfg *owConfig) error {
+	tg, _ := cfg.guard.(throttledGuard)
+	var before time.Duration
+	if tg != nil {
+		before = tg.Throttled()
+	}
+	err := cfg.guard.Wait(ctx)
+	if tg != nil {
+		if d := tg.Throttled() - before; d > 0 {
+			ow.count(cfg, func(w *owWindow) { w.rep.AddThrottled(d) })
+		}
+	}
+	return err
+}
+
 // count updates the current window, opening one for cfg's bundle if needed.
 func (ow *OnWrite) count(cfg *owConfig, fn func(w *owWindow)) {
 	ow.winMu.Lock()
 	defer ow.winMu.Unlock()
 	if ow.win == nil {
+		b := cfg.active.Bundle
 		ow.win = &owWindow{active: cfg.active, opened: ow.r.o.Now(),
-			rep: report.NewScan("", yara.TriggerOnWrite, onWritePreset, cfg.active.Bundle.Evidence, ow.r.o.Dedupe)}
+			rep: report.NewScan("", yara.TriggerOnWrite, onWritePreset, b.Evidence, ow.r.o.Dedupe)}
+		ow.win.rep.SetScope(cfg.roots, cfg.excl, b.Limits, b.RulesetsFor(cfg.ids))
 	}
 	fn(ow.win)
 }

@@ -26,6 +26,7 @@ var AgentCapabilities = []string{
 	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
 	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
 	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
+	"yara_scan_report_v1",   // threat hunting: scan_summary skip/error reasons, end reason, scope, problem files (contract v1.2, #497)
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on

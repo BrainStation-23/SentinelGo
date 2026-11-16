@@ -28,6 +28,11 @@ const Capability = "yara_scan_v1"
 // enabled on_write block only to agents that report it.
 const CapabilityOnWrite = "yara_on_write_v1"
 
+// CapabilityScanReport is advertised by agents whose scan_summary carries
+// the contract v1.2 report fields: skip and error reasons, end reason,
+// scope, problem files (#497). They are optional, so v1 servers ignore them.
+const CapabilityScanReport = "yara_scan_report_v1"
+
 // RPCs and tasks.
 const (
 	RPCGetRuleset    = "agent_get_yara_ruleset"
@@ -57,6 +62,16 @@ const (
 	MaxSkippedRules = 100 // per ruleset in a status
 	MaxRuleCounts   = 500 // scan_summary rule_counts (the server takes up to 1,000)
 	MaxErrorLen     = 200 // skipped-rule reasons and other error strings
+
+	// scan_summary report fields (contract v1.2, #497), as the server's
+	// _yara_valid_scan_report checks them.
+	MaxSummaryBytes    = 32 << 10 // problem_files go first, then rule_counts
+	MaxReasons         = 32       // keys of skipped_by_reason / errors_by_reason
+	MaxProblemFiles    = 200
+	MaxProblemDetail   = 200
+	MaxScopeRoots      = 100
+	MaxScopeExclusions = 200
+	MaxScopeBytes      = 64 << 10
 
 	MaxEventsPerCall = 500
 	MaxMetaBytes     = 2 << 10
@@ -107,6 +122,47 @@ const (
 func ValidScanState(s string) bool {
 	return s == ScanCompleted || s == ScanPartial || s == ScanCancelled || s == ScanFailed
 }
+
+// Why a scan ended early (scan_summary end_reason, contract v1.2). A
+// completed scan has none.
+const (
+	EndTimeLimit     = "time_limit"
+	EndFileLimit     = "file_limit"
+	EndCancelled     = "cancelled"
+	EndDisabled      = "disabled"
+	EndWorkerFailure = "worker_failure"
+	EndNoRules       = "no_rules"
+	EndShutdown      = "shutdown"
+	EndError         = "error"
+)
+
+// ValidEndReason reports whether r is an end reason the contract defines.
+func ValidEndReason(r string) bool {
+	switch r {
+	case EndTimeLimit, EndFileLimit, EndCancelled, EndDisabled, EndWorkerFailure, EndNoRules, EndShutdown, EndError:
+		return true
+	}
+	return false
+}
+
+// Per-file reasons the scan adds to the walk's skip reasons
+// (skipped_by_reason), and error reasons (errors_by_reason).
+const (
+	SkipTimeout = "timeout" // the per-file timeout
+	SkipChanged = "changed" // changed or gone since it was listed
+
+	ErrAccessDenied = "access_denied"
+	ErrLocked       = "locked" // sharing violation, in use
+	ErrRead         = "read_error"
+	ErrList         = "list_error" // a folder couldn't be listed, or a file stat'ed
+	ErrWorkerFailed = "worker_failed"
+	ErrQueue        = "queue_error" // match events couldn't be queued on disk
+)
+
+var reasonRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// IsReason reports whether s is a reason name the server accepts.
+func IsReason(s string) bool { return reasonRE.MatchString(s) }
 
 // Path evidence modes (bundle evidence.path_mode).
 const (

@@ -225,5 +225,103 @@ func (s *ScanSummary) Validate() error {
 			return fmt.Errorf("%w: negative rule count", ErrInvalidEvent)
 		}
 	}
+	return s.validReport()
+}
+
+// validReport checks the contract v1.2 report fields like the server's
+// _yara_valid_scan_report.
+func (s *ScanSummary) validReport() error {
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("%w: "+format, append([]any{ErrInvalidEvent}, a...)...)
+	}
+	for name, m := range map[string]map[string]int64{"skipped_by_reason": s.SkippedByReason, "errors_by_reason": s.ErrorsByReason} {
+		if len(m) > MaxReasons {
+			return bad("%s has %d reasons (max %d)", name, len(m), MaxReasons)
+		}
+		for k, v := range m {
+			if !IsReason(k) || v < 0 {
+				return bad("%s: reason %q = %d", name, k, v)
+			}
+		}
+	}
+	switch {
+	case s.EndReason != "" && !ValidEndReason(s.EndReason):
+		return bad("unknown end_reason %q", s.EndReason)
+	case s.BytesScanned < 0 || s.ThrottledSeconds < 0:
+		return bad("negative bytes_scanned or throttled_seconds")
+	case len(s.ProblemFiles) > MaxProblemFiles:
+		return bad("%d problem files (max %d)", len(s.ProblemFiles), MaxProblemFiles)
+	}
+	if err := s.Scope.validate(); err != nil {
+		return err
+	}
+	for _, f := range s.ProblemFiles {
+		if err := f.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f ProblemFile) validate() error {
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("%w: problem file: "+format, append([]any{ErrInvalidEvent}, a...)...)
+	}
+	hasPath := f.Path != nil && *f.Path != ""
+	switch {
+	case !IsReason(f.Reason):
+		return bad("reason %q", f.Reason)
+	case f.Path != nil && len(*f.Path) > MaxPathLen:
+		return bad("path over %d characters", MaxPathLen)
+	case f.PathHash != nil && !IsSHA256(*f.PathHash):
+		return bad("path_hash is not a hex SHA-256")
+	case !hasPath && (f.PathHash == nil || *f.PathHash == ""):
+		return bad("needs a path or a path_hash")
+	case len(f.FileExt) > MaxFileExtLen:
+		return bad("file_ext over %d characters", MaxFileExtLen)
+	case len(f.Detail) > MaxProblemDetail:
+		return bad("detail over %d characters", MaxProblemDetail)
+	case f.Size < 0:
+		return bad("negative size")
+	}
+	return nil
+}
+
+func (sc *Scope) validate() error {
+	if sc == nil {
+		return nil
+	}
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("%w: scope: "+format, append([]any{ErrInvalidEvent}, a...)...)
+	}
+	for _, l := range []struct {
+		name string
+		list []string
+		max  int
+	}{{"roots", sc.Roots, MaxScopeRoots}, {"exclusions", sc.Exclusions, MaxScopeExclusions}} {
+		if len(l.list) > l.max {
+			return bad("%d %s (max %d)", len(l.list), l.name, l.max)
+		}
+		for _, p := range l.list {
+			if p == "" || len(p) > MaxPathLen {
+				return bad("%s entries must be 1-%d characters", l.name, MaxPathLen)
+			}
+		}
+	}
+	if len(sc.Rulesets) > MaxRulesets {
+		return bad("%d rulesets (max %d)", len(sc.Rulesets), MaxRulesets)
+	}
+	for _, r := range sc.Rulesets {
+		if !IsUUID(r.ID) || r.Revision < 0 {
+			return bad("ruleset %q revision %d", r.ID, r.Revision)
+		}
+	}
+	l := sc.Limits
+	if l.MaxFileBytes < 0 || l.PerFileTimeoutMS < 0 || l.MaxScanMinutes < 0 || l.MaxFilesPerScan < 0 {
+		return bad("negative limit")
+	}
+	if data, err := json.Marshal(sc); err != nil || len(data) > MaxScopeBytes {
+		return bad("over %d bytes", MaxScopeBytes)
+	}
 	return nil
 }

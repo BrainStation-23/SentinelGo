@@ -89,8 +89,9 @@ func excludedReason(o Options, p string) string {
 // be excluded (Excluded), must be a regular file and not a link, must have
 // its content on the device, must fit o.MaxFileBytes and, with o.Cache,
 // must have changed since its last scan with o.Rules. It returns the File
-// to scan, or the skip reason (one of the Skip* constants) and no error. A
-// file that is gone returns fs.ErrNotExist.
+// to scan, or the skip reason (one of the Skip* constants) and no error;
+// for a skip after the lstat the File still has the path and size, for the
+// scan report. A file that is gone returns fs.ErrNotExist.
 func Stat(o Options, p string) (File, string, error) {
 	if reason := excludedReason(o, p); reason != "" {
 		return File{}, reason, nil
@@ -105,9 +106,9 @@ func Stat(o Options, p string) (File, string, error) {
 	case !info.Mode().IsRegular():
 		return File{}, SkipSpecial, nil
 	case placeholder(info):
-		return File{}, SkipCloud, nil
+		return File{Path: p, Size: info.Size()}, SkipCloud, nil
 	case o.MaxFileBytes > 0 && info.Size() > o.MaxFileBytes:
-		return File{}, SkipTooLarge, nil
+		return File{Path: p, Size: info.Size()}, SkipTooLarge, nil
 	}
 	f := File{Path: p, Size: info.Size(), Key: keyOf(p, info), id: idOf(info)}
 	if o.Cache != nil {
