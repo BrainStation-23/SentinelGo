@@ -75,7 +75,9 @@ func TestBundle_ProgressInterval(t *testing.T) {
 		{nil, 0},
 		{&ScanProgressConfig{}, DefaultProgressInterval},
 		{&ScanProgressConfig{IntervalSeconds: 120}, 2 * time.Minute},
-		{&ScanProgressConfig{IntervalSeconds: 5}, MinProgressInterval},
+		{&ScanProgressConfig{IntervalSeconds: 5}, 2 * time.Minute},
+		{&ScanProgressConfig{IntervalSeconds: 60}, 2 * time.Minute},
+		{&ScanProgressConfig{IntervalSeconds: 119}, 2 * time.Minute},
 	} {
 		if got := (&Bundle{ScanProgress: c.cfg}).ProgressInterval(); got != c.want {
 			t.Errorf("%+v: %v, want %v", c.cfg, got, c.want)

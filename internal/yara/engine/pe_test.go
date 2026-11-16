@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"sentinelgo/internal/dlp/filescan"
 )
 
 // minimalPE returns a PE32 image of size bytes: DOS header, PE header, one
@@ -110,5 +112,34 @@ func TestReadWholeHonoursContext(t *testing.T) {
 	got, err := readWhole(context.Background(), strings.NewReader("abc"), 10)
 	if err != nil || string(got) != "abc" {
 		t.Errorf("short read = %q, %v", got, err)
+	}
+}
+
+// utf16StubPE is a 200 KiB PE whose bytes after the headers read as UTF-16LE
+// text ("AAAA..."), so a text-first sniffer would type it text.utf16le.
+func utf16StubPE() []byte {
+	img := minimalPE(200 << 10)
+	fill := func(from, to int) {
+		for i := from; i+1 < to; i += 2 {
+			img[i], img[i+1] = 'A', 0
+		}
+	}
+	fill(0x02, 0x3c)   // the DOS header up to e_lfanew
+	fill(0x160, 0x200) // after the section table
+	fill(0x202, len(img))
+	return img
+}
+
+// A PE that looks like UTF-16LE text is still typed executable.pe, so it is
+// scanned whole and whole-file pe fields stay defined (no evasion).
+func TestPEModuleUTF16LookingStubStillScannedWhole(t *testing.T) {
+	img := utf16StubPE()
+	if typ := filescan.SniffType(img[:sniffBytes]); typ != "executable.pe" {
+		t.Fatalf("SniffType = %q, want executable.pe", typ)
+	}
+	p, _ := compile(t, peRules, Options{})
+	got := matchedRules(scan(t, p, string(img), File{Path: "a.exe", Size: int64(len(img))}))
+	if !got["pe_full_input"] {
+		t.Errorf("matched %v, want pe_full_input", got)
 	}
 }

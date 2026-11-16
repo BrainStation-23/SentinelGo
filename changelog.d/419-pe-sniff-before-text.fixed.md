@@ -1,0 +1,1 @@
+- YARA: a Windows executable whose first bytes look like UTF-16 text is still typed `executable.pe` (#419), so `pe` rules see the whole file (signatures, checksum, resources) and the `filetype` external is right. DLP evidence reports these files as `executable.pe` too, not `text.utf16le`.

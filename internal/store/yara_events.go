@@ -109,6 +109,16 @@ func (s *YARAEventStore) Add(evs []yara.Event) error {
 		if err != nil {
 			return fmt.Errorf("encode YARA event: %w", err)
 		}
+		// An event already queued is a no-op: check before the progress
+		// replacement, which would otherwise delete it and re-insert it
+		// behind newer rows, changing which row the cap evicts.
+		var queued int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM yara_event_queue WHERE event_id = ?`, ev.EventID).Scan(&queued); err != nil {
+			return fmt.Errorf("look up YARA event: %w", err)
+		}
+		if queued > 0 {
+			continue
+		}
 		if id := progressScanID(ev); id != "" {
 			if _, err := tx.Exec(`DELETE FROM yara_event_queue
 				WHERE json_extract(event_json, '$.kind') = ? AND json_extract(event_json, '$.scan_id') = ?`,
