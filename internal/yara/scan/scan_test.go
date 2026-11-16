@@ -360,7 +360,7 @@ func TestOnDemand_BusyAndCancel(t *testing.T) {
 // same scan id from where it stopped.
 func TestScheduled_PreemptedThenResumed(t *testing.T) {
 	dir := files(t, "a.txt", "b.txt", "bad.txt", "d.txt")
-	sc := &fakeScanner{gate: make(chan struct{}, 10), entered: make(chan struct{}, 1)}
+	sc := &fakeScanner{gate: make(chan struct{}, 10), entered: make(chan struct{}, 10)}
 	g := newRig(t, bundle(customSchedule(dir)), sc)
 	if err := g.r.Tick(); err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestScheduled_PreemptedThenResumed(t *testing.T) {
 // runner continues it after the restart.
 func TestScheduled_ShutdownCheckpointAndResume(t *testing.T) {
 	dir := files(t, "a.txt", "bad.txt", "c.txt")
-	sc := &fakeScanner{gate: make(chan struct{}, 10), entered: make(chan struct{}, 1)}
+	sc := &fakeScanner{gate: make(chan struct{}, 10), entered: make(chan struct{}, 10)}
 	g := newRig(t, bundle(customSchedule(dir)), sc)
 	before := runtime.NumGoroutine()
 	if err := g.r.Tick(); err != nil {
