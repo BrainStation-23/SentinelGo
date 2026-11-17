@@ -1,1 +1,0 @@
-- YARA: `scan_progress` is sent at most every 2 minutes whatever the bundle asks (#498); a shorter `interval_seconds` was honoured down to 1 minute. Re-queuing a progress event that is still queued no longer moves it behind newer events, so the queue cap keeps dropping the oldest first.
