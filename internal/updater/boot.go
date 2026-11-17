@@ -23,6 +23,7 @@ package updater
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -225,7 +226,7 @@ func scheduledTaskXML(m *Marker, markerPath string) ([]byte, error) {
 	out := make([]byte, 2, 2+2*len(u))
 	out[0], out[1] = 0xff, 0xfe // UTF-16LE BOM
 	for _, c := range u {
-		out = append(out, byte(c), byte(c>>8))
+		out = binary.LittleEndian.AppendUint16(out, c)
 	}
 	return out, nil
 }
