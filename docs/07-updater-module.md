@@ -24,6 +24,7 @@ Package layout:
 | `installer.go` | Backup, atomic replace, OS-specific restart |
 | `version.go` | Semver parse / update decision (newer, or server-approved older) |
 | `health.go` (+ `health_unix.go`, `health_windows.go`) | Update marker, health confirmation, the update watchdog and its rollback |
+| `boot.go` (+ `boot_unix.go`, `boot_windows.go`) | The boot job that starts the watchdog after a reboot while an update is pending (#516) |
 | `pubkey.go` | Embedded ed25519 public key (matches CI `SENTINELGO_SIGNING_KEY`) |
 
 ## Triggers
@@ -55,6 +56,7 @@ Order is deliberate (verify before replace; version not persisted before restart
                          sentinelgo-update-watchdog[.exe] (a copy of the old binary)
 7. atomicReplace       → Unix only (Windows stages .new for post-exit swap)
 8. spawnWatchdog       → `update-watchdog --marker …`, outside the service
+   registerBoot        → boot job running the watchdog copy with --boot (#516)
 9. restart             → exit; launchd / systemd / SCM relaunches
 ```
 
@@ -133,6 +135,36 @@ which may predate this check and could never confirm itself.
   `launchctl kickstart`, which leave a running service alone).
 - **No stacking.** While an update waits for its health check, the agent
   doesn't start another one.
+- **After a reboot (#516).** The spawned watchdog doesn't survive a reboot,
+  and a new binary that fails before `StartHealthCheck` can't start one. So
+  while an update is pending, a boot job starts the **watchdog copy** (never
+  the new binary) with `update-watchdog --marker <path> --boot`:
+  - Linux: `/etc/systemd/system/sentinelgo-update-watchdog.service`, enabled
+    for `multi-user.target` (`ConditionPathExists` on the marker). None on a
+    system without `systemctl`.
+  - macOS: `/Library/LaunchDaemons/com.sentinelgo.update-watchdog.plist`
+    with `RunAtLoad`. Registering only writes the file; launchd loads it at
+    the next boot.
+  - Windows: the scheduled task `\SentinelGo\UpdateWatchdog`, with a boot
+    trigger, as SYSTEM, allowed on battery, a 2-day limit.
+
+  It is registered next to the spawned watchdog (a failure is logged, not
+  fatal) and again by the new binary at each start, so an update started by
+  an older release is covered from the new binary's first start. It is
+  removed when no update a watchdog could roll back is left (a valid marker
+  whose backup exists): by the watchdog on its way out, by the confirmation,
+  by an update that doesn't go ahead, and by the update checks retiring a
+  stale marker. A rollback whose install failed keeps marker, backup and boot
+  job, so the next boot tries again. The watchdog lock still allows only one
+  watchdog: a boot-started one that finds another running exits and leaves
+  the job to it.
+
+  A boot-started watchdog gives the new binary a full 10 minutes from the
+  boot to record a start, so a reboot near the deadline doesn't roll back an
+  update that is still starting. If it hasn't recorded a start since the
+  boot by then (it fails before its health check, however often the
+  service manager restarts it), the watchdog rolls back with the reason
+  "didn't start after the reboot".
 
 ## Release discovery
 

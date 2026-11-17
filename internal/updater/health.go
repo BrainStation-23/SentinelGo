@@ -12,6 +12,8 @@ package updater
 //  2. Each start of the new binary records a boot attempt and its start time
 //     in its own health file, and marks itself alive while it runs. If no
 //     watchdog holds the watchdog lock (the device rebooted), it starts one.
+//     A boot job also starts the watchdog after a reboot (#516, boot.go), so
+//     a new binary that fails before getting this far is rolled back too.
 //  3. The new binary is healthy once it is signed in and its first
 //     agent-info RPC succeeded (ConfirmHealthy). It then deletes the marker,
 //     its health file and the backup, and the watchdog exits.
@@ -296,6 +298,7 @@ func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now ti
 func endHealthWatch(m *Marker, markerPath string) {
 	_ = os.Remove(markerPath)
 	_ = os.Remove(m.WatchdogPath)
+	unregisterBoot()
 }
 
 // pendingUpdate reports whether an earlier update is still waiting to be
@@ -310,6 +313,7 @@ func pendingUpdate(cfg *config.Config, now time.Time) (*Marker, bool) {
 	if err != nil {
 		log.Printf("Updater: unreadable update marker, removing it: %v", err)
 		_ = os.Remove(path)
+		unregisterBoot()
 		return nil, false
 	}
 	if now.After(m.GiveUpAt) {
@@ -349,12 +353,15 @@ func retireExpired(path string, m *Marker) (*Marker, bool) {
 			// The marker is the only record of the bad version: a new
 			// update would overwrite it, so no update until it moves.
 			log.Printf("Updater: keeping the update marker so %s isn't installed again; updates wait until it can be moved: %v", sanitize.ForLog(m.ToVersion), err)
+			unregisterBoot() // past GiveUpAt nothing is rolled back any more
 			return m, true
 		}
+		unregisterBoot()
 		return nil, false
 	}
 	log.Printf("Updater: removing a stale update marker (%s -> %s)", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
 	_ = os.Remove(path)
+	unregisterBoot()
 	return nil, false
 }
 
@@ -432,6 +439,9 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 		sanitize.ForLog(m.ToVersion), sanitize.ForLog(m.FromVersion), h.Attempts, m.MaxAttempts)
 
 	ensureWatchdog(m, path)
+	// Covers the next reboot too, also for an update started by a release
+	// that didn't register the boot job (#516).
+	registerBoot(m, path)
 
 	go func() {
 		t := time.NewTicker(aliveInterval)
@@ -552,6 +562,7 @@ func finishConfirm(m *Marker) bool {
 		_ = os.Remove(m.BackupPath)
 	}
 	_ = os.Remove(m.WatchdogPath) // fails on Windows while it still runs; removed at the next start
+	unregisterBoot()
 	log.Printf("Updater: update %s -> %s is healthy; backup removed", sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
 	return true
 }
@@ -588,6 +599,9 @@ type watchdogDeps struct {
 	start func() error
 	// lock takes the transition lock; nil release when it can't.
 	lock func(markerPath string) (release func(), err error)
+	// bootAt is when a watchdog started by the boot job (#516) started,
+	// about when the device booted; zero otherwise.
+	bootAt time.Time
 }
 
 func defaultWatchdogDeps() watchdogDeps {
@@ -608,16 +622,25 @@ func defaultWatchdogDeps() watchdogDeps {
 }
 
 // RunWatchdog watches the marker at markerPath until the update is confirmed
-// healthy (the marker is gone) or rolls it back. It returns a process exit
-// code.
-func RunWatchdog(markerPath string) int {
+// healthy (the marker is gone) or rolls it back. boot: it was started by the
+// boot job (#516). It returns a process exit code. On the way out it removes
+// the boot job unless an update is still pending.
+func RunWatchdog(markerPath string, boot bool) int {
 	lock := lockfile.NewLockFileWithPath(watchdogLockPath(markerPath))
 	if err := lock.TryAcquire(); err != nil {
+		// The other watchdog removes the boot job when it is done.
 		log.Printf("Update watchdog: another watchdog is running (%v); exiting", err)
 		return 0
 	}
 	defer func() { _ = lock.Release() }()
-	return runWatchdog(markerPath, defaultWatchdogDeps())
+	d := defaultWatchdogDeps()
+	if boot {
+		d.bootAt = d.now()
+		log.Printf("Update watchdog: started at boot")
+	}
+	code := runWatchdog(markerPath, d)
+	retireBootIfDone(markerPath)
+	return code
 }
 
 func runWatchdog(markerPath string, d watchdogDeps) int {
@@ -645,7 +668,7 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 			return 1
 		}
 		now := d.now()
-		reason, offline := judge(m, readHealthState(m), now, extendedUntil, d.networkUp)
+		reason, offline := judge(m, readHealthState(m), now, extendedUntil, d.bootAt, d.networkUp)
 		if offline {
 			log.Printf("Update watchdog: %s is running but the server is unreachable from here too; waiting longer", sanitize.ForLog(m.ToVersion))
 			extendedUntil = now.Add(HealthWindow)
@@ -676,7 +699,7 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 		// Decide again on what the new binary wrote up to now: one that
 		// started after the deadline and before the lock was taken gets its
 		// fresh health window.
-		if reason, _ = judge(cur, readHealthState(cur), d.now(), extendedUntil, d.networkUp); reason == "" {
+		if reason, _ = judge(cur, readHealthState(cur), d.now(), extendedUntil, d.bootAt, d.networkUp); reason == "" {
 			release()
 			d.sleep(watchdogPoll)
 			continue
@@ -696,8 +719,12 @@ func readHealthState(m *Marker) HealthState {
 }
 
 // judge returns why the update must be rolled back now ("" to keep
-// waiting), and whether to wait longer because the network is down.
-func judge(m *Marker, h HealthState, now, extendedUntil time.Time, networkUp func(string) bool) (reason string, offline bool) {
+// waiting), and whether to wait longer because the network is down. bootAt
+// is set for a watchdog started at boot (#516): the new binary gets a full
+// HealthWindow from the boot to record a start, and one that never does
+// (it fails before its health check, however often the service manager
+// restarts it) is rolled back once that window ends.
+func judge(m *Marker, h HealthState, now, extendedUntil, bootAt time.Time, networkUp func(string) bool) (reason string, offline bool) {
 	if m.MaxAttempts > 0 && h.Attempts > m.MaxAttempts {
 		return fmt.Sprintf("started %d times without becoming healthy", h.Attempts), false
 	}
@@ -705,11 +732,17 @@ func judge(m *Marker, h HealthState, now, extendedUntil time.Time, networkUp fun
 	if !h.BootedAt.IsZero() && h.BootedAt.Add(HealthWindow).After(deadline) {
 		deadline = h.BootedAt.Add(HealthWindow) // a fresh window per start (e.g. after a reboot)
 	}
+	if !bootAt.IsZero() && bootAt.Add(HealthWindow).After(deadline) {
+		deadline = bootAt.Add(HealthWindow)
+	}
 	if extendedUntil.After(deadline) {
 		deadline = extendedUntil
 	}
 	if !now.After(deadline) {
 		return "", false
+	}
+	if !bootAt.IsZero() && h.BootedAt.Before(bootAt) {
+		return "didn't start after the reboot (it fails before its health check starts)", false
 	}
 	alive := !h.AliveAt.IsZero() && now.Sub(h.AliveAt) < aliveFresh
 	if !alive {
