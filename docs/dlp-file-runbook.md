@@ -131,6 +131,12 @@ In the console, the device's DLP tab shows the status the agent last reported:
 - each file channel's capability, `supported` or `unsupported:<reason>`;
 - the hook's state (`running`, `disabled_locally`, `unavailable:<reason>`) and counters;
 - the **pilot summary** `files.summary`: per file channel since the agent started, how many files were recorded, by action and by `would_have`, how many were quarantined or deleted, and which detectors matched. A newer `since` means the agent restarted and its totals started again from zero.
+- with upload inspection on, `files.deep_inspection`: the inspection CA, the redirect, the proxy's health and counters, and the uploads to listed sites it **couldn't inspect** (#527). `uninspectable_counts` counts them by reason since the agent started, and `uninspectable_hosts` lists up to 20 hosts, most recent first, each with its reason, how often and when (the host only, never a URL or anything that was sent):
+  - `tls_untrusted`: an app got the inspection certificate and refused it, so it pins certificates or doesn't trust the device CA (its own trust store, Firefox without the enterprise-roots policy). It can't reach that site through the proxy at all. Add the site to `bypass` if the app needs it, knowing its uploads then go uninspected.
+  - `websocket`: a WebSocket connection to a listed site. It is relayed, but what is sent through it isn't read.
+  - `too_large`: a body over `max_file_bytes`, decided by `on_unscannable` (and recorded as `unscannable:too_large` when a policy applies).
+
+  Client-side encrypted uploads (MEGA, Proton) look like any other file and aren't counted. These reasons aren't sent as events yet: the server doesn't accept them.
 
 ## During the pilot
 

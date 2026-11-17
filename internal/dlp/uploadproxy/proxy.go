@@ -69,6 +69,7 @@ type Proxy struct {
 
 	tunnelled, intercepted, inspected, blocked, errs atomic.Uint64
 	lastInspection                                   atomic.Int64 // Unix ns
+	uninsp                                           *uninspectable
 }
 
 // New returns a Proxy.
@@ -98,6 +99,7 @@ func New(o Options) *Proxy {
 		opts:     o,
 		dialer:   d,
 		resolver: net.DefaultResolver,
+		uninsp:   newUninspectable(nil),
 		transport: &http.Transport{
 			Proxy:               nil, // never chain to an environment proxy: no loops
 			DialContext:         d.DialContext,
@@ -122,6 +124,13 @@ func (p *Proxy) LastInspection() time.Time {
 func (p *Proxy) Stats() Stats {
 	return Stats{Tunnelled: p.tunnelled.Load(), Intercepted: p.intercepted.Load(), Inspected: p.inspected.Load(),
 		Blocked: p.blocked.Load(), Errors: p.errs.Load()}
+}
+
+// Uninspectable returns the uploads to intercepted hosts that couldn't be
+// inspected (#527): counts by reason, and the hosts, most recent first. Both
+// are nil until one happens.
+func (p *Proxy) Uninspectable() (map[string]uint64, []UninspectableHost) {
+	return p.uninsp.snapshot()
 }
 
 // Serve accepts proxy connections on l until it is closed.
@@ -297,20 +306,29 @@ func closeWrite(c net.Conn) {
 // serveDecrypted terminates TLS with a certificate for host and serves the
 // client's requests (HTTP/1.1 or HTTP/2) on that one connection.
 func (p *Proxy) serveDecrypted(conn net.Conn, host, target string) {
+	var offered atomic.Bool // the client sent a ClientHello and got our certificate
 	tlsConn := tls.Server(conn, &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// The certificate is for the CONNECT host, whatever SNI says.
-			return p.opts.CA.Leaf(host)
+			c, err := p.opts.CA.Leaf(host)
+			offered.Store(err == nil)
+			return c, err
 		},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	err := tlsConn.HandshakeContext(ctx)
 	cancel()
 	if err != nil {
-		// A client that doesn't trust the CA, or a pinned app: nothing to do.
 		p.errs.Add(1)
+		if offered.Load() {
+			// The client saw our certificate and refused it or hung up: a
+			// pinned app, or one that doesn't trust the device CA. Its
+			// uploads to this host go nowhere (it can't connect), but they
+			// weren't inspected either.
+			p.uninsp.add(host, ReasonTLSUntrusted)
+		}
 		_ = tlsConn.Close()
 		return
 	}
@@ -375,16 +393,23 @@ func sameHost(hostHeader, host string) bool {
 // forward inspects an upload (when inspect is true) and sends the request to
 // upstream, or refuses it.
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream *url.URL, host string, inspect bool) {
+	if inspect && p.opts.Inspector != nil && isWebSocket(r) {
+		// Relayed as before, but what goes through the socket isn't read.
+		p.uninsp.add(host, ReasonWebSocket)
+	}
 	if inspect && p.opts.Inspector != nil && hasBody(r) && CarriesFile(r) {
 		p.inspected.Add(1)
 		p.lastInspection.Store(time.Now().UnixNano())
-		v, body, err := p.opts.Inspector.Inspect(r.Context(), r, host)
+		v, body, tooLarge, err := p.opts.Inspector.Inspect(r.Context(), r, host)
 		if err != nil {
 			p.errs.Add(1)
 			http.Error(w, "upload inspection failed", http.StatusBadGateway)
 			return
 		}
 		defer func() { _ = body.Close() }()
+		if tooLarge {
+			p.uninsp.add(host, ReasonTooLarge)
+		}
 		if v.Block {
 			p.blocked.Add(1)
 			log.Printf("DLP: blocked an upload to %s", sanitize.ForLog(host)) // #nosec G706 -- the client-supplied host has its line breaks removed (sanitize.ForLog)
@@ -407,6 +432,21 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream *url.UR
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// isWebSocket reports an HTTP/1.1 WebSocket upgrade request.
+func isWebSocket(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, v := range r.Header.Values("Connection") {
+		for _, t := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasBody reports whether r may carry an upload.
