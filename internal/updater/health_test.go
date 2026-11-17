@@ -17,7 +17,7 @@ func resetHealthState(t *testing.T) {
 	t.Helper()
 	reset := func() {
 		healthMu.Lock()
-		healthy, confirmed = false, false
+		healthy, confirmed, watching = false, false, false
 		healthMu.Unlock()
 	}
 	reset()
