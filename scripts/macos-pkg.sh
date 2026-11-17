@@ -68,9 +68,11 @@ mkdir -p "$root/opt/sentinelgo"
 lipo -create -output "$root/opt/sentinelgo/sentinelgo" "$amd64" "$arm64"
 chmod 755 "$root/opt/sentinelgo" "$root/opt/sentinelgo/sentinelgo"
 lipo -info "$root/opt/sentinelgo/sentinelgo"
-# A code-signed slice must still verify after lipo; unsigned builds have no
-# signature to check (the agent signs them ad-hoc at install).
-if codesign -dv "$root/opt/sentinelgo/sentinelgo" >/dev/null 2>&1; then
+# Certificate-signed slices must still verify after lipo. Unsigned builds have
+# nothing to check: Go's linker gives the arm64 slice an ad-hoc signature and
+# leaves amd64 unsigned, and the agent signs the binary ad-hoc at install. So
+# only an Authority (a certificate) on the input means the release signed it.
+if codesign -dv --verbose=2 "$amd64" 2>&1 | grep -q '^Authority='; then
     codesign --verify --strict --all-architectures --verbose=2 "$root/opt/sentinelgo/sentinelgo"
 fi
 
