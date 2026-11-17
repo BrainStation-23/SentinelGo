@@ -69,8 +69,31 @@ func TestRun(t *testing.T) {
 		t.Errorf("manifest %+v", got)
 	}
 
+	if got.Pkg != nil || strings.Contains(string(b), `"pkg"`) {
+		t.Errorf("without -pkg the key must be absent:\n%s", b)
+	}
+
+	// With the signed macOS package (#352).
+	pkg := filepath.Join(dir, PkgName)
+	if err := os.WriteFile(pkg, []byte("pkg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-version", "v4.1.0", "-manifest", js, "-msi", msi, "-pkg", pkg}, &out); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(js)
+	got = Installers{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Pkg == nil || got.Pkg.Name != "sentinelgo-darwin-universal.pkg" || got.Pkg.Identifier != "com.sentinelgo.agent" ||
+		got.Pkg.SHA256 != "e0ce1a7f3f76d7bfda0ffdae6e0226aa63b3009c4c4a770c321876aecad0a6c1" { // sha256("pkg")
+		t.Errorf("manifest pkg %+v", got.Pkg)
+	}
+
 	for _, args := range [][]string{
 		{"-version", "v4.1", "-vars"},
+		{"-version", "v4.1.0", "-manifest", js, "-msi", msi, "-pkg", filepath.Join(dir, "other.pkg")},
 		{"-version", "v4.1.0"},
 		{"-version", "v4.1.0", "-manifest", js, "-msi", filepath.Join(dir, "other.msi")},
 	} {

@@ -226,6 +226,60 @@ jobs:
           name: release-binaries
           path: dist/
 
+  # ── 2a'. Generic macOS package (#352) ─────────────────────────────────────
+  # sentinelgo-darwin-universal.pkg, which MDM installs on every Mac
+  # (InstallEnterpriseApplication, Compliance-OS#555): a universal binary
+  # made with lipo from the two darwin binaries the sign job code-signed, no
+  # config.json (the agent enrolls from MDM managed preferences), and a
+  # postinstall that runs `sentinelgo -install`. See scripts/macos-pkg.sh.
+  # It is signed with productsign only when MACOS_INSTALLER_P12 holds a
+  # Developer ID Installer identity (#491), and notarized and stapled when the
+  # notary key is set too. An unsigned package is still published, for manual
+  # installs, but left out of sentinelgo-installers.json, since MDM can't
+  # install it. This job can't fail the release: the MSI job runs either way
+  # and adds the package only when `built` is true.
+  pkg:
+    name: Build the macOS package
+    runs-on: macos-latest
+    needs: sign
+    continue-on-error: true
+    timeout-minutes: 45
+    outputs:
+      built: ${{ steps.done.outputs.built }}
+      signed: ${{ steps.build.outputs.signed }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binaries
+          path: dist
+
+      - name: Build the package
+        id: build
+        env:
+          MACOS_INSTALLER_P12: ${{ secrets.MACOS_INSTALLER_P12 }}
+          MACOS_INSTALLER_P12_PASSWORD: ${{ secrets.MACOS_INSTALLER_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          mkdir -p pkg
+          bash scripts/macos-pkg.sh "$GITHUB_REF_NAME" \
+            dist/sentinelgo-darwin-amd64 dist/sentinelgo-darwin-arm64 \
+            pkg/sentinelgo-darwin-universal.pkg
+
+      - name: Upload the package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-pkg
+          path: pkg/
+
+      - name: Mark the package built
+        id: done
+        run: echo "built=true" >> "$GITHUB_OUTPUT"
+
   # ── 2b. Generic Windows MSI (#358) ────────────────────────────────────────
   # One MSI for every device, which an MDM pushes with the device's
   # enrollment token (see installer/msi/sentinelgo.wxs). Built from the exe
@@ -240,7 +294,9 @@ jobs:
   msi:
     name: Build the Windows MSI
     runs-on: windows-latest
-    needs: sign
+    needs: [sign, pkg]
+    # Runs when the macOS package job failed too: the package is optional.
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -266,19 +322,40 @@ jobs:
         shell: pwsh
         run: ./installer/msi/build.ps1 -Tag "$env:GITHUB_REF_NAME" -AgentExe dist/sentinelgo-windows-amd64.exe -Out dist/sentinelgo-windows-amd64.msi -Wix "$env:RUNNER_TEMP/wix/wix.exe"
 
+      - name: Download the macOS package
+        if: needs.pkg.outputs.built == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-pkg
+          path: dist
+
+      # The package goes into the metadata only when it is signed (MDM
+      # installs nothing else); an unsigned one is still published.
       - name: Write sentinelgo-installers.json
         shell: bash
-        run: go run ./scripts/msi -version "$GITHUB_REF_NAME" -manifest dist/sentinelgo-installers.json -msi dist/sentinelgo-windows-amd64.msi
+        env:
+          PKG_SIGNED: ${{ needs.pkg.outputs.signed }}
+        run: |
+          pkg=()
+          if [ "$PKG_SIGNED" = "true" ] && [ -f dist/sentinelgo-darwin-universal.pkg ]; then
+            pkg=(-pkg dist/sentinelgo-darwin-universal.pkg)
+          fi
+          go run ./scripts/msi -version "$GITHUB_REF_NAME" -manifest dist/sentinelgo-installers.json -msi dist/sentinelgo-windows-amd64.msi "${pkg[@]}"
+          cat dist/sentinelgo-installers.json
 
       # scripts/sign writes a SHA256SUMS for the files it is given: keep the
-      # build job's list and append the two new lines.
-      - name: Sign the MSI and the metadata, add them to SHA256SUMS
+      # build job's list and append the new lines.
+      - name: Sign the MSI, the macOS package and the metadata, add them to SHA256SUMS
         shell: bash
         env:
           SENTINELGO_SIGNING_KEY: ${{ secrets.SENTINELGO_SIGNING_KEY }}
         run: |
           mv dist/SHA256SUMS SHA256SUMS.build
-          go run ./scripts/sign dist/sentinelgo-windows-amd64.msi dist/sentinelgo-installers.json
+          files=(dist/sentinelgo-windows-amd64.msi dist/sentinelgo-installers.json)
+          if [ -f dist/sentinelgo-darwin-universal.pkg ]; then
+            files+=(dist/sentinelgo-darwin-universal.pkg)
+          fi
+          go run ./scripts/sign "${files[@]}"
           cat SHA256SUMS.build dist/SHA256SUMS > SHA256SUMS.all
           mv SHA256SUMS.all dist/SHA256SUMS
           cat dist/SHA256SUMS
@@ -302,6 +379,8 @@ jobs:
     name: Attest (${{ matrix.binary }})
     runs-on: ubuntu-latest
     needs: msi
+    # Explicit, so a failed macOS package job further up doesn't skip this.
+    if: ${{ !cancelled() && needs.msi.result == 'success' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -342,6 +421,7 @@ jobs:
     name: Attest installers and SHA256SUMS
     runs-on: ubuntu-latest
     needs: msi
+    if: ${{ !cancelled() && needs.msi.result == 'success' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -366,12 +446,19 @@ jobs:
             artifacts/sentinelgo-installers.json
             artifacts/SHA256SUMS
 
+      - name: Attest the macOS package
+        if: hashFiles('artifacts/sentinelgo-darwin-universal.pkg') != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: artifacts/sentinelgo-darwin-universal.pkg
+
   # ── 4. Publish GitHub Release ──────────────────────────────────────────────
   # Waits for attestations so a release is never published without them.
   release:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [sign, msi, attest, attest-installers]
+    if: ${{ !cancelled() && needs.sign.result == 'success' && needs.msi.result == 'success' && needs.attest.result == 'success' && needs.attest-installers.result == 'success' }}
     timeout-minutes: 15
     permissions:
       contents: write
