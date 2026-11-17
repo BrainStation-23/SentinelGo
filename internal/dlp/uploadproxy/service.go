@@ -105,6 +105,12 @@ type Status struct {
 	Addr             string     `json:"addr,omitempty"`
 	LastInspectionAt *time.Time `json:"last_inspection_at,omitempty"`
 	Stats            Stats      `json:"stats"`
+	// UninspectableCounts counts the uploads to intercepted hosts the proxy
+	// couldn't inspect, by reason (tls_untrusted, websocket, too_large);
+	// UninspectableHosts lists them by host, most recent first (at most
+	// 20). Both are left out until one happens (#527).
+	UninspectableCounts map[string]uint64   `json:"uninspectable_counts,omitempty"`
+	UninspectableHosts  []UninspectableHost `json:"uninspectable_hosts,omitempty"`
 	// DirectBlock is the block on direct connections (Windows, #427); nil
 	// where the OS has none.
 	DirectBlock *DirectBlockStatus `json:"direct_block,omitempty"`
@@ -522,6 +528,7 @@ func (s *Service) Status() *Status {
 	}
 	if s.proxy != nil {
 		st.Stats = s.proxy.Stats()
+		st.UninspectableCounts, st.UninspectableHosts = s.proxy.Uninspectable()
 		if t := s.proxy.LastInspection(); !t.IsZero() {
 			u := t.UTC()
 			st.LastInspectionAt = &u
