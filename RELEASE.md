@@ -87,6 +87,9 @@ The tag push runs [`.github/workflows/release.yml`](.github/workflows/release.ym
 5. Signs the binaries and installers with Ed25519 (`SENTINELGO_SIGNING_KEY`
    secret), writes `SHA256SUMS`, and generates `THIRD_PARTY_NOTICES.txt` and a
    CycloneDX SBOM per binary. These cover the code-signed macOS binaries.
+   Then it builds the generic Windows MSI and the generic macOS package (see
+   [macOS package](#macos-package)), signs them the same way and lists them in
+   `sentinelgo-installers.json`.
 6. Creates build provenance and SBOM attestations.
 7. Publishes the GitHub Release with the `[v3.4.0]` changelog section as its
    description, plus all of the artifacts below.
@@ -104,6 +107,9 @@ before replacing itself.
 | `*.cdx.json` | CycloneDX SBOM for each binary |
 | `SHA256SUMS` | Checksums for every binary and installer |
 | `install.sh`, `install.command`, `install.bat`, `sentinelgo-install.desktop` | Installers. They verify the binary against `SHA256SUMS` before installing. |
+| `sentinelgo-windows-amd64.msi` | Generic Windows MSI for MDM (#358) |
+| `sentinelgo-darwin-universal.pkg` | Generic macOS package for MDM (#352), when its job succeeds |
+| `sentinelgo-installers.json` | The MSI's ProductCode and the signed package's identifier, with their SHA-256, for the backend mirror |
 | `THIRD_PARTY_NOTICES.txt` | Licenses of every linked dependency |
 | `INSTALLATION.md` | Per-OS install guide |
 
@@ -169,6 +175,39 @@ gh secret set MACOS_CODESIGN_P12_PASSWORD
 accepts. Keep the same certificate, or at least the same CA and subject, for
 as long as profiles pin it. A new certificate changes the designated
 requirement, and every profile built from the old one has to be rebuilt.
+
+## macOS package
+
+MDM installs the agent on a Mac with `InstallEnterpriseApplication`
+(Compliance-OS#555), which takes a **signed** distribution package. The
+release's `pkg` job builds one for every Mac,
+`sentinelgo-darwin-universal.pkg`, with
+[`scripts/macos-pkg.sh`](scripts/macos-pkg.sh) on a macOS runner:
+
+- one universal binary at `/opt/sentinelgo/sentinelgo`, made with `lipo`
+  from the two code-signed darwin binaries (each slice keeps its signature);
+- no `config.json`: the agent enrolls on first start from the MDM managed
+  preferences `com.sentinelgo.agent` (#360);
+- a preinstall that stops a running agent, and a postinstall that runs
+  `sentinelgo -install`, the same code path as `install.sh`;
+- package identifier `com.sentinelgo.agent`, which never changes (the backend
+  uses it too).
+
+| Secret | Value |
+|---|---|
+| `MACOS_INSTALLER_P12` | Base64 of a `.p12` holding the **Developer ID Installer** certificate and its private key (#491) |
+| `MACOS_INSTALLER_P12_PASSWORD` | The `.p12`'s password |
+
+With them the package is signed with `productsign`, and with the
+`APPLE_NOTARY_*` secrets also notarized and stapled. Stapling changes the
+package, so it happens before the Ed25519 signature and `SHA256SUMS`. Only a
+signed package goes into `sentinelgo-installers.json`, since MDM can't install
+anything else. Without the secrets the package is still published, unsigned,
+for manual installs (Gatekeeper asks before opening it).
+
+The job can't stop a release: if it fails, the release goes out without the
+package. CI builds the package on every pull request, checks its contents and
+installs it on the runner (`Build macOS package` in `ci.yml`).
 
 ## Building locally
 

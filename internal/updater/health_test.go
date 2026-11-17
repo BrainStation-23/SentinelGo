@@ -710,7 +710,7 @@ func TestRunWatchdog_SecondInstanceExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lock.Release() })
-	if code := RunWatchdog(markerPath); code != 0 {
+	if code := RunWatchdog(markerPath, false); code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
 	if got := mustReadFile(t, m.ExePath); string(got) != "broken new agent" {

@@ -37,23 +37,25 @@ func NewInspector(d *filedlp.Decider, spillDir string) *Inspector {
 // Inspect reads r's body, decides it, and returns the verdict and a body to
 // forward in its place: the same bytes, the inspected part from the spill
 // file and any rest still streaming from the client. The caller closes it.
-func (in *Inspector) Inspect(ctx context.Context, r *http.Request, host string) (filedlp.Verdict, io.ReadCloser, error) {
+// tooLarge reports a body over max_file_bytes, which couldn't be inspected
+// (on_unscannable decided it).
+func (in *Inspector) Inspect(ctx context.Context, r *http.Request, host string) (filedlp.Verdict, io.ReadCloser, bool, error) {
 	// The same limit the scanner applies, so a body cut here is reported as
 	// too large rather than scanned as if it were complete.
 	limit := max(in.decider.Files().MaxFileBytes, 1)
 	spill, err := os.CreateTemp(in.spillDir, "upload-*")
 	if err != nil {
-		return filedlp.Verdict{}, nil, err
+		return filedlp.Verdict{}, nil, false, err
 	}
 	n, err := io.Copy(spill, io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		closeSpill(spill)
-		return filedlp.Verdict{}, nil, err
+		return filedlp.Verdict{}, nil, false, err
 	}
 	body := &spillBody{spill: spill, n: n, rest: r.Body}
 	if _, err := spill.Seek(0, io.SeekStart); err != nil {
 		_ = body.Close()
-		return filedlp.Verdict{}, nil, err
+		return filedlp.Verdict{}, nil, false, err
 	}
 
 	dest := filedlp.Destination{Channel: policy.ChannelFileUpload, Type: filedlp.TypeUpload, Host: host}
@@ -78,9 +80,9 @@ func (in *Inspector) Inspect(ctx context.Context, r *http.Request, host string) 
 	}
 	if _, err := spill.Seek(0, io.SeekStart); err != nil {
 		_ = body.Close()
-		return filedlp.Verdict{}, nil, err
+		return filedlp.Verdict{}, nil, false, err
 	}
-	return v, body, nil
+	return v, body, n > limit, nil
 }
 
 func isMultipart(r *http.Request) bool {

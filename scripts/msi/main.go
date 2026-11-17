@@ -7,9 +7,11 @@
 //	go run ./scripts/msi -version v4.1.0 -vars
 //	    print MSI_VERSION, PRODUCT_CODE and UPGRADE_CODE as KEY=value lines
 //	    (for $GITHUB_ENV), passed to `wix build -d`
-//	go run ./scripts/msi -version v4.1.0 -manifest dist/sentinelgo-installers.json -msi dist/sentinelgo-windows-amd64.msi
+//	go run ./scripts/msi -version v4.1.0 -manifest dist/sentinelgo-installers.json -msi dist/sentinelgo-windows-amd64.msi [-pkg dist/sentinelgo-darwin-universal.pkg]
 //	    write the installers metadata the backend mirror reads
-//	    (Compliance-OS#555): each installer's name, ProductCode and SHA-256
+//	    (Compliance-OS#555): each installer's name, ProductCode or package
+//	    identifier, and SHA-256. -pkg is given only for a signed macOS
+//	    package (#352): MDM can't install an unsigned one.
 //
 // The UpgradeCode never changes: it is what makes each new MSI upgrade the
 // one installed. The ProductCode is new for every version (a major upgrade)
@@ -40,6 +42,15 @@ const UpgradeCode = "{80615706-0C1E-43A0-8101-8F2B18A05C7B}"
 
 // MSIName is the release asset name of the MSI.
 const MSIName = "sentinelgo-windows-amd64.msi"
+
+// PkgName is the release asset name of the generic macOS package (#352), and
+// PkgIdentifier its package identifier (the receipt MDM checks). The
+// identifier never changes; Compliance-OS (installer-packages/pkg.ts,
+// installer-metadata.ts) uses the same one.
+const (
+	PkgName       = "sentinelgo-darwin-universal.pkg"
+	PkgIdentifier = "com.sentinelgo.agent"
+)
 
 var tagRe = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
 
@@ -78,11 +89,19 @@ func productCode(version string) string {
 	return strings.ToUpper(fmt.Sprintf("{%s-%s-%s-%s-%s}", s[0:8], s[8:12], s[12:16], s[16:20], s[20:32]))
 }
 
-// Installers is sentinelgo-installers.json. Pkg (macOS, #352) is added when
-// that package exists.
+// Installers is sentinelgo-installers.json. Pkg (macOS, #352) is there only
+// when the release has a signed package.
 type Installers struct {
 	Version string        `json:"version"`
 	MSI     InstallerInfo `json:"msi"`
+	Pkg     *PkgInfo      `json:"pkg,omitempty"`
+}
+
+// PkgInfo describes the macOS package.
+type PkgInfo struct {
+	Name       string `json:"name"`
+	Identifier string `json:"identifier"`
+	SHA256     string `json:"sha256"`
 }
 
 // InstallerInfo describes one installer asset.
@@ -92,7 +111,21 @@ type InstallerInfo struct {
 	SHA256      string `json:"sha256"`
 }
 
-func manifest(tag, msiPath string) ([]byte, error) {
+// fileSHA256 is the hex SHA-256 of the file at path.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path) // #nosec G304 -- release tooling, path from argv
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func manifest(tag, msiPath, pkgPath string) ([]byte, error) {
 	v, err := msiVersion(tag)
 	if err != nil {
 		return nil, err
@@ -100,18 +133,22 @@ func manifest(tag, msiPath string) ([]byte, error) {
 	if filepath.Base(msiPath) != MSIName {
 		return nil, fmt.Errorf("%s: the MSI must be named %s", msiPath, MSIName)
 	}
-	f, err := os.Open(msiPath) // #nosec G304 -- release tooling, path from argv
+	sum, err := fileSHA256(msiPath)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return nil, err
+	m := Installers{Version: tag, MSI: InstallerInfo{Name: MSIName, ProductCode: productCode(v), SHA256: sum}}
+	if pkgPath != "" {
+		if filepath.Base(pkgPath) != PkgName {
+			return nil, fmt.Errorf("%s: the package must be named %s", pkgPath, PkgName)
+		}
+		pkgSum, err := fileSHA256(pkgPath)
+		if err != nil {
+			return nil, err
+		}
+		m.Pkg = &PkgInfo{Name: PkgName, Identifier: PkgIdentifier, SHA256: pkgSum}
 	}
-	b, err := json.MarshalIndent(Installers{Version: tag, MSI: InstallerInfo{
-		Name: MSIName, ProductCode: productCode(v), SHA256: hex.EncodeToString(h.Sum(nil)),
-	}}, "", "  ")
+	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +161,7 @@ func run(args []string, stdout io.Writer) error {
 	vars := fs.Bool("vars", false, "print MSI_VERSION, PRODUCT_CODE and UPGRADE_CODE")
 	out := fs.String("manifest", "", "write sentinelgo-installers.json here")
 	msiPath := fs.String("msi", "", "the built MSI (with -manifest)")
+	pkgPath := fs.String("pkg", "", "the signed macOS package, if any (with -manifest)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -136,13 +174,13 @@ func run(args []string, stdout io.Writer) error {
 		_, err = fmt.Fprintf(stdout, "MSI_VERSION=%s\nPRODUCT_CODE=%s\nUPGRADE_CODE=%s\n", v, productCode(v), UpgradeCode)
 		return err
 	case *out != "" && *msiPath != "":
-		b, err := manifest(*tag, *msiPath)
+		b, err := manifest(*tag, *msiPath, *pkgPath)
 		if err != nil {
 			return err
 		}
 		return os.WriteFile(*out, b, 0o644) // #nosec G306 -- a public release asset
 	default:
-		return errors.New("usage: msi -version vX.Y.Z (-vars | -manifest OUT -msi MSI)")
+		return errors.New("usage: msi -version vX.Y.Z (-vars | -manifest OUT -msi MSI [-pkg PKG])")
 	}
 }
 
