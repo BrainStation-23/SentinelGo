@@ -72,7 +72,10 @@ lipo -info "$root/opt/sentinelgo/sentinelgo"
 # nothing to check: Go's linker gives the arm64 slice an ad-hoc signature and
 # leaves amd64 unsigned, and the agent signs the binary ad-hoc at install. So
 # only an Authority (a certificate) on the input means the release signed it.
-if codesign -dv --verbose=2 "$amd64" 2>&1 | grep -q '^Authority='; then
+# (Captured first: under pipefail, `codesign | grep -q` can fail on SIGPIPE
+# and would then skip the check on a signed build.)
+sig="$(codesign -dv --verbose=2 "$amd64" 2>&1 || true)"
+if grep -q '^Authority=' <<<"$sig"; then
     codesign --verify --strict --all-architectures --verbose=2 "$root/opt/sentinelgo/sentinelgo"
 fi
 
