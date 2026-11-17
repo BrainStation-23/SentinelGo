@@ -394,8 +394,12 @@ jobs:
           x="$RUNNER_TEMP/pkg"
           pkgutil --expand-full build/sentinelgo-darwin-universal.pkg "$x"
           bin="$x/sentinelgo.pkg/Payload/opt/sentinelgo/sentinelgo"
-          lipo -archs "$bin" | tr ' ' '\n' | sort | paste -sd' ' - | grep -qx 'arm64 x86_64'
-          "$bin" -version 2>&1 | grep -q '0.0.1' || { "$bin" -version; echo "wrong version"; exit 1; }
+          # Capture output before matching: with pipefail, `cmd | grep -q` fails
+          # when grep exits on its first match and cmd then gets SIGPIPE.
+          archs="$(lipo -archs "$bin" | tr ' ' '\n' | sort | paste -sd' ' -)"
+          [[ "$archs" == "arm64 x86_64" ]] || { echo "archs: $archs"; exit 1; }
+          ver="$("$bin" -version 2>&1)"
+          [[ "$ver" == *"v0.0.1"* ]] || { echo "$ver"; echo "wrong version"; exit 1; }
           grep -q 'identifier="com.sentinelgo.agent"' "$x/sentinelgo.pkg/PackageInfo"
           grep -q 'version="0.0.1"' "$x/sentinelgo.pkg/PackageInfo"
           test -x "$x/sentinelgo.pkg/Scripts/preinstall"
@@ -407,7 +411,8 @@ jobs:
           set -euo pipefail
           sudo installer -pkg build/sentinelgo-darwin-universal.pkg -target / -verboseR
           test -f /Library/LaunchDaemons/com.sentinelgo.agent.plist
-          sudo launchctl print system/com.sentinelgo.agent | head -20
+          job="$(sudo launchctl print system/com.sentinelgo.agent)"
+          printf '%s\n' "$job" | sed -n 1,20p
           # A second install over the first (an upgrade) must work too.
           sudo installer -pkg build/sentinelgo-darwin-universal.pkg -target /
           sudo launchctl print system/com.sentinelgo.agent > /dev/null
