@@ -210,6 +210,7 @@ func startHealthWatch(cfg *config.Config, running, to, backupPath string) (*Mark
 		endHealthWatch(marker, markerPath)
 		return nil, "", fmt.Errorf("refusing to update: the update watchdog didn't start: %w", err)
 	}
+	registerBoot(marker, markerPath) // the running watchdog doesn't survive a reboot (#516)
 	return marker, markerPath, nil
 }
 

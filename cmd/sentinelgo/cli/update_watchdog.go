@@ -16,12 +16,14 @@ import (
 // binary proves healthy in time.
 const UpdateWatchdogCommand = updater.UpdateWatchdogCommand
 
-// RunUpdateWatchdog runs `sentinelgo update-watchdog --marker <path>`. It logs
-// to update_watchdog.log next to the marker, since it runs detached.
+// RunUpdateWatchdog runs `sentinelgo update-watchdog --marker <path> [--boot]`.
+// --boot: started by the boot job (#516). It logs to update_watchdog.log next
+// to the marker, since it runs detached.
 func RunUpdateWatchdog(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet(UpdateWatchdogCommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	marker := fs.String("marker", "", "path of the update marker to watch")
+	boot := fs.Bool("boot", false, "started by the boot job after a reboot")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -36,5 +38,5 @@ func RunUpdateWatchdog(args []string, stderr io.Writer) int {
 		log.SetOutput(f)
 		defer func() { log.SetOutput(prev); _ = f.Close() }()
 	}
-	return updater.RunWatchdog(*marker)
+	return updater.RunWatchdog(*marker, *boot)
 }
