@@ -37,6 +37,10 @@ type updateFixture struct {
 	newBinary  []byte
 	restarted  []string // newPath values passed to restartFn
 	restartErr error
+	spawned    []string // marker paths passed to spawnWatchdogFn
+	spawnErr   error
+	cfgDir     string        // where the update marker and rollback record go
+	release    LatestRelease // what the fake RPC returns; tests may change it
 }
 
 // newUpdateFixture wires config.Version, PublicKey, executablePath and
@@ -63,18 +67,26 @@ func newUpdateFixture(t *testing.T, manifestSHA string) (*updateFixture, *config
 	}
 	t.Cleanup(func() { restartFn = prevRestart })
 
+	prevSpawn := spawnWatchdogFn
+	spawnWatchdogFn = func(_ *Marker, markerPath string) error {
+		f.spawned = append(f.spawned, markerPath)
+		return f.spawnErr
+	}
+	t.Cleanup(func() { spawnWatchdogFn = prevSpawn })
+	resetHealthState(t)
+
 	sum := sha256.Sum256(f.newBinary)
 	if manifestSHA == "" {
 		manifestSHA = hex.EncodeToString(sum[:])
 	}
 	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, f.newBinary))
-	release := LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, SHA256: manifestSHA}
+	f.release = LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, SHA256: manifestSHA}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case rpcPath:
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]LatestRelease{release})
+			_ = json.NewEncoder(w).Encode([]LatestRelease{f.release})
 		case "/storage/v1/object/agent-releases/" + releaseAsset:
 			_, _ = w.Write(f.newBinary)
 		case "/storage/v1/object/agent-releases/" + releaseAsset + ".sig":
@@ -85,7 +97,8 @@ func newUpdateFixture(t *testing.T, manifestSHA string) (*updateFixture, *config
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key"}
+	f.cfgDir = t.TempDir()
+	cfg := &config.Config{SupabaseURL: srv.URL, SupabaseKey: "test-key", Path: filepath.Join(f.cfgDir, "config.json")}
 	cfg.SetTokens("test-jwt", "")
 	return f, cfg
 }
@@ -101,7 +114,22 @@ func TestCheckAndApply_AppliesVerifiedUpdate(t *testing.T) {
 	if len(f.restarted) != 1 || f.restarted[0] != staged {
 		t.Fatalf("restart calls = %q, want exactly [%q]", f.restarted, staged)
 	}
-	assertNotExist(t, f.self+".backup", "backup")
+	// The backup and the update marker stay until the new binary is
+	// confirmed healthy, and the watchdog was started (#503).
+	if got := mustReadFile(t, f.self+".backup"); !bytes.Equal(got, f.oldBinary) {
+		t.Errorf("backup = %q, want the old binary", got)
+	}
+	markerPath := filepath.Join(f.cfgDir, markerFileName)
+	if len(f.spawned) != 1 || f.spawned[0] != markerPath {
+		t.Errorf("watchdog spawned with %q, want [%q]", f.spawned, markerPath)
+	}
+	m, err := ReadMarker(markerPath)
+	if err != nil || m.FromVersion != "v1.0.0" || m.ToVersion != "v99.9.9" || m.BackupPath != f.self+".backup" {
+		t.Errorf("marker = %+v, %v", m, err)
+	}
+	if got := mustReadFile(t, m.WatchdogPath); !bytes.Equal(got, f.oldBinary) {
+		t.Errorf("watchdog copy = %q, want the old binary", got)
+	}
 
 	if runtime.GOOS == "windows" {
 		// Windows defers the swap to the restart script: the running binary is

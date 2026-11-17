@@ -165,7 +165,7 @@ jobs:
     name: Sign binaries and installers
     runs-on: ${{ needs.build.outputs.signer }}
     needs: build
-    timeout-minutes: 20
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -186,6 +186,19 @@ jobs:
           MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
           MACOS_CODESIGN_P12_PASSWORD: ${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}
         run: bash scripts/macos-codesign.sh dist/sentinelgo-darwin-amd64 dist/sentinelgo-darwin-arm64
+
+      # Notarization (#491) needs a Developer ID signature. It doesn't change
+      # the binaries, so the Ed25519 signatures below still cover them. The
+      # script skips with a notice for an internal CA signature, warns without
+      # the key or when Apple doesn't answer in time, and fails the release
+      # only when Apple rejects the binaries.
+      - name: Notarize the macOS binaries
+        if: runner.os == 'macOS'
+        env:
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/macos-notarize.sh dist/sentinelgo-darwin-amd64 dist/sentinelgo-darwin-arm64
 
       - name: Sign binaries and installers, generate SHA256SUMS
         env:

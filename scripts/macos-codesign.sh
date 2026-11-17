@@ -8,17 +8,19 @@
 # The .p12 holds one code-signing identity: a certificate (with the
 # codeSigning extended key usage), its private key and, ideally, the CA
 # certificates above it, so the signature embeds the chain. Today that is a
-# certificate from our internal CA, whose root MDM installs on managed Macs;
-# a Developer ID Application identity drops in the same way later.
+# certificate from our internal CA, whose root MDM installs on managed Macs,
+# or a Developer ID Application identity. Developer ID signatures also get
+# Apple's secure timestamp, so scripts/macos-notarize.sh can notarize them.
 #
-# The identifier never changes: profiles that grant the agent permissions
-# (Full Disk Access, notifications) pin it with the certificate.
+# The identifier is the App ID registered in the Apple Developer account
+# (#491) and never changes: profiles that grant the agent permissions (Full
+# Disk Access, notifications) pin it with the certificate.
 #
 # The certificate is imported into a throwaway keychain that is deleted on
 # exit, so nothing outlives the job.
 set -euo pipefail
 
-IDENTIFIER="com.sentinelgo.agent"
+IDENTIFIER="com.brainstation-23.sentinelgo"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "macos-codesign: needs macOS (codesign)" >&2
@@ -57,21 +59,29 @@ security list-keychains -d user -s "$keychain" $existing
 
 # Without -v, find-identity also lists identities whose root isn't trusted on
 # this runner, which an internal CA's isn't. The keychain holds one identity.
-identity="$(security find-identity "$keychain" | awk '/^ *[0-9]+\) [0-9A-F]{40} /{print $2; exit}')"
+line="$(security find-identity "$keychain" | awk '/^ *[0-9]+\) [0-9A-F]{40} /{print; exit}')"
+identity="$(awk '{print $2}' <<<"$line")"
 if [[ -z "$identity" ]]; then
     echo "macos-codesign: no signing identity in MACOS_CODESIGN_P12" >&2
     exit 1
 fi
 echo "Signing with identity $identity"
 
+# Notarization needs Apple's secure timestamp, and Apple's timestamp server
+# only stamps signatures made with Apple-issued certificates. So a Developer
+# ID identity gets one; an internal CA's doesn't.
+timestamp="--timestamp=none"
+if [[ "$line" == *'"Developer ID Application: '* ]]; then
+    timestamp="--timestamp"
+    echo "Developer ID identity: adding Apple's secure timestamp"
+fi
+
 for bin in "$@"; do
-    # The hardened runtime is what notarization will need with a Developer
-    # ID certificate. The agent only loads system frameworks, which it
-    # allows. No timestamp: Apple's timestamp server is for Apple-issued
-    # certificates.
+    # The hardened runtime is required for notarization. The agent only loads
+    # system frameworks, which it allows, so it needs no entitlements.
     codesign --force --sign "$identity" --keychain "$keychain" \
-        --identifier "$IDENTIFIER" --options runtime --timestamp=none "$bin"
+        --identifier "$IDENTIFIER" --options runtime "$timestamp" "$bin"
     codesign --verify --strict --verbose=2 "$bin"
-    codesign -dv --verbose=2 "$bin" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|CodeDirectory)='
+    codesign -dv --verbose=2 "$bin" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|Timestamp|CodeDirectory)='
     codesign -d -r- "$bin" 2>&1 | grep '^designated'
 done

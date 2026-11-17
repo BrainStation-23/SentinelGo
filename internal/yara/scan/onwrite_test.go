@@ -53,7 +53,14 @@ func (f *fakeWatch) state() (starts, open int) {
 }
 
 // countGuard counts the files that waited on the CPU budget.
-type countGuard struct{ n atomic.Int64 }
+// countGuard counts waits; each one "pauses" pause, reported as a
+// walk.Throttle does.
+type countGuard struct {
+	n     atomic.Int64
+	pause time.Duration
+}
+
+func (g *countGuard) Throttled() time.Duration { return time.Duration(g.n.Load()) * g.pause }
 
 func (g *countGuard) Wait(context.Context) error { g.n.Add(1); return nil }
 

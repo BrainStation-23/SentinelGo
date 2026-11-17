@@ -185,7 +185,8 @@ func TestRefreshToken_ContextCancelled(t *testing.T) {
 	go func() { done <- svc.RefreshToken(ctx, cfg) }()
 
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("RefreshToken: %v", err)
 		// Any return is acceptable; we only care that it returned promptly.
 	case <-time.After(5 * time.Second):
 		t.Fatal("RefreshToken did not return within 5 s with cancelled context")

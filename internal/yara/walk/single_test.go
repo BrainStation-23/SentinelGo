@@ -72,6 +72,10 @@ func TestStat(t *testing.T) {
 			t.Errorf("%s: reason %q err %v, want %q", name, reason, err, want)
 		}
 	}
+	// A file skipped as too large keeps its size, for the scan report.
+	if big, _, _ := Stat(o, filepath.Join(root, "big.bin")); big.Size <= o.MaxFileBytes || big.Path == "" {
+		t.Errorf("too large: %+v", big)
+	}
 	if _, reason, err := Stat(o, root); err != nil || reason != SkipSpecial {
 		t.Errorf("folder: reason %q err %v", reason, err)
 	}

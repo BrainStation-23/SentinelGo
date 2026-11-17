@@ -35,9 +35,9 @@ Print the queue (number, title, why it's in that order) before starting.
    go test ./...
    make check-no-cgo
    make verify-cross
-   # golangci-lint v2.12.2 is not on PATH; install to temp and lint each OS:
+   # golangci-lint v2.15.0 is not on PATH; install to temp and lint each OS:
    LINT_DIR=$(mktemp -d)
-   GOBIN=$LINT_DIR go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+   GOBIN=$LINT_DIR go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
    for os in linux darwin windows; do CGO_ENABLED=0 GOOS=$os "$LINT_DIR/golangci-lint" run ./...; done
    # gosec is advisory in CI (continue-on-error), but its findings show up as
    # code-scanning alerts on the PR, so fix or annotate them too (e.g. G302 on 0700 dirs):

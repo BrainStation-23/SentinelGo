@@ -22,7 +22,8 @@ Package layout:
 | `checker.go` | Discover latest release, compare versions, orchestrate apply, startup check |
 | `downloader.go` | Authenticated Storage download, SHA256 + ed25519 verify |
 | `installer.go` | Backup, atomic replace, OS-specific restart |
-| `version.go` | Semver parse / strictly-newer comparison |
+| `version.go` | Semver parse / update decision (newer, or server-approved older) |
+| `health.go` (+ `health_unix.go`, `health_windows.go`) | Update marker, health confirmation, the update watchdog and its rollback |
 | `pubkey.go` | Embedded ed25519 public key (matches CI `SENTINELGO_SIGNING_KEY`) |
 
 ## Triggers
@@ -43,13 +44,18 @@ Order is deliberate (verify before replace; version not persisted before restart
 
 ```
 1. fetchLatestRelease  → RPC get_latest_agent_release(p_platform, p_arch)
-2. Compare latest.Version to compiled-in config.Version (strictly newer only)
+2. Compare latest.Version to compiled-in config.Version (newer, or older with allow_downgrade)
+   → skip a version this device rolled back from, and wait while an earlier
+     update still waits for its health check
 3. Require SHA256 in the RPC row (refuse otherwise)
 4. createBackup        → <exe>.backup
 5. downloadAndVerify   → Storage agent-releases/<asset> + <.sig>
                        → SHA256 match + ed25519.Verify(PublicKey)
-6. atomicReplace       → Unix only (Windows stages .new for post-exit swap)
-7. restart             → exit; launchd / systemd / SCM relaunches
+6. beginHealthWatch    → update_marker.json next to the config, and
+                         sentinelgo-update-watchdog[.exe] (a copy of the old binary)
+7. atomicReplace       → Unix only (Windows stages .new for post-exit swap)
+8. spawnWatchdog       → `update-watchdog --marker …`, outside the service
+9. restart             → exit; launchd / systemd / SCM relaunches
 ```
 
 Notes:
@@ -57,11 +63,76 @@ Notes:
 - Comparison uses **`config.Version`**, not a stale `cfg.CurrentVersion`.
   On load, `config.Load` sets `CurrentVersion = Version` so reporting matches
   the binary that is actually running.
-- Downgrades and equal tags never apply. Unparseable versions (e.g. `"dev"`)
-  skip the update.
+- Equal tags never apply. An older tag applies only when the RPC row has
+  `allow_downgrade: true`, which the backend sets during an audited,
+  admin-initiated rollback; the agent logs
+  `Rolling back: vA -> vB (server-approved downgrade)`. The SHA-256 and
+  signature checks are the same. A missing field (older backend) means false.
+  Unparseable versions (e.g. `"dev"`) skip the update.
 - Fail closed: missing `.sig`, bad signature, or checksum mismatch aborts and
   cleans up the staged file / backup as appropriate.
 - On Unix replace failure, `rollbackFromBackup` restores the previous binary.
+
+## Health check and rollback (#503)
+
+An upgrade keeps the backup until the new binary proves it works. A
+server-approved downgrade (#505) isn't watched: it goes to an earlier release,
+which may predate this check and could never confirm itself.
+
+- **Marker.** `update_marker.json` (next to `config.json`, mode 0600) holds
+  `from_version`, `to_version`, the binary, backup and health-file paths, the
+  deadline (10 minutes) and `give_up_at` (24 hours). The old binary writes it
+  once; afterwards it is only deleted, so the agent and the watchdog never
+  write the same file. Versions are compared as semver (`2.1.6` = `v2.1.6`).
+- **Watchdog.** Before restarting, the old binary copies itself to
+  `sentinelgo-update-watchdog[.exe]` and starts it with
+  `update-watchdog --marker <path>` so it survives the restart: as a
+  transient systemd unit (`systemd-run`) on Linux, because systemd kills the
+  agent's whole cgroup; in its own session on macOS, outside the process
+  group launchd kills; detached (breaking away from a job when allowed) on
+  Windows. It holds `update_watchdog.lock` (one watchdog per marker) and logs
+  to `update_watchdog.log`. It starts before the binary is replaced; if it
+  can't start, the update doesn't go ahead, because a new binary that can't
+  start couldn't start a watchdog either.
+- **New binary.** `StartHealthCheck` (first step of `MainIntegration.Start`)
+  records each start (`attempts`, `booted_at`) in `update_health.json` and
+  refreshes `alive_at` every 30 s. When no watchdog holds the lock, for example
+  after a reboot, it starts one. Once the agent has signed in and an
+  agent-info upload the server accepted (a payload it rejects with a 4xx
+  doesn't count), `ConfirmHealthy` (from the `agent-info-update` task)
+  deletes the marker, the health file, the backup and the watchdog copy, and
+  the watchdog exits. If deleting the marker fails, the 30 s ticker retries
+  it.
+- **Confirm or roll back, never both.** The agent confirming and the watchdog
+  rolling back each hold `update_transition.lock` (an OS file lock) and
+  re-read the marker under it. Whoever gets it first ends the update; the
+  other finds the marker gone (or another update's) and leaves the files
+  alone.
+- **Rollback.** The watchdog restores the backup when the new binary started
+  more than 3 times, or when the deadline passed. The deadline is the
+  marker's, or 10 minutes after the latest start if that is later. On Linux
+  and macOS it replaces the file in place and restarts the service
+  (`systemctl restart sentinelgo`,
+  `launchctl kickstart -k system/com.sentinelgo.agent`, after re-registering
+  with Gatekeeper). On Windows it stops the service with `sc stop`, waits for
+  the binary to unlock, then runs `sc start`. It writes
+  `update_rollback.json`. If that write fails (a full disk), it renames the
+  marker to `update_rolledback_marker.json` instead, which needs no new
+  space and still names the bad version; if even that fails, the marker
+  stays, which holds updates back until `give_up_at`. The restored agent logs the rollback once, so it
+  reaches the uploaded agent log, and the update checks skip that version
+  until the server offers another one. The watchdog only restores
+  `<exe>.backup` over `<exe>`, whatever the marker says.
+- **Offline.** If the deadline passes while the new binary is alive but the
+  watchdog can't reach the server either, the watchdog waits another
+  10 minutes (in memory), for up to 24 hours. A marker older than that is
+  stale and is removed.
+- **Never installed.** If the binary still matches the backup (e.g. the
+  Windows swap didn't run), the watchdog cleans up, records nothing, and
+  starts the service in case it is down (`sc start`, `systemctl start`,
+  `launchctl kickstart`, which leave a running service alone).
+- **No stacking.** While an update waits for its health check, the agent
+  doesn't start another one.
 
 ## Release discovery
 
@@ -71,8 +142,8 @@ Notes:
 // Auth: Authorization Bearer <agent JWT>, apikey <anon key>
 ```
 
-`LatestRelease` fields used by the agent: `version`, `asset_path`, `sha256`
-(plus metadata such as `published_at`, `asset_name`, `size`).
+`LatestRelease` fields used by the agent: `version`, `asset_path`, `sha256`,
+`allow_downgrade` (plus metadata such as `published_at`, `asset_name`, `size`).
 
 Empty RPC result → no release configured yet; skip quietly.
 

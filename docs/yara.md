@@ -15,9 +15,15 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    every 15 minutes. Rule sources are downloaded from Storage, rejected unless
    their size and SHA-256 match the bundle, and compiled in a sandboxed scan
    worker. The last good rules stay in force through any failure and are
-   cached in `yara/` next to `config.json`, so scans work offline. Rules using
-   modules the engine doesn't support (`import "pe"`) are skipped one by one
-   and listed in the status; the rest of the ruleset still runs.
+   cached in `yara/` next to `config.json`, so scans work offline. The engine
+   has the `pe`, `hash`, `math`, `string` and `time` modules. Rules using
+   another module (`import "elf"`, `import "dotnet"`) are skipped one by one
+   and listed in the status; the rest of the ruleset still runs. For rulesets
+   that import `pe`, a Windows executable up to 64 MiB is read into memory and
+   scanned whole, so fields at the end of the file (`pe.signatures`,
+   `pe.calculate_checksum()`, resources, version info) are defined. Larger
+   executables are streamed, and those fields stay undefined, so rules that
+   test them don't match.
 2. **When.** Each schedule in the bundle runs every `every_hours`, at an
    offset within `jitter_minutes` derived from the agent id and schedule id:
    the same on every restart, different on every device, so a fleet doesn't
@@ -64,11 +70,42 @@ or quarantine anything, and it doesn't replace Defender, XProtect or an EDR.
    `[{ruleset_id, rule, files}]`, including matches it didn't send again; it
    is `[]` when the scan found nothing and `null` when nothing was counted.
    At most 500 rules. `rule_counts_truncated` says the list can't show a rule
-   is gone: it was cut at 500, or a file that matched in an earlier scan
-   couldn't be scanned this time (read error, timeout, worker failure). The
-   server closes a match alert after a full scan only when a complete list
-   leaves the rule out (Compliance-OS#952). The status's `last_scan` leaves
-   the list out to stay under 64 KB.
+   is gone: it was cut at 500 (or to fit the summary's 32 KB, below), or a
+   file that matched in an earlier scan couldn't be scanned this time (read
+   error, timeout, worker failure). The server closes a match alert after a
+   full scan only when a complete list leaves the rule out
+   (Compliance-OS#952). The status's `last_scan` leaves the list out to stay
+   under 64 KB.
+8. **Scan report** (contract v1.2, #497; capability `yara_scan_report_v1`).
+   Every field is optional; servers on v1 ignore them.
+
+   | Field | Shape |
+   | --- | --- |
+   | `skipped_by_reason` | `{reason: count}`, summing to `files_skipped`: `excluded`, `link`, `special`, `network`, `removable`, `too_large`, `cloud_placeholder`, `too_deep`, `tcc_denied`, `unchanged`, `timeout` (per-file timeout), `changed` (changed or gone since it was listed) |
+   | `errors_by_reason` | `{reason: count}`, summing to `errors`: `access_denied`, `locked` (in use, sharing violation), `read_error`, `list_error` (a folder or file couldn't be listed), `worker_failed`, `no_rules`, `queue_error` (match events couldn't be queued) |
+   | `end_reason` | why the scan stopped early: `time_limit`, `file_limit`, `cancelled`, `disabled`, `worker_failure`, `no_rules`, `shutdown`, `error`; absent when it completed |
+   | `bytes_scanned`, `throttled_seconds` | bytes the worker read; time paused on battery or for the CPU budget |
+   | `scope` | `{roots, exclusions, limits: {max_file_bytes, per_file_timeout_ms, max_scan_minutes, max_files_per_scan}, rulesets: [{id, revision}]}` |
+   | `problem_files` | up to 200 `{path \| path_hash, file_ext, reason, detail, size}`, errors first. Expected skips (`excluded`, `link`, `unchanged`) are counted only. `detail` is the OS error text, at most 200 characters, without the path. |
+
+   In hashed path mode the scope's folders and the problem files' paths are
+   hashed like match paths. A summary stays under 32 KB: problem files are
+   cut first, then rule counts (which then say `rule_counts_truncated`). A
+   stopped scheduled scan keeps its breakdown in its checkpoint, so the
+   resumed scan reports the whole run. On-write windows send the same fields.
+   The status's `last_scan` and the inventory keep the counts and reasons but
+   not the scope or problem files.
+9. **Scan progress** (contract v1.2, #498). When the bundle has
+   `scan_progress: {interval_seconds}` (the server adds it for agents that
+   report `yara_scan_report_v1` and accept the event), a running scheduled
+   or on-demand scan queues a `scan_progress` event at most once per
+   interval (2 minutes by default, never more often than every 2 minutes):
+   `{scan_id, trigger, preset, files_scanned, files_skipped, errors,
+   matches, root_index, roots_total, elapsed_seconds}`, no paths.
+   `root_index` counts folders from 0. The queue keeps only a scan's latest
+   progress until it is uploaded, and its `scan_summary` drops it. On-write
+   windows don't send progress, and neither does an agent whose bundle has
+   no `scan_progress`, so older servers never receive the kind.
 
 ## On-write scanning
 
@@ -166,7 +203,10 @@ The worker also runs at low CPU and I/O priority.
 - Events carry identifiers, hashes and metadata only: never file content,
   matched bytes or excerpts. The server drops any other field.
 - With path mode `hashed` the path never leaves the device: only the SHA-256
-  of the lower-cased path and the extension.
+  of the lower-cased path and the extension. That includes the scan
+  summary's scope folders and problem files.
+- A problem file's `detail` is the operating system's error text (for
+  example "Access is denied."), never file content.
 - Logs name scans, rulesets and rules by id and count. They never contain rule
   text, matched bytes or file paths.
 - The skip cache stores hashes of paths, not paths. The scan state file keeps

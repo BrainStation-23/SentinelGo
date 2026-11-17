@@ -11,6 +11,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ import (
 // information (TestPinnedVersionMatchesGoMod keeps the two in step).
 const (
 	goYaraModule  = "github.com/cawalch/go-yara"
-	pinnedVersion = "v0.9.0"
+	pinnedVersion = "v0.10.0"
 )
 
 // Name is the engine name the bundle's engine.name refers to.
@@ -161,7 +162,7 @@ func (g *goYara) Compile(ctx context.Context, id string, src []byte) (Program, [
 	for name := range c.GetOptions().Modules {
 		supported[name] = true
 	}
-	source, err := prepare(string(src), supported)
+	source, imported, err := prepare(string(src), supported)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -191,7 +192,7 @@ func (g *goYara) Compile(ctx context.Context, id string, src []byte) (Program, [
 	case n == 0:
 		return nil, skipped, ErrNoRules
 	}
-	return &program{prog: prog, ns: id}, skipped, nil
+	return &program{prog: prog, ns: id, wholePE: imported["pe"]}, skipped, nil
 }
 
 // skippedRules maps go-yara's ignored rules to the status's skipped rules
@@ -232,6 +233,73 @@ func reason(ig compiler.IgnoredRule, earlier map[string]string) string {
 type program struct {
 	prog *compiler.CompiledProgram
 	ns   string
+	// wholePE: the ruleset imports pe, so PE files are scanned from one
+	// buffer holding the whole file (see scanWhole).
+	wholePE bool
+}
+
+// typePE is filescan's type for a PE image.
+const typePE = "executable.pe"
+
+// go-yara's reader scans keep only the first streamPrefix bytes for the pe
+// module: fields past it (signatures, checksum, resources, version info, and
+// imports/exports stored late in the file) are undefined, so rules testing
+// them never match. PE files between streamPrefix and MaxWholePEBytes are
+// read into memory and scanned whole instead; larger ones still stream. The
+// worker's memory limit is 1 GiB and it scans one file at a time.
+const (
+	streamPrefix    = 64 << 10
+	MaxWholePEBytes = 64 << 20
+)
+
+// scanWhole reports whether f is scanned from one whole-file buffer.
+func (p *program) scanWhole(f File) bool {
+	return p.wholePE && f.Type == typePE && f.Size > streamPrefix && f.Size <= MaxWholePEBytes
+}
+
+// peOffset is e_lfanew, the offset of the "PE\0\0" signature, in an "MZ"
+// file's DOS header; ok is false for anything else.
+func peOffset(b []byte) (off int64, ok bool) {
+	if len(b) < 0x40 || b[0] != 'M' || b[1] != 'Z' {
+		return 0, false
+	}
+	return int64(binary.LittleEndian.Uint32(b[0x3c:])), true
+}
+
+// peOffsetBeyond reports an "MZ" head whose PE signature offset is past the
+// head but inside a file of size bytes, so only the whole file can say
+// whether it's a PE.
+func peOffsetBeyond(head []byte, size int64) bool {
+	off, ok := peOffset(head)
+	return ok && off+4 > int64(len(head)) && off+4 <= size
+}
+
+// hasPESignature reports a whole "MZ" file with "PE\0\0" at e_lfanew.
+func hasPESignature(data []byte) bool {
+	off, ok := peOffset(data)
+	return ok && off >= 4 && off+4 <= int64(len(data)) && string(data[off:off+4]) == "PE\x00\x00"
+}
+
+// readWhole reads up to n bytes of r, checking ctx between chunks. A file
+// that shrank returns what it has.
+func readWhole(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	const chunk = 1 << 20
+	buf := make([]byte, n)
+	var off int64
+	for off < n {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m, err := io.ReadFull(r, buf[off:min(off+chunk, n)])
+		off += int64(m)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf[:off], nil
 }
 
 func (p *program) RuleCount() int { return p.prog.GetRuleCount() }
@@ -244,11 +312,29 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 	if f.Size > 0 {
 		r = io.LimitReader(r, f.Size)
 	}
+	// farPE: an "MZ" file whose PE signature offset lies past the sniffed
+	// head, so SniffType couldn't confirm it (and may have typed it as text).
+	farPE := false
 	if f.Type == "" {
 		br := bufio.NewReaderSize(r, sniffBytes)
 		head, _ := br.Peek(sniffBytes) // a short file returns what it has
 		f.Type = filescan.SniffType(head)
+		farPE = f.Type != typePE && peOffsetBeyond(head, f.Size)
 		r = br
+	}
+	var data []byte
+	// A far PE is read whole whatever the ruleset imports or the file's size
+	// (up to MaxWholePEBytes): only the whole file can confirm it, and the
+	// filetype external must say executable.pe for every rule.
+	whole := p.scanWhole(f) || (farPE && f.Size <= MaxWholePEBytes)
+	if whole {
+		var err error
+		if data, err = readWhole(ctx, r, f.Size); err != nil {
+			return nil, err
+		}
+		if farPE && hasPESignature(data) {
+			f.Type = typePE
+		}
 	}
 	s := p.prog.NewScanner(
 		compiler.WithMatchData(0),
@@ -257,7 +343,13 @@ func (p *program) ScanReader(ctx context.Context, r io.Reader, f File) ([]Match,
 		compiler.WithExternalVariables(externals(f)),
 	)
 	defer s.Close()
-	res, err := s.ScanReaderWithContext(ctx, r)
+	var res *compiler.ScanResult
+	var err error
+	if whole {
+		res, err = s.ScanWithContext(ctx, data)
+	} else {
+		res, err = s.ScanReaderWithContext(ctx, r)
+	}
 	if err != nil {
 		return nil, err
 	}

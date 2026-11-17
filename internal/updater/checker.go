@@ -26,6 +26,10 @@ type LatestRelease struct {
 	SHA256      string    `json:"sha256"`
 	Size        int64     `json:"size"`
 	ContentType string    `json:"content_type"`
+	// AllowDowngrade is set by the server only during an admin-initiated
+	// rollback: install Version even though it is older than the running
+	// one. Missing (older servers) means false.
+	AllowDowngrade bool `json:"allow_downgrade"`
 }
 
 var updateMutex sync.Mutex
@@ -77,8 +81,9 @@ var connectivityClient = httpx.NewClient(10 * time.Second)
 // Test seams: restart exits the process and dialTimeout reaches real hosts on
 // port 443, so tests swap these for fakes.
 var (
-	restartFn   = restart
-	dialTimeout = net.DialTimeout
+	restartFn       = restart
+	dialTimeout     = net.DialTimeout
+	spawnWatchdogFn = spawnWatchdog
 )
 
 // CheckAndApply checks for a newer release via Supabase RPC and applies the
@@ -87,7 +92,9 @@ var (
 // Order of operations is deliberate:
 //  1. Compare against the COMPILED-IN running version (config.Version), not the
 //     persisted cfg.CurrentVersion.
-//  2. Only update on a strictly-newer semantic version (blocks downgrades).
+//  2. Only update on a strictly-newer semantic version, or an older one the
+//     server explicitly approved (allow_downgrade, an audited rollback).
+//     Equal versions are a no-op.
 //  3. Require a SHA256 checksum (from RPC) and an ed25519 signature (from Storage).
 //  4. Download and verify BEFORE replacing anything.
 //  5. Replace + restart via the OS service manager.
@@ -105,15 +112,19 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	}
 
 	running := config.Version
-	newer, err := isNewerVersion(latest.Version, running)
+	action, err := decideUpdate(latest.Version, running, latest.AllowDowngrade)
 	if err != nil {
 		// Cannot compare versions (e.g. a "dev" build). Skip.
 		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
 		return nil
 	}
-	if !newer {
+	if action == actionNone {
 		fmt.Printf("Already up to date (running %s, latest %s)\n",
 			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+		return nil
+	}
+
+	if heldBack(cfg, latest.Version) {
 		return nil
 	}
 
@@ -122,7 +133,12 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 			sanitize.ForLog(latest.Version))
 	}
 
-	fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	if action == actionDowngrade {
+		log.Printf("Rolling back: %s -> %s (server-approved downgrade)",
+			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	} else {
+		fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+	}
 
 	backupPath, err := createBackup()
 	if err != nil {
@@ -144,8 +160,25 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
 
+	// For an upgrade the backup stays until the new binary proves healthy; a
+	// watchdog restores it otherwise (#503). A server-approved downgrade goes
+	// to an earlier release, which may predate the health check and could
+	// never confirm itself, so it isn't watched.
+	var marker *Marker
+	var markerPath string
+	if action == actionUpgrade {
+		if marker, markerPath, err = startHealthWatch(cfg, running, latest.Version, backupPath); err != nil {
+			_ = removeFile(newPath)
+			_ = removeFile(backupPath)
+			return err
+		}
+	}
+
 	if runtime.GOOS != "windows" {
 		if err := atomicReplace(newPath); err != nil {
+			if marker != nil {
+				endHealthWatch(marker, markerPath)
+			}
 			if rbErr := rollbackFromBackup(backupPath); rbErr != nil {
 				return fmt.Errorf("atomic replace failed (%v) and rollback failed: %w", err, rbErr)
 			}
@@ -154,10 +187,47 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
-	fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
-	_ = removeFile(backupPath)
+	if marker == nil {
+		fmt.Printf("Update verified and staged: %s -> %s\n", running, latest.Version)
+		_ = removeFile(backupPath)
+		return restartFn(newPath)
+	}
 
+	fmt.Printf("Update verified and staged: %s -> %s (backup kept until it is healthy)\n", running, latest.Version)
 	return restartFn(newPath)
+}
+
+// startHealthWatch writes the update marker and starts the watchdog, before
+// the binary is touched: a new binary that can't start can't start a
+// watchdog either, so without one nothing would roll it back. On error
+// nothing is left behind and the update must not go ahead.
+func startHealthWatch(cfg *config.Config, running, to, backupPath string) (*Marker, string, error) {
+	marker, markerPath, err := beginHealthWatch(cfg, running, to, backupPath, time.Now())
+	if err != nil {
+		return nil, "", fmt.Errorf("refusing to update without a health check: %w", err)
+	}
+	if err := spawnWatchdogFn(marker, markerPath); err != nil {
+		endHealthWatch(marker, markerPath)
+		return nil, "", fmt.Errorf("refusing to update: the update watchdog didn't start: %w", err)
+	}
+	return marker, markerPath, nil
+}
+
+// heldBack reports whether the update health check (#503) holds this
+// version back: it was rolled back on this device, or an earlier update is
+// still waiting for its health check.
+func heldBack(cfg *config.Config, version string) bool {
+	if rolledBack(cfg, version, time.Now()) {
+		log.Printf("Updater: skipping %s: it was rolled back on this device after failing its health check; waiting for another version",
+			sanitize.ForLog(version))
+		return true
+	}
+	if m, pending := pendingUpdate(cfg, time.Now()); pending {
+		log.Printf("Updater: update %s -> %s is still waiting for its health check; not updating again yet",
+			sanitize.ForLog(m.FromVersion), sanitize.ForLog(m.ToVersion))
+		return true
+	}
+	return false
 }
 
 // CheckAndApplyWithRetry performs an update check and apply with exponential

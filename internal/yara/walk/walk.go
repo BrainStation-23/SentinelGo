@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+
+	"sentinelgo/internal/yara"
 )
 
 // Reasons a file or folder is skipped, counted in Stats.Skipped. Their sum
@@ -65,6 +67,20 @@ type Options struct {
 	Guard Guard
 	// Resume continues a partial scan (ignored when the roots changed).
 	Resume *Checkpoint
+	// Problem, if set, is called for each error and each skip an admin can
+	// act on (not excluded, links or unchanged files), for the scan
+	// summary's problem_files.
+	Problem func(Problem)
+}
+
+// Problem is a path the walk couldn't list or skipped for a reason worth
+// showing. Detail is the OS error text, without the path.
+type Problem struct {
+	Path   string
+	Reason string
+	Detail string
+	Size   int64
+	Error  bool // an error (errors_by_reason), not a skip
 }
 
 // Checkpoint is where a partial scan stopped: roots before Root are done,
@@ -85,7 +101,11 @@ type File struct {
 	// an earlier scan. If it can't be scanned now, the scan can't show its
 	// rules are gone.
 	MatchedBefore bool
-	id            fileID
+	// Root is the index in Options.Roots of the root the file is under;
+	// Skipped and Errors are the walk's counts so far (scan progress, #498).
+	Root            int
+	Skipped, Errors int64
+	id              fileID
 }
 
 // Stats count what a walk did.
@@ -93,6 +113,8 @@ type Stats struct {
 	Files   int64            // handed to the callback
 	Skipped map[string]int64 // by reason
 	Errors  int64            // folders or files that couldn't be listed or read
+	// ErrorsBy counts Errors by reason (list_error); it sums to Errors.
+	ErrorsBy map[string]int64
 	// TCCDenied: macOS refused a folder for privacy (no Full Disk Access).
 	TCCDenied bool
 	// Checkpoint is set when the walk returned ErrPartial, or stopped
@@ -131,6 +153,7 @@ type walker struct {
 	resume  string // skip files up to this path in walk order ("" when passed)
 	root    int
 	lastOut string
+	skipped int64 // the sum of st.Skipped
 }
 
 // Walk lists the files under o.Roots and calls fn for each, in a stable
@@ -142,7 +165,7 @@ func Walk(ctx context.Context, o Options, fn func(File) error) (Stats, error) {
 	if o.MaxDepth <= 0 {
 		o.MaxDepth = DefaultMaxDepth
 	}
-	w := &walker{o: o, fn: fn, st: Stats{Skipped: map[string]int64{}}, mounts: map[string]Mount{}}
+	w := &walker{o: o, fn: fn, st: Stats{Skipped: map[string]int64{}, ErrorsBy: map[string]int64{}}, mounts: map[string]Mount{}}
 	for _, m := range o.Mounts {
 		w.mounts[w.fold(m.Path)] = m
 	}
@@ -176,20 +199,20 @@ func Walk(ctx context.Context, o Options, fn func(File) error) (Stats, error) {
 
 func (w *walker) walkRoot(ctx context.Context, root string) error {
 	if reason, skip := w.mountSkip(root, true); skip {
-		w.skip(reason)
+		w.skip(root, reason, 0)
 		return nil
 	}
 	info, err := lstat(root)
 	if err != nil {
-		w.fail(err)
+		w.fail(root, err)
 		return nil
 	}
 	if info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
-		w.skip(SkipLink)
+		w.skip(root, SkipLink, 0)
 		return nil
 	}
 	if w.o.Exclude.Excluded(root, baseName(root, w.o.GOOS)) {
-		w.skip(SkipExcluded)
+		w.skip(root, SkipExcluded, 0)
 		return nil
 	}
 	if !info.IsDir() {
@@ -204,7 +227,7 @@ func (w *walker) dir(ctx context.Context, dir string, depth int) error {
 	}
 	entries, err := readDir(dir)
 	if err != nil {
-		w.fail(err)
+		w.fail(dir, err)
 		// ReadDir returns what it read before the error; keep going with it.
 	}
 	sep := separator(w.o.GOOS)
@@ -221,19 +244,19 @@ func (w *walker) dir(ctx context.Context, dir string, depth int) error {
 			}
 		}
 		if w.o.Exclude.Excluded(p, e.Name()) {
-			w.skip(SkipExcluded)
+			w.skip(p, SkipExcluded, 0)
 			continue
 		}
 		switch {
 		case typ&(fs.ModeSymlink|fs.ModeIrregular) != 0:
-			w.skip(SkipLink)
+			w.skip(p, SkipLink, 0)
 		case typ.IsDir():
 			if reason, skip := w.mountSkip(p, false); skip {
-				w.skip(reason)
+				w.skip(p, reason, 0)
 				continue
 			}
 			if depth+1 > w.o.MaxDepth {
-				w.skip(SkipTooDeep)
+				w.skip(p, SkipTooDeep, 0)
 				continue
 			}
 			if err := w.dir(ctx, p, depth+1); err != nil {
@@ -243,7 +266,7 @@ func (w *walker) dir(ctx context.Context, dir string, depth int) error {
 			info, err := e.Info()
 			if err != nil {
 				if !errors.Is(err, fs.ErrNotExist) { // gone since the listing
-					w.fail(err)
+					w.fail(p, err)
 				}
 				continue
 			}
@@ -251,7 +274,7 @@ func (w *walker) dir(ctx context.Context, dir string, depth int) error {
 				return err
 			}
 		default:
-			w.skip(SkipSpecial)
+			w.skip(p, SkipSpecial, 0)
 		}
 	}
 	return nil
@@ -259,22 +282,22 @@ func (w *walker) dir(ctx context.Context, dir string, depth int) error {
 
 func (w *walker) file(ctx context.Context, p string, info fs.FileInfo) error {
 	if !info.Mode().IsRegular() {
-		w.skip(SkipSpecial)
+		w.skip(p, SkipSpecial, 0)
 		return nil
 	}
 	if placeholder(info) {
-		w.skip(SkipCloud)
+		w.skip(p, SkipCloud, info.Size())
 		return nil
 	}
 	if w.o.MaxFileBytes > 0 && info.Size() > w.o.MaxFileBytes {
-		w.skip(SkipTooLarge)
+		w.skip(p, SkipTooLarge, info.Size())
 		return nil
 	}
 	f := File{Path: p, Size: info.Size(), Key: keyOf(p, info), id: idOf(info)}
 	if w.o.Cache != nil {
 		if r, ok := w.o.Cache.Lookup(f.Key, w.o.Rules); ok {
 			if r != Matched {
-				w.skip(SkipUnchanged)
+				w.skip(p, SkipUnchanged, 0)
 				return nil
 			}
 			f.MatchedBefore = true
@@ -285,6 +308,7 @@ func (w *walker) file(ctx context.Context, p string, info fs.FileInfo) error {
 			return err
 		}
 	}
+	f.Root, f.Skipped, f.Errors = w.root, w.skipped, w.st.Errors
 	if err := w.fn(f); err != nil {
 		return err
 	}
@@ -328,18 +352,33 @@ func (w *walker) fold(p string) string {
 	return p
 }
 
-func (w *walker) skip(reason string) { w.st.Skipped[reason]++ }
+// skip counts a skipped path, and reports it as a problem unless skipping
+// it is expected (excluded, links, unchanged).
+func (w *walker) skip(p, reason string, size int64) {
+	w.st.Skipped[reason]++
+	w.skipped++
+	if w.o.Problem != nil && !expectedSkip[reason] {
+		w.o.Problem(Problem{Path: p, Reason: reason, Size: size})
+	}
+}
+
+// expectedSkip are skips that need no action: counts only, no problem file.
+var expectedSkip = map[string]bool{SkipExcluded: true, SkipLink: true, SkipUnchanged: true}
 
 // fail counts a listing or stat error. macOS privacy refusals are skips,
 // not errors (#413); a path that vanished is neither.
-func (w *walker) fail(err error) {
+func (w *walker) fail(p string, err error) {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case privacyDenied(w.o.GOOS, err):
 		w.st.TCCDenied = true
-		w.skip(SkipTCCDenied)
+		w.skip(p, SkipTCCDenied, 0)
 	default:
 		w.st.Errors++
+		w.st.ErrorsBy[yara.ErrList]++
+		if w.o.Problem != nil {
+			w.o.Problem(Problem{Path: p, Reason: yara.ErrList, Detail: ErrorDetail(err), Error: true})
+		}
 	}
 }
 

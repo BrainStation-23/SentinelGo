@@ -61,15 +61,16 @@ var knownPaths = func() map[string][]string {
 		"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
 
 		// Linux
-		"systemctl":  {"/usr/bin/systemctl", "/bin/systemctl"},
-		"smartctl":   {"/usr/sbin/smartctl", "/sbin/smartctl"},
-		"dpkg-query": {"/usr/bin/dpkg-query"},
-		"rpm":        {"/usr/bin/rpm", "/bin/rpm"},
-		"snap":       {"/usr/bin/snap"},
-		"flatpak":    {"/usr/bin/flatpak"},
-		"ufw":        {"/usr/sbin/ufw", "/sbin/ufw"},
-		"sudo":       {"/usr/bin/sudo"},
-		"env":        {"/usr/bin/env", "/bin/env"},
+		"systemctl":   {"/usr/bin/systemctl", "/bin/systemctl"},
+		"systemd-run": {"/usr/bin/systemd-run", "/bin/systemd-run"},
+		"smartctl":    {"/usr/sbin/smartctl", "/sbin/smartctl"},
+		"dpkg-query":  {"/usr/bin/dpkg-query"},
+		"rpm":         {"/usr/bin/rpm", "/bin/rpm"},
+		"snap":        {"/usr/bin/snap"},
+		"flatpak":     {"/usr/bin/flatpak"},
+		"ufw":         {"/usr/sbin/ufw", "/sbin/ufw"},
+		"sudo":        {"/usr/bin/sudo"},
+		"env":         {"/usr/bin/env", "/bin/env"},
 
 		// Linux accounts (the file DLP scan workers' account).
 		"useradd": {"/usr/sbin/useradd", "/sbin/useradd"},

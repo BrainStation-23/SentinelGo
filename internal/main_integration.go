@@ -151,6 +151,10 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 		log.Printf("Warning: emergency log init failed (events echo to log only): %v", err)
 	}
 
+	// After a self-update: count this start and watch for the health
+	// check, or log a rollback the update watchdog did (#503).
+	updater.StartHealthCheck(ctx, mi.cfg)
+
 	// 1. Validate configuration before doing anything that depends on it.
 	if err := mi.cfg.ValidateConfiguration(); err != nil {
 		emergencylog.Record("startup", "config validation failed: %v", err)

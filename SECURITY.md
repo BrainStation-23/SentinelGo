@@ -103,10 +103,10 @@ SentinelGo **does not protect against**:
 - Release binaries are cross-compiled with `CGO_ENABLED=0` (fully static, no C runtime dependency) and are reproducible; see [`RELEASE.md`](RELEASE.md).
 - Every release binary and installer is signed with Ed25519 (`scripts/sign`), listed in `SHA256SUMS`, and has a GitHub build-provenance attestation.
 - The updater (`internal/updater/`) asks the backend for the latest release through the `get_latest_agent_release` RPC and downloads the binary and its `.sig` from Supabase Storage. It installs the update only if:
-  - the version is strictly newer than the running one (no downgrades),
+  - the version is strictly newer than the running one, or older and the release row has `allow_downgrade` set (the backend sets it only during an audited, admin-initiated rollback); equal versions never install,
   - the SHA-256 matches the release manifest, and
   - the Ed25519 signature verifies against the public key compiled into the agent (`internal/updater/pubkey.go`). A missing or invalid signature is a hard failure.
-- The current binary is backed up first, the new one replaces it atomically, and a failed replace rolls back to the backup.
+- The current binary is backed up first, the new one replaces it atomically, and a failed replace rolls back to the backup. The backup stays until the new binary signs in and uploads agent info. If it doesn't within 10 minutes, or crash-loops, an update watchdog (a copy of the old binary started outside the service) restores the backup, and that version is skipped until the server offers another one. The watchdog only ever restores `<exe>.backup` over `<exe>`.
 - The installers verify the binary against `SHA256SUMS` and refuse to install if the file is missing. See [`installation-doc/INSTALLATION.md`](installation-doc/INSTALLATION.md).
 
 ### Audit log collection

@@ -11,7 +11,7 @@ func TestHasAuthority(t *testing.T) {
 		{
 			name: "internal CA signature",
 			out: `Executable=/opt/sentinelgo/sentinelgo
-Identifier=com.sentinelgo.agent
+Identifier=com.brainstation-23.sentinelgo
 Format=Mach-O thin (arm64)
 CodeDirectory v=20500 size=51234 flags=0x10000(runtime) hashes=1590+2 location=embedded
 Signature size=1683
@@ -25,7 +25,7 @@ TeamIdentifier=not set
 		},
 		{
 			name: "Developer ID signature",
-			out: `Identifier=com.sentinelgo.agent
+			out: `Identifier=com.brainstation-23.sentinelgo
 Authority=Developer ID Application: Example Ltd (ABCDE12345)
 Authority=Developer ID Certification Authority
 Authority=Apple Root CA

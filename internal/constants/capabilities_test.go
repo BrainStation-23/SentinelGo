@@ -137,6 +137,22 @@ func TestCapabilities_YARAScan(t *testing.T) {
 	}
 }
 
+// yara_scan_report_v1 is advertised on every OS: the contract v1.2 report
+// fields come from the walk and the runner, which are the same everywhere.
+func TestCapabilities_YARAScanReport(t *testing.T) {
+	if yara.CapabilityScanReport != "yara_scan_report_v1" || !slices.Contains(AgentCapabilities, yara.CapabilityScanReport) {
+		t.Fatalf("%s not in AgentCapabilities %q", yara.CapabilityScanReport, AgentCapabilities)
+	}
+	prev := goos
+	t.Cleanup(func() { goos = prev })
+	for _, os := range []string{"windows", "darwin", "linux"} {
+		goos = os
+		if !slices.Contains(Capabilities(), yara.CapabilityScanReport) {
+			t.Errorf("%s: yara_scan_report_v1 not advertised", os)
+		}
+	}
+}
+
 // admin_password_rotation_v1 is advertised on Windows only (#361).
 func TestCapabilities_AdminPasswordRotationOnWindowsOnly(t *testing.T) {
 	prev := goos
