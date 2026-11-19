@@ -17,6 +17,7 @@ import (
 	"os"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/dlp/filescan"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/yara"
@@ -160,17 +161,8 @@ func serve(c frameConn, sandboxDesc string) error {
 			if err := c.writeMsg(message{Type: typeResult, ID: m.ID, Result: &res}, -1); err != nil {
 				return err
 			}
-		case typeYARARuleset:
-			closeFile(f)
-			ys.add(m.Ruleset)
-		case typeYARACompile:
-			closeFile(f)
-			if err := c.writeMsg(message{Type: typeYARACompiled, ID: m.ID, Compiled: ys.compile()}, -1); err != nil {
-				return err
-			}
-		case typeYARAScan:
-			res := ys.scan(f, m)
-			if err := c.writeMsg(message{Type: typeResult, ID: m.ID, YARA: &res}, -1); err != nil {
+		case typeYARARuleset, typeYARACompile, typeYARAScan:
+			if err := serveYARA(c, ys, m, f); err != nil {
 				return err
 			}
 		default:
@@ -179,6 +171,34 @@ func serve(c frameConn, sandboxDesc string) error {
 			}
 		}
 	}
+}
+
+// serveYARA answers a YARA request. A build without YARA (the read-only
+// build, #547) holds no rules: it compiles nothing and answers every scan
+// with no rules, so the YARA engine isn't in its binary.
+func serveYARA(c frameConn, ys *yaraState, m message, f *os.File) error {
+	if !buildflavor.YARA {
+		closeFile(f)
+		switch m.Type {
+		case typeYARACompile:
+			return c.writeMsg(message{Type: typeYARACompiled, ID: m.ID}, -1)
+		case typeYARAScan:
+			return c.writeMsg(message{Type: typeResult, ID: m.ID, YARA: &YARAResult{Status: YARANoRules, Size: m.Size}}, -1)
+		}
+		return nil
+	}
+	switch m.Type {
+	case typeYARARuleset:
+		closeFile(f)
+		ys.add(m.Ruleset)
+	case typeYARACompile:
+		closeFile(f)
+		return c.writeMsg(message{Type: typeYARACompiled, ID: m.ID, Compiled: ys.compile()}, -1)
+	case typeYARAScan:
+		res := ys.scan(f, m)
+		return c.writeMsg(message{Type: typeResult, ID: m.ID, YARA: &res}, -1)
+	}
+	return nil
 }
 
 func scanOne(s *filescan.Scanner, f *os.File, size int64) filescan.Result {

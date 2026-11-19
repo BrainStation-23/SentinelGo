@@ -51,9 +51,9 @@ type CompiledPolicy struct {
 // bad custom pattern is skipped and reported while the policy's other rules
 // stay active. b must not be nil.
 func Compile(b *Bundle) *Compiled {
-	// A bundle built in code rather than decoded is made monitor-only here
-	// too; decoded ones already are.
-	monitorOnly(b)
+	// The read-only build never blocks (#547): it compiles a monitor-only
+	// copy, so b (and the cache that saved it) keeps the server's actions.
+	b = monitorOnly(b)
 	c := &Compiled{
 		Bundle:       b,
 		Version:      b.Version,

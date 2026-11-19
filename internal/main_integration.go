@@ -491,6 +491,11 @@ const dlpPolicySyncTick = time.Minute
 // not keep the rest of the agent from running.
 func (mi *MainIntegration) startDLP(ctx context.Context) {
 	cfg := mi.cfg
+	// The read-only build has no upload inspection: clear what a full build
+	// may have left behind (#547).
+	if !buildflavor.DLPEnforcement {
+		removeUploadLeftovers(cfg)
+	}
 	cache := policy.NewCache(filepath.Join(filepath.Dir(cfg.Path), policy.CacheFileName))
 	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
 
@@ -564,6 +569,20 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
 	native.SetDLPPolicySync(mi.dlpSyncNow)
+}
+
+// removeUploadLeftoversFn is uploadproxy.RemoveLeftovers; replaced in tests.
+var removeUploadLeftoversFn = uploadproxy.RemoveLeftovers
+
+// removeUploadLeftovers removes upload inspection's system proxy setting,
+// direct block and CA left by a full build that didn't stop cleanly.
+func removeUploadLeftovers(cfg *config.Config) {
+	if cfg.Path == "" {
+		return
+	}
+	if err := removeUploadLeftoversFn(filepath.Dir(cfg.Path)); err != nil {
+		log.Printf("Warning: could not remove what upload inspection left behind: %v", err)
+	}
 }
 
 // fileEnforcer builds file DLP: the file hook (Linux: fanotify; Windows and

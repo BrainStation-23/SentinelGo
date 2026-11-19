@@ -24,6 +24,11 @@ func TestReadOnly_MonitorOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Decode keeps the server's actions: the cache saves this bundle, and
+	// a switch back to the full build must block again.
+	if b.Policies[0].Action != ActionBlock {
+		t.Errorf("Decode rewrote the action to %q", b.Policies[0].Action)
+	}
 	c := Compile(b)
 	for _, p := range c.Policies {
 		if p.Action != ActionMonitor || p.Blocks() {

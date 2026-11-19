@@ -152,7 +152,6 @@ func (b *Bundle) normalize() {
 	// past what a desktop session should spend on one copy.
 	b.Modules.Clipboard.MaxScanBytes = min(b.Modules.Clipboard.MaxScanBytes, MaxScanBytesLimit)
 	b.Modules.Files.normalize()
-	monitorOnly(b)
 }
 
 // PollInterval is how often to poll for a new bundle: the bundle's

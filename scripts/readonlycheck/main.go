@@ -46,6 +46,8 @@ var sentinels = []sentinel{
 	{"DLPEnforcement", pkg + "dlp/prompt.Show", nil},
 	{"YARA", pkg + "yara/ruleset.(*Syncer).Sync", nil},
 	{"YARA", pkg + "yara/scan.(*Runner).StartOnDemand", nil},
+	{"YARA", pkg + "dlp/scanworker.(*yaraState).compile", nil},
+	{"YARA", pkg + "yara/engine.(*goYara).Compile", nil},
 	{"NotifyUser", pkg + "service/task/native.(*notifyUserHandler).Run", nil},
 	{"MDMEnroll", pkg + "mdmenroll.(*Enroller).Enroll", nil},
 }
