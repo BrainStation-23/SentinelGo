@@ -258,6 +258,13 @@ func TestUpdateAgentInfo_BuildFlavor(t *testing.T) {
 	if want := `"build_flavor":"` + buildflavor.Flavor + `"`; !strings.Contains(string(body), want) {
 		t.Errorf("request body lacks %s: %s", want, body)
 	}
+	want := `"build_features":[]`
+	if !buildflavor.ReadOnly {
+		want = `"build_features":["scripts","device_actions","dlp_enforcement","yara","notify_user","mdm_enroll"]`
+	}
+	if !strings.Contains(string(body), want) {
+		t.Errorf("request body lacks %s: %s", want, body)
+	}
 }
 
 // TestUpdateAgentInfo_SendsUserIdentity: the #223 keys sit at the top level

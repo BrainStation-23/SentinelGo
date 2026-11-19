@@ -33,10 +33,14 @@ type AgentUpdatePayload struct {
 	RAMS             interface{} `json:"rams,omitempty"`
 	Display          interface{} `json:"display,omitempty"`
 	AgentVersion     string      `json:"agent_version,omitempty"`
-	// BuildFlavor is the build this binary is: "full" or "readonly" (#547).
-	// The console needs it because capabilities don't cover scripts or
-	// most native commands.
-	BuildFlavor     string      `json:"build_flavor"`
+	// BuildFlavor is the build this binary is: "full" or "readonly" (#547),
+	// a label for the console.
+	BuildFlavor string `json:"build_flavor"`
+	// BuildFeatures are the features compiled into this binary (scripts,
+	// device_actions, dlp_enforcement, yara, notify_user, mdm_enroll): what
+	// the server checks (Compliance-OS#1076). Always sent, [] for the
+	// read-only build; a missing key means an older, full agent.
+	BuildFeatures   []string    `json:"build_features"`
 	FQDN            string      `json:"fqdn,omitempty"`
 	ChassisType     string      `json:"chassis_type,omitempty"`
 	KernelVersion   string      `json:"kernel_version,omitempty"`
@@ -194,6 +198,7 @@ func buildPayload(sysInfo *shared.SystemInfo) AgentUpdatePayload {
 		MDM:              sysInfo.MDM,
 		PowerTelemetry:   sysInfo.PowerTelemetry,
 		BuildFlavor:      buildflavor.Flavor,
+		BuildFeatures:    buildflavor.Features(),
 		Capabilities:     constants.Capabilities(),
 		UserIdentity:     sysInfo.UserIdentity,
 	}
