@@ -17,7 +17,7 @@ const activeIdle = 2 * time.Minute
 // CGSSessionScreenIsLocked only while that session's screen is locked;
 // IOConsoleLocked covers the console as a whole. ok is false when the output
 // can't be read or has no entry for uid.
-func consoleLocked(out string, uid string) (locked, ok bool) {
+func consoleLocked(out, uid string) (locked, ok bool) {
 	v, ok := shared.PlistFromOutput(out)
 	if !ok {
 		return false, false
