@@ -17,12 +17,29 @@ const activeIdle = 2 * time.Minute
 // CGSSessionScreenIsLocked only while that session's screen is locked;
 // IOConsoleLocked covers the console as a whole. ok is false when the output
 // can't be read or has no entry for uid.
+// plistRoot is the registry entry ioreg printed: the top-level dictionary,
+// or the first dictionary of a top-level array (the shape -r gives, and
+// what some macOS versions print for -n).
+func plistRoot(v any) map[string]any {
+	switch t := v.(type) {
+	case map[string]any:
+		return t
+	case []any:
+		for _, e := range t {
+			if d, ok := e.(map[string]any); ok {
+				return d
+			}
+		}
+	}
+	return nil
+}
+
 func consoleLocked(out, uid string) (locked, ok bool) {
 	v, ok := shared.PlistFromOutput(out)
 	if !ok {
 		return false, false
 	}
-	root, _ := v.(map[string]any)
+	root := plistRoot(v)
 	if root == nil {
 		return false, false
 	}
