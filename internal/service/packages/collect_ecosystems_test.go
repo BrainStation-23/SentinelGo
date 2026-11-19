@@ -101,6 +101,7 @@ func TestCollectGlobal_Ecosystems(t *testing.T) {
 	write(t, j(alice, ".cargo", ".crates2.json"), string(fixture(t, "crates2.json")))
 	write(t, j(alice, ".cargo", "registry", "cache", "index.crates.io-6f17d22bba15001f", "serde-1.0.197.crate"), "")
 	write(t, j(alice, ".cargo", "registry", "cache", "my-registry.example.com-abc", "private-1.0.0.crate"), "")
+	write(t, j(alice, ".cargo", "registry", "cache", "github.com-0123456789abcdef", "private-2.0.0.crate"), "") // another GitHub-hosted index
 
 	// RubyGems, Pub, CRAN.
 	gems := j(alice, ".gem", "ruby", "3.2.0", "specifications")

@@ -288,54 +288,81 @@ func parseBunLock(data []byte) []nameVersion {
 }
 
 // jsoncToJSON turns JSONC (comments, trailing commas) into JSON: comments
-// outside strings are dropped, and a comma followed only by whitespace
-// before "}" or "]" is removed.
+// outside strings are dropped first, then a comma followed only by
+// whitespace before "}" or "]" is removed.
 func jsoncToJSON(data []byte) []byte {
+	return dropTrailingCommas(dropJSONComments(data))
+}
+
+// scanJSON calls keep for each byte outside a string; inside strings
+// (escapes included) bytes are copied as they are. keep returns how many
+// bytes to skip after this one and whether to copy it.
+func scanJSON(data []byte, keep func(i int) (skip int, copyByte bool)) []byte {
 	out := make([]byte, 0, len(data))
 	inString := false
 	for i := 0; i < len(data); i++ {
 		c := data[i]
 		if inString {
 			out = append(out, c)
-			switch c {
-			case '\\':
-				if i+1 < len(data) {
-					i++
-					out = append(out, data[i])
-				}
-			case '"':
+			switch {
+			case c == '\\' && i+1 < len(data):
+				i++
+				out = append(out, data[i])
+			case c == '"':
 				inString = false
 			}
 			continue
 		}
-		switch {
-		case c == '"':
+		if c == '"' {
 			inString = true
-		case c == '/' && i+1 < len(data) && data[i+1] == '/':
-			for i < len(data) && data[i] != '\n' {
-				i++
-			}
-			if i < len(data) {
-				out = append(out, '\n')
-			}
+			out = append(out, c)
 			continue
-		case c == '/' && i+1 < len(data) && data[i+1] == '*':
-			end := bytes.Index(data[i+2:], []byte("*/"))
-			if end < 0 {
-				return out
-			}
-			i += end + 3
-			continue
-		case c == ',':
-			j := i + 1
-			for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
-				j++
-			}
-			if j < len(data) && (data[j] == '}' || data[j] == ']') {
-				continue
-			}
 		}
-		out = append(out, c)
+		skip, copyByte := keep(i)
+		if copyByte {
+			out = append(out, c)
+		}
+		i += skip
 	}
 	return out
+}
+
+// dropJSONComments removes // and /* */ comments outside strings. A line
+// comment keeps its newline; an unterminated block comment ends the input.
+func dropJSONComments(data []byte) []byte {
+	return scanJSON(data, func(i int) (int, bool) {
+		if data[i] != '/' || i+1 >= len(data) {
+			return 0, true
+		}
+		switch data[i+1] {
+		case '/':
+			end := bytes.IndexByte(data[i:], '\n')
+			if end < 0 {
+				return len(data), false
+			}
+			return end - 1, false // resume at the newline
+		case '*':
+			end := bytes.Index(data[i+2:], []byte("*/"))
+			if end < 0 {
+				return len(data), false
+			}
+			return end + 3, false
+		}
+		return 0, true
+	})
+}
+
+// dropTrailingCommas removes a comma outside strings that only whitespace
+// separates from a closing "}" or "]".
+func dropTrailingCommas(data []byte) []byte {
+	return scanJSON(data, func(i int) (int, bool) {
+		if data[i] != ',' {
+			return 0, true
+		}
+		j := i + 1
+		for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
+			j++
+		}
+		return 0, j >= len(data) || (data[j] != '}' && data[j] != ']')
+	})
 }

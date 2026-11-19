@@ -267,6 +267,7 @@ func (p *projectScanner) visit(item walkItem, maxDepth int) int {
 	}
 	read := len(entries)
 	pyLocked := false
+	reqFiles, reqPinned := 0, 0
 	var venvs []fs.DirEntry
 	for _, e := range entries {
 		name := e.Name()
@@ -320,12 +321,19 @@ func (p *projectScanner) visit(item walkItem, maxDepth int) int {
 			continue
 		}
 		data := p.parseLockfile(filepath.Join(item.dir, name), e, ecosystem, parse, root.user)
-		if pythonLockfiles[name] || isPylock(name) ||
-			(ecosystem == EcosystemPyPI && data != nil && requirementsPinned(data)) {
+		switch {
+		case pythonLockfiles[name] || isPylock(name):
 			pyLocked = true
+		case ecosystem == EcosystemPyPI: // requirements*.txt
+			reqFiles++
+			if data != nil && requirementsPinned(data) {
+				reqPinned++
+			}
 		}
 	}
-	if !pyLocked {
+	// requirements files lock the project only when every one of them pins
+	// everything it installs.
+	if !pyLocked && (reqFiles == 0 || reqPinned < reqFiles) {
 		for _, v := range venvs {
 			read += p.visitVenv(filepath.Join(item.dir, v.Name()), root.user)
 		}
@@ -429,7 +437,7 @@ func (p *projectScanner) visitVenv(venv, user string) int {
 		filepath.Join(venv, "Lib", "site-packages"),            // Windows
 	} {
 		for _, dir := range s.glob(pattern) {
-			if info, err := os.Lstat(dir); err == nil && info.IsDir() {
+			if realDirUnder(dir, venv) {
 				s.collectSitePackages(dir, user)
 			}
 		}
@@ -442,6 +450,29 @@ func (p *projectScanner) visitVenv(venv, user string) int {
 		p.current = append(p.current, pkg)
 	}
 	return s.files + s.dirs
+}
+
+// realDirUnder reports whether dir is a directory reached from base without
+// following a link: glob follows a linked lib or python3.x folder, which
+// could lead outside the project.
+func realDirUnder(dir, base string) bool {
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return false
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(base, dir)
+	if err != nil {
+		return false
+	}
+	if !sameFold(realDir, filepath.Join(realBase, rel)) {
+		return false // some folder on the way is a link
+	}
+	info, err := os.Lstat(dir)
+	return err == nil && info.IsDir()
 }
 
 // ownerHome returns the user whose home holds path, or "" when none does.

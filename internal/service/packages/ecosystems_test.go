@@ -115,11 +115,13 @@ func TestCrateFileName(t *testing.T) {
 
 func TestGemspecFileName(t *testing.T) {
 	for in, want := range map[string]string{
-		"rack-2.2.8.gemspec":                   "rack@2.2.8",
-		"rack-test-2.1.0.gemspec":              "rack-test@2.1.0",
-		"nokogiri-1.15.0-x86_64-linux.gemspec": "nokogiri@1.15.0",
-		"net-imap-0.4.9.1.gemspec":             "net-imap@0.4.9.1",
-		"rails-7.1.0.rc1.gemspec":              "rails@7.1.0.rc1",
+		"rack-2.2.8.gemspec":                     "rack@2.2.8",
+		"rack-test-2.1.0.gemspec":                "rack-test@2.1.0",
+		"nokogiri-1.15.0-x86_64-linux.gemspec":   "nokogiri@1.15.0",
+		"net-imap-0.4.9.1.gemspec":               "net-imap@0.4.9.1",
+		"rails-7.1.0.rc1.gemspec":                "rails@7.1.0.rc1",
+		"iso-639-0.3.8.gemspec":                  "iso-639@0.3.8",
+		"ffi-1.15.5-universal-darwin-22.gemspec": "ffi@1.15.5",
 	} {
 		nv, ok := gemspecFileName(in)
 		if !ok || nv.name+"@"+nv.version != want {
@@ -151,17 +153,36 @@ func TestParseDescription(t *testing.T) {
 
 func TestRequirementsPinned(t *testing.T) {
 	for body, want := range map[string]bool{
-		"requests==2.31.0\ncertifi==2024.2.2\n":          true,
-		"-r base.txt\nrequests==2.31.0 --hash=sha256:aa": true,
-		"requests>=2\n":                       false,
-		"requests==2.31.0\nflask\n":           false,
-		"-e .\nrequests==2.31.0\n":            false,
-		"# only comments\n":                   false,
-		"pkg @ https://example.com/pkg.whl\n": false,
+		"requests==2.31.0\ncertifi==2024.2.2\n":                 true,
+		"-c constraints.txt\nrequests==2.31.0 --hash=sha256:aa": true,
+		"-r base.txt\nrequests==2.31.0\n":                       false, // base.txt's pins are unknown
+		"requests>=2\n":                                         false,
+		"requests==2.31.0\nflask\n":                             false,
+		"-e .\nrequests==2.31.0\n":                              false,
+		"# only comments\n":                                     false,
+		"pkg @ https://example.com/pkg.whl\n":                   false,
 	} {
 		if g := requirementsPinned([]byte(body)); g != want {
 			t.Errorf("requirementsPinned(%q) = %v, want %v", body, g, want)
 		}
+	}
+}
+
+func TestParseMixLock_PrivateDependency(t *testing.T) {
+	lock := []byte(`%{
+  "public_pkg": {:hex, :public_pkg, "1.0.0", "aa", [:mix], [{:private_pkg, "~> 1.0", [hex: :private_pkg, repo: "hexpm:acme", optional: false]}], "hexpm", "bb"},
+  "private_pkg": {:hex, :private_pkg, "1.0.0", "cc", [:mix], [], "hexpm:acme", "dd"},
+  "old_format": {:hex, :old_format, "0.1.0", "ee", [:mix], [], "hexpm"},
+}`)
+	if g, want := got(parseMixLock(lock)), []string{"old_format@0.1.0", "public_pkg@1.0.0"}; !slices.Equal(g, want) {
+		t.Errorf("got %v, want %v", g, want)
+	}
+}
+
+func TestParseBunLock_CommentAfterTrailingComma(t *testing.T) {
+	lock := []byte("{\"packages\": {\"a\": [\"a@1.0.0\"], // comment\n /* block */ }, }")
+	if g := got(parseBunLock(lock)); !slices.Equal(g, []string{"a@1.0.0"}) {
+		t.Errorf("got %v", g)
 	}
 }
 

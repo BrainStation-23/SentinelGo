@@ -143,13 +143,20 @@ func (s *scan) collectCargoHome(home, user string) {
 	}
 }
 
+// cratesIOGitCache is the cache folder of crates.io's git index. Other
+// registries hosted on GitHub also get a "github.com-<hash>" folder, so only
+// this hash counts.
+const cratesIOGitCache = "github.com-1ecc6299db9ec823"
+
 // collectCargoCache reports a registry's download cache
 // (~/.cargo/registry/cache/<index>/<name>-<version>.crate). Only the
-// crates.io index folders ("index.crates.io-…", "github.com-1ecc6299db9ec823")
-// count. The location is the .crate file.
+// crates.io index folders count: "index.crates.io-<hash>" (the sparse
+// protocol; another sparse registry is named after its own host) and the
+// git index's. A private registry's crates never leave the device. The
+// location is the .crate file.
 func (s *scan) collectCargoCache(dir, user string) {
 	base := filepath.Base(dir)
-	if !strings.HasPrefix(base, "index.crates.io-") && !strings.HasPrefix(base, "github.com-") {
+	if !strings.HasPrefix(base, "index.crates.io-") && base != cratesIOGitCache {
 		return
 	}
 	for _, f := range s.regularFiles(dir) {

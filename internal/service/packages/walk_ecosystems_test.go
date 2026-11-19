@@ -39,7 +39,17 @@ func TestProjectScan_Venv(t *testing.T) {
 	notVenv := filepath.Join(home, "notvenv")
 	write(t, site(filepath.Join(notVenv, "env")), "Name: requests\nVersion: 2.31.0\n")
 
+	// One pinned requirements file doesn't vouch for another one.
+	mixed := filepath.Join(home, "mixed")
+	write(t, filepath.Join(mixed, "requirements-dev.txt"), "pytest==8.0.0\n")
+	write(t, filepath.Join(mixed, "requirements.txt"), "requests>=2\n")
+	write(t, filepath.Join(mixed, ".venv", "pyvenv.cfg"), "")
+	write(t, site(filepath.Join(mixed, ".venv")), "Name: requests\nVersion: 2.31.0\n")
+
 	got := runProjectScan(t, home)
+	if _, ok := got["requests@2.31.0 "+filepath.Join(mixed, ".venv")]; !ok {
+		t.Errorf("mixed requirements: venv not read: %v", got)
+	}
 	venv := filepath.Join(unpinned, ".venv")
 	p, ok := got["requests@2.31.0 "+venv]
 	if !ok || p.Scope != ScopeProject || p.Ecosystem != EcosystemPyPI || p.User != "gina" {
@@ -57,6 +67,21 @@ func TestProjectScan_Venv(t *testing.T) {
 	}
 	if _, ok := got["requests@2.31.0 "+filepath.Join(locked, "poetry.lock")]; !ok {
 		t.Errorf("poetry.lock not reported: %v", got)
+	}
+}
+
+func TestProjectScan_VenvLinkNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "ivy")
+	outside := filepath.Join(dir, "outside")
+	write(t, filepath.Join(outside, "python3.12", "site-packages", "secret-1.0.dist-info", "METADATA"), "Name: secret\nVersion: 1.0\n")
+	venv := filepath.Join(home, "app", ".venv")
+	write(t, filepath.Join(venv, "pyvenv.cfg"), "")
+	if !symlink(t, outside, filepath.Join(venv, "lib")) {
+		t.Skip("symlinks not available")
+	}
+	for k := range runProjectScan(t, home) {
+		t.Errorf("followed a linked lib folder: %s", k)
 	}
 }
 

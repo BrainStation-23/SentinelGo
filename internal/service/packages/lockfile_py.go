@@ -195,9 +195,10 @@ func parseComposerLock(data []byte) []nameVersion {
 
 // requirementsPinned reports whether a requirements file pins everything it
 // installs: it has at least one requirement, and every requirement is
-// "name==version". An editable install (-e), a URL or a range means the
-// installed versions are only in the environment (#543). Other options
-// (-r, -c, --index-url, --hash) don't install anything themselves.
+// "name==version". An editable install (-e), an included file (-r), a URL
+// or a range means the installed versions are only in the environment
+// (#543). Other options (-c, --index-url, --hash) don't install anything
+// themselves.
 func requirementsPinned(data []byte) bool {
 	n := 0
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -214,7 +215,10 @@ func requirementsPinned(data []byte) bool {
 		switch {
 		case line == "" || line[0] == '#':
 			continue
-		case strings.HasPrefix(line, "-e") || strings.HasPrefix(line, "--editable"):
+		case strings.HasPrefix(line, "-e") || strings.HasPrefix(line, "--editable"),
+			strings.HasPrefix(line, "-r") || strings.HasPrefix(line, "--requirement"):
+			// An editable install, or another file whose pins this one
+			// can't vouch for.
 			return false
 		case line[0] == '-':
 			continue

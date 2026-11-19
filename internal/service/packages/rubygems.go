@@ -65,23 +65,34 @@ func gemVersion(v string) (string, bool) {
 func gemName(n string) bool { return nameChars(n, "-_.") }
 
 // gemspecFileName splits "<name>-<version>[-<platform>].gemspec". Gem
-// names may contain "-", so the version is the first segment that starts
-// with a digit.
+// names may contain "-" and even digit-led segments ("iso-639"), so the
+// version is the first digit-led segment with a "." in it (every released
+// gem version has one); failing that, the first digit-led segment.
 func gemspecFileName(file string) (nameVersion, bool) {
 	base, ok := strings.CutSuffix(file, ".gemspec")
 	if !ok {
 		return nameVersion{}, false
 	}
 	segs := strings.Split(base, "-")
+	at := -1
 	for i := 1; i < len(segs); i++ {
 		if segs[i] == "" || segs[i][0] < '0' || segs[i][0] > '9' {
 			continue
 		}
-		name := strings.Join(segs[:i], "-")
-		if v, ok := gemVersion(segs[i]); ok && gemName(name) {
-			return nameVersion{name, v}, true
+		if strings.Contains(segs[i], ".") {
+			at = i
+			break
 		}
+		if at < 0 {
+			at = i
+		}
+	}
+	if at < 0 {
 		return nameVersion{}, false
+	}
+	name := strings.Join(segs[:at], "-")
+	if v, ok := gemVersion(segs[at]); ok && gemName(name) {
+		return nameVersion{name, v}, true
 	}
 	return nameVersion{}, false
 }
