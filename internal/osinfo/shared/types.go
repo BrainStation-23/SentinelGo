@@ -839,8 +839,10 @@ type AgentCodeSignature struct {
 }
 
 // MDMIdentity holds the identifiers the backend links an MDM device to an
-// agent with: the provisioning UDID first (on Apple silicon it differs from
-// the hardware UUID), then the serial number.
+// agent with. A Mac's MDM UDID is its provisioning UDID or its hardware
+// UUID, which differ on Apple silicon; which one the MDM client sends isn't
+// settled (Compliance-OS#1068), so the backend matches either, then the
+// serial number.
 type MDMIdentity struct {
 	Serial           string `json:"serial,omitempty"`
 	ProvisioningUDID string `json:"provisioning_udid,omitempty"`

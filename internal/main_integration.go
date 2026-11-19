@@ -109,6 +109,10 @@ type MainIntegration struct {
 	// sessions runs a helper in each user session whenever the agent runs:
 	// DLP enforces through it, and notify-user shows notifications with it.
 	sessions session.Service
+	// mdmOfferCancel and mdmOfferDone stop and join the Enroll now offers
+	// (#545); nil when they don't run. Guarded by mu.
+	mdmOfferCancel context.CancelFunc
+	mdmOfferDone   chan struct{}
 }
 
 // newSessions returns the session helper service (replaced in tests, which
@@ -573,10 +577,25 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 		}
 		return mi.authSvc.DoWithAuthRetry(ctx, cfg, fn)
 	}
+	// Macs offer Enroll now until enrolled (#545); helpers elsewhere can't.
+	var offer func(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error)
+	if mdmenroll.OfferEnrollForUser != nil {
+		offer = func(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error) {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return false, session.ErrNoHelper
+			}
+			return sup.OfferEnroll(ctx, sessionID, o)
+		}
+	}
 	e := mdmenroll.New(mdmenroll.Deps{
 		OurHost:        func() string { return cfg.MDMHost },
 		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
 		ConsoleSession: mdmenroll.ConsoleSession,
+		UserActive:     mdmenroll.UserActive,
+		OfferState:     mdmenroll.OfferStatePath(cfg.Path),
 		RenewADE:       mdmenroll.RenewADE,
 		FetchWindowsEnrollment: mdmenroll.WindowsEnrollmentFetcher(
 			func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
@@ -599,7 +618,11 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 			}
 			return sup.OpenProfile(ctx, sessionID, p)
 		},
+		Offer: offer,
 	})
+	if offer != nil {
+		mi.startMDMOffers(e)
+	}
 	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
 		req, err := mdmenroll.ParseRequest(payload)
 		if err != nil {
@@ -610,6 +633,37 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 			return "", err
 		}
 		return out.String(), nil
+	}
+}
+
+// startMDMOffers runs the Enroll now offers (#545) until Stop.
+func (mi *MainIntegration) startMDMOffers(e *mdmenroll.Enroller) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	mi.mu.Lock()
+	mi.mdmOfferCancel, mi.mdmOfferDone = cancel, done
+	mi.mu.Unlock()
+	go func() {
+		defer close(done)
+		e.RunOffers(ctx)
+	}()
+}
+
+// stopMDMOffers stops the Enroll now offers and waits for an offer in
+// flight to end.
+func (mi *MainIntegration) stopMDMOffers() {
+	mi.mu.Lock()
+	cancel, done := mi.mdmOfferCancel, mi.mdmOfferDone
+	mi.mdmOfferCancel, mi.mdmOfferDone = nil, nil
+	mi.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(taskManagerStopTimeout):
+		log.Printf("Warning: MDM enrollment offers did not stop within %v", taskManagerStopTimeout)
 	}
 }
 
@@ -926,6 +980,7 @@ func (mi *MainIntegration) Stop() error {
 	native.SetUserNotifier(nil)
 	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)
+	mi.stopMDMOffers()
 	native.SetMDMSyncer(nil)
 	native.SetMDMUnenroller(nil)
 	if mi.dlpManager != nil {

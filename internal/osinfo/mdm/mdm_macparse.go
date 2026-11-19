@@ -91,9 +91,13 @@ func parseBootstrapToken(out string) *bool {
 }
 
 // parseHardwareIdentity reads `system_profiler SPHardwareDataType -json`.
-// The provisioning UDID is what Apple MDM identifies a Mac by; on Apple
-// silicon it differs from the hardware (platform) UUID. Intel Macs and older
-// macOS don't report it, and there the MDM UDID is the hardware UUID.
+// On Apple silicon the provisioning UDID differs from the hardware
+// (platform) UUID; Intel Macs and older macOS don't report it. Which of the
+// two a Mac's MDM client sends as its UDID at check-in isn't settled:
+// Apple's Managed Device Attestation guide says the provisioning UDID, but
+// agent-fetched profiles refused on Apple silicon (Compliance-OS#1068) point
+// to the hardware UUID. So both are reported, and the backend matches
+// either (#545).
 func parseHardwareIdentity(out string) shared.MDMIdentity {
 	var doc struct {
 		Hardware []struct {

@@ -11,7 +11,13 @@ func ConsoleSession() (Session, bool) { return Session{}, false }
 var RenewADE func(ctx context.Context) error
 
 // OpenProfileForUser is nil: this platform can't present a profile.
-var OpenProfileForUser func(name string, data []byte) error
+var OpenProfileForUser func(name string, data []byte, title, message string) error
+
+// OfferEnrollForUser is nil: the Enroll now offer is the Mac's.
+var OfferEnrollForUser func(ctx context.Context, title, message string) (bool, error)
+
+// UserActive is nil: only a Mac waits for its user before presenting.
+var UserActive func(s Session) bool
 
 // OpenURLForUser is nil: enrollment links are Windows'.
 var OpenURLForUser func(url string) error

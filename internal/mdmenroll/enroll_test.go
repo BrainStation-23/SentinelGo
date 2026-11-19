@@ -25,6 +25,11 @@ type fakeDevice struct {
 	renews     int
 	renewErr   error
 	clock      time.Time
+	sleeps     int
+	// active says whether the console user is at the Mac; nil means yes.
+	active func() bool
+	// fetchedWhileIdle is set when a profile was fetched for an idle user.
+	fetchedWhileIdle bool
 }
 
 func ptr(b bool) *bool { return &b }
@@ -38,7 +43,14 @@ func (f *fakeDevice) deps() Deps {
 			}
 			return f.info
 		},
-		FetchProfile: func(context.Context) ([]byte, error) { f.fetches++; return []byte("<?xml p"), nil },
+		FetchProfile: func(context.Context) ([]byte, error) {
+			f.fetches++
+			if f.active != nil && !f.active() {
+				f.fetchedWhileIdle = true
+			}
+			return []byte("<?xml p"), nil
+		},
+		UserActive: func(Session) bool { return f.active == nil || f.active() },
 		Present: func(_ context.Context, sid string, p ipc.OpenProfile) error {
 			if f.presentErr != nil {
 				return f.presentErr
@@ -56,6 +68,7 @@ func (f *fakeDevice) deps() Deps {
 		RenewADE: func(context.Context) error { f.renews++; f.started = true; return f.renewErr },
 		Now:      func() time.Time { return f.clock },
 		Sleep: func(ctx context.Context, d time.Duration) error {
+			f.sleeps++
 			f.clock = f.clock.Add(d)
 			return ctx.Err()
 		},
@@ -152,8 +165,8 @@ func TestEnroll_ADEAssignedElsewhere(t *testing.T) {
 	}
 }
 
-// The profile path presents to the console user, at most once a day unless
-// forced, and reports enrolled once the user approves.
+// The profile path presents to the console user and reports enrolled once
+// the user approves. Every presentation fetches a new profile (#545).
 func TestEnroll_Profile(t *testing.T) {
 	alice := &Session{ID: "501", User: "alice"}
 	f := &fakeDevice{info: notEnrolled(ptr(false), ""), console: alice, afterStart: enrolledOurs, clock: time.Unix(1_800_000_000, 0)}
@@ -163,19 +176,74 @@ func TestEnroll_Profile(t *testing.T) {
 		t.Fatalf("out %v err %v presented %d", out, err, len(f.presented))
 	}
 	p := f.presented[0]
-	if p.Name != profileName || string(p.Data) != "<?xml p" || p.Title == "" {
+	if p.Name != profileName || string(p.Data) != "<?xml p" || p.Title == "" || !strings.Contains(p.Message, "Install") {
 		t.Errorf("presented %+v", p)
 	}
 
-	// Again within a day: no new prompt, no new profile.
+	// Asked again right away, with or without force: a new profile each time.
 	f.started, f.afterStart = false, nil
-	out, err = e.Enroll(context.Background(), Request{Method: MethodProfile})
-	if err != nil || out.Code != ResultProfilePresented || f.fetches != 1 || !strings.Contains(out.Detail, "already presented") {
-		t.Errorf("second: %v %v fetches %d", out, err, f.fetches)
+	for i, force := range []bool{false, true} {
+		out, err = e.Enroll(context.Background(), Request{Method: MethodProfile, Force: force})
+		if err != nil || out.Code != ResultProfilePresented || f.fetches != i+2 || len(f.presented) != i+2 {
+			t.Errorf("again (force %v): %v %v fetches %d", force, out, err, f.fetches)
+		}
 	}
-	// force presents it again.
-	if out, err := e.Enroll(context.Background(), Request{Method: MethodProfile, Force: true}); err != nil || f.fetches != 2 || out.Code != ResultProfilePresented {
-		t.Errorf("forced: %v %v fetches %d", out, err, f.fetches)
+}
+
+// The profile is presented only once the user is at the Mac, and fetched
+// only then, so its challenge is fresh when they see it.
+func TestEnroll_ProfileWaitsForActiveUser(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	f := &fakeDevice{info: notEnrolled(nil, ""), console: &Session{ID: "501", User: "alice"}, clock: start}
+	back := start.Add(4 * time.Minute)
+	f.active = func() bool { return !f.clock.Before(back) }
+	out, err := New(f.deps()).Enroll(context.Background(), Request{Method: MethodProfile})
+	if err != nil || out.Code != ResultProfilePresented || f.fetches != 1 {
+		t.Fatalf("out %v err %v fetches %d", out, err, f.fetches)
+	}
+	if f.fetchedWhileIdle {
+		t.Error("fetched the profile while the user was away")
+	}
+}
+
+// A user away for the whole wait gets nothing; the task says why.
+func TestEnroll_ProfileUserIdleTimeout(t *testing.T) {
+	f := &fakeDevice{info: notEnrolled(nil, ""), console: &Session{ID: "501", User: "alice"}, clock: time.Unix(1_800_000_000, 0)}
+	f.active = func() bool { return false }
+	start := f.clock
+	_, err := New(f.deps()).Enroll(context.Background(), Request{Method: MethodProfile})
+	if outcomeCode(t, err) != ResultUserIdleTimeout || !strings.Contains(err.Error(), "alice") {
+		t.Errorf("err = %v", err)
+	}
+	if f.fetches != 0 || len(f.presented) != 0 {
+		t.Errorf("fetched %d, presented %d to an idle user", f.fetches, len(f.presented))
+	}
+	if waited := f.clock.Sub(start); waited < waitActive || waited > waitActive+activePoll {
+		t.Errorf("waited %v, want %v", waited, waitActive)
+	}
+}
+
+// The task's deadline bounds the wait, leaving time to wait for the
+// enrollment and report.
+func TestEnroll_ProfileWaitWithinDeadline(t *testing.T) {
+	f := &fakeDevice{info: notEnrolled(nil, ""), console: &Session{ID: "501", User: "alice"}, clock: time.Unix(1_800_000_000, 0)}
+	f.active = func() bool { return false }
+	ctx, cancel := context.WithTimeout(context.Background(), deadlineReserve+waitEnrolled/2+2*time.Minute)
+	defer cancel()
+	start := f.clock
+	if _, err := New(f.deps()).Enroll(ctx, Request{Method: MethodProfile}); outcomeCode(t, err) != ResultUserIdleTimeout {
+		t.Fatalf("err = %v", err)
+	}
+	if waited := f.clock.Sub(start); waited > 2*time.Minute+activePoll {
+		t.Errorf("waited %v past a deadline that left 2m", waited)
+	}
+
+	// No time left at all: one look, then the answer.
+	f.sleeps = 0
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := New(f.deps()).Enroll(ctx, Request{Method: MethodProfile}); outcomeCode(t, err) != ResultUserIdleTimeout || f.sleeps != 0 {
+		t.Errorf("err %v sleeps %d", err, f.sleeps)
 	}
 }
 
@@ -188,6 +256,27 @@ func TestEnroll_ProfileNoUser(t *testing.T) {
 	_, err := New(f.deps()).Enroll(context.Background(), Request{Method: MethodAuto})
 	if outcomeCode(t, err) != ResultNoConsoleUser || !strings.Contains(err.Error(), "bob") {
 		t.Errorf("no helper: %v", err)
+	}
+
+	// Someone signs in during the wait.
+	f = &fakeDevice{info: notEnrolled(nil, ""), clock: time.Unix(1_800_000_000, 0)}
+	d := f.deps()
+	d.ConsoleSession = func() (Session, bool) { return Session{ID: "501", User: "carol"}, f.sleeps >= 2 }
+	if out, err := New(d).Enroll(context.Background(), Request{Method: MethodProfile}); err != nil || out.Code != ResultProfilePresented {
+		t.Errorf("signed in later: %v %v", out, err)
+	}
+}
+
+// A stopped task stops waiting.
+func TestEnroll_ProfileWaitCancelled(t *testing.T) {
+	f := &fakeDevice{info: notEnrolled(nil, ""), console: &Session{ID: "501", User: "alice"}}
+	f.active = func() bool { return false }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New(f.deps()).Enroll(ctx, Request{Method: MethodProfile})
+	var oe *OutcomeError
+	if err == nil || errors.As(err, &oe) || !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
 	}
 }
 

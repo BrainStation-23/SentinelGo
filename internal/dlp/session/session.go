@@ -81,6 +81,9 @@ type Service interface {
 	SessionReadiness(sessionID string) (state string, ok bool)
 	// OpenURL opens an MDM enrollment link for the user of one session.
 	OpenURL(ctx context.Context, sessionID string, u ipc.OpenURL) error
+	// OfferEnroll offers the user of one session to enroll the Mac in device
+	// management now and waits for their choice; true means Enroll now.
+	OfferEnroll(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error)
 }
 
 // PolicyOnly lets DLP's Manager set the policy on s without owning the
