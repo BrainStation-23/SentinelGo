@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/taskstore"
@@ -17,6 +19,7 @@ func TestRegistry_NotEmpty(t *testing.T) {
 }
 
 func TestRegistry_ContainsAllExpectedSlugs(t *testing.T) {
+	flavortest.Require(t, buildflavor.DeviceActions, "device actions")
 	expectedSlugs := []string{
 		"agent-update",
 		"device-reboot",
@@ -70,6 +73,7 @@ func TestRegistry_ReturnsCopy(t *testing.T) {
 }
 
 func TestFind_ReturnsCorrectHandler(t *testing.T) {
+	flavortest.Require(t, buildflavor.DeviceActions, "device actions")
 	slugs := []string{"agent-update", "device-reboot", "firewall-disable", "firewall-enable", "sync-inventory", "sync-software"}
 	for _, slug := range slugs {
 		h := native.Find(slug)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -15,7 +16,11 @@ var enableFirewallFn = triggerFirewallEnable
 
 type firewallEnableHandler struct{}
 
-func init() { Register(&firewallEnableHandler{}) }
+func init() {
+	if buildflavor.DeviceActions {
+		Register(&firewallEnableHandler{})
+	}
+}
 
 func (h *firewallEnableHandler) Slugs() []string {
 	return []string{"firewall-enable"}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
@@ -507,11 +508,19 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	mi.mu.Lock()
 	mi.sessions = sup
 	mi.mu.Unlock()
-	native.SetUserNotifier(mi.notifyUser)
 	agentsvc.SetSessionsSource(func() []agentsvc.SessionReport { return sessionReports(sup.Sessions()) })
-	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
-	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
-	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
+	// The read-only build leaves these hooks out, so their code isn't in
+	// the binary (#547).
+	if buildflavor.NotifyUser {
+		native.SetUserNotifier(mi.notifyUser)
+	}
+	if buildflavor.MDMEnroll {
+		native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
+	}
+	if buildflavor.DeviceActions {
+		native.SetMDMSyncer(mi.mdmSyncHook(cfg))
+		native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
+	}
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if cfg.DLPEnabled {
@@ -521,21 +530,11 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {
-			// Network controls (#427, Windows): off until the bundle turns
-			// them on. The file hook finds the taints, the controller
-			// applies them.
-			netControls := netctl.New(netctl.Options{})
 			// The file channels' events are counted per channel for the
 			// status (pilot rollout, #430) on their way to the queue.
 			tally := filedlp.NewTally(sink, time.Now())
 			m.SetFileSummary(tally.Summary)
-			files := filedlp.New(filedlp.Options{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher), NetworkTaint: netControls})
-			// Upload inspection (#344): off until the bundle turns it on.
-			// On Linux the helpers set each user's desktop proxy (#426).
-			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				SessionProxy: sessionProxySetter(sup)})
-			enforcer := netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
+			enforcer := mi.fileEnforcer(cfg, fetcher, sup, tally, exe)
 			m.SetFiles(enforcer)
 			// Windows: the helpers hand over files on shares and sync folders (#330).
 			if fr, ok := sup.(interface{ SetFileReceiver(session.FileReceiver) }); ok {
@@ -565,6 +564,28 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		log.Printf("Warning: DLP policy sync not scheduled: %v", err)
 	}
 	native.SetDLPPolicySync(mi.dlpSyncNow)
+}
+
+// fileEnforcer builds file DLP: the file hook (Linux: fanotify; Windows and
+// macOS: scan after the write and device control, no driver or system
+// extension), which scans in sandboxed workers started from exe. The full
+// build adds network controls (#427, Windows) and upload inspection (#344);
+// the read-only build leaves both out of the binary and only monitors
+// (#547). Each is off until the bundle turns it on.
+func (mi *MainIntegration) fileEnforcer(cfg *config.Config, fetcher *dlpsvc.Service, sup session.Service, tally *filedlp.Tally, exe string) filedlp.Enforcer {
+	opts := filedlp.Options{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+		Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)}
+	if !buildflavor.DLPEnforcement {
+		return filedlp.New(opts)
+	}
+	// The file hook finds the taints, the controller applies them.
+	netControls := netctl.New(netctl.Options{})
+	opts.NetworkTaint = netControls
+	files := filedlp.New(opts)
+	// On Linux the helpers set each user's desktop proxy (#426).
+	uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+		SessionProxy: sessionProxySetter(sup)})
+	return netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
 }
 
 // mdmEnrollHook is the mdm-enroll task (#350): the enroller gets the device

@@ -3,11 +3,15 @@ package policy
 import (
 	"testing"
 	"time"
+
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 )
 
 // block_override (Compliance-OS#581) is a valid action that blocks; the
 // files module carries the daily limit and the approved exceptions.
 func TestBlockOverrideBundle(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	raw := []byte(`{"schema_version": 1, "version": "v1", "enabled": true,
 	  "modules": {"files": {"enabled": true, "channels": {"file.removable": true},
 	    "override_daily_limit": 3,

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"sentinelgo/internal/buildflavor"
 )
 
 // File DLP channels (contract #326). No agent enforces them yet: they are
@@ -168,7 +170,10 @@ func (m *FilesModule) UnmarshalJSON(data []byte) error {
 }
 
 // IsAuditOnly reports whether the module may only record (the default).
-func (m *FilesModule) IsAuditOnly() bool { return m.AuditOnly == nil || *m.AuditOnly }
+// A build without DLP enforcement (#547) is always audit-only.
+func (m *FilesModule) IsAuditOnly() bool {
+	return !buildflavor.DLPEnforcement || m.AuditOnly == nil || *m.AuditOnly
+}
 
 // ChannelEnabled reports whether the module and channel are both on.
 func (m *FilesModule) ChannelEnabled(channel string) bool {

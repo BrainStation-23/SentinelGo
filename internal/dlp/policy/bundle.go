@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"sentinelgo/internal/buildflavor"
 )
 
 // SchemaVersion is the bundle schema this agent understands.
@@ -26,7 +28,9 @@ const (
 
 // Blocks reports whether a policy's action stops the content (block, or
 // block_override until the user gives a reason).
-func (p Policy) Blocks() bool { return p.Action == ActionBlock || p.Action == ActionBlockOverride }
+func (p Policy) Blocks() bool {
+	return buildflavor.DLPEnforcement && (p.Action == ActionBlock || p.Action == ActionBlockOverride)
+}
 
 // Evidence modes for the whole bundle.
 const (
@@ -148,6 +152,7 @@ func (b *Bundle) normalize() {
 	// past what a desktop session should spend on one copy.
 	b.Modules.Clipboard.MaxScanBytes = min(b.Modules.Clipboard.MaxScanBytes, MaxScanBytesLimit)
 	b.Modules.Files.normalize()
+	monitorOnly(b)
 }
 
 // PollInterval is how often to poll for a new bundle: the bundle's

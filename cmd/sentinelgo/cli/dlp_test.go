@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/filedlp"
@@ -64,6 +66,7 @@ func runDLP(t *testing.T, stdin string, args ...string) (code int, out, errOut s
 }
 
 func TestDLPStatus_Offline(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	dlpTestConfig(t, true, 2)
 	code, out, _ := runDLP(t, "", "status")
 	if code != 0 {
@@ -95,6 +98,7 @@ func TestDLPStatus_NoPolicy(t *testing.T) {
 
 // dlp test prints masked findings only, never the raw match.
 func TestDLPTest_MaskedOnly(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	dlpTestConfig(t, true, 0)
 	code, out, _ := runDLP(t, "pay 4111 1111 1111 1111 for falcon-42", "test")
 	if code != 0 {

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/ipc"
@@ -84,6 +86,7 @@ func (f *fakeSessions) OfferEnroll(context.Context, string, ipc.OfferEnroll) (bo
 // at Stop (#350). Here the device has no MDM collector, so the hook answers
 // unsupported_os rather than "unavailable".
 func TestMDMEnrollHookInstalled(t *testing.T) {
+	flavortest.Require(t, buildflavor.MDMEnroll, "mdm-enroll")
 	cfg := miTestConfig(t)
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
@@ -104,6 +107,7 @@ func TestMDMEnrollHookInstalled(t *testing.T) {
 // The helpers run, and notify-user reaches them, whatever DLP's state: off
 // in config.json, or on without a policy (#301).
 func TestNotifyUser_WithoutDLP(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	for _, tc := range []struct {
 		name       string
 		dlpEnabled bool
@@ -154,6 +158,7 @@ func TestNotifyUser_WithoutDLP(t *testing.T) {
 
 // Stop removes the hook and stops the helpers, once.
 func TestNotifyUser_StopRemovesHook(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	cfg := miTestConfig(t)
 	cfg.DLPEnabled = false
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
@@ -176,6 +181,7 @@ func TestNotifyUser_StopRemovesHook(t *testing.T) {
 
 // Nobody signed in: the task fails and nothing is kept for later.
 func TestNotifyUser_NoUser(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	cfg := miTestConfig(t)
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())

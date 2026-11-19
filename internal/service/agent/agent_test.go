@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/constants"
 	"sentinelgo/internal/osinfo/shared"
@@ -236,6 +237,25 @@ func TestUpdateAgentInfo_PowerTelemetry(t *testing.T) {
 	}
 	want := `"power_telemetry":{"window_start":"2026-10-15T09:00:00Z","window_end":"2026-10-15T10:00:00Z","samples":12,"sample_interval_seconds":300,"cpu_usage_avg_percent":7.4}`
 	if !strings.Contains(string(body), want) {
+		t.Errorf("request body lacks %s: %s", want, body)
+	}
+}
+
+// TestUpdateAgentInfo_BuildFlavor: every payload says which build sent it
+// (#547), so the console can tell a read-only agent apart.
+func TestUpdateAgentInfo_BuildFlavor(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	cfg := &config.Config{SupabaseURL: server.URL, AccessToken: "test-token", DeviceID: "dev-1"}
+	if err := agent.NewAgentService().UpdateAgentInfo(context.Background(), cfg, mockSysInfo()); err != nil {
+		t.Fatalf("UpdateAgentInfo: %v", err)
+	}
+	if want := `"build_flavor":"` + buildflavor.Flavor + `"`; !strings.Contains(string(body), want) {
 		t.Errorf("request body lacks %s: %s", want, body)
 	}
 }

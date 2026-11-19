@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp/events"
 )
 
@@ -25,6 +27,7 @@ var testNotifier = &fakeNotifier{}
 func init() { notifier = testNotifier } // no real toasts from tests
 
 func TestDecide_NotifyMessage(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	p := compile(t, blockCards)
 	d := Decide(p, "4111111111111111", events.SourceApp{}, now)
 	if d.Notify != "SentinelOps blocked sensitive data on your clipboard: credit card" {
@@ -47,6 +50,7 @@ func TestDecide_NotifyMessage(t *testing.T) {
 
 // A warned copy notifies with the warn message; a monitor-only one doesn't.
 func TestNotifyUser_Warn(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	before := len(testNotifier.msgs)
 	notifyUser(Decide(compile(t, warnEmails), "jane@example.com", events.SourceApp{}, now))
 	if len(testNotifier.msgs) != before+1 || !strings.Contains(testNotifier.msgs[before], "allowed and logged") {

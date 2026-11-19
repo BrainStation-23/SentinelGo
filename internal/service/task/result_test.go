@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -164,6 +166,7 @@ func scriptResultTask() taskstore.Task {
 // TestExecuteTask_ReportsStructuredResult runs a script that writes a result
 // file and exits 3: the report carries the file's keys with the real exit code.
 func TestExecuteTask_ReportsStructuredResult(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	client := &resultClient{fakeTaskClient: &fakeTaskClient{}}
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "")
@@ -188,6 +191,7 @@ func TestExecuteTask_ReportsStructuredResult(t *testing.T) {
 // TestSyncPendingTasks_ResendsResult: a report that failed on the network is
 // retried with its result from the local store.
 func TestSyncPendingTasks_ResendsResult(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	client := &resultClient{fakeTaskClient: &fakeTaskClient{}, fail: 1}
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "")

@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"sentinelgo/internal/artifact"
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/supabase"
 	"sentinelgo/internal/taskstore"
@@ -102,6 +104,7 @@ func runBatch(t *testing.T, ctx context.Context, setup func(*TaskExecutorService
 }
 
 func TestInventorySync_SystemScriptRan(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	for _, code := range []string{"0", "3"} {
 		t.Run("exit_"+code, func(t *testing.T) {
 			_, client, rec := runBatch(t, context.Background(), nil, kindScriptTask("t1", taskstore.CommandKindSystem, code))
@@ -120,6 +123,7 @@ func TestInventorySync_SystemScriptRan(t *testing.T) {
 }
 
 func TestInventorySync_SystemScriptTimedOut(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	if runtime.GOOS == "windows" {
 		t.Skip("a killed cmd.exe can keep the temp dir busy past test cleanup")
 	}
@@ -138,6 +142,7 @@ func TestInventorySync_SystemScriptTimedOut(t *testing.T) {
 }
 
 func TestInventorySync_SeveralSystemScriptsShareOneSync(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	_, _, rec := runBatch(t, context.Background(), nil,
 		kindScriptTask("t1", taskstore.CommandKindSystem, "0"),
 		kindScriptTask("t2", taskstore.CommandKindSystem, "1"),
@@ -190,6 +195,7 @@ func TestInventorySync_NotWhenScriptNeverStarted(t *testing.T) {
 }
 
 func TestInventorySync_NativeSyncInventoryInBatch(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	t.Run("after the system script", func(t *testing.T) {
 		_, _, rec := runBatch(t, context.Background(), nil,
 			kindScriptTask("t1", taskstore.CommandKindSystem, "0"),
@@ -248,6 +254,7 @@ func TestInventorySync_CancelledContext(t *testing.T) {
 }
 
 func TestInventorySync_ErrorLeavesStatusesAlone(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	client := &fakeTaskClient{}
 	s, dbPath := newExecutorFixture(t, client, "")
@@ -275,6 +282,7 @@ func (r *countingRefresher) RefreshToken(context.Context) (string, error) {
 }
 
 func TestInventorySync_RecoversFrom401(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	client := &fakeTaskClient{}
 	s, _ := newExecutorFixture(t, client, "")
@@ -294,6 +302,7 @@ func TestInventorySync_RecoversFrom401(t *testing.T) {
 }
 
 func TestRunTask_NativeKindWithoutHandler(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	var downloads atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		downloads.Add(1)

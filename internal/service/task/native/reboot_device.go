@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/service/task/restartctx"
 	"sentinelgo/internal/taskstore"
@@ -18,7 +19,11 @@ var rebootFn = triggerReboot
 
 type rebootDeviceHandler struct{}
 
-func init() { Register(&rebootDeviceHandler{}) }
+func init() {
+	if buildflavor.DeviceActions {
+		Register(&rebootDeviceHandler{})
+	}
+}
 
 func (h *rebootDeviceHandler) Slugs() []string {
 	return []string{"device-reboot"}

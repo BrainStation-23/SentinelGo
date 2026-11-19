@@ -1,3 +1,5 @@
+//go:build !readonly
+
 package constants
 
 import (
@@ -186,6 +188,26 @@ func TestCapabilities_DLPAtRestOnWindowsOnly(t *testing.T) {
 		goos = os
 		if got := slices.Contains(Capabilities(), CapabilityDLPAtRest); got != want {
 			t.Errorf("%s: dlp_at_rest_v1 advertised = %v, want %v", os, got, want)
+		}
+	}
+}
+
+// Every capability the read-only build drops is one the full build has
+// somewhere, so a typo or a rename can't leave one advertised (#547).
+func TestReadOnlyLacks_Known(t *testing.T) {
+	defer func(g string, p func() bool) { goos, pwshInstalled = g, p }(goos, pwshInstalled)
+	pwshInstalled = func() bool { return true }
+	var all []string
+	for _, g := range []string{"darwin", "linux"} {
+		goos = g
+		all = append(all, Capabilities()...)
+	}
+	goos = "windows"
+	all = append(all, Capabilities()...)
+	all = append(all, CapabilityScriptPwsh)
+	for _, c := range ReadOnlyLacks {
+		if !slices.Contains(all, c) {
+			t.Errorf("ReadOnlyLacks has %q, which no build advertises", c)
 		}
 	}
 }

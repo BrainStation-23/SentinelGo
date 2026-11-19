@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -68,7 +69,11 @@ var errNoUser = errors.New("no user is signed in; nothing was shown")
 // root), so the session helpers show it. The text is never logged.
 type notifyUserHandler struct{}
 
-func init() { Register(&notifyUserHandler{}) }
+func init() {
+	if buildflavor.NotifyUser {
+		Register(&notifyUserHandler{})
+	}
+}
 
 // Slugs: the console's slugs allow hyphens only (#288); the underscore form
 // matches the other native tasks' contract names.

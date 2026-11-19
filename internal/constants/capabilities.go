@@ -3,8 +3,10 @@ package constants
 
 import (
 	"runtime"
+	"slices"
 
 	"sentinelgo/internal/binpath"
+	"sentinelgo/internal/buildflavor"
 )
 
 // AgentCapabilities are the task features this binary supports, sent in the
@@ -92,6 +94,26 @@ var pwshInstalled = func() bool {
 // installing PowerShell later is picked up without a restart. The result is a
 // fresh slice, so callers can't change what the agent advertises.
 func Capabilities() []string {
+	caps := deviceCapabilities()
+	if buildflavor.ReadOnly {
+		caps = slices.DeleteFunc(caps, func(c string) bool { return slices.Contains(ReadOnlyLacks, c) })
+	}
+	return caps
+}
+
+// ReadOnlyLacks are the capabilities the read-only build doesn't have
+// (#547): its gated features are compiled out, so it never advertises them.
+var ReadOnlyLacks = []string{
+	"script_inline_body_v1", "task_artifacts_v1", CapabilityScriptPwsh, // Scripts
+	"local_admin_v1", CapabilityAdminPasswordRotation, CapabilityMDMSync, CapabilityMDMUnenroll, // DeviceActions
+	"dlp_warn_v1", CapabilityDLPNetworkControl, CapabilityDLPAtRest, // DLPEnforcement
+	"yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1", // YARA
+	"desktop_notify_v1", // NotifyUser
+	CapabilityMDMEnroll, // MDMEnroll
+}
+
+// deviceCapabilities is every capability of the full build on this device.
+func deviceCapabilities() []string {
 	caps := append([]string{}, AgentCapabilities...)
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)

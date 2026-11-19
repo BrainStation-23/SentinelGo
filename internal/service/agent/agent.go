@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/constants"
 	"sentinelgo/internal/httpx"
@@ -32,19 +33,23 @@ type AgentUpdatePayload struct {
 	RAMS             interface{} `json:"rams,omitempty"`
 	Display          interface{} `json:"display,omitempty"`
 	AgentVersion     string      `json:"agent_version,omitempty"`
-	FQDN             string      `json:"fqdn,omitempty"`
-	ChassisType      string      `json:"chassis_type,omitempty"`
-	KernelVersion    string      `json:"kernel_version,omitempty"`
-	GPUs             interface{} `json:"gpus,omitempty"`
-	Disks            interface{} `json:"disks,omitempty"`
-	Firmware         interface{} `json:"firmware,omitempty"`
-	TPMVersion       string      `json:"tpm_version,omitempty"`
-	NetworkAdapters  interface{} `json:"network_adapters,omitempty"`
-	Peripherals      interface{} `json:"peripherals,omitempty"`
-	AudioDevices     interface{} `json:"audio_devices,omitempty"`
-	Printers         interface{} `json:"printers,omitempty"`
-	OSInformation    interface{} `json:"os_information"`
-	SecurityInfo     interface{} `json:"security_info,omitempty"`
+	// BuildFlavor is the build this binary is: "full" or "readonly" (#547).
+	// The console needs it because capabilities don't cover scripts or
+	// most native commands.
+	BuildFlavor     string      `json:"build_flavor"`
+	FQDN            string      `json:"fqdn,omitempty"`
+	ChassisType     string      `json:"chassis_type,omitempty"`
+	KernelVersion   string      `json:"kernel_version,omitempty"`
+	GPUs            interface{} `json:"gpus,omitempty"`
+	Disks           interface{} `json:"disks,omitempty"`
+	Firmware        interface{} `json:"firmware,omitempty"`
+	TPMVersion      string      `json:"tpm_version,omitempty"`
+	NetworkAdapters interface{} `json:"network_adapters,omitempty"`
+	Peripherals     interface{} `json:"peripherals,omitempty"`
+	AudioDevices    interface{} `json:"audio_devices,omitempty"`
+	Printers        interface{} `json:"printers,omitempty"`
+	OSInformation   interface{} `json:"os_information"`
+	SecurityInfo    interface{} `json:"security_info,omitempty"`
 	// MDM is the device's MDM enrollment state (#349); left out on
 	// platforms without a collector.
 	MDM *shared.MDMInfo `json:"mdm,omitempty"`
@@ -188,6 +193,7 @@ func buildPayload(sysInfo *shared.SystemInfo) AgentUpdatePayload {
 		SecurityInfo:     sysInfo.SecurityInfo,
 		MDM:              sysInfo.MDM,
 		PowerTelemetry:   sysInfo.PowerTelemetry,
+		BuildFlavor:      buildflavor.Flavor,
 		Capabilities:     constants.Capabilities(),
 		UserIdentity:     sysInfo.UserIdentity,
 	}
