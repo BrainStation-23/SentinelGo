@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
@@ -30,6 +31,10 @@ type LatestRelease struct {
 	// rollback: install Version even though it is older than the running
 	// one. Missing (older servers) means false.
 	AllowDowngrade bool `json:"allow_downgrade"`
+	// Flavor is the build the returned asset is, "full" or "readonly"
+	// (#548): the one the server assigned this device. Missing (an older
+	// server) means this agent's own build, so nothing changes.
+	Flavor string `json:"flavor"`
 }
 
 var updateMutex sync.Mutex
@@ -112,7 +117,18 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 	}
 
 	running := config.Version
-	action, err := decideUpdate(latest.Version, running, latest.AllowDowngrade)
+	// A row whose asset isn't the build it names (or, from a server without
+	// the flavor column, another build's asset: a read-only agent never
+	// takes the full build that way) is refused, but only when it would be
+	// installed: up to date or a dev build is still a quiet no-op.
+	flavor, flavorErr := releaseFlavor(latest)
+	if flavorErr != nil {
+		flavor = buildflavor.Flavor
+	}
+	action, err := decideRelease(latest.Version, running, latest.AllowDowngrade, flavor)
+	if err == nil && action != actionNone && flavorErr != nil {
+		return flavorErr
+	}
 	if err != nil {
 		// Cannot compare versions (e.g. a "dev" build). Skip.
 		fmt.Printf("Skipping update: cannot compare versions (%v)\n", err)
@@ -133,11 +149,18 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 			sanitize.ForLog(latest.Version))
 	}
 
-	if action == actionDowngrade {
+	switch {
+	case action == actionDowngrade:
 		log.Printf("Rolling back: %s -> %s (server-approved downgrade)",
 			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
-	} else {
+	case action == actionSwitch:
+		log.Printf("Switching build: %s -> %s at %s (assigned by the server)",
+			buildflavor.Flavor, flavor, sanitize.ForLog(latest.Version))
+	default:
 		fmt.Printf("Found update: %s -> %s\n", sanitize.ForLog(running), sanitize.ForLog(latest.Version))
+		if flavor != buildflavor.Flavor {
+			log.Printf("Switching build: %s -> %s (assigned by the server)", buildflavor.Flavor, flavor)
+		}
 	}
 
 	backupPath, err := createBackup()
@@ -160,14 +183,14 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", latest.SHA256, actualChecksum)
 	}
 
-	// For an upgrade the backup stays until the new binary proves healthy; a
-	// watchdog restores it otherwise (#503). A server-approved downgrade goes
-	// to an earlier release, which may predate the health check and could
-	// never confirm itself, so it isn't watched.
+	// For an upgrade or a switch of build the backup stays until the new
+	// binary proves healthy; a watchdog restores it otherwise (#503). A
+	// server-approved downgrade goes to an earlier release, which may predate
+	// the health check and could never confirm itself, so it isn't watched.
 	var marker *Marker
 	var markerPath string
-	if action == actionUpgrade {
-		if marker, markerPath, err = startHealthWatch(cfg, running, latest.Version, backupPath); err != nil {
+	if action == actionUpgrade || action == actionSwitch {
+		if marker, markerPath, err = startHealthWatch(cfg, running, latest.Version, flavor, backupPath); err != nil {
 			_ = removeFile(newPath)
 			_ = removeFile(backupPath)
 			return err
@@ -201,8 +224,8 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 // the binary is touched: a new binary that can't start can't start a
 // watchdog either, so without one nothing would roll it back. On error
 // nothing is left behind and the update must not go ahead.
-func startHealthWatch(cfg *config.Config, running, to, backupPath string) (*Marker, string, error) {
-	marker, markerPath, err := beginHealthWatch(cfg, running, to, backupPath, time.Now())
+func startHealthWatch(cfg *config.Config, running, to, toFlavor, backupPath string) (*Marker, string, error) {
+	marker, markerPath, err := beginHealthWatch(cfg, running, to, toFlavor, backupPath, time.Now())
 	if err != nil {
 		return nil, "", fmt.Errorf("refusing to update without a health check: %w", err)
 	}

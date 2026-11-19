@@ -115,6 +115,17 @@ sudo ./install.sh install
 - Sets up auto-start on boot
 - Starts the service immediately
 
+### Read-only build
+```bash
+sudo ./install.sh install --readonly
+```
+```bat
+install.bat install --readonly
+```
+- Installs `sentinelgo-readonly-<os>-<arch>` instead of the full binary
+- The read-only agent reports inventory but runs no scripts or device commands, and DLP only monitors
+- The console can switch a device between the two builds later; the agent follows on its next update check
+
 ### Update
 ```bash
 sudo ./install.sh update

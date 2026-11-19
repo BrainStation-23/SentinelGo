@@ -2,8 +2,12 @@ package updater
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
+
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/sanitize"
 )
 
 // semver is a parsed major.minor.patch version. Pre-release and build metadata
@@ -101,6 +105,7 @@ const (
 	actionNone      updateAction = iota // equal, or older without approval
 	actionUpgrade                       // strictly newer
 	actionDowngrade                     // older, and the server set allow_downgrade
+	actionSwitch                        // the same version in the other build (#548)
 )
 
 // decideUpdate picks the action for a release. Downgrades happen only when
@@ -120,6 +125,40 @@ func decideUpdate(candidate, current string, allowDowngrade bool) (updateAction,
 	default:
 		return actionNone, nil
 	}
+}
+
+// decideRelease is decideUpdate for a release in build flavor (#548). A
+// release in another build than this binary's is installed at the same
+// version too: that is how the server moves a device between the full and
+// the read-only build, either way. An older one still needs allow_downgrade.
+func decideRelease(candidate, current string, allowDowngrade bool, flavor string) (updateAction, error) {
+	action, err := decideUpdate(candidate, current, allowDowngrade)
+	if err == nil && action == actionNone && flavor != buildflavor.Flavor && sameVersion(candidate, current) {
+		return actionSwitch, nil
+	}
+	return action, err
+}
+
+// releaseFlavor is the build latest is: its flavor column, or this binary's
+// when the server doesn't send one. It refuses a flavor this agent doesn't
+// know and an asset whose name is another build's: installing the wrong
+// build would only be undone by the next check, again and again.
+func releaseFlavor(latest *LatestRelease) (string, error) {
+	flavor := latest.Flavor
+	if flavor == "" {
+		flavor = buildflavor.Flavor
+	}
+	if flavor != buildflavor.FlavorFull && flavor != buildflavor.FlavorReadOnly {
+		return "", fmt.Errorf("refusing to update to %s: unknown build flavor %q", sanitize.ForLog(latest.Version), sanitize.ForLog(flavor))
+	}
+	name := latest.AssetName
+	if name == "" {
+		name = path.Base(latest.AssetPath)
+	}
+	if strings.HasPrefix(name, "sentinelgo-readonly-") != (flavor == buildflavor.FlavorReadOnly) {
+		return "", fmt.Errorf("refusing to update to %s: asset %s isn't the %s build", sanitize.ForLog(latest.Version), sanitize.ForLog(name), flavor)
+	}
+	return flavor, nil
 }
 
 // sameVersion reports whether a and b name the same release; unparseable
