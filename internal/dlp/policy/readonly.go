@@ -12,6 +12,11 @@ func monitorOnly(b *Bundle) {
 	if buildflavor.DLPEnforcement {
 		return
 	}
+	forceMonitor(b)
+}
+
+// forceMonitor is monitorOnly's rewrite, whatever the build.
+func forceMonitor(b *Bundle) {
 	for i := range b.Policies {
 		if a := b.Policies[i].Action; a != ActionMonitor && validAction(a) {
 			b.Policies[i].Action = ActionMonitor

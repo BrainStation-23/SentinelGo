@@ -96,9 +96,14 @@ var pwshInstalled = func() bool {
 func Capabilities() []string {
 	caps := deviceCapabilities()
 	if buildflavor.ReadOnly {
-		caps = slices.DeleteFunc(caps, func(c string) bool { return slices.Contains(ReadOnlyLacks, c) })
+		caps = withoutReadOnlyLacks(caps)
 	}
 	return caps
+}
+
+// withoutReadOnlyLacks drops ReadOnlyLacks from caps.
+func withoutReadOnlyLacks(caps []string) []string {
+	return slices.DeleteFunc(caps, func(c string) bool { return slices.Contains(ReadOnlyLacks, c) })
 }
 
 // ReadOnlyLacks are the capabilities the read-only build doesn't have

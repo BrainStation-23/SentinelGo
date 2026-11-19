@@ -211,3 +211,10 @@ func TestReadOnlyLacks_Known(t *testing.T) {
 		}
 	}
 }
+
+func TestWithoutReadOnlyLacks(t *testing.T) {
+	got := withoutReadOnlyLacks([]string{"users_inventory_v2", "script_inline_body_v1", "yara_scan_v1", CapabilityMDMEnroll, "packages_v1"})
+	if !slices.Equal(got, []string{"users_inventory_v2", "packages_v1"}) {
+		t.Errorf("withoutReadOnlyLacks = %v", got)
+	}
+}

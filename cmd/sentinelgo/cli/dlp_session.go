@@ -56,6 +56,32 @@ func RunDLPSession() int {
 	} else {
 		defer release()
 	}
+	// Linux: the upload redirect is the user's desktop proxy (#426). A
+	// helper that was killed left it set: put the user's setting back now,
+	// also in the read-only build, which never sets it (#547); the service
+	// asks again while it inspects uploads.
+	var setProxy func(string) error
+	if dp := desktopproxy.New(); dp != nil {
+		if err := dp.Clear(); err != nil {
+			log.Printf("DLP helper: could not restore the desktop proxy: %v", err)
+		}
+		setProxy = dp.Set
+	}
+	o := helperOptions(setProxy)
+	err = session.RunHelper(ctx, o)
+	if err != nil {
+		log.Printf("DLP helper stopped: %v", err)
+		return 1
+	}
+	log.Printf("DLP helper exiting")
+	return 0
+}
+
+// helperOptions is what the helper does for this build. The override prompt
+// and the upload redirect (setProxy, nil off Linux) only exist where DLP may
+// block, and the MDM enrollment hooks only where mdm-enroll is built in:
+// not in the read-only build (#547).
+func helperOptions(setProxy func(string) error) session.HelperOptions {
 	o := session.HelperOptions{
 		Addr:      ipc.DefaultAddress,
 		Version:   config.Version,
@@ -63,27 +89,12 @@ func RunDLPSession() int {
 		Notify:    notify.Show,
 		Readiness: notify.Readiness,
 	}
-	// Linux: the upload redirect is the user's desktop proxy (#426). A
-	// helper that was killed left it set: put the user's setting back now,
-	// also in the read-only build, which never sets it (#547); the service
-	// asks again while it inspects uploads.
-	dp := desktopproxy.New()
-	if dp != nil {
-		if err := dp.Clear(); err != nil {
-			log.Printf("DLP helper: could not restore the desktop proxy: %v", err)
-		}
-	}
-	// The override prompt and the upload redirect only exist where DLP may
-	// block (not in the read-only build, #547).
 	if buildflavor.DLPEnforcement {
 		o.AskOverride = func(ctx context.Context, a ipc.AskOverride) (string, string, error) {
 			ans, err := prompt.Show(ctx, prompt.Ask{Title: a.Title, Message: a.Message, CanOverride: a.CanOverride, CanRequest: a.CanRequest})
 			return ans.Choice, ans.Reason, err
 		}
-		// The upload inspection's redirect on Linux (#426).
-		if dp != nil {
-			o.SetProxy = dp.Set
-		}
+		o.SetProxy = setProxy
 	}
 	if buildflavor.MDMEnroll {
 		// mdm-enroll presents the enrollment profile in the user's session
@@ -93,13 +104,7 @@ func RunDLPSession() int {
 		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
 		o.OpenURL = mdmenroll.OpenURLForUser
 	}
-	err = session.RunHelper(ctx, o)
-	if err != nil {
-		log.Printf("DLP helper stopped: %v", err)
-		return 1
-	}
-	log.Printf("DLP helper exiting")
-	return 0
+	return o
 }
 
 // helperLockRetry is how often a standby helper retries the lock.
