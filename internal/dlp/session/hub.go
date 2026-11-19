@@ -63,7 +63,7 @@ type helper struct {
 	done  chan struct{}     // closed when the connection is finished
 
 	pending map[string]chan string             // notify id -> its result (guarded by Hub.mu)
-	asks    map[string]chan ipc.OverrideAnswer // ask id -> the user's answer (guarded by Hub.mu)
+	asks    map[string]chan ipc.OverrideAnswer // ask or offer id -> the user's answer (guarded by Hub.mu)
 	proxies map[string]chan ipc.SetProxyResult // set_proxy id -> its result (guarded by Hub.mu)
 	// redirect is the session's upload redirect from its last SetProxy
 	// answer (CapUploadRedirect); "" before any.
@@ -305,6 +305,23 @@ func (h *Hub) AskOverride(ctx context.Context, sessionID string, a ipc.AskOverri
 	if a.ID == "" {
 		a.ID = newNotifyID()
 	}
+	return h.ask(ctx, sessionID, a.ID, ipc.Message{Type: ipc.TypeAskOverride, AskOverride: &a})
+}
+
+// OfferEnroll offers the user of one session to enroll the Mac in device
+// management now (#545) and waits for their choice until ctx ends; true
+// when they chose Enroll now.
+func (h *Hub) OfferEnroll(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error) {
+	if o.ID == "" {
+		o.ID = newNotifyID()
+	}
+	ans, err := h.ask(ctx, sessionID, o.ID, ipc.Message{Type: ipc.TypeOfferEnroll, OfferEnroll: &o})
+	return err == nil && ans.Choice == ipc.ChoiceEnroll, err
+}
+
+// ask sends m, a dialog, to the helper of one session and waits for the
+// user's answer with the given id.
+func (h *Hub) ask(ctx context.Context, sessionID, id string, m ipc.Message) (ipc.OverrideAnswer, error) {
 	ch := make(chan ipc.OverrideAnswer, 1)
 	h.mu.Lock()
 	var target *helper
@@ -318,7 +335,7 @@ func (h *Hub) AskOverride(ctx context.Context, sessionID string, a ipc.AskOverri
 		if target.asks == nil {
 			target.asks = map[string]chan ipc.OverrideAnswer{}
 		}
-		target.asks[a.ID] = ch
+		target.asks[id] = ch
 	}
 	h.mu.Unlock()
 	if target == nil {
@@ -326,10 +343,10 @@ func (h *Hub) AskOverride(ctx context.Context, sessionID string, a ipc.AskOverri
 	}
 	defer func() {
 		h.mu.Lock()
-		delete(target.asks, a.ID)
+		delete(target.asks, id)
 		h.mu.Unlock()
 	}()
-	h.send(target, ipc.Message{Type: ipc.TypeAskOverride, AskOverride: &a})
+	h.send(target, m)
 	select {
 	case ans := <-ch:
 		if ans.Error != "" {
@@ -709,6 +726,9 @@ func (h *Hub) handle(hp *helper, m ipc.Message) {
 		h.proxyAnswer(hp, *m.SetProxyResult)
 	case m.Type == ipc.TypeOverrideAnswer && m.OverrideAnswer != nil:
 		h.overrideAnswer(hp, *m.OverrideAnswer)
+	case m.Type == ipc.TypeOfferEnrollAnswer && m.OfferEnrollAnswer != nil:
+		a := m.OfferEnrollAnswer
+		h.overrideAnswer(hp, ipc.OverrideAnswer{ID: a.ID, Choice: a.Choice, Error: a.Error})
 	case m.Type == ipc.TypeStatus && m.Status != nil:
 		h.mu.Lock()
 		hp.state = m.Status.State
@@ -731,7 +751,8 @@ func (h *Hub) takeFile(hp *helper, f ipc.UserFile) {
 	h.send(hp, ipc.Message{Type: ipc.TypeUserFileAck, UserFileAck: &ipc.UserFileAck{ID: f.ID}})
 }
 
-// overrideAnswer delivers the user's answer to the AskOverride waiting on it.
+// overrideAnswer delivers the user's answer to the AskOverride or
+// OfferEnroll waiting on it.
 func (h *Hub) overrideAnswer(hp *helper, a ipc.OverrideAnswer) {
 	h.mu.Lock()
 	ch := hp.asks[a.ID]

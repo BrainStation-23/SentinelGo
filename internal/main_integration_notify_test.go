@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
@@ -75,6 +76,10 @@ func (f *fakeSessions) OpenURL(context.Context, string, ipc.OpenURL) error {
 	return session.ErrNoHelper
 }
 
+func (f *fakeSessions) OfferEnroll(context.Context, string, ipc.OfferEnroll) (bool, error) {
+	return false, session.ErrNoHelper
+}
+
 // The service installs the mdm-enroll hook with the helpers and removes it
 // at Stop (#350). Here the device has no MDM collector, so the hook answers
 // unsupported_os rather than "unavailable".
@@ -82,7 +87,11 @@ func TestMDMEnrollHookInstalled(t *testing.T) {
 	cfg := miTestConfig(t)
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
-	_, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{})
+	// On a Mac the profile path waits for an active user within the task's
+	// deadline (#545); a short one keeps the test from waiting.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := native.Find("mdm-enroll").Run(ctx, cfg, taskstore.Task{})
 	if runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
 		t.Errorf("mdm-enroll with the hook installed: %v", err)
 	}

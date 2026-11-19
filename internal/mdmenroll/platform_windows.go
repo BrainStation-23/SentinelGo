@@ -34,7 +34,13 @@ func ConsoleSession() (Session, bool) {
 var RenewADE func(ctx context.Context) error
 
 // OpenProfileForUser is nil: Windows has no configuration profiles to present.
-var OpenProfileForUser func(name string, data []byte) error
+var OpenProfileForUser func(name string, data []byte, title, message string) error
+
+// OfferEnrollForUser is nil: the Enroll now offer is the Mac's.
+var OfferEnrollForUser func(ctx context.Context, title, message string) (bool, error)
+
+// UserActive is nil: only a Mac waits for its user before presenting.
+var UserActive func(s Session) bool
 
 // OpenURLForUser runs in the session helper, as the user: ShellExecute hands
 // the ms-device-enrollment: link to Settings.

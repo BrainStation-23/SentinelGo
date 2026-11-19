@@ -6,7 +6,10 @@
 //     through Automated Device Enrollment (`profiles renew -type enrollment`).
 //   - Any other Mac gets a single-use enrollment profile from the backend,
 //     presented to the console user through their session helper. macOS 11+
-//     won't install an MDM profile silently; the user must approve it.
+//     won't install an MDM profile silently; the user must approve it. So
+//     the agent waits until the user is at the Mac, fetches a new profile
+//     every time, opens System Settings where it is installed, and offers
+//     Enroll now until the Mac is enrolled (#545).
 //
 // A device already enrolled in another MDM is never touched.
 package mdmenroll
@@ -49,6 +52,9 @@ const (
 	ResultNoConsoleUser  = "no_console_user"
 	ResultADENotAssigned = "ade_not_assigned"
 	ResultMDMHostUnknown = "mdm_host_unknown"
+	// ResultUserIdleTimeout: a user was signed in, but idle or with the
+	// screen locked for the whole wait, so the profile wasn't presented.
+	ResultUserIdleTimeout = "user_idle_timeout"
 )
 
 // Outcome is the task's result: a contract code and a readable detail.
@@ -72,7 +78,9 @@ func fail(code, format string, a ...any) error {
 type Request struct {
 	Method  string // MethodAuto (default), MethodADE or MethodProfile
 	MDMHost string // overrides the config's mdm_host
-	Force   bool   // present the profile again even if it was shown today
+	// Force is accepted for older consoles. Every presentation now fetches a
+	// new profile, so there is nothing to force.
+	Force bool
 }
 
 // ParseRequest validates the mdm-enroll payload. Unknown keys are ignored.
@@ -116,6 +124,15 @@ type Deps struct {
 	Present func(ctx context.Context, sessionID string, p ipc.OpenProfile) error
 	// ConsoleSession returns the user at the console; false when nobody is.
 	ConsoleSession func() (Session, bool)
+	// UserActive says whether the user of s is at the Mac: recent keyboard
+	// or mouse input, the screen unlocked. nil means always.
+	UserActive func(s Session) bool
+	// Offer asks the user of a session whether to enroll now (the Enroll
+	// now dialog, session.Service.OfferEnroll); nil means no offers.
+	Offer func(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error)
+	// OfferState is the file that keeps the offer's state across restarts;
+	// "" keeps it in memory.
+	OfferState string
 	// RenewADE runs `profiles renew -type enrollment`.
 	RenewADE func(ctx context.Context) error
 	// Windows (#356). FetchWindowsEnrollment gets the discovery URL, UPN and
@@ -131,14 +148,21 @@ type Deps struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 }
 
-// Timing of the enroller; vars so tests can shorten them.
+// Timing of the enroller; vars so tests can shorten them. Tasks run one at
+// a time, so a task's waits hold up the device's other tasks: they are
+// bounded here, and by the task's deadline.
 var (
+	// waitActive is how long a task waits for the console user to be at
+	// the Mac before giving up with user_idle_timeout.
+	waitActive = 10 * time.Minute
+	activePoll = 30 * time.Second
 	// waitEnrolled is how long a task waits for the enrollment to finish
 	// after starting it. A user who approves later shows up in the inventory.
-	waitEnrolled = 2 * time.Minute
+	waitEnrolled = 5 * time.Minute
 	pollEvery    = 10 * time.Second
-	// promptEvery limits how often one user is shown the profile.
-	promptEvery = 24 * time.Hour
+	// deadlineReserve is the part of the task's deadline left for
+	// reporting the result.
+	deadlineReserve = 30 * time.Second
 )
 
 // profileName is the file the user sees in System Settings' download list.
@@ -146,14 +170,18 @@ const profileName = "SentinelOps-Enrollment.mobileconfig"
 
 const (
 	presentTitle   = "Enroll this Mac in device management"
-	presentMessage = "Your organization's management profile was downloaded. Open System Settings, then General > Device Management (Privacy & Security > Profiles on older macOS), and install it."
+	presentMessage = "System Settings is open at Device Management. Double-click the downloaded enrollment profile, click Install, then enter your Mac password."
 )
 
 // Enroller runs mdm-enroll. It is safe for concurrent use.
 type Enroller struct {
-	d          Deps
-	mu         sync.Mutex
-	lastPrompt map[string]time.Time // user -> when the profile was presented
+	d Deps
+	// presentMu lets one profile be fetched and presented at a time: a task
+	// and an Enroll now click don't both present one.
+	presentMu sync.Mutex
+
+	mu    sync.Mutex // guards offer
+	offer *offerState
 }
 
 // New returns an Enroller; zero Now/Sleep default to the real clock.
@@ -167,7 +195,7 @@ func New(d Deps) *Enroller {
 	if d.Collect == nil {
 		d.Collect = mdm.Collect
 	}
-	return &Enroller{d: d, lastPrompt: map[string]time.Time{}}
+	return &Enroller{d: d}
 }
 
 func sleep(ctx context.Context, d time.Duration) error {
@@ -193,6 +221,7 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 		return Outcome{}, fail(ResultUnsupportedOS, "MDM enrollment by the agent isn't supported on this platform")
 	}
 	if info.Enrolled {
+		e.disarm() // no more Enroll now offers, whichever MDM it is
 		switch {
 		case host == "":
 			return Outcome{}, fail(ResultMDMHostUnknown, "the device is enrolled with %s, and mdm_host isn't set, so the agent can't tell whether that is this deployment's MDM", orUnknown(info.ServerURLHost))
@@ -224,7 +253,7 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 	if method == MethodADE {
 		started, err = e.startADE(ctx, info, host)
 	} else {
-		started, err = e.presentProfile(ctx, req.Force)
+		started, err = e.presentProfile(ctx)
 	}
 	if err != nil || started.Code == ResultAlreadyEnrolled {
 		return started, err
@@ -311,22 +340,26 @@ func (e *Enroller) startADE(ctx context.Context, info *shared.MDMInfo, host stri
 	return Outcome{ResultADETriggered, "macOS is asking the user to enroll the Mac"}, nil
 }
 
-func (e *Enroller) presentProfile(ctx context.Context, force bool) (Outcome, error) {
+// presentProfile waits for the console user to be at the Mac, then
+// presents a new profile to them. From then on they are offered Enroll now
+// until the Mac is enrolled.
+func (e *Enroller) presentProfile(ctx context.Context) (Outcome, error) {
 	if e.d.ConsoleSession == nil || e.d.Present == nil || e.d.FetchProfile == nil {
 		return Outcome{}, fail(ResultUnsupportedOS, "profile enrollment isn't available on this platform")
 	}
-	sess, ok := e.d.ConsoleSession()
-	if !ok {
-		return Outcome{}, fail(ResultNoConsoleUser, "nobody is signed in at the console; try again when a user is")
+	e.arm()
+	sess, err := e.activeSession(ctx)
+	if err != nil {
+		return Outcome{}, err
 	}
-	now := e.d.Now()
-	e.mu.Lock()
-	last, seen := e.lastPrompt[sess.User]
-	e.mu.Unlock()
-	if seen && !force && now.Sub(last) < promptEvery {
-		return Outcome{ResultProfilePresented, fmt.Sprintf("already presented to %s at %s; it's shown again after %s, or now with force", sess.User, last.UTC().Format(time.RFC3339), last.Add(promptEvery).UTC().Format(time.RFC3339))}, nil
-	}
+	return e.present(ctx, sess)
+}
 
+// present fetches a new profile and presents it to the user of sess. A
+// profile is single-use and goes stale, so one is never presented twice.
+func (e *Enroller) present(ctx context.Context, sess Session) (Outcome, error) {
+	e.presentMu.Lock()
+	defer e.presentMu.Unlock()
 	data, err := e.d.FetchProfile(ctx)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("mdm-enroll: getting the enrollment profile: %w", err)
@@ -338,21 +371,59 @@ func (e *Enroller) presentProfile(ctx context.Context, force bool) (Outcome, err
 	if err != nil {
 		return Outcome{}, fmt.Errorf("mdm-enroll: presenting the profile to %s: %w", sess.User, err)
 	}
-	e.mu.Lock()
-	e.lastPrompt[sess.User] = now
-	e.mu.Unlock()
-	return Outcome{ResultProfilePresented, "opened in " + sess.User + "'s session; waiting for them to install it in System Settings"}, nil
+	e.shown(sess.User)
+	return Outcome{ResultProfilePresented, "opened in " + sess.User + "'s session with System Settings at Device Management; waiting for them to install it"}, nil
+}
+
+// activeSession waits until the console user is at the Mac, for up to
+// waitActive and within the task's deadline. It fails with no_console_user
+// when nobody signed in during the wait, and user_idle_timeout when
+// someone did but was away the whole time.
+func (e *Enroller) activeSession(ctx context.Context) (Session, error) {
+	wait := e.within(ctx, waitActive, deadlineReserve+waitEnrolled/2)
+	until := e.d.Now().Add(wait)
+	var last Session
+	seen := false
+	for {
+		if s, ok := e.d.ConsoleSession(); ok {
+			if e.d.UserActive == nil || e.d.UserActive(s) {
+				return s, nil
+			}
+			last, seen = s, true
+		}
+		if !e.d.Now().Before(until) {
+			break
+		}
+		if err := e.d.Sleep(ctx, activePoll); err != nil {
+			return Session{}, fmt.Errorf("mdm-enroll: stopped while waiting for the user: %w", err)
+		}
+	}
+	if !seen {
+		return Session{}, fail(ResultNoConsoleUser, "nobody was signed in at the console for %s; try again when a user is", wait.Round(time.Second))
+	}
+	return Session{}, fail(ResultUserIdleTimeout, "%s was away (idle, or the screen locked) for %s, so the profile wasn't presented; they're offered Enroll now when they're back", last.User, wait.Round(time.Second))
+}
+
+// within bounds want by ctx's deadline, keeping reserve for what follows.
+func (e *Enroller) within(ctx context.Context, want, reserve time.Duration) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl) - reserve; left < want {
+			return max(left, 0)
+		}
+	}
+	return want
 }
 
 // waitForEnrollment polls the MDM state for a while; it returns enrolled
 // when the device enrolls with our server, otherwise the started outcome.
 func (e *Enroller) waitForEnrollment(ctx context.Context, host string, started Outcome) Outcome {
-	deadline := e.d.Now().Add(waitEnrolled)
+	deadline := e.d.Now().Add(e.within(ctx, waitEnrolled, deadlineReserve))
 	for e.d.Now().Before(deadline) {
 		if e.d.Sleep(ctx, pollEvery) != nil {
 			break
 		}
 		if info := e.d.Collect(host); info != nil && info.Enrolled && info.IsOurServer {
+			e.disarm()
 			return Outcome{ResultEnrolled, "enrolled with " + info.ServerURLHost}
 		}
 	}

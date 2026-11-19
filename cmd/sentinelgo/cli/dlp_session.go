@@ -75,8 +75,10 @@ func RunDLPSession() int {
 			ans, err := prompt.Show(ctx, prompt.Ask{Title: a.Title, Message: a.Message, CanOverride: a.CanOverride, CanRequest: a.CanRequest})
 			return ans.Choice, ans.Reason, err
 		},
-		// mdm-enroll presents the enrollment profile in the user's session (#350).
+		// mdm-enroll presents the enrollment profile in the user's session
+		// (#350) and offers Enroll now until the Mac is enrolled (#545).
 		OpenProfile: mdmenroll.OpenProfileForUser,
+		OfferEnroll: mdmenroll.OfferEnrollForUser,
 		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
 		OpenURL: mdmenroll.OpenURLForUser,
 		// The upload inspection's redirect on Linux (#426).
