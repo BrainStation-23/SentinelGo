@@ -49,7 +49,8 @@ func TestConsoleLocked(t *testing.T) {
 		{"switched out", consoleUsers("false", consoleUser("501", false, "")), "501", false, false},
 		{"no entry", consoleUsers("false", consoleUser("502", true, "")), "501", false, false},
 		{"not a plist", "ioreg: error", "501", false, false},
-		{"an array", `<plist><array/></plist>`, "501", false, false},
+		{"an empty array", `<plist><array/></plist>`, "501", false, false},
+		{"array-wrapped, locked", strings.Replace(strings.Replace(consoleUsers("false", consoleUser("501", true, "true")), "<dict>", "<array><dict>", 1), "</dict>\n</plist>", "</dict></array>\n</plist>", 1), "501", true, true},
 	} {
 		locked, ok := consoleLocked(tc.out, tc.uid)
 		if locked != tc.locked || ok != tc.isOK {
@@ -110,6 +111,7 @@ func TestMacUserActive(t *testing.T) {
 	}{
 		{"at the Mac", unlocked, hid("5000000000"), true},
 		{"screen locked", locked, hid("0"), false},
+		{"screen locked, array-wrapped", "<plist><array>" + strings.TrimSuffix(strings.SplitN(locked, "<plist version=\"1.0\">", 2)[1], "</plist>") + "</array></plist>", hid("0"), false},
 		{"idle", unlocked, hid("600000000000"), false},
 		{"nothing readable", "", "", true},
 	} {

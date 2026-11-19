@@ -122,11 +122,14 @@ func (s *scan) collectPubCache(dir, user string) {
 // alias). Elixir terms aren't parsed beyond this strict pattern.
 var mixHexEntry = regexp.MustCompile(`^\s*"[^"]+":\s*\{:hex,\s*:"?([a-z0-9_]+)"?,\s*"([0-9][^"\s]*)"`)
 
-// mixRepo matches the repository element at the end of a Hex entry
-// (`…, "hexpm", "<checksum>"},`; older mix.lock files end at the
-// repository). A dependency's repo: option inside the entry isn't at the
-// end, so it never matches.
-var mixRepo = regexp.MustCompile(`"(hexpm[^"]*)"(?:,\s*"[0-9a-fA-F]*")?\s*\},?\s*$`)
+// mixRepo matches the repository element at the end of a Hex entry: the
+// string right after the dependency list (`…, [...], "hexpm", "<checksum>"},`;
+// some mix.lock files end at the repository). Any repository counts, so a
+// private one ("hexpm:acme", or a custom repository's name) is recognised. A
+// dependency's repo: option sits inside the list, before a `]}` rather than a
+// `], "`, so it never matches. Entries from before mix.lock recorded the
+// repository have none, and were always from the public one.
+var mixRepo = regexp.MustCompile(`\]\s*,\s*"([^"]+)"(?:,\s*"[0-9a-fA-F]*")?\s*\},?\s*$`)
 
 // parseMixLock reads mix.lock. Only :hex entries count (:git and :path
 // aren't Hex releases), and only from the public repository: a package

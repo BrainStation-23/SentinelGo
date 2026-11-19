@@ -173,8 +173,12 @@ func TestParseMixLock_PrivateDependency(t *testing.T) {
   "public_pkg": {:hex, :public_pkg, "1.0.0", "aa", [:mix], [{:private_pkg, "~> 1.0", [hex: :private_pkg, repo: "hexpm:acme", optional: false]}], "hexpm", "bb"},
   "private_pkg": {:hex, :private_pkg, "1.0.0", "cc", [:mix], [], "hexpm:acme", "dd"},
   "old_format": {:hex, :old_format, "0.1.0", "ee", [:mix], [], "hexpm"},
+  "custom_repo": {:hex, :custom_repo, "2.0.0", "ff", [:mix], [], "acme_repo", "11"},
+  "custom_old": {:hex, :custom_old, "2.0.0", "ff", [:mix], [], "acme_repo"},
+  "no_repo": {:hex, :no_repo, "0.0.1", "22", [:mix], []},
+  "oldest": {:hex, :oldest, "0.0.2", "33"},
 }`)
-	if g, want := got(parseMixLock(lock)), []string{"old_format@0.1.0", "public_pkg@1.0.0"}; !slices.Equal(g, want) {
+	if g, want := got(parseMixLock(lock)), []string{"no_repo@0.0.1", "old_format@0.1.0", "oldest@0.0.2", "public_pkg@1.0.0"}; !slices.Equal(g, want) {
 		t.Errorf("got %v, want %v", g, want)
 	}
 }
