@@ -1,7 +1,7 @@
 @echo off
 REM SentinelGo Windows Agent Installation Script
 REM Enhanced version with better error handling and auto-start configuration
-REM Usage: install.bat [install|uninstall|update|status|help|enable-autostart|disable-autostart]
+REM Usage: install.bat [install|uninstall|update|status|help|enable-autostart|disable-autostart] [--readonly]
 REM 
 REM To run as administrator:
 REM   - Right-click install.bat and select "Run as administrator"
@@ -19,6 +19,21 @@ set INSTALL_DIR=C:\SentinelGo
 set CONFIG_DIR=%INSTALL_DIR%\.sentinelgo
 set REQUIRED_BINARY=sentinelgo-windows-amd64.exe
 
+REM Arguments: the command (default install) and options, in any order.
+REM --readonly installs the read-only build (#548): it reports inventory but
+REM runs no scripts or device commands.
+set COMMAND=
+set FLAVOR_ARG=
+for %%A in (%*) do (
+    if /i "%%~A"=="--readonly" (
+        set FLAVOR_ARG=--readonly
+    ) else if not defined COMMAND (
+        set "COMMAND=%%~A"
+    )
+)
+if not defined COMMAND set COMMAND=install
+if defined FLAVOR_ARG set REQUIRED_BINARY=sentinelgo-readonly-windows-amd64.exe
+
 REM Check administrator privileges and auto-elevate if needed
 net session >nul 2>&1
 if %errorLevel% neq 0 (
@@ -27,18 +42,13 @@ if %errorLevel% neq 0 (
     
     REM Try to auto-elevate using VBScript (works from CMD)
     echo Set UAC = CreateObject^("Shell.Application"^) > "%temp%\getadmin.vbs"
-    REM Relaunch with the same command (it used to always relaunch as "install").
-    set "ELEVATE_CMD=%~1"
-    if not defined ELEVATE_CMD set "ELEVATE_CMD=install"
-    echo UAC.ShellExecute "%~f0", "!ELEVATE_CMD!", "", "runas", 1 >> "%temp%\getadmin.vbs"
+    REM Relaunch with the same command and options (it used to always
+    REM relaunch as "install").
+    echo UAC.ShellExecute "%~f0", "!COMMAND! !FLAVOR_ARG!", "", "runas", 1 >> "%temp%\getadmin.vbs"
     "%temp%\getadmin.vbs"
     del "%temp%\getadmin.vbs" >nul 2>&1
     exit /b 0
 )
-
-REM Get command from parameters
-set COMMAND=%1
-if "%COMMAND%"=="" set COMMAND=install
 
 REM Command routing
 if "%COMMAND%"=="install" goto install
@@ -60,7 +70,7 @@ REM Step 1: Locate Installation Artifacts
 echo [STEP 1] Locating installation artifacts...
 if not exist "%REQUIRED_BINARY%" (
     echo [ERROR] Required binary not found: %REQUIRED_BINARY%
-    echo [INFO] Ensure sentinelgo-windows-amd64.exe is in the same directory as install.bat
+    echo [INFO] Ensure %REQUIRED_BINARY% is in the same directory as install.bat
     echo [INFO] Download from: https://github.com/BrainStation-23/SentinelGo/releases
     pause
     exit /b 1
@@ -492,7 +502,12 @@ echo ========================================
 echo SentinelGo Installation Script Help
 echo ========================================
 echo.
-echo Usage: install.bat [command]
+echo Usage: install.bat [command] [--readonly]
+echo.
+echo Options:
+echo   --readonly           Install or update to the read-only build
+echo                        (sentinelgo-readonly-windows-amd64.exe): it reports
+echo                        inventory but runs no scripts or device commands
 echo.
 echo Commands:
 echo   install              Install SentinelGo service (default)
@@ -505,7 +520,8 @@ echo   help                 Show this help message
 echo.
 echo Installation Requirements:
 echo   - Administrator privileges
-echo   - sentinelgo-windows-amd64.exe in current directory
+echo   - sentinelgo-windows-amd64.exe (or sentinelgo-readonly-windows-amd64.exe
+echo     with --readonly) in current directory
 echo   - config.json (optional, will create default)
 echo.
 echo Examples:

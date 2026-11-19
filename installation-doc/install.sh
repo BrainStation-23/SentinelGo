@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SentinelGo Universal Installation Script
-# Usage: ./install.sh [COMMAND] (will auto-request sudo if needed)
+# Usage: ./install.sh [COMMAND] [--readonly] (will auto-request sudo if needed)
 # Works on Ubuntu/Debian, CentOS/RHEL, macOS, and Windows (via Git Bash)
 #
 # To run:
@@ -29,6 +29,20 @@ CONFIG_DIR="${INSTALL_DIR}/.sentinelgo"
 SERVICE_USER="sentinelgo"
 readonly OS_WINDOWS="windows"
 readonly LAUNCHD_PLIST_PATH="/Library/LaunchDaemons/com.sentinelgo.agent.plist"
+
+# The script's own arguments, so the sudo re-run gets the same command and
+# options. --readonly installs the read-only build (#548), the
+# sentinelgo-readonly-<os>-<arch> release asset; the others are the command.
+ORIG_ARGS=("$@")
+FLAVOR="full"
+CMD_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--readonly" ]]; then
+        FLAVOR="readonly"
+    else
+        CMD_ARGS+=("$arg")
+    fi
+done
 
 # Detect OS
 detect_os() {
@@ -62,11 +76,14 @@ detect_arch() {
 
 # select_binary prints the path of the binary to install from the current
 # directory: a plain ./sentinelgo if present, otherwise the release asset that
-# matches this machine's OS and CPU (sentinelgo-<os>-<arch>). Prints nothing if
-# there is none. Choosing by OS/arch matters: a full release download contains
-# every platform's binary, and installing the wrong one breaks the service.
+# matches this machine's OS and CPU (sentinelgo-<os>-<arch>, or
+# sentinelgo-readonly-<os>-<arch> with --readonly). Prints nothing if there is
+# none. Choosing by OS/arch matters: a full release download contains every
+# platform's binary, and installing the wrong one breaks the service. With
+# --readonly only the read-only asset will do: a plain ./sentinelgo could be
+# either build.
 select_binary() {
-    if [[ -f "./$BINARY_NAME" ]]; then
+    if [[ "$FLAVOR" != "readonly" && -f "./$BINARY_NAME" ]]; then
         echo "./$BINARY_NAME"
         return
     fi
@@ -77,7 +94,9 @@ select_binary() {
         "$OS_WINDOWS") goos="windows" ;;
         *) return ;;
     esac
-    local candidate="./sentinelgo-${goos}-$(detect_arch)"
+    local prefix="./sentinelgo-"
+    [[ "$FLAVOR" == "readonly" ]] && prefix="./sentinelgo-readonly-"
+    local candidate="${prefix}${goos}-$(detect_arch)"
     [[ "$goos" == "windows" ]] && candidate="${candidate}.exe"
     if [[ -f "$candidate" ]]; then
         echo "$candidate"
@@ -168,11 +187,11 @@ check_permissions() {
             print_status "Attempting to auto-elevate using sudo..."
             
             # Re-run script with sudo, passing all arguments
-            exec sudo "$0" "$@"
+            exec sudo "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
             
             # If exec fails, fall back to error
             print_error "Failed to auto-elevate. Please run with sudo:"
-            print_error "  sudo $0 $*"
+            print_error "  sudo $0 ${ORIG_ARGS[*]-}"
             exit 1
         fi
     fi
@@ -229,7 +248,7 @@ setup_directories() {
     local src
     src=$(select_binary)
     if [[ -z "$src" ]]; then
-        print_error "No SentinelGo binary for $(detect_os)/$(detect_arch) found in the current directory"
+        print_error "No SentinelGo $FLAVOR binary for $(detect_os)/$(detect_arch) found in the current directory"
         print_error "Download the binary for your OS and CPU from https://github.com/BrainStation-23/SentinelGo/releases and place it next to this script"
         exit 1
     fi
@@ -712,7 +731,11 @@ fix_service() {
 show_help() {
     printf '%s\n' 'SentinelGo Universal Installation Script'
     printf '%s\n' ''
-    printf '%s\n' 'Usage: ./install.sh [COMMAND] (auto-elevates with sudo if needed)'
+    printf '%s\n' 'Usage: ./install.sh [COMMAND] [--readonly] (auto-elevates with sudo if needed)'
+    printf '%s\n' ''
+    printf '%s\n' 'Options:'
+    printf '%s\n' '  --readonly  Install or update to the read-only build (sentinelgo-readonly-<os>-<arch>):'
+    printf '%s\n' '              it reports inventory but runs no scripts or device commands'
     printf '%s\n' ''
     printf '%s\n' 'Commands:'
     printf '%s\n' '  install     Install SentinelGo as a service (default)'
@@ -736,6 +759,7 @@ show_help() {
     printf '%s\n' ''
     printf '%s\n' 'Examples:'
     printf '%s\n' '  ./install.sh install'
+    printf '%s\n' '  ./install.sh install --readonly'
     printf '%s\n' '  ./install.sh uninstall'
     printf '%s\n' '  ./install.sh status'
     printf '%s\n' '  ./install.sh fix-service'
@@ -851,4 +875,4 @@ main() {
 }
 
 # Call main function with all arguments
-main "$@"
+main ${CMD_ARGS[@]+"${CMD_ARGS[@]}"}

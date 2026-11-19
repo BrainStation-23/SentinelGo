@@ -1,0 +1,1 @@
+- `install.sh` re-runs itself under sudo with the command it was given; `./install.sh uninstall` (or `update`, `fix-service`) run as a normal user used to re-run as `install` (#548).

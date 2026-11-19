@@ -107,6 +107,11 @@ create_github_release() {
         release/sentinelgo-linux-arm64
         release/sentinelgo-darwin-amd64
         release/sentinelgo-darwin-arm64
+        release/sentinelgo-readonly-windows-amd64.exe
+        release/sentinelgo-readonly-linux-amd64
+        release/sentinelgo-readonly-linux-arm64
+        release/sentinelgo-readonly-darwin-amd64
+        release/sentinelgo-readonly-darwin-arm64
         release/install.sh
         release/install.command
         release/install.bat
