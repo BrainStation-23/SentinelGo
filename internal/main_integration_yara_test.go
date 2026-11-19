@@ -1,3 +1,5 @@
+//go:build !readonly
+
 package internal
 
 import (

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/channel/clipboard"
 	"sentinelgo/internal/dlp/detect"
@@ -189,6 +190,11 @@ func orDefault(v, def string) string {
 // -config points at a non-default install's config.json.
 func RunDLP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "proxy" {
+		// The upload proxy isn't in the read-only build (#547).
+		if !buildflavor.DLPEnforcement {
+			_, _ = fmt.Fprintln(stderr, "dlp proxy is "+buildflavor.NotAvailable)
+			return 2
+		}
 		return runDLPProxy(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != "status" && args[0] != "test") {

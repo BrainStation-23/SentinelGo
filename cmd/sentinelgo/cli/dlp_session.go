@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/channel/clipboard"
@@ -56,8 +57,9 @@ func RunDLPSession() int {
 		defer release()
 	}
 	// Linux: the upload redirect is the user's desktop proxy (#426). A
-	// helper that was killed left it set: put the user's setting back now;
-	// the service asks again while it inspects uploads.
+	// helper that was killed left it set: put the user's setting back now,
+	// also in the read-only build, which never sets it (#547); the service
+	// asks again while it inspects uploads.
 	var setProxy func(string) error
 	if dp := desktopproxy.New(); dp != nil {
 		if err := dp.Clear(); err != nil {
@@ -65,31 +67,44 @@ func RunDLPSession() int {
 		}
 		setProxy = dp.Set
 	}
-	err = session.RunHelper(ctx, session.HelperOptions{
-		Addr:      ipc.DefaultAddress,
-		Version:   config.Version,
-		Channels:  append([]channel.Channel{clipboard.New()}, filedlp.UserFolderChannels()...),
-		Notify:    notify.Show,
-		Readiness: notify.Readiness,
-		AskOverride: func(ctx context.Context, a ipc.AskOverride) (string, string, error) {
-			ans, err := prompt.Show(ctx, prompt.Ask{Title: a.Title, Message: a.Message, CanOverride: a.CanOverride, CanRequest: a.CanRequest})
-			return ans.Choice, ans.Reason, err
-		},
-		// mdm-enroll presents the enrollment profile in the user's session
-		// (#350) and offers Enroll now until the Mac is enrolled (#545).
-		OpenProfile: mdmenroll.OpenProfileForUser,
-		OfferEnroll: mdmenroll.OfferEnrollForUser,
-		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
-		OpenURL: mdmenroll.OpenURLForUser,
-		// The upload inspection's redirect on Linux (#426).
-		SetProxy: setProxy,
-	})
+	o := helperOptions(setProxy)
+	err = session.RunHelper(ctx, o)
 	if err != nil {
 		log.Printf("DLP helper stopped: %v", err)
 		return 1
 	}
 	log.Printf("DLP helper exiting")
 	return 0
+}
+
+// helperOptions is what the helper does for this build. The override prompt
+// and the upload redirect (setProxy, nil off Linux) only exist where DLP may
+// block, and the MDM enrollment hooks only where mdm-enroll is built in:
+// not in the read-only build (#547).
+func helperOptions(setProxy func(string) error) session.HelperOptions {
+	o := session.HelperOptions{
+		Addr:      ipc.DefaultAddress,
+		Version:   config.Version,
+		Channels:  append([]channel.Channel{clipboard.New()}, filedlp.UserFolderChannels()...),
+		Notify:    notify.Show,
+		Readiness: notify.Readiness,
+	}
+	if buildflavor.DLPEnforcement {
+		o.AskOverride = func(ctx context.Context, a ipc.AskOverride) (string, string, error) {
+			ans, err := prompt.Show(ctx, prompt.Ask{Title: a.Title, Message: a.Message, CanOverride: a.CanOverride, CanRequest: a.CanRequest})
+			return ans.Choice, ans.Reason, err
+		}
+		o.SetProxy = setProxy
+	}
+	if buildflavor.MDMEnroll {
+		// mdm-enroll presents the enrollment profile in the user's session
+		// (#350) and offers Enroll now until the Mac is enrolled (#545).
+		o.OpenProfile = mdmenroll.OpenProfileForUser
+		o.OfferEnroll = mdmenroll.OfferEnrollForUser
+		// mdm-enroll opens the Windows enrollment link when silent enrollment fails (#356).
+		o.OpenURL = mdmenroll.OpenURLForUser
+	}
+	return o
 }
 
 // helperLockRetry is how often a standby helper retries the lock.

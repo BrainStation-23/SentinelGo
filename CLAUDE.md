@@ -12,7 +12,10 @@ make format-check                 # gofmt check
 make pre-release                  # quality gate + build
 make release VERSION=vX.Y.Z      # cross-compile all platforms
 make check-no-cgo                 # fail if any `import "C"` exists
-make verify-cross                 # type-check every target with CGO_ENABLED=0
+make verify-cross                 # type-check every target with CGO_ENABLED=0 (both builds)
+make build-readonly               # dev read-only build (-tags readonly)
+make test-readonly                # tests of the read-only build
+make check-readonly               # prove the read-only binaries lack the removed code
 ```
 
 All builds use `CGO_ENABLED=0`. Version is injected via `-ldflags` from git tags.
@@ -32,6 +35,7 @@ internal/
   service/             auth (session lifecycle, 401 recovery), agent info, enqueue RPCs, tasks
   supabase/            the only Supabase client: RPC, Storage, token refresh, edge functions
   updater/             Supabase release check, signed download, atomic replace, restart
+  buildflavor/         build-time feature constants: full build vs read-only build (-tags readonly)
   auditlogs/           audit log collection and forwarding
   dlp/                 Data Loss Prevention: Manager (kill switches, lifecycle) + policy, detect,
                        events, channel (clipboard), session (per-user helpers), ipc, notify,
@@ -73,6 +77,7 @@ release/               Compiled binaries (never edit directly)
 - **Never add `import "C"` (no cgo).** The agent must stay a static, dependency-free binary that cross-compiles from one host to all platforms. cgo breaks all three: it needs a per-target C toolchain, links dynamically against system libs, and can't cross-compile (e.g. you can't build a macOS binary from Linux). If a feature seems to need a native library, use a subprocess to the OS's CLI or a pure-Go equivalent instead. Example: the audit log collectors read logs via `journalctl -o json` (Linux) and `log show --style ndjson` (macOS) rather than `libsystemd`/`OSLog`. macOS frameworks are reached through `github.com/ebitengine/purego` (clipboard: AppKit; file DLP: FSEvents, `sandbox_init`), Windows APIs through `golang.org/x/sys/windows`.
 - **No kernel drivers, system extensions or non-Go helper binaries** (file DLP included, #324). Everything ships in the one `sentinelgo` binary. Where the OS only offers blocking through a driver (Windows file copies), the agent detects and remediates instead and reports that in its capabilities.
 - **Why this is a hard rule, not a preference:** under `CGO_ENABLED=0` a cgo file's build constraint silently becomes false, so the file is *excluded* and any fallback (e.g. a stub collector) compiles in its place. The result is missing functionality at runtime, not a build error — exactly the kind of failure that hides for a long time. `make check-no-cgo` enforces this in the pre-release gate.
+- **Two builds from one tree: full and read-only (#547).** The read-only build (`-tags readonly`) only reports: no scripts, no device actions, no DLP blocking (matches are monitored), and for now no YARA, notify-user or mdm-enroll. Each is a `const` in `internal/buildflavor`, checked where the feature is registered or wired (`native.Register` in `init`, the executor's script path, `MainIntegration`), so the compiler drops the code. Never turn one into a config value or `-ldflags -X` var: a value can be changed back, a missing function can't. A new feature that runs code or changes the device must be gated the same way; `make test-readonly` (handler allowlist) and `make check-readonly` (symbols) enforce it
 - Validate platform-specific code on all targets with `make verify-cross` (compiles every `GOOS/GOARCH` with `CGO_ENABLED=0`). Build tags / `_linux.go`/`_darwin.go`/`_windows.go` suffixes mean a file is only compiled on its OS, so a Windows-only dev never type-checks the Linux file otherwise.
 - Be careful with signal handling, startup order, and graceful shutdown (runs as system service)
 - Keep error handling explicit; this is a long-running service

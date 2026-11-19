@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/config"
 )
 
@@ -42,6 +44,7 @@ func TestPrintVersion_noPanic(t *testing.T) {
 }
 
 func TestPrintVersion_ListsCapabilities(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "the full capability list")
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)

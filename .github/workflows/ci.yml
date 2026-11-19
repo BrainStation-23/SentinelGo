@@ -317,7 +317,7 @@ jobs:
     if: >-
       !cancelled() && github.event_name == 'pull_request' &&
       needs.changes.outputs.go == 'true' && needs.test.result == 'success'
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -328,6 +328,14 @@ jobs:
 
       - name: Build every release target
         run: make verify-cross
+
+      # The read-only build (#547): its tests, and proof that the removed
+      # features aren't in its binaries for any target.
+      - name: Test the read-only build
+        run: make test-readonly
+
+      - name: Check the read-only binaries
+        run: make check-readonly
 
   # ── the generic Windows MSI (#358) ───────────────────────────────────────────
   # release.yml builds it only on a tag: build and check it here too, so a

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -30,7 +31,11 @@ func SetMDMEnroller(f MDMEnroller) {
 // this deployment's MDM. A device enrolled in another MDM is never touched.
 type mdmEnrollHandler struct{}
 
-func init() { Register(&mdmEnrollHandler{}) }
+func init() {
+	if buildflavor.MDMEnroll {
+		Register(&mdmEnrollHandler{})
+	}
+}
 
 func (h *mdmEnrollHandler) Slugs() []string { return []string{"mdm-enroll", "mdm_enroll"} }
 

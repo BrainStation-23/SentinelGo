@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp/events"
 )
 
@@ -313,6 +315,7 @@ func runChannel(t *testing.T, policies string, ignoreConcealed bool) *lockedSink
 const placeholder = "Blocked by SentinelOps: credit card"
 
 func TestX11_BlockMonitorAndRepeats(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	display, _ := useXvfb(t)
 	app := newXApp(t, display)
 	s := runChannel(t, blockCards+","+monitorFalcon, false)
@@ -393,6 +396,7 @@ func TestX11_ConcealedAndNonText(t *testing.T) {
 
 // A copy above the X request size limit arrives in INCR chunks.
 func TestX11_LargeCopy(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	display, _ := useXvfb(t)
 	app := newXApp(t, display)
 	s := runChannel(t, blockCards, false)
@@ -408,6 +412,7 @@ func TestX11_LargeCopy(t *testing.T) {
 
 // When the X server goes away the channel keeps running and reconnects.
 func TestX11_Reconnects(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	display, stop := useXvfb(t)
 	s := runChannel(t, blockCards, false)
 	time.Sleep(100 * time.Millisecond)

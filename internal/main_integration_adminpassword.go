@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"sentinelgo/internal/adminpassword"
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/scheduler"
 	authsvc "sentinelgo/internal/service/auth"
@@ -19,7 +20,8 @@ import (
 // enabled policy (or while the server lacks the RPCs). The kill switch
 // admin_password_rotation_enabled: false keeps it reporting "disabled".
 func (mi *MainIntegration) startAdminPassword() {
-	if runtime.GOOS != "windows" {
+	// The read-only build never changes a password (#547).
+	if !buildflavor.DeviceActions || runtime.GOOS != "windows" {
 		return
 	}
 	cfg := mi.cfg

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -30,7 +31,11 @@ func SetMDMSyncer(f MDMSyncer) {
 // at its next poll.
 type mdmSyncHandler struct{}
 
-func init() { Register(&mdmSyncHandler{}) }
+func init() {
+	if buildflavor.DeviceActions {
+		Register(&mdmSyncHandler{})
+	}
+}
 
 func (h *mdmSyncHandler) Slugs() []string { return []string{"mdm-sync", "mdm_sync"} }
 

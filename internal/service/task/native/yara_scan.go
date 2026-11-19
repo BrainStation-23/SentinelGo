@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 	"sentinelgo/internal/yara"
@@ -51,7 +52,11 @@ var errYARAOff = errors.New("threat hunting is not running on this device (yara_
 // doesn't hold the task open.
 type yaraScanHandler struct{}
 
-func init() { Register(&yaraScanHandler{}) }
+func init() {
+	if buildflavor.YARA {
+		Register(&yaraScanHandler{})
+	}
+}
 
 func (h *yaraScanHandler) Slugs() []string { return []string{yara.TaskScan} }
 
@@ -94,7 +99,11 @@ func resultNote(msg string, result any) string {
 // not an error (the scan may just have finished).
 type yaraScanCancelHandler struct{}
 
-func init() { Register(&yaraScanCancelHandler{}) }
+func init() {
+	if buildflavor.YARA {
+		Register(&yaraScanCancelHandler{})
+	}
+}
 
 func (h *yaraScanCancelHandler) Slugs() []string { return []string{yara.TaskScanCancel} }
 

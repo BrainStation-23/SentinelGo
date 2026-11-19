@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/events"
 )
@@ -116,6 +118,7 @@ type recSink struct{ evs []events.Event }
 func (r *recSink) Emit(ev events.Event) { r.evs = append(r.evs, ev) }
 
 func TestPoller_BlockMonitorConcealed(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("DISPLAY", ":0")
 	d := &fakeDesktop{tools: map[string]bool{"xclip": true}}
@@ -210,6 +213,7 @@ func TestPoller_NoWriteWithoutReread(t *testing.T) {
 
 // Run polls until cancelled and blocks a copy made meanwhile.
 func TestRun_PollsUntilCancelled(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("DISPLAY", ":0")
 	d := &fakeDesktop{tools: map[string]bool{"xclip": true}, xConnected: true}

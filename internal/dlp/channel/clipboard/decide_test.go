@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp/events"
 	"sentinelgo/internal/dlp/policy"
 )
@@ -37,6 +39,7 @@ const (
 var now = time.Unix(1_700_000_000, 0)
 
 func TestDecide_Block(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	p := compile(t, blockCards+","+monitorFalcon)
 	text := "pay with 4111 1111 1111 1111 for project falcon"
 	d := Decide(p, text, events.SourceApp{Name: "chrome.exe"}, now)
@@ -67,6 +70,7 @@ func TestDecide_MonitorOnly(t *testing.T) {
 // A warn policy keeps the content and tells the user; other matching monitor
 // policies still record "monitored".
 func TestDecide_Warn(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	p := compile(t, warnEmails+","+monitorFalcon)
 	d := Decide(p, "mail jane@example.com about falcon", events.SourceApp{}, now)
 	if d.Block || !d.Warn || d.Message != "" {
@@ -95,6 +99,7 @@ func TestDecide_Warn(t *testing.T) {
 // Block wins over warn: the copy is replaced, every event records the block
 // and the user gets the block notification, not the warning.
 func TestDecide_BlockBeatsWarn(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	p := compile(t, warnEmails+","+blockCards)
 	d := Decide(p, "jane@example.com 4111 1111 1111 1111", events.SourceApp{}, now)
 	if !d.Block || d.Warn {

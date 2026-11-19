@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"sentinelgo/internal/adminpassword"
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -35,7 +36,11 @@ var errAdminPasswordOff = errors.New("local admin password rotation is not runni
 // never carries the password.
 type adminPasswordRotateHandler struct{}
 
-func init() { Register(&adminPasswordRotateHandler{}) }
+func init() {
+	if buildflavor.DeviceActions {
+		Register(&adminPasswordRotateHandler{})
+	}
+}
 
 func (h *adminPasswordRotateHandler) Slugs() []string {
 	return []string{adminpassword.TaskRotate}
