@@ -160,21 +160,40 @@ func writeSBOMs(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// Both builds ship (#548): the read-only one links what its build tag
+	// leaves in, which go list sees through GOFLAGS.
 	for _, t := range targets {
-		name := "sentinelgo-" + t[0] + "-" + t[1]
-		if t[0] == "windows" {
-			name += ".exe"
+		for _, flavor := range []string{"", "readonly"} {
+			if err := writeSBOM(bin, dir, t, flavor); err != nil {
+				return err
+			}
 		}
-		out := filepath.Join(dir, name+".cdx.json")
-		cmd := exec.Command(bin, "app", "-json", "-licenses", "-main", mainPkg, "-output", out, ".")
-		cmd.Env = targetEnv(t)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		fmt.Println("wrote", out)
 	}
+	return nil
+}
+
+// writeSBOM writes the SBOM of one release binary: target t in flavor ""
+// (full) or "readonly".
+func writeSBOM(bin, dir string, t [2]string, flavor string) error {
+	name := "sentinelgo-" + t[0] + "-" + t[1]
+	if flavor != "" {
+		name = "sentinelgo-" + flavor + "-" + t[0] + "-" + t[1]
+	}
+	if t[0] == "windows" {
+		name += ".exe"
+	}
+	out := filepath.Join(dir, name+".cdx.json")
+	cmd := exec.Command(bin, "app", "-json", "-licenses", "-main", mainPkg, "-output", out, ".")
+	cmd.Env = targetEnv(t)
+	if flavor != "" {
+		cmd.Env = append(cmd.Env, "GOFLAGS=-tags="+flavor)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	fmt.Println("wrote", out)
 	return nil
 }
 

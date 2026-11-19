@@ -1,0 +1,3 @@
+[v1]
+"ripgrep 13.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = ["rg"]
+"mytool 0.1.0 (path+file:///home/alice/mytool)" = ["mytool"]

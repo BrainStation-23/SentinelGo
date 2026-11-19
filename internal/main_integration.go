@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
@@ -109,6 +110,10 @@ type MainIntegration struct {
 	// sessions runs a helper in each user session whenever the agent runs:
 	// DLP enforces through it, and notify-user shows notifications with it.
 	sessions session.Service
+	// mdmOfferCancel and mdmOfferDone stop and join the Enroll now offers
+	// (#545); nil when they don't run. Guarded by mu.
+	mdmOfferCancel context.CancelFunc
+	mdmOfferDone   chan struct{}
 }
 
 // newSessions returns the session helper service (replaced in tests, which
@@ -486,6 +491,11 @@ const dlpPolicySyncTick = time.Minute
 // not keep the rest of the agent from running.
 func (mi *MainIntegration) startDLP(ctx context.Context) {
 	cfg := mi.cfg
+	// The read-only build has no upload inspection: clear what a full build
+	// may have left behind (#547).
+	if !buildflavor.DLPEnforcement {
+		removeUploadLeftovers(cfg)
+	}
 	cache := policy.NewCache(filepath.Join(filepath.Dir(cfg.Path), policy.CacheFileName))
 	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
 
@@ -503,11 +513,19 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	mi.mu.Lock()
 	mi.sessions = sup
 	mi.mu.Unlock()
-	native.SetUserNotifier(mi.notifyUser)
 	agentsvc.SetSessionsSource(func() []agentsvc.SessionReport { return sessionReports(sup.Sessions()) })
-	native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
-	native.SetMDMSyncer(mi.mdmSyncHook(cfg))
-	native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
+	// The read-only build leaves these hooks out, so their code isn't in
+	// the binary (#547).
+	if buildflavor.NotifyUser {
+		native.SetUserNotifier(mi.notifyUser)
+	}
+	if buildflavor.MDMEnroll {
+		native.SetMDMEnroller(mi.mdmEnrollHook(cfg))
+	}
+	if buildflavor.DeviceActions {
+		native.SetMDMSyncer(mi.mdmSyncHook(cfg))
+		native.SetMDMUnenroller(mi.mdmUnenrollHook(cfg))
+	}
 
 	m := dlp.NewManager(cfg.DLPEnabled, cache, session.PolicyOnly(sup))
 	if cfg.DLPEnabled {
@@ -517,21 +535,11 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		// workers started from this binary. Off until a bundle enables a file
 		// channel.
 		if exe, err := os.Executable(); err == nil {
-			// Network controls (#427, Windows): off until the bundle turns
-			// them on. The file hook finds the taints, the controller
-			// applies them.
-			netControls := netctl.New(netctl.Options{})
 			// The file channels' events are counted per channel for the
 			// status (pilot rollout, #430) on their way to the queue.
 			tally := filedlp.NewTally(sink, time.Now())
 			m.SetFileSummary(tally.Summary)
-			files := filedlp.New(filedlp.Options{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher), NetworkTaint: netControls})
-			// Upload inspection (#344): off until the bundle turns it on.
-			// On Linux the helpers set each user's desktop proxy (#426).
-			uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
-				SessionProxy: sessionProxySetter(sup)})
-			enforcer := netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
+			enforcer := mi.fileEnforcer(cfg, fetcher, sup, tally, exe)
 			m.SetFiles(enforcer)
 			// Windows: the helpers hand over files on shares and sync folders (#330).
 			if fr, ok := sup.(interface{ SetFileReceiver(session.FileReceiver) }); ok {
@@ -563,6 +571,42 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 	native.SetDLPPolicySync(mi.dlpSyncNow)
 }
 
+// removeUploadLeftoversFn is uploadproxy.RemoveLeftovers; replaced in tests.
+var removeUploadLeftoversFn = uploadproxy.RemoveLeftovers
+
+// removeUploadLeftovers removes upload inspection's system proxy setting,
+// direct block and CA left by a full build that didn't stop cleanly.
+func removeUploadLeftovers(cfg *config.Config) {
+	if cfg.Path == "" {
+		return
+	}
+	if err := removeUploadLeftoversFn(filepath.Dir(cfg.Path)); err != nil {
+		log.Printf("Warning: could not remove what upload inspection left behind: %v", err)
+	}
+}
+
+// fileEnforcer builds file DLP: the file hook (Linux: fanotify; Windows and
+// macOS: scan after the write and device control, no driver or system
+// extension), which scans in sandboxed workers started from exe. The full
+// build adds network controls (#427, Windows) and upload inspection (#344);
+// the read-only build leaves both out of the binary and only monitors
+// (#547). Each is off until the bundle turns it on.
+func (mi *MainIntegration) fileEnforcer(cfg *config.Config, fetcher *dlpsvc.Service, sup session.Service, tally *filedlp.Tally, exe string) filedlp.Enforcer {
+	opts := filedlp.Options{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+		Notifier: sessionNotifier{sup}, RequestException: mi.exceptionRequester(cfg, fetcher)}
+	if !buildflavor.DLPEnforcement {
+		return filedlp.New(opts)
+	}
+	// The file hook finds the taints, the controller applies them.
+	netControls := netctl.New(netctl.Options{})
+	opts.NetworkTaint = netControls
+	files := filedlp.New(opts)
+	// On Linux the helpers set each user's desktop proxy (#426).
+	uploads := uploadproxy.NewService(uploadproxy.ServiceOptions{Sink: tally, Exe: exe, ConfigDir: filepath.Dir(cfg.Path),
+		SessionProxy: sessionProxySetter(sup)})
+	return netctl.With(uploadproxy.WithUploads(files, uploads), netControls)
+}
+
 // mdmEnrollHook is the mdm-enroll task (#350): the enroller gets the device
 // enrolled through ADE or by presenting a profile to the console user's
 // session helper.
@@ -573,10 +617,25 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 		}
 		return mi.authSvc.DoWithAuthRetry(ctx, cfg, fn)
 	}
+	// Macs offer Enroll now until enrolled (#545); helpers elsewhere can't.
+	var offer func(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error)
+	if mdmenroll.OfferEnrollForUser != nil {
+		offer = func(ctx context.Context, sessionID string, o ipc.OfferEnroll) (bool, error) {
+			mi.mu.Lock()
+			sup := mi.sessions
+			mi.mu.Unlock()
+			if sup == nil {
+				return false, session.ErrNoHelper
+			}
+			return sup.OfferEnroll(ctx, sessionID, o)
+		}
+	}
 	e := mdmenroll.New(mdmenroll.Deps{
 		OurHost:        func() string { return cfg.MDMHost },
 		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
 		ConsoleSession: mdmenroll.ConsoleSession,
+		UserActive:     mdmenroll.UserActive,
+		OfferState:     mdmenroll.OfferStatePath(cfg.Path),
 		RenewADE:       mdmenroll.RenewADE,
 		FetchWindowsEnrollment: mdmenroll.WindowsEnrollmentFetcher(
 			func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
@@ -599,7 +658,11 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 			}
 			return sup.OpenProfile(ctx, sessionID, p)
 		},
+		Offer: offer,
 	})
+	if offer != nil {
+		mi.startMDMOffers(e)
+	}
 	return func(ctx context.Context, payload map[string]interface{}) (string, error) {
 		req, err := mdmenroll.ParseRequest(payload)
 		if err != nil {
@@ -610,6 +673,37 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 			return "", err
 		}
 		return out.String(), nil
+	}
+}
+
+// startMDMOffers runs the Enroll now offers (#545) until Stop.
+func (mi *MainIntegration) startMDMOffers(e *mdmenroll.Enroller) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	mi.mu.Lock()
+	mi.mdmOfferCancel, mi.mdmOfferDone = cancel, done
+	mi.mu.Unlock()
+	go func() {
+		defer close(done)
+		e.RunOffers(ctx)
+	}()
+}
+
+// stopMDMOffers stops the Enroll now offers and waits for an offer in
+// flight to end.
+func (mi *MainIntegration) stopMDMOffers() {
+	mi.mu.Lock()
+	cancel, done := mi.mdmOfferCancel, mi.mdmOfferDone
+	mi.mdmOfferCancel, mi.mdmOfferDone = nil, nil
+	mi.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(taskManagerStopTimeout):
+		log.Printf("Warning: MDM enrollment offers did not stop within %v", taskManagerStopTimeout)
 	}
 }
 
@@ -926,6 +1020,7 @@ func (mi *MainIntegration) Stop() error {
 	native.SetUserNotifier(nil)
 	agentsvc.SetSessionsSource(nil)
 	native.SetMDMEnroller(nil)
+	mi.stopMDMOffers()
 	native.SetMDMSyncer(nil)
 	native.SetMDMUnenroller(nil)
 	if mi.dlpManager != nil {

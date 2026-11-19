@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 )
 
 // filesBundle is the draft contract example from #326.
@@ -33,6 +36,7 @@ const filesBundle = `{
 }`
 
 func TestDecode_FilesModule(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	b, err := Decode([]byte(filesBundle))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

@@ -33,7 +33,7 @@ func TestUpdateAgentInfo_YARASummary(t *testing.T) {
 		}
 	}
 	send()
-	if strings.Contains(body, `"yara"`) {
+	if strings.Contains(body, `"yara":`) {
 		t.Fatalf("yara sent without a source: %s", body)
 	}
 	SetYARASource(func() *yara.Summary {

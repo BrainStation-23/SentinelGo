@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"sentinelgo/internal/service/rpcutil"
 	"sentinelgo/internal/supabase"
@@ -27,6 +28,30 @@ type Settings struct {
 	Roots []string `json:"roots"`
 	// MaxDepth is how deep a project scan walks below a root.
 	MaxDepth int `json:"max_depth"`
+	// Ecosystems are the ecosystems the server accepts (Compliance-OS#1047).
+	// Missing (nil) means npm, PyPI and Packagist only: an older server
+	// rejects any other row, and one rejected row stops a full snapshot from
+	// retiring removed packages.
+	Ecosystems []string `json:"ecosystems"`
+}
+
+// Accepts reports whether the server takes packages of ecosystem.
+func (s Settings) Accepts(ecosystem string) bool {
+	if s.Ecosystems == nil {
+		return slices.Contains(legacyEcosystems, ecosystem)
+	}
+	return slices.Contains(s.Ecosystems, ecosystem)
+}
+
+// accepted keeps the packages whose ecosystem the server takes.
+func (s Settings) accepted(pkgs []Package) []Package {
+	out := pkgs[:0:0]
+	for _, p := range pkgs {
+		if s.Accepts(p.Ecosystem) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // RPC is the Supabase RPC call (supabase.Client.RPC); an interface so tests

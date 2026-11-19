@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"sentinelgo/internal/artifact"
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/sanitize"
@@ -284,9 +285,22 @@ func (s *TaskExecutorService) runTaskResult(ctx context.Context, task taskstore.
 	if task.CommandKind == taskstore.CommandKindNative {
 		// Without this the task fell through to the script path and failed
 		// with a misleading "no script found for platform".
+		if buildflavor.ReadOnly {
+			return "", nil, false, fmt.Errorf("native command %q is %s (%s)", task.Slug, buildflavor.NotAvailable, config.Version)
+		}
 		return "", nil, false, fmt.Errorf("native command %q is not supported by this agent version (%s)", task.Slug, config.Version)
 	}
+	// The read-only build has no script executor (#547): the constant drops
+	// runScriptTask and everything only it reaches from the binary.
+	if !buildflavor.Scripts {
+		return "", nil, false, fmt.Errorf("script tasks are %s", buildflavor.NotAvailable)
+	}
+	return s.runScriptTask(taskCtx, timeout, task)
+}
 
+// runScriptTask downloads or writes the task's script, fetches its
+// artifacts and runs it under taskCtx.
+func (s *TaskExecutorService) runScriptTask(taskCtx context.Context, timeout time.Duration, task taskstore.Task) (note string, result map[string]interface{}, scriptStarted bool, err error) {
 	// Reject bad artifact specs before anything is created or downloaded.
 	if err := artifact.Validate(task.Artifacts); err != nil {
 		return "", nil, false, fmt.Errorf("invalid task artifacts: %w", err)

@@ -6,7 +6,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/dlp"
 	"sentinelgo/internal/dlp/channel"
 	"sentinelgo/internal/dlp/ipc"
@@ -75,14 +78,23 @@ func (f *fakeSessions) OpenURL(context.Context, string, ipc.OpenURL) error {
 	return session.ErrNoHelper
 }
 
+func (f *fakeSessions) OfferEnroll(context.Context, string, ipc.OfferEnroll) (bool, error) {
+	return false, session.ErrNoHelper
+}
+
 // The service installs the mdm-enroll hook with the helpers and removes it
 // at Stop (#350). Here the device has no MDM collector, so the hook answers
 // unsupported_os rather than "unavailable".
 func TestMDMEnrollHookInstalled(t *testing.T) {
+	flavortest.Require(t, buildflavor.MDMEnroll, "mdm-enroll")
 	cfg := miTestConfig(t)
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())
-	_, err := native.Find("mdm-enroll").Run(context.Background(), cfg, taskstore.Task{})
+	// On a Mac the profile path waits for an active user within the task's
+	// deadline (#545); a short one keeps the test from waiting.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := native.Find("mdm-enroll").Run(ctx, cfg, taskstore.Task{})
 	if runtime.GOOS == "linux" && (err == nil || !strings.Contains(err.Error(), "unsupported_os")) {
 		t.Errorf("mdm-enroll with the hook installed: %v", err)
 	}
@@ -95,6 +107,7 @@ func TestMDMEnrollHookInstalled(t *testing.T) {
 // The helpers run, and notify-user reaches them, whatever DLP's state: off
 // in config.json, or on without a policy (#301).
 func TestNotifyUser_WithoutDLP(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	for _, tc := range []struct {
 		name       string
 		dlpEnabled bool
@@ -145,6 +158,7 @@ func TestNotifyUser_WithoutDLP(t *testing.T) {
 
 // Stop removes the hook and stops the helpers, once.
 func TestNotifyUser_StopRemovesHook(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	cfg := miTestConfig(t)
 	cfg.DLPEnabled = false
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
@@ -167,6 +181,7 @@ func TestNotifyUser_StopRemovesHook(t *testing.T) {
 
 // Nobody signed in: the task fails and nothing is kept for later.
 func TestNotifyUser_NoUser(t *testing.T) {
+	flavortest.Require(t, buildflavor.NotifyUser, "notify-user")
 	cfg := miTestConfig(t)
 	mi := NewMainIntegrationWith(cfg, scheduler.NewScheduler())
 	mi.startDLP(context.Background())

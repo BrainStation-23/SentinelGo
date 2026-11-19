@@ -42,9 +42,10 @@ endif
 export CGO_ENABLED=0
 
 # Targets
-.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross fuzz fuzz-list license-check notices sbom changelog-check changelog-release generate
+.PHONY: build clean clean-all all windows linux macos release sign version test-version deps test coverage coverage-html pre-release quality-check format format-check setup packages check-no-cgo verify-cross build-readonly readonly test-readonly check-readonly fuzz fuzz-list license-check notices sbom changelog-check changelog-release generate
 
-all: windows linux macos
+# Every release ships both builds: full and read-only (#547, #548).
+all: windows linux macos readonly
 
 # The build links the committed cmd/sentinelgo/resource_windows.syso (icon +
 # manifest; its version fields are empty, so it doesn't change per release).
@@ -62,6 +63,36 @@ linux:
 macos:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/darwin/sentinelgo-darwin-amd64 ./cmd/sentinelgo
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GOBUILDFLAGS) $(LDFLAGS) -o build/darwin/sentinelgo-darwin-arm64 ./cmd/sentinelgo
+
+# The read-only build (#547): a reporting agent without script execution,
+# device actions, DLP blocking, YARA, notify-user or mdm-enroll. The
+# features are build-time constants (internal/buildflavor), so the code isn't
+# in the binary and no config or server reply can turn it back on.
+READONLY_TAGS=-tags readonly
+
+readonly:
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o build/windows/sentinelgo-readonly-windows-amd64.exe ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o build/linux/sentinelgo-readonly-linux-amd64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o build/linux/sentinelgo-readonly-linux-arm64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o build/darwin/sentinelgo-readonly-darwin-amd64 ./cmd/sentinelgo
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o build/darwin/sentinelgo-readonly-darwin-arm64 ./cmd/sentinelgo
+
+# Development read-only build (current platform only).
+build-readonly: format
+	go build $(GOBUILDFLAGS) $(READONLY_TAGS) $(LDFLAGS) -o $(DEV_BIN) ./cmd/sentinelgo
+	@echo "Built read-only $(DEV_BIN) (version $(VERSION))"
+
+# Tests of the read-only build. File DLP, the upload proxy and network
+# controls are left out: their tests exercise blocking, which this build
+# doesn't do (the policy package tests that it never blocks).
+test-readonly:
+	go vet $(READONLY_TAGS) ./...
+	go test $(READONLY_TAGS) -short $$(go list ./... | grep -v -e /dlp/filedlp -e /dlp/uploadproxy -e /dlp/netctl)
+
+# Build both flavors for every target and fail unless the removed features'
+# functions are in the full binaries and absent from the read-only ones.
+check-readonly:
+	go run ./scripts/readonlycheck
 
 # Build all platforms for release, then sign and generate SHA256SUMS.
 # Requires SENTINELGO_SIGNING_KEY env var (base64-encoded ed25519 private key).
@@ -84,6 +115,11 @@ release: pre-release clean all
 	@cp build/linux/sentinelgo-linux-arm64 release/
 	@cp build/darwin/sentinelgo-darwin-amd64 release/
 	@cp build/darwin/sentinelgo-darwin-arm64 release/
+	@cp build/windows/sentinelgo-readonly-windows-amd64.exe release/
+	@cp build/linux/sentinelgo-readonly-linux-amd64 release/
+	@cp build/linux/sentinelgo-readonly-linux-arm64 release/
+	@cp build/darwin/sentinelgo-readonly-darwin-amd64 release/
+	@cp build/darwin/sentinelgo-readonly-darwin-arm64 release/
 	@go run ./scripts/licenses -notices release/THIRD_PARTY_NOTICES.txt -sbom release
 	@$(MAKE) sign
 	@echo "\nRelease packages ready in release/ directory:"
@@ -103,6 +139,11 @@ sign:
 	  release/sentinelgo-darwin-amd64 \
 	  release/sentinelgo-darwin-arm64 \
 	  release/sentinelgo-windows-amd64.exe \
+	  release/sentinelgo-readonly-linux-amd64 \
+	  release/sentinelgo-readonly-linux-arm64 \
+	  release/sentinelgo-readonly-darwin-amd64 \
+	  release/sentinelgo-readonly-darwin-arm64 \
+	  release/sentinelgo-readonly-windows-amd64.exe \
 	  release/install.sh \
 	  release/install.command \
 	  release/install.bat \
@@ -222,6 +263,12 @@ verify-cross:
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build ./...
 	@echo "Type-checking windows/amd64..."
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+	@echo "Type-checking the read-only build (#547)..."
+	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build $(READONLY_TAGS) ./...
+	CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build $(READONLY_TAGS) ./...
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build $(READONLY_TAGS) ./...
+	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build $(READONLY_TAGS) ./...
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(READONLY_TAGS) ./...
 	@echo "✅ all release targets compile with CGO_ENABLED=0"
 
 # Code quality checks

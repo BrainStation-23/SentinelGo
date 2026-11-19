@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 )
 
 // sampleBundle is the contract example from sentinel-ops docs/dlp.md.
@@ -30,6 +33,7 @@ const sampleBundle = `{
 }`
 
 func TestDecode_ContractExample(t *testing.T) {
+	flavortest.Require(t, buildflavor.DLPEnforcement, "DLP blocking")
 	b, err := Decode([]byte(sampleBundle))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

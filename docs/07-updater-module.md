@@ -75,6 +75,29 @@ Notes:
   cleans up the staged file / backup as appropriate.
 - On Unix replace failure, `rollbackFromBackup` restores the previous binary.
 
+### Build flavor (#548)
+
+Every release ships two builds: full (`sentinelgo-<os>-<arch>`) and
+read-only (`sentinelgo-readonly-<os>-<arch>`, `-tags readonly`, #547). The
+server decides per device which one it runs and returns that asset, with a
+last column `flavor` (`full` | `readonly`):
+
+- A `flavor` other than this binary's (`buildflavor.Flavor`) is installed at
+  the **same version** too (`actionSwitch`, logged as `Switching build: …`),
+  watched by the health check like an upgrade. Newer and older (with
+  `allow_downgrade`) releases follow the usual rules and switch the build on
+  the way. A server can move a device either way.
+- `flavor` must be `full` or `readonly`, and the asset's name must be that
+  build's (`sentinelgo-readonly-` prefix for read-only). A row that doesn't
+  match is refused when it would be installed. A missing column (an older
+  server) means this binary's own build, so a read-only agent offered the
+  full asset is refused rather than turned back into a full agent.
+- `update_marker.json` carries `to_flavor` and the health file `flavor`: the
+  switch's new binary and the restored one have the same version, so only
+  the build tells them apart. A switch that rolls back blocks that version
+  (the rollback record), so it isn't retried in a loop.
+- The agent reports the build it runs as `build_flavor` in every inventory.
+
 ## Health check and rollback (#503)
 
 An upgrade keeps the backup until the new binary proves it works. A
@@ -175,7 +198,8 @@ which may predate this check and could never confirm itself.
 ```
 
 `LatestRelease` fields used by the agent: `version`, `asset_path`, `sha256`,
-`allow_downgrade` (plus metadata such as `published_at`, `asset_name`, `size`).
+`allow_downgrade`, `flavor` and `asset_name` (checked against `flavor`), plus
+metadata such as `published_at` and `size`.
 
 Empty RPC result → no release configured yet; skip quietly.
 

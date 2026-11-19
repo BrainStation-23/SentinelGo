@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 )
 
@@ -80,7 +81,7 @@ func newUpdateFixture(t *testing.T, manifestSHA string) (*updateFixture, *config
 		manifestSHA = hex.EncodeToString(sum[:])
 	}
 	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, f.newBinary))
-	f.release = LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, SHA256: manifestSHA}
+	f.release = LatestRelease{Version: "v99.9.9", AssetPath: releaseAsset, AssetName: assetFor(buildflavor.Flavor), SHA256: manifestSHA}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

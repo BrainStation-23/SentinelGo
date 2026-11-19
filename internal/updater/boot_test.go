@@ -150,7 +150,7 @@ func TestStartHealthWatch_RegistersBootJob(t *testing.T) {
 	}
 	dir := t.TempDir()
 	cfg := &config.Config{Path: filepath.Join(dir, "config.json")}
-	m, markerPath, err := startHealthWatch(cfg, "v1.0.0", "v2.0.0", exe+".backup")
+	m, markerPath, err := startHealthWatch(cfg, "v1.0.0", "v2.0.0", "", exe+".backup")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestStartHealthWatch_SpawnFailureRegistersNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Path: filepath.Join(t.TempDir(), "config.json")}
-	if _, _, err := startHealthWatch(cfg, "v1.0.0", "v2.0.0", exe+".backup"); err == nil {
+	if _, _, err := startHealthWatch(cfg, "v1.0.0", "v2.0.0", "", exe+".backup"); err == nil {
 		t.Fatal("update went ahead without a watchdog")
 	}
 	if reg, _ := calls(); len(reg) != 0 {

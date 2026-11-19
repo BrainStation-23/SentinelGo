@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/dlp/filescan"
 	"sentinelgo/internal/dlp/policy"
 	"sentinelgo/internal/dlp/scanworker"
@@ -481,7 +482,7 @@ func (e *linuxEnforcer) Capabilities() map[string]string {
 	state, workers := e.stateLocked()
 	e.mu.Unlock()
 	caps := channelCapabilities(e.compiled.Load(), linuxChannels, state, workers)
-	if state == stateRunning && len(caps) > 0 && e.opts.Notifier != nil {
+	if buildflavor.DLPEnforcement && state == stateRunning && len(caps) > 0 && e.opts.Notifier != nil {
 		// a block_override block can ask its user for a reason (#336)
 		caps[CapabilityBlockOverride] = "supported"
 	}

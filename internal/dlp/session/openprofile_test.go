@@ -13,33 +13,40 @@ import (
 )
 
 type fakeOpener struct {
-	mu   sync.Mutex
-	name string
-	data []byte
-	err  error
+	mu                   sync.Mutex
+	name, title, message string
+	data                 []byte
+	err                  error
 }
 
-func (f *fakeOpener) Open(name string, data []byte) error {
+func (f *fakeOpener) Open(name string, data []byte, title, message string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.name, f.data = name, data
+	f.name, f.data, f.title, f.message = name, data, title, message
 	return f.err
 }
 
-func startProfileHelper(t *testing.T, addr string, open func(string, []byte) error, n *fakeNotifier) {
+func startProfileHelper(t *testing.T, addr string, open func(string, []byte, string, string) error, n *fakeNotifier) {
 	t.Helper()
+	startHelperWith(t, HelperOptions{Addr: addr, Notify: n.Notify, OpenProfile: open})
+}
+
+func startHelperWith(t *testing.T, o HelperOptions) {
+	t.Helper()
+	o.Version, o.Channels = "test", []channel.Channel{&fakeChannel{}}
+	o.Backoff = func(int) time.Duration { return 20 * time.Millisecond }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = RunHelper(ctx, HelperOptions{Addr: addr, Version: "test", Channels: []channel.Channel{&fakeChannel{}},
-			Notify: n.Notify, OpenProfile: open, Backoff: func(int) time.Duration { return 20 * time.Millisecond }})
+		_ = RunHelper(ctx, o)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 }
 
 // OpenProfile reaches only the named session's helper, which opens the
-// profile and then shows the instructions (#350).
+// profile with the instructions (#350, #545). The opener shows them itself,
+// as a dialog, so no notification goes out.
 func TestOpenProfile(t *testing.T) {
 	addr := testAddress(t)
 	hub := NewHub(addr, &recordingSink{})
@@ -56,12 +63,12 @@ func TestOpenProfile(t *testing.T) {
 		t.Fatalf("OpenProfile: %v", err)
 	}
 	op.mu.Lock()
-	if op.name != "E.mobileconfig" || string(op.data) != "<?xml profile" {
-		t.Errorf("opened %q %q", op.name, op.data)
+	if op.name != "E.mobileconfig" || string(op.data) != "<?xml profile" || op.title != "Enroll" || op.message != "Install it" {
+		t.Errorf("opened %q %q %q %q", op.name, op.data, op.title, op.message)
 	}
 	op.mu.Unlock()
-	if n.count() != 1 || !strings.HasPrefix(n.shown[0], ipc.LevelWarning+"|Enroll|") {
-		t.Errorf("instructions shown = %v", n.shown)
+	if n.count() != 0 {
+		t.Errorf("notification shown as well: %v", n.shown)
 	}
 
 	if err := hub.OpenProfile(context.Background(), sid+"-other", ipc.OpenProfile{Name: "x"}); !errors.Is(err, ErrNoHelper) {
@@ -69,7 +76,7 @@ func TestOpenProfile(t *testing.T) {
 	}
 }
 
-// A helper that can't open profiles, or fails to, says so; nothing is shown.
+// A helper that can't open profiles, or fails to, says so.
 func TestOpenProfileFailures(t *testing.T) {
 	addr := testAddress(t)
 	hub := NewHub(addr, &recordingSink{})
@@ -84,9 +91,6 @@ func TestOpenProfileFailures(t *testing.T) {
 	if err := hub.OpenProfile(context.Background(), sid, ipc.OpenProfile{Name: "x", Title: "t"}); err == nil || !strings.Contains(err.Error(), "exit status 1") {
 		t.Errorf("failing opener: %v", err)
 	}
-	if n.count() != 0 {
-		t.Error("instructions shown for a profile that wasn't opened")
-	}
 }
 
 func TestOpenProfileHelperWithoutOpener(t *testing.T) {
@@ -99,5 +103,45 @@ func TestOpenProfileHelperWithoutOpener(t *testing.T) {
 	err := hub.OpenProfile(context.Background(), hub.Sessions()[0].SessionID, ipc.OpenProfile{Name: "x"})
 	if err == nil || !strings.Contains(err.Error(), "can't open configuration profiles") {
 		t.Errorf("helper without opener: %v", err)
+	}
+}
+
+// OfferEnroll reaches the session's helper and comes back with the user's
+// choice; a helper that can't ask answers later with an error (#545).
+func TestOfferEnroll(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offer  func(context.Context, string, string) (bool, error)
+		want   bool
+		errHas string
+	}{
+		{"enroll now", func(_ context.Context, title, msg string) (bool, error) { return title == "T" && msg == "M", nil }, true, ""},
+		{"later", func(context.Context, string, string) (bool, error) { return false, nil }, false, ""},
+		{"dialog failed", func(context.Context, string, string) (bool, error) {
+			return true, errors.New("osascript: exit status 1")
+		}, false, "exit status 1"},
+		{"can't ask", nil, false, "can't offer enrollment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := testAddress(t)
+			hub := NewHub(addr, &recordingSink{})
+			hub.Apply(context.Background(), nil)
+			t.Cleanup(hub.Stop)
+			startHelperWith(t, HelperOptions{Addr: addr, OfferEnroll: tc.offer})
+			eventually(t, "the helper to connect", func() bool { return connectedHelpers(hub) == 1 })
+
+			yes, err := hub.OfferEnroll(context.Background(), hub.Sessions()[0].SessionID, ipc.OfferEnroll{Title: "T", Message: "M"})
+			if yes != tc.want {
+				t.Errorf("enroll = %v, want %v", yes, tc.want)
+			}
+			if (tc.errHas == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.errHas)) {
+				t.Errorf("err = %v, want %q", err, tc.errHas)
+			}
+		})
+	}
+
+	hub := NewHub(testAddress(t), &recordingSink{})
+	if _, err := hub.OfferEnroll(context.Background(), "nobody", ipc.OfferEnroll{}); !errors.Is(err, ErrNoHelper) {
+		t.Errorf("no helper: %v", err)
 	}
 }

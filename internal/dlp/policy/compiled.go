@@ -51,6 +51,9 @@ type CompiledPolicy struct {
 // bad custom pattern is skipped and reported while the policy's other rules
 // stay active. b must not be nil.
 func Compile(b *Bundle) *Compiled {
+	// The read-only build never blocks (#547): it compiles a monitor-only
+	// copy, so b (and the cache that saved it) keeps the server's actions.
+	b = monitorOnly(b)
 	c := &Compiled{
 		Bundle:       b,
 		Version:      b.Version,
@@ -98,8 +101,12 @@ func Compile(b *Bundle) *Compiled {
 	return c
 }
 
+func validAction(a string) bool {
+	return a == ActionMonitor || a == ActionWarn || a == ActionBlock || a == ActionBlockOverride
+}
+
 func validatePolicy(p Policy) error {
-	if p.Action != ActionMonitor && p.Action != ActionWarn && p.Action != ActionBlock && p.Action != ActionBlockOverride {
+	if !validAction(p.Action) {
 		return fmt.Errorf("policy %q: unknown action %q", p.Name, p.Action)
 	}
 	if p.Match != "" && p.Match != detect.MatchAny && p.Match != detect.MatchAll {

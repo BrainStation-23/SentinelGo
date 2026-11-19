@@ -1,9 +1,11 @@
-// Package packages reports the npm, PyPI and Composer packages installed on
-// the device (#421), so the backend can say which devices have a given
-// name@version when a malicious release is published (supply-chain worms).
+// Package packages reports the language packages installed on the device
+// (#421: npm, PyPI and Composer; #535–#540: NuGet, Maven, Go, crates.io,
+// RubyGems, Pub, Hex, SwiftURL and CRAN), so the backend can say which
+// devices have a given name@version when a malicious release is published
+// (supply-chain worms).
 //
-// It only reads files: it never runs npm, pip or composer, so collecting
-// starts no child process and makes no network call. Uploads go through
+// It only reads files: it never runs a package manager or a toolchain, so
+// collecting starts no child process and makes no network call. Uploads go through
 // agent_enqueue_packages, separate from the software inventory (volume is far
 // higher, and the server keeps packages out of the software catalog). The
 // server decides whether anything is collected (agent_get_package_settings,
@@ -24,13 +26,36 @@ const (
 	EcosystemNPM       = "npm"
 	EcosystemPyPI      = "pypi"
 	EcosystemPackagist = "packagist"
+	EcosystemNuGet     = "nuget"
+	EcosystemMaven     = "maven" // name is groupId:artifactId
+	EcosystemGo        = "go"    // name is the module path; "stdlib" for Go itself
+	EcosystemCargo     = "cargo" // crates.io
+	EcosystemRubyGems  = "rubygems"
+	EcosystemPub       = "pub"
+	EcosystemHex       = "hex"
+	EcosystemSwift     = "swift" // SwiftURL: name is the repository URL
+	EcosystemCRAN      = "cran"
 )
 
-// Scopes: a global install (location is the install directory) or a project
-// dependency (location is the lockfile).
+// knownEcosystems are the ecosystems this agent can report.
+var knownEcosystems = map[string]bool{
+	EcosystemNPM: true, EcosystemPyPI: true, EcosystemPackagist: true,
+	EcosystemNuGet: true, EcosystemMaven: true, EcosystemGo: true, EcosystemCargo: true,
+	EcosystemRubyGems: true, EcosystemPub: true, EcosystemHex: true, EcosystemSwift: true,
+	EcosystemCRAN: true,
+}
+
+// legacyEcosystems are what a server accepts when its settings carry no
+// ecosystems list (before Compliance-OS#1047).
+var legacyEcosystems = []string{EcosystemNPM, EcosystemPyPI, EcosystemPackagist}
+
+// Scopes: a global install (location is the install directory), a project
+// dependency (location is the lockfile or manifest), or a version in a
+// download cache (downloaded, maybe run by a build, but not installed).
 const (
 	ScopeGlobal  = "global"
 	ScopeProject = "project"
+	ScopeCache   = "cache"
 )
 
 // Server-side limits on a row (characters). A row over any of them is
@@ -70,9 +95,9 @@ func (p *Package) valid() bool {
 	p.Location = strings.TrimSpace(p.Location)
 	p.User = strings.TrimSpace(p.User)
 	switch {
-	case p.Ecosystem != EcosystemNPM && p.Ecosystem != EcosystemPyPI && p.Ecosystem != EcosystemPackagist:
+	case !knownEcosystems[p.Ecosystem]:
 		return false
-	case p.Scope != ScopeGlobal && p.Scope != ScopeProject:
+	case p.Scope != ScopeGlobal && p.Scope != ScopeProject && p.Scope != ScopeCache:
 		return false
 	case !lenOK(p.Name, maxNameLen), !lenOK(p.Version, maxVersionLen), !lenOK(p.Location, maxLocationLen):
 		return false
@@ -114,4 +139,20 @@ func normalize(in []Package) (out []Package, invalid int) {
 		)
 	})
 	return out, invalid
+}
+
+// nameChars reports whether s is non-empty and holds only ASCII letters,
+// digits and the characters in extra. Registry package names are this
+// narrow, so anything else isn't a name an advisory could match.
+func nameChars(s, extra string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		alnum := c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !alnum && !strings.ContainsRune(extra, c) {
+			return false
+		}
+	}
+	return true
 }

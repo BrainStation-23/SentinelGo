@@ -41,6 +41,7 @@ import (
 	"sync"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/lockfile"
 	"sentinelgo/internal/sanitize"
@@ -85,8 +86,11 @@ const (
 // Marker is the update in progress. The old binary writes it once; the new
 // binary (healthy) or the watchdog (rollback) deletes it.
 type Marker struct {
-	FromVersion  string    `json:"from_version"`
-	ToVersion    string    `json:"to_version"`
+	FromVersion string `json:"from_version"`
+	ToVersion   string `json:"to_version"`
+	// ToFlavor is the build being installed (#548): "full" or "readonly".
+	// Empty in markers from older agents, which only change the version.
+	ToFlavor     string    `json:"to_flavor,omitempty"`
 	ExePath      string    `json:"exe_path"`
 	BackupPath   string    `json:"backup_path"`
 	WatchdogPath string    `json:"watchdog_path,omitempty"`
@@ -103,6 +107,7 @@ type Marker struct {
 // watchdog never write the same file.
 type HealthState struct {
 	Version  string    `json:"version"`
+	Flavor   string    `json:"flavor,omitempty"` // the build that wrote it (#548)
 	Attempts int       `json:"attempts"`
 	BootedAt time.Time `json:"booted_at"`
 	AliveAt  time.Time `json:"alive_at"`
@@ -173,7 +178,21 @@ func acquireTransition(markerPath string, wait time.Duration) (*lockfile.LockFil
 
 // sameUpdate reports whether a and b describe the same update.
 func sameUpdate(a, b *Marker) bool {
-	return a.Created.Equal(b.Created) && a.FromVersion == b.FromVersion && a.ToVersion == b.ToVersion && a.ExePath == b.ExePath
+	return a.Created.Equal(b.Created) && a.FromVersion == b.FromVersion && a.ToVersion == b.ToVersion &&
+		a.ToFlavor == b.ToFlavor && a.ExePath == b.ExePath
+}
+
+// installsThis reports whether m installs this binary: its version and,
+// when m names one, its build. A switch of build keeps the version (#548),
+// so the version alone can't tell the new binary from the restored one.
+func (m *Marker) installsThis() bool {
+	return sameVersion(m.ToVersion, config.Version) && (m.ToFlavor == "" || m.ToFlavor == buildflavor.Flavor)
+}
+
+// isThisBinary reports whether h was written by a binary of this version and
+// build.
+func (h HealthState) isThisBinary() bool {
+	return sameVersion(h.Version, config.Version) && (h.Flavor == "" || h.Flavor == buildflavor.Flavor)
 }
 
 // watchdogPathFor is the watchdog copy of the old binary, next to it. A
@@ -251,7 +270,7 @@ func (m *Marker) validate() error {
 
 // beginHealthWatch writes the marker and the watchdog copy for an upgrade
 // from running to `to`. On error nothing is left behind.
-func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now time.Time) (*Marker, string, error) {
+func beginHealthWatch(cfg *config.Config, running, to, toFlavor, backupPath string, now time.Time) (*Marker, string, error) {
 	exe, err := executablePath()
 	if err != nil {
 		return nil, "", err
@@ -264,7 +283,7 @@ func beginHealthWatch(cfg *config.Config, running, to, backupPath string, now ti
 		return nil, "", err
 	}
 	m := &Marker{
-		FromVersion: running, ToVersion: to,
+		FromVersion: running, ToVersion: to, ToFlavor: toFlavor,
 		ExePath: exe, BackupPath: backupPath,
 		WatchdogPath: watchdogPathFor(exe),
 		HealthPath:   filepath.Join(dir, healthFileName),
@@ -342,7 +361,7 @@ func retireExpired(path string, m *Marker) (*Marker, bool) {
 		return m, true // changed meanwhile: decide on the next check
 	}
 	_ = os.Remove(m.HealthPath)
-	if !sameVersion(m.ToVersion, config.Version) {
+	if !m.installsThis() {
 		// The update isn't what runs: the watchdog rolled it back but
 		// couldn't save the record or rename the marker, or the update
 		// never stayed installed. Keep blocking that version: move the
@@ -382,7 +401,7 @@ func rolledBackVersions(cfg *config.Config, now time.Time) []string {
 	}
 	var kept Marker
 	if readJSON(markerPathFor(cfg), &kept) == nil && kept.ToVersion != "" &&
-		now.After(kept.GiveUpAt) && !sameVersion(kept.ToVersion, config.Version) {
+		now.After(kept.GiveUpAt) && !kept.installsThis() {
 		out = append(out, kept.ToVersion)
 	}
 	return out
@@ -418,14 +437,14 @@ func StartHealthCheck(ctx context.Context, cfg *config.Config) {
 		}
 		return
 	}
-	if !sameVersion(m.ToVersion, config.Version) {
+	if !m.installsThis() {
 		return // the old binary: the watchdog handles it
 	}
 
 	healthMu.Lock()
 	var h HealthState
-	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, config.Version) {
-		h = HealthState{Version: config.Version}
+	if readJSON(m.HealthPath, &h) != nil || !h.isThisBinary() {
+		h = HealthState{Version: config.Version, Flavor: buildflavor.Flavor}
 	}
 	now := time.Now().UTC()
 	h.Attempts++
@@ -485,8 +504,8 @@ func healthTick(m *Marker) bool {
 		return !finishConfirm(m)
 	}
 	var h HealthState
-	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, config.Version) {
-		h = HealthState{Version: config.Version, Attempts: 1, BootedAt: time.Now().UTC()}
+	if readJSON(m.HealthPath, &h) != nil || !h.isThisBinary() {
+		h = HealthState{Version: config.Version, Flavor: buildflavor.Flavor, Attempts: 1, BootedAt: time.Now().UTC()}
 	}
 	h.AliveAt = time.Now().UTC()
 	if err := writeJSONAtomic(m.HealthPath, h); err != nil {
@@ -521,7 +540,7 @@ func ConfirmHealthy(cfg *config.Config) {
 		}
 		return
 	}
-	if !sameVersion(m.ToVersion, config.Version) {
+	if !m.installsThis() {
 		return
 	}
 	healthy = true
@@ -712,7 +731,8 @@ func runWatchdog(markerPath string, d watchdogDeps) int {
 // missing or for another version.
 func readHealthState(m *Marker) HealthState {
 	var h HealthState
-	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, m.ToVersion) {
+	if readJSON(m.HealthPath, &h) != nil || !sameVersion(h.Version, m.ToVersion) ||
+		(m.ToFlavor != "" && h.Flavor != m.ToFlavor) {
 		return HealthState{}
 	}
 	return h

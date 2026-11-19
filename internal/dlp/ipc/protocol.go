@@ -53,6 +53,9 @@ const (
 	TypeOpenURL       = "open_url"        // service → helper: open an enrollment link for the user
 	TypeOpenURLResult = "open_url_result" // helper → service: whether it was opened
 
+	TypeOfferEnroll       = "offer_enroll"        // service → helper: offer the user Enroll now (macOS, #545)
+	TypeOfferEnrollAnswer = "offer_enroll_answer" // helper → service: the user's choice
+
 	TypeAskOverride    = "ask_override"    // service → helper: a file was blocked; ask the user what to do (#336)
 	TypeOverrideAnswer = "override_answer" // helper → service: the user's choice and reason
 
@@ -90,7 +93,10 @@ type Message struct {
 	OpenURL           *OpenURL           `json:"open_url,omitempty"`
 	// OpenURLResult answers an OpenURL with the same ID.
 	OpenURLResult *OpenProfileResult `json:"open_url_result,omitempty"`
-	AskOverride   *AskOverride       `json:"ask_override,omitempty"`
+	OfferEnroll   *OfferEnroll       `json:"offer_enroll,omitempty"`
+	// OfferEnrollAnswer answers an OfferEnroll with the same ID.
+	OfferEnrollAnswer *OfferEnrollAnswer `json:"offer_enroll_answer,omitempty"`
+	AskOverride       *AskOverride       `json:"ask_override,omitempty"`
 	// OverrideAnswer answers an AskOverride with the same ID.
 	OverrideAnswer *OverrideAnswer `json:"override_answer,omitempty"`
 	UserFile       *UserFile       `json:"user_file,omitempty"`
@@ -173,14 +179,37 @@ type OpenURL struct {
 
 // OpenProfile asks the helper to present a configuration profile (an MDM
 // enrollment profile, #350) to its user: write it to the user's own files
-// and open it, which registers it for review in System Settings, then show
-// Title/Message as a notification with what to do.
+// and open it, which registers it for review in System Settings, then open
+// System Settings where it is installed and show Title/Message (#545).
 type OpenProfile struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"` // file name, e.g. "Enrollment.mobileconfig"
 	Data    []byte `json:"data"`
 	Title   string `json:"title"`
 	Message string `json:"message"`
+}
+
+// OfferEnroll asks the helper to offer its user to enroll the Mac in device
+// management now (#545): a dialog with Title/Message and the buttons Later
+// and Enroll now.
+type OfferEnroll struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// Choices in an OfferEnrollAnswer.
+const (
+	ChoiceEnroll = "enroll"
+	ChoiceLater  = "later"
+)
+
+// OfferEnrollAnswer is the user's choice (ChoiceEnroll or ChoiceLater; a
+// dialog nobody answered is later).
+type OfferEnrollAnswer struct {
+	ID     string `json:"id"`
+	Choice string `json:"choice"`
+	Error  string `json:"error,omitempty"`
 }
 
 // OpenProfileResult says whether a helper presented an OpenProfile. Error is

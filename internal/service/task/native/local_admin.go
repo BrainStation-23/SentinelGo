@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/localadmin"
 	"sentinelgo/internal/taskstore"
@@ -34,7 +35,11 @@ var localAdminApplyFn = func(ctx context.Context, cfg *config.Config, add bool, 
 // itself at that time, even offline.
 type localAdminHandler struct{}
 
-func init() { Register(&localAdminHandler{}) }
+func init() {
+	if buildflavor.DeviceActions {
+		Register(&localAdminHandler{})
+	}
+}
 
 func (h *localAdminHandler) Slugs() []string {
 	return []string{localAdminAddSlug, localAdminRemoveSlug}

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/taskstore"
 )
@@ -170,6 +172,7 @@ func TestExecutePendingTasks_StoreUnavailable_DoesNotPanic(t *testing.T) {
 // ── runTask ──────────────────────────────────────────────────────────────────
 
 func TestRunTask_NoScriptForPlatform(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, "")
 	_, err := s.runTask(context.Background(), taskstore.Task{ID: "t1", Slug: "scripted"})
@@ -179,6 +182,7 @@ func TestRunTask_NoScriptForPlatform(t *testing.T) {
 }
 
 func TestRunTask_DownloadFails_CleansUpTempDir(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	srv := scriptServer(t, http.StatusNotFound, "not found")
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, srv.URL)
@@ -191,6 +195,7 @@ func TestRunTask_DownloadFails_CleansUpTempDir(t *testing.T) {
 }
 
 func TestRunTask_TempDirUnavailable(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(k, missing)
@@ -221,6 +226,7 @@ func echoScript(text string, exitCode int) (name, body string) {
 }
 
 func TestRunTask_ScriptSucceeds_ReturnsOutput(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	name, body := echoScript("hello-from-task", 0)
 	srv := scriptServer(t, http.StatusOK, body)
@@ -237,6 +243,7 @@ func TestRunTask_ScriptSucceeds_ReturnsOutput(t *testing.T) {
 }
 
 func TestRunTask_ScriptFails_ReturnsOutputAndError(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	name, body := echoScript("about-to-fail", 3)
 	srv := scriptServer(t, http.StatusOK, body)
@@ -254,6 +261,7 @@ func TestRunTask_ScriptFails_ReturnsOutputAndError(t *testing.T) {
 // TestRunTask_InlineBody_Runs runs a policy-style inline script with no
 // storage path: nothing is downloaded and the output reaches the note (#135).
 func TestRunTask_InlineBody_Runs(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	name, body := echoScript("hello-inline", 0)
 	// No server: any download attempt would fail.

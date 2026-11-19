@@ -27,6 +27,8 @@ type PostRunner interface {
 
 **Self-registration:** `func init() { Register(&myHandler{}) }` — runs automatically at startup. No central list to update.
 
+**Read-only build (#547):** a handler that runs code on the device or changes it registers behind a `buildflavor` constant (`if buildflavor.DeviceActions { Register(&myHandler{}) }`), so the read-only build leaves it out. A handler that only reports goes on the `readOnlySlugs` allowlist in `native/readonly_test.go`; `make test-readonly` fails for a handler that is neither.
+
 ## Steps
 
 1. **Read** `internal/service/task/native/sync_inventory.go` to see the exact file structure.
@@ -65,13 +67,15 @@ func (h *<camelSlug>Handler) Run(ctx context.Context, cfg *config.Config, _ task
 }
 ```
 
-5. **Ask the user:** "Should this handler automatically trigger any post-run tasks after it succeeds (e.g. `sync-inventory`)?" If yes, add:
+5. **Ask the user** whether the task only reports (add its slugs to `readOnlySlugs` in `native/readonly_test.go`) or changes the device (wrap the `Register` call in `if buildflavor.DeviceActions { … }`, or the constant for its feature).
+
+6. **Ask the user:** "Should this handler automatically trigger any post-run tasks after it succeeds (e.g. `sync-inventory`)?" If yes, add:
 ```go
 func (h *<camelSlug>Handler) PostRun() []string {
     return []string{"<post-run-slug>"}
 }
 ```
 
-6. **Run** `go build ./internal/service/task/native/...` to confirm the new file compiles without errors.
+7. **Run** `go build ./internal/service/task/native/...` to confirm the new file compiles without errors.
 
-7. **Tell the user** the scaffold is ready and point them to implement the `Run` body. Reference `internal/service/task/native/sync_software.go` as an example of a handler that opens a local store and calls an RPC service, or `internal/service/task/native/sync_inventory.go` for one that collects system info. Both show the correct pattern for using `cfg *config.Config` to access Supabase credentials and config paths.
+8. **Tell the user** the scaffold is ready and point them to implement the `Run` body. Reference `internal/service/task/native/sync_software.go` as an example of a handler that opens a local store and calls an RPC service, or `internal/service/task/native/sync_inventory.go` for one that collects system info. Both show the correct pattern for using `cfg *config.Config` to access Supabase credentials and config paths.

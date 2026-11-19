@@ -55,9 +55,14 @@ type HelperOptions struct {
 	// Notify shows an admin's desktop notification and waits for it; nil
 	// means this helper can't show one.
 	Notify func(title, message, level string) error
-	// OpenProfile presents a configuration profile to the user (#350); nil
-	// means this platform can't.
-	OpenProfile func(name string, data []byte) error
+	// OpenProfile presents a configuration profile to the user (#350) and
+	// shows them title and message, what to do with it (#545); nil means
+	// this platform can't.
+	OpenProfile func(name string, data []byte, title, message string) error
+	// OfferEnroll asks the user whether to enroll the Mac in device
+	// management now (#545); true means Enroll now. nil means this platform
+	// can't, and answers later.
+	OfferEnroll func(ctx context.Context, title, message string) (bool, error)
 	// OpenURL opens an MDM enrollment link for the user (#356); nil means
 	// this platform can't.
 	OpenURL func(url string) error
@@ -217,6 +222,10 @@ func (r *helperRuntime) dispatch(ctx context.Context, m ipc.Message) {
 	case ipc.TypeOpenURL:
 		if m.OpenURL != nil {
 			go r.openURL(*m.OpenURL)
+		}
+	case ipc.TypeOfferEnroll:
+		if m.OfferEnroll != nil {
+			go r.offerEnroll(ctx, *m.OfferEnroll)
 		}
 	case ipc.TypeAskOverride:
 		if m.AskOverride != nil {
@@ -483,21 +492,41 @@ func (r *helperRuntime) askOverride(ctx context.Context, a ipc.AskOverride) {
 	r.send(ipc.Message{Type: ipc.TypeOverrideAnswer, OverrideAnswer: ans})
 }
 
-// openProfile presents a configuration profile to this helper's user, then
-// tells them what to do with it. The profile's bytes are never logged.
+// openProfile presents a configuration profile to this helper's user, with
+// what to do with it. The profile's bytes are never logged.
 func (r *helperRuntime) openProfile(p ipc.OpenProfile) {
 	res := &ipc.OpenProfileResult{ID: p.ID}
 	if r.o.OpenProfile == nil {
 		res.Error = "this helper can't open configuration profiles on this platform"
-	} else if err := r.o.OpenProfile(p.Name, p.Data); err != nil {
+	} else if err := r.o.OpenProfile(p.Name, p.Data, p.Title, p.Message); err != nil {
 		log.Printf("Session helper: profile %s not opened: %v", p.ID, err)
 		res.Error = err.Error()
-	} else if r.o.Notify != nil && p.Title != "" {
-		if err := r.o.Notify(p.Title, p.Message, ipc.LevelWarning); err != nil {
-			log.Printf("Session helper: profile %s opened; instructions not shown: %v", p.ID, err)
-		}
 	}
 	r.send(ipc.Message{Type: ipc.TypeOpenProfileResult, OpenProfileResult: res})
+}
+
+// offerEnrollWait bounds how long the Enroll now dialog stays open.
+const offerEnrollWait = 10 * time.Minute
+
+// offerEnroll asks the user whether to enroll the Mac now and answers with
+// their choice; a dialog nobody answers is later.
+func (r *helperRuntime) offerEnroll(ctx context.Context, o ipc.OfferEnroll) {
+	ans := &ipc.OfferEnrollAnswer{ID: o.ID, Choice: ipc.ChoiceLater}
+	if r.o.OfferEnroll == nil {
+		ans.Error = "this helper can't offer enrollment on this platform"
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, offerEnrollWait)
+		yes, err := r.o.OfferEnroll(ctx, o.Title, o.Message)
+		cancel()
+		switch {
+		case err != nil:
+			log.Printf("Session helper: enrollment offer %s failed: %v", o.ID, err)
+			ans.Error = err.Error()
+		case yes:
+			ans.Choice = ipc.ChoiceEnroll
+		}
+	}
+	r.send(ipc.Message{Type: ipc.TypeOfferEnrollAnswer, OfferEnrollAnswer: ans})
 }
 
 // enrollmentScheme is the only kind of link a helper opens: Windows' MDM

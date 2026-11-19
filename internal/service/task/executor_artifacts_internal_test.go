@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"sentinelgo/internal/artifact"
+	"sentinelgo/internal/buildflavor"
+	"sentinelgo/internal/buildflavor/flavortest"
 	"sentinelgo/internal/taskstore"
 )
 
@@ -104,6 +106,7 @@ func lastLine(out string) string {
 }
 
 func TestRunTask_Artifacts_HappyPath(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	srv, hits := artifactServer(t, installerBytes)
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, srv.URL)
@@ -154,6 +157,7 @@ func TestRunTask_Artifacts_HappyPath(t *testing.T) {
 // TestRunTask_NoArtifacts_Unchanged: without artifacts nothing is fetched and
 // payload.json is exactly the task payload, as before (#137 regression).
 func TestRunTask_NoArtifacts_Unchanged(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	srv, hits := artifactServer(t, installerBytes)
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, srv.URL)
@@ -176,6 +180,7 @@ func TestRunTask_NoArtifacts_Unchanged(t *testing.T) {
 }
 
 func TestRunTask_Artifacts_ValidationFails_ScriptNotRun(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	srv, hits := artifactServer(t, installerBytes)
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, srv.URL)
@@ -193,6 +198,7 @@ func TestRunTask_Artifacts_ValidationFails_ScriptNotRun(t *testing.T) {
 }
 
 func TestRunTask_Artifacts_HashMismatch_ScriptNotRun(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	tmp := isolateTempDir(t)
 	srv, _ := artifactServer(t, "TAMPERED-BYTES-v1!")
 	s, _ := newExecutorFixture(t, &fakeTaskClient{}, srv.URL)
@@ -213,6 +219,7 @@ func TestRunTask_Artifacts_HashMismatch_ScriptNotRun(t *testing.T) {
 }
 
 func TestExecuteTask_Artifacts_FailureNoteNamesArtifact(t *testing.T) {
+	flavortest.Require(t, buildflavor.Scripts, "script execution")
 	isolateTempDir(t)
 	srv, _ := artifactServer(t, "short")
 	client := &fakeTaskClient{}

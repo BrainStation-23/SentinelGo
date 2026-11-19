@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/scanworker"
@@ -81,6 +82,10 @@ type yaraState struct {
 // console sees state disabled, and queued events are still uploaded, but no
 // worker starts and no scan runs. Errors are logged, never fatal.
 func (mi *MainIntegration) startYARA() {
+	// Not in the read-only build for now (#547).
+	if !buildflavor.YARA {
+		return
+	}
 	cfg := mi.cfg
 	dir := filepath.Dir(cfg.Path)
 	y := &yaraState{cfg: cfg, statusPath: filepath.Join(dir, scan.StatusFileName)}

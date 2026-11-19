@@ -41,3 +41,15 @@ func FuzzParseComposerInstalled(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseDescription(f *testing.F) {
+	f.Add([]byte("Package: jsonlite\nVersion: 1.8.8\nRepository: CRAN\n"))
+	f.Add([]byte("Package: stats\nVersion: 4.3.2\nPriority: base\n"))
+	f.Add([]byte("Package:\nVersion:\nRepository: CRAN\n  continued: x\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		name, version, ok := parseDescription(data)
+		if ok && (name == "" || version == "") {
+			t.Fatalf("ok with empty field: %q %q", name, version)
+		}
+	})
+}

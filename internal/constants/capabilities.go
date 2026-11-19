@@ -3,8 +3,10 @@ package constants
 
 import (
 	"runtime"
+	"slices"
 
 	"sentinelgo/internal/binpath"
+	"sentinelgo/internal/buildflavor"
 )
 
 // AgentCapabilities are the task features this binary supports, sent in the
@@ -23,7 +25,7 @@ var AgentCapabilities = []string{
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
 	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
-	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
+	"packages_v1",           // package inventory: agent_enqueue_packages, settings poll, sync-packages task (#421); more ecosystems once the server lists them (#535–#543)
 	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
 	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
 	"yara_scan_report_v1",   // threat hunting: scan_summary skip/error reasons, end reason, scope, problem files (contract v1.2, #497)
@@ -92,6 +94,31 @@ var pwshInstalled = func() bool {
 // installing PowerShell later is picked up without a restart. The result is a
 // fresh slice, so callers can't change what the agent advertises.
 func Capabilities() []string {
+	caps := deviceCapabilities()
+	if buildflavor.ReadOnly {
+		caps = withoutReadOnlyLacks(caps)
+	}
+	return caps
+}
+
+// withoutReadOnlyLacks drops ReadOnlyLacks from caps.
+func withoutReadOnlyLacks(caps []string) []string {
+	return slices.DeleteFunc(caps, func(c string) bool { return slices.Contains(ReadOnlyLacks, c) })
+}
+
+// ReadOnlyLacks are the capabilities the read-only build doesn't have
+// (#547): its gated features are compiled out, so it never advertises them.
+var ReadOnlyLacks = []string{
+	"script_inline_body_v1", "task_artifacts_v1", CapabilityScriptPwsh, // Scripts
+	"local_admin_v1", CapabilityAdminPasswordRotation, CapabilityMDMSync, CapabilityMDMUnenroll, // DeviceActions
+	"dlp_warn_v1", CapabilityDLPNetworkControl, CapabilityDLPAtRest, // DLPEnforcement
+	"yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1", // YARA
+	"desktop_notify_v1", // NotifyUser
+	CapabilityMDMEnroll, // MDMEnroll
+}
+
+// deviceCapabilities is every capability of the full build on this device.
+func deviceCapabilities() []string {
 	caps := append([]string{}, AgentCapabilities...)
 	if pwshInstalled() {
 		caps = append(caps, CapabilityScriptPwsh)
