@@ -149,11 +149,11 @@ func CheckAndApply(ctx context.Context, cfg *config.Config) error {
 			sanitize.ForLog(latest.Version))
 	}
 
-	switch {
-	case action == actionDowngrade:
+	switch action {
+	case actionDowngrade:
 		log.Printf("Rolling back: %s -> %s (server-approved downgrade)",
 			sanitize.ForLog(running), sanitize.ForLog(latest.Version))
-	case action == actionSwitch:
+	case actionSwitch:
 		log.Printf("Switching build: %s -> %s at %s (assigned by the server)",
 			buildflavor.Flavor, flavor, sanitize.ForLog(latest.Version))
 	default:
