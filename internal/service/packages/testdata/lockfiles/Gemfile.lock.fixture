@@ -1,0 +1,35 @@
+GIT
+  remote: https://github.com/owner/gitgem.git
+  revision: abc123
+  specs:
+    gitgem (0.1.0)
+
+PATH
+  remote: .
+  specs:
+    myapp (1.0.0)
+      rack (>= 2.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    actionpack (7.1.3)
+      rack (>= 2.2.4)
+      rack-test (>= 0.6.3)
+    nokogiri (1.15.0-x86_64-linux)
+      racc (~> 1.4)
+    rack (2.2.8)
+    rack-test (2.1.0)
+      rack (>= 1.3)
+    racc (1.7.3)
+
+PLATFORMS
+  x86_64-linux
+
+DEPENDENCIES
+  actionpack
+  myapp!
+  nokogiri (~> 1.15)
+
+BUNDLED WITH
+   2.5.6

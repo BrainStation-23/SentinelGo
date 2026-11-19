@@ -51,3 +51,73 @@ func FuzzParseRequirements(f *testing.F) {
 func FuzzParseComposerLock(f *testing.F) {
 	fuzzLockfile(f, parseComposerLock, "composer.lock")
 }
+
+func FuzzParseBunLock(f *testing.F) { fuzzLockfile(f, parseBunLock, "bun.lock") }
+
+func FuzzParsePdmLock(f *testing.F) { fuzzLockfile(f, parsePdmLock, "pdm.lock") }
+
+func FuzzParsePylock(f *testing.F) { fuzzLockfile(f, parsePylock, "pylock.toml") }
+
+func FuzzParseProjectAssets(f *testing.F) {
+	fuzzLockfile(f, parseProjectAssets, "project.assets.json")
+}
+
+func FuzzParseNuGetLock(f *testing.F) { fuzzLockfile(f, parseNuGetLock, "packages.lock.json") }
+
+func FuzzParsePackagesConfig(f *testing.F) {
+	fuzzLockfile(f, parsePackagesConfig, "packages.config")
+}
+
+func FuzzParseGradleLockfile(f *testing.F) {
+	fuzzLockfile(f, parseGradleLockfile, "gradle.lockfile")
+}
+
+func FuzzParsePom(f *testing.F) { fuzzLockfile(f, parsePom, "pom.xml") }
+
+func FuzzParseGoSum(f *testing.F) { fuzzLockfile(f, parseGoSum, "go.sum") }
+
+func FuzzParseGoMod(f *testing.F) {
+	fuzzLockfile(f, func(data []byte) []nameVersion {
+		direct, rest := parseGoModule(data, data)
+		return append(direct, rest...)
+	}, "go.mod")
+}
+
+func FuzzParseCargoLock(f *testing.F) { fuzzLockfile(f, parseCargoLock, "Cargo.lock") }
+
+func FuzzParseCargoInstalls(f *testing.F) {
+	fuzzLockfile(f, parseCargoInstalls, "crates2.json")
+}
+
+func FuzzParseCargoInstallsTOML(f *testing.F) {
+	fuzzLockfile(f, parseCargoInstallsTOML, "crates.toml")
+}
+
+func FuzzParseGemfileLock(f *testing.F) { fuzzLockfile(f, parseGemfileLock, "Gemfile.lock") }
+
+func FuzzParsePubspecLock(f *testing.F) { fuzzLockfile(f, parsePubspecLock, "pubspec.lock") }
+
+func FuzzParseMixLock(f *testing.F) { fuzzLockfile(f, parseMixLock, "mix.lock") }
+
+func FuzzParsePackageResolved(f *testing.F) {
+	fuzzLockfile(f, parsePackageResolved, "Package.resolved-v1", "Package.resolved-v2")
+}
+
+func FuzzParseRenvLock(f *testing.F) { fuzzLockfile(f, parseRenvLock, "renv.lock") }
+
+func FuzzFileNames(f *testing.F) {
+	for _, s := range []string{"serde-1.0.197.crate", "nokogiri-1.15.0-x86_64-linux.gemspec", "github.com/!a/b"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if nv, ok := crateFileName(s); ok && (nv.name == "" || nv.version == "") {
+			t.Fatalf("crate %+v", nv)
+		}
+		if nv, ok := gemspecFileName(s); ok && (nv.name == "" || nv.version == "") {
+			t.Fatalf("gem %+v", nv)
+		}
+		if u, ok := goUnescape(s); ok && len(u) > len(s) {
+			t.Fatalf("unescape grew %q to %q", s, u)
+		}
+	})
+}

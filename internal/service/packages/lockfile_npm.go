@@ -252,3 +252,117 @@ func pnpmKey(key string, v5 bool) (nameVersion, bool) {
 	}
 	return nameVersion{name, v}, true
 }
+
+// parseBunLock reads bun.lock, Bun 1.2+'s text lockfile: JSON with trailing
+// commas. Its "packages" map keys are install paths ("a/b" for a nested
+// copy); each value is an array whose first element is "name@version"
+// (scoped: "@scope/name@version"; an alias names the real package).
+// Workspace, git, file, link and tarball entries ("name@workspace:…",
+// "name@github:…") have no registry version and are skipped.
+func parseBunLock(data []byte) []nameVersion {
+	var lock struct {
+		Packages map[string][]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(jsoncToJSON(data), &lock); err != nil {
+		return nil
+	}
+	var out []nameVersion
+	for _, entry := range lock.Packages {
+		if len(entry) == 0 {
+			continue
+		}
+		var ident string
+		if err := json.Unmarshal(entry[0], &ident); err != nil {
+			continue
+		}
+		i := strings.LastIndex(ident, "@")
+		if i <= 0 {
+			continue
+		}
+		name := ident[:i]
+		if v, ok := npmVersion(ident[i+1:]); ok && strings.TrimSpace(name) != "" && !strings.ContainsAny(name, ": ") {
+			out = append(out, nameVersion{name, v})
+		}
+	}
+	return out
+}
+
+// jsoncToJSON turns JSONC (comments, trailing commas) into JSON: comments
+// outside strings are dropped first, then a comma followed only by
+// whitespace before "}" or "]" is removed.
+func jsoncToJSON(data []byte) []byte {
+	return dropTrailingCommas(dropJSONComments(data))
+}
+
+// scanJSON calls keep for each byte outside a string; inside strings
+// (escapes included) bytes are copied as they are. keep returns how many
+// bytes to skip after this one and whether to copy it.
+func scanJSON(data []byte, keep func(i int) (skip int, copyByte bool)) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if inString {
+			out = append(out, c)
+			switch {
+			case c == '\\' && i+1 < len(data):
+				i++
+				out = append(out, data[i])
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			out = append(out, c)
+			continue
+		}
+		skip, copyByte := keep(i)
+		if copyByte {
+			out = append(out, c)
+		}
+		i += skip
+	}
+	return out
+}
+
+// dropJSONComments removes // and /* */ comments outside strings. A line
+// comment keeps its newline; an unterminated block comment ends the input.
+func dropJSONComments(data []byte) []byte {
+	return scanJSON(data, func(i int) (int, bool) {
+		if data[i] != '/' || i+1 >= len(data) {
+			return 0, true
+		}
+		switch data[i+1] {
+		case '/':
+			end := bytes.IndexByte(data[i:], '\n')
+			if end < 0 {
+				return len(data), false
+			}
+			return end - 1, false // resume at the newline
+		case '*':
+			end := bytes.Index(data[i+2:], []byte("*/"))
+			if end < 0 {
+				return len(data), false
+			}
+			return end + 3, false
+		}
+		return 0, true
+	})
+}
+
+// dropTrailingCommas removes a comma outside strings that only whitespace
+// separates from a closing "}" or "]".
+func dropTrailingCommas(data []byte) []byte {
+	return scanJSON(data, func(i int) (int, bool) {
+		if data[i] != ',' {
+			return 0, true
+		}
+		j := i + 1
+		for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
+			j++
+		}
+		return 0, j >= len(data) || (data[j] != '}' && data[j] != ']')
+	})
+}

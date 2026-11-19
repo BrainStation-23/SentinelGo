@@ -1,0 +1,30 @@
+{
+  "originHash" : "aaa",
+  "pins" : [
+    {
+      "identity" : "swift-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio.git",
+      "state" : { "revision" : "abc", "version" : "2.62.0" }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:apple/swift-log.git",
+      "state" : { "revision" : "def", "version" : "1.5.4" }
+    },
+    {
+      "identity" : "localpkg",
+      "kind" : "localSourceControl",
+      "location" : "/Users/alice/localpkg",
+      "state" : { "revision" : "ghi", "version" : "0.1.0" }
+    },
+    {
+      "identity" : "revonly",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/owner/revonly",
+      "state" : { "revision" : "jkl" }
+    }
+  ],
+  "version" : 3
+}

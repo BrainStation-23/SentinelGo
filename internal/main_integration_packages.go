@@ -12,7 +12,7 @@ import (
 	"sentinelgo/internal/supabase"
 )
 
-// startPackageSync schedules the npm/PyPI/Composer inventory (#421) and
+// startPackageSync schedules the package inventory (#421, #535–#543) and
 // installs the sync-packages task hook. The server decides whether anything
 // is collected (off by default), so the task always runs and only polls the
 // settings until an admin turns it on.

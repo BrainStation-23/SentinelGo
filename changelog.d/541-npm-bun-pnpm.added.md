@@ -1,0 +1,1 @@
+- More npm sources in the package inventory (#541): `bun.lock` (Bun 1.2+; the binary `bun.lockb` can't be read without Bun and is counted in the log instead), Bun global installs, pnpm global installs (their links are followed only inside pnpm's own store) and Node versions installed with asdf or mise.

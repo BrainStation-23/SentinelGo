@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,7 +62,7 @@ type Collector func(ctx context.Context, s Settings) Collection
 func DefaultCollector() Collector {
 	projects := newProjectScanner()
 	return func(ctx context.Context, s Settings) Collection {
-		pkgs, complete := CollectGlobal(ctx)
+		pkgs, complete := CollectGlobal(ctx, s.Accepts)
 		if !s.ProjectScan {
 			projects.reset()
 			return Collection{Packages: pkgs, Complete: complete}
@@ -182,8 +183,10 @@ func (s *Syncer) pollSettings(ctx context.Context) (changed bool, err error) {
 	// first successful poll always sets the settings.
 	s.known = true
 	if changed {
-		if got.Enabled != s.settings.Enabled || got.ProjectScan != s.settings.ProjectScan {
-			log.Printf("[packages] settings: enabled=%v project_scan=%v", got.Enabled, got.ProjectScan)
+		if got.Enabled != s.settings.Enabled || got.ProjectScan != s.settings.ProjectScan ||
+			!slices.Equal(got.Ecosystems, s.settings.Ecosystems) {
+			log.Printf("[packages] settings: enabled=%v project_scan=%v ecosystems=%v",
+				got.Enabled, got.ProjectScan, got.Ecosystems)
 		}
 		s.settings = got
 	}
@@ -199,7 +202,9 @@ func (s *Syncer) run(ctx context.Context, settings Settings, force bool) (Result
 
 	c := s.collect(ctx, settings)
 	complete := c.Complete
-	pkgs, invalid := normalize(c.Packages)
+	// Never send an ecosystem the server doesn't accept: it would reject the
+	// row, and a rejected row stops the full snapshot from retiring packages.
+	pkgs, invalid := normalize(settings.accepted(c.Packages))
 	if invalid > 0 {
 		log.Printf("[packages] skipped %d packages the server would reject (empty or over-long fields)", invalid)
 	}
