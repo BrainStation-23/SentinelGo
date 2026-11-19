@@ -1,6 +1,7 @@
 package mdmenroll
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -61,22 +62,18 @@ func firstLine(s string) string {
 	return s
 }
 
-// UserActive runs in the service, as root: the user of s is at the Mac when
-// their screen isn't locked and the keyboard, mouse or trackpad was used in
-// the last activeIdle. What ioreg can't tell counts as active, so a Mac
-// whose ioreg changes still gets the profile.
+// UserActive runs in the service, as root: whether the user of s is at the
+// Mac (macUserActive), from ioreg.
 func UserActive(s Session) bool {
-	if out, err := shared.RunCommand("ioreg", "-n", "Root", "-d1", "-a"); err == nil {
-		if locked, ok := consoleLocked(out, s.ID); ok && locked {
-			return false
-		}
+	root, err := shared.RunCommand("ioreg", "-n", "Root", "-d1", "-a")
+	if err != nil {
+		root = ""
 	}
-	if out, err := shared.RunCommand("ioreg", "-r", "-c", "IOHIDSystem", "-d1", "-a"); err == nil {
-		if idle, ok := hidIdle(out); ok && idle >= activeIdle {
-			return false
-		}
+	hid, err := shared.RunCommand("ioreg", "-r", "-c", "IOHIDSystem", "-d1", "-a")
+	if err != nil {
+		hid = ""
 	}
-	return true
+	return macUserActive(root, hid, s.ID)
 }
 
 // execCommand is exec.CommandContext; a var for tests.
@@ -160,7 +157,7 @@ func osProductVersion() string {
 // as script.
 const (
 	instructionsScript = `display dialog (system attribute "SG_MSG") with title (system attribute "SG_TITLE") buttons {"OK"} default button "OK" with icon note giving up after 600`
-	offerScript        = `set r to display dialog (system attribute "SG_MSG") with title (system attribute "SG_TITLE") buttons {"Later", "Enroll now"} default button "Enroll now" cancel button "Later" with icon caution giving up after 600
+	offerScript        = `set r to display dialog (system attribute "SG_MSG") with title (system attribute "SG_TITLE") buttons {"Later", "Enroll now"} default button "Enroll now" cancel button "Later" with icon caution giving up after 540
 if gave up of r then return "later"
 return button returned of r`
 )
@@ -172,23 +169,42 @@ func dialogCommand(ctx context.Context, script, title, message string) *exec.Cmd
 }
 
 // showInstructions shows the dialog that says what to click, over System
-// Settings, and returns at once. If it can't, a notification says it.
+// Settings, and returns at once. If the dialog can't be shown, a
+// notification says it instead.
 func showInstructions(title, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), dialogWait+time.Minute)
 	cmd := dialogCommand(ctx, instructionsScript, title, message)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		cancel()
-		log.Printf("Session helper: enrollment instructions not shown as a dialog: %v", err)
-		if err := notify.Show(title, message, notify.LevelWarning); err != nil {
-			log.Printf("Session helper: enrollment instructions not shown: %v", err)
-		}
+		instructionsFallback(title, message, err)
 		return
 	}
 	go func() {
 		defer cancel()
-		_ = cmd.Wait()
+		// OK and giving up both exit 0; the dialog has no Cancel button.
+		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+			instructionsFallback(title, message, fmt.Errorf("%v: %s", err, firstLine(stderr.String())))
+		}
 	}()
 }
+
+// instructionsFallback shows the instructions as a notification when the
+// dialog failed.
+func instructionsFallback(title, message string, why error) {
+	log.Printf("Session helper: enrollment instructions not shown as a dialog: %v", why)
+	if err := notifyFallback(title, message, notify.LevelWarning); err != nil {
+		log.Printf("Session helper: enrollment instructions not shown: %v", err)
+	}
+}
+
+// notifyFallback is notify.Show; a var for tests.
+var notifyFallback = notify.Show
+
+// userCanceled is the AppleScript error osascript reports for the Cancel
+// button ("User canceled. (-128)").
+const userCanceled = "(-128)"
 
 // OfferEnrollForUser runs in the session helper, as the user: the Enroll
 // now dialog (#545). true means Enroll now; Later, closing it or leaving it
@@ -197,12 +213,18 @@ var OfferEnrollForUser = func(ctx context.Context, title, message string) (bool,
 	out, err := dialogCommand(ctx, offerScript, title, message).Output()
 	var ee *exec.ExitError
 	switch {
-	case errors.As(err, &ee), ctx.Err() != nil:
-		return false, nil // Later (osascript's "User canceled"), or nobody answered
-	case err != nil:
+	case err == nil:
+		return strings.TrimSpace(string(out)) == "Enroll now", nil
+	case ctx.Err() != nil:
+		return false, nil // nobody answered
+	case errors.As(err, &ee) && strings.Contains(string(ee.Stderr), userCanceled):
+		return false, nil // Later
+	case errors.As(err, &ee):
+		// The dialog wasn't shown: an error, so the offer is tried again.
+		return false, fmt.Errorf("osascript: %v: %s", err, firstLine(string(ee.Stderr)))
+	default:
 		return false, err
 	}
-	return strings.TrimSpace(string(out)) == "Enroll now", nil
 }
 
 // OpenURLForUser is nil: enrollment links are Windows'.

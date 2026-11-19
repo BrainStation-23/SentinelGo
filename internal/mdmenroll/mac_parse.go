@@ -46,6 +46,20 @@ func consoleLocked(out string, uid string) (locked, ok bool) {
 	return false, false
 }
 
+// macUserActive decides from the two ioreg outputs ("" when a read failed)
+// whether the user with uid is at the Mac: their screen isn't locked and
+// there was input in the last activeIdle. What the output can't tell counts
+// as active, so a Mac whose ioreg changes still gets the profile.
+func macUserActive(rootOut, hidOut, uid string) bool {
+	if locked, ok := consoleLocked(rootOut, uid); ok && locked {
+		return false
+	}
+	if idle, ok := hidIdle(hidOut); ok && idle >= activeIdle {
+		return false
+	}
+	return true
+}
+
 // hidIdle reads `ioreg -r -c IOHIDSystem -d1 -a`: the time since the last
 // keyboard, mouse or trackpad input (HIDIdleTime, in nanoseconds).
 func hidIdle(out string) (time.Duration, bool) {

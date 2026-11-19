@@ -92,16 +92,19 @@ func TestOfferEnrollForUser(t *testing.T) {
 	for _, tc := range []struct {
 		answer []string
 		want   bool
+		errHas string
 	}{
-		{[]string{"/bin/echo", "Enroll now"}, true},
-		{[]string{"/bin/echo", "later"}, false},
-		{[]string{"/usr/bin/false"}, false}, // Later: osascript's "User canceled"
+		{[]string{"/bin/echo", "Enroll now"}, true, ""},
+		{[]string{"/bin/echo", "later"}, false, ""},
+		{[]string{"/bin/sh", "-c", "echo '0:1: execution error: User canceled. (-128)' >&2; exit 1"}, false, ""},
+		// The dialog failed to show: an error, so the service tries again.
+		{[]string{"/bin/sh", "-c", "echo '0:5: execution error: no display (-1712)' >&2; exit 1"}, false, "-1712"},
 	} {
 		f := &fakeCommands{}
 		f.install(t, tc.answer...)
 		yes, err := OfferEnrollForUser(context.Background(), offerTitle, offerMessage)
-		if err != nil || yes != tc.want {
-			t.Errorf("%q: %v %v, want %v", tc.answer, yes, err, tc.want)
+		if yes != tc.want || (tc.errHas == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.errHas)) {
+			t.Errorf("%q: %v %v, want %v %q", tc.answer, yes, err, tc.want, tc.errHas)
 		}
 		if len(f.runs) != 1 || f.runs[0][0] != "/usr/bin/osascript" || !strings.Contains(f.runs[0][2], `"Enroll now"`) {
 			t.Errorf("ran %q", f.runs)
@@ -115,6 +118,37 @@ func TestOfferEnrollForUser(t *testing.T) {
 	defer cancel()
 	if yes, err := OfferEnrollForUser(ctx, offerTitle, offerMessage); yes || err != nil {
 		t.Errorf("unanswered: %v %v", yes, err)
+	}
+}
+
+// An instructions dialog that fails after it started falls back to a
+// notification (here, its osascript run is recorded too).
+func TestShowInstructionsFallsBack(t *testing.T) {
+	f := &fakeCommands{}
+	f.install(t, "/bin/sh", "-c", "echo 'execution error (-1712)' >&2; exit 1")
+	var mu sync.Mutex
+	var got []string
+	old := notifyFallback
+	notifyFallback = func(title, message, level string) error {
+		mu.Lock()
+		got = append(got, title)
+		mu.Unlock()
+		return nil
+	}
+	t.Cleanup(func() { notifyFallback = old })
+	showInstructions(presentTitle, presentMessage)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(got) != 1 || got[0] != presentTitle {
+		t.Errorf("fallback notifications = %q", got)
 	}
 }
 

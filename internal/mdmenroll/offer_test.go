@@ -16,6 +16,8 @@ type offerDevice struct {
 	offers []ipc.OfferEnroll
 	answer bool
 	err    error
+	// during runs while the dialog is open.
+	during func()
 }
 
 func newOfferDevice() *offerDevice {
@@ -34,6 +36,9 @@ func (o *offerDevice) deps(state string) Deps {
 			return false, errors.New("wrong session " + sid)
 		}
 		o.offers = append(o.offers, x)
+		if o.during != nil {
+			o.during()
+		}
 		return o.answer, o.err
 	}
 	return d
@@ -92,12 +97,49 @@ func TestOffer_EnrollNowAndCadence(t *testing.T) {
 		t.Error("offered again right after Enroll now")
 	}
 
-	// A failed dialog still counts as shown, and presents nothing.
+	// A dialog that wasn't shown (no helper, osascript failed) presents
+	// nothing and is tried again at the next check, not hours later.
 	o.clock = o.clock.Add(offerEvery)
 	o.err = errors.New("no helper")
 	e.offerOnce(context.Background())
-	if len(o.offers) != 2 || o.fetches != 2 {
+	o.clock = o.clock.Add(offerCheck)
+	o.err = nil
+	e.offerOnce(context.Background())
+	if len(o.offers) != 3 || o.fetches != 3 {
 		t.Errorf("offers %d fetches %d", len(o.offers), o.fetches)
+	}
+}
+
+// No offer while a profile task waits for the user or for the enrollment;
+// and Enroll now doesn't supersede a profile presented while its dialog was
+// open, or present one to a Mac that enrolled meanwhile.
+func TestOffer_DoesntSupersedeATask(t *testing.T) {
+	o := newOfferDevice()
+	e := New(o.deps(""))
+	e.arm()
+	e.taskBusy(1)
+	e.offerOnce(context.Background())
+	if len(o.offers) != 0 {
+		t.Fatal("offered while a task was in flight")
+	}
+	e.taskBusy(-1)
+
+	o.answer = true
+	o.during = func() {
+		if _, err := e.present(context.Background(), *o.console); err != nil {
+			t.Error(err)
+		}
+	}
+	e.offerOnce(context.Background())
+	if len(o.offers) != 1 || o.fetches != 1 {
+		t.Errorf("offers %d fetches %d: the task's profile was superseded", len(o.offers), o.fetches)
+	}
+
+	o.clock = o.clock.Add(offerEvery)
+	o.during = func() { o.info = enrolledOurs }
+	e.offerOnce(context.Background())
+	if len(o.offers) != 2 || o.fetches != 1 {
+		t.Errorf("offers %d fetches %d: presented to an enrolled Mac", len(o.offers), o.fetches)
 	}
 }
 

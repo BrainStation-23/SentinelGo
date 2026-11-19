@@ -180,8 +180,14 @@ type Enroller struct {
 	// and an Enroll now click don't both present one.
 	presentMu sync.Mutex
 
-	mu    sync.Mutex // guards offer
+	mu    sync.Mutex // guards offer, tasks and presents
 	offer *offerState
+	// tasks counts profile tasks waiting for the user, presenting or
+	// waiting for the enrollment; no offers are made meanwhile.
+	tasks int
+	// presents counts presentations, so an Enroll now click that comes
+	// after another presentation doesn't supersede that profile.
+	presents uint64
 }
 
 // New returns an Enroller; zero Now/Sleep default to the real clock.
@@ -253,6 +259,8 @@ func (e *Enroller) Enroll(ctx context.Context, req Request) (Outcome, error) {
 	if method == MethodADE {
 		started, err = e.startADE(ctx, info, host)
 	} else {
+		e.taskBusy(1)
+		defer e.taskBusy(-1)
 		started, err = e.presentProfile(ctx)
 	}
 	if err != nil || started.Code == ResultAlreadyEnrolled {
@@ -360,6 +368,11 @@ func (e *Enroller) presentProfile(ctx context.Context) (Outcome, error) {
 func (e *Enroller) present(ctx context.Context, sess Session) (Outcome, error) {
 	e.presentMu.Lock()
 	defer e.presentMu.Unlock()
+	return e.presentLocked(ctx, sess)
+}
+
+// presentLocked is present with presentMu held.
+func (e *Enroller) presentLocked(ctx context.Context, sess Session) (Outcome, error) {
 	data, err := e.d.FetchProfile(ctx)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("mdm-enroll: getting the enrollment profile: %w", err)
@@ -371,6 +384,9 @@ func (e *Enroller) present(ctx context.Context, sess Session) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, fmt.Errorf("mdm-enroll: presenting the profile to %s: %w", sess.User, err)
 	}
+	e.mu.Lock()
+	e.presents++
+	e.mu.Unlock()
 	e.shown(sess.User)
 	return Outcome{ResultProfilePresented, "opened in " + sess.User + "'s session with System Settings at Device Management; waiting for them to install it"}, nil
 }

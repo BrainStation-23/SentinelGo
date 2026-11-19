@@ -96,3 +96,25 @@ func TestInstallPane(t *testing.T) {
 		}
 	}
 }
+
+func TestMacUserActive(t *testing.T) {
+	unlocked := consoleUsers("false", consoleUser("501", true, ""))
+	locked := consoleUsers("false", consoleUser("501", true, "true"))
+	hid := func(ns string) string {
+		return `<plist><array><dict><key>HIDIdleTime</key><integer>` + ns + `</integer></dict></array></plist>`
+	}
+	for _, tc := range []struct {
+		name      string
+		root, hid string
+		want      bool
+	}{
+		{"at the Mac", unlocked, hid("5000000000"), true},
+		{"screen locked", locked, hid("0"), false},
+		{"idle", unlocked, hid("600000000000"), false},
+		{"nothing readable", "", "", true},
+	} {
+		if got := macUserActive(tc.root, tc.hid, "501"); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
