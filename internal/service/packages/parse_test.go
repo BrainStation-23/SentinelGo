@@ -87,7 +87,7 @@ func TestNormalize(t *testing.T) {
 		{Ecosystem: EcosystemNPM, Name: "a", Version: "1", Scope: ScopeGlobal, Location: "/n"}, // duplicate after trim
 		{Ecosystem: EcosystemNPM, Name: long, Version: "1", Scope: ScopeGlobal, Location: "/n"},
 		{Ecosystem: EcosystemNPM, Name: "c", Version: "", Scope: ScopeGlobal, Location: "/n"},
-		{Ecosystem: "cargo", Name: "c", Version: "1", Scope: ScopeGlobal, Location: "/n"},
+		{Ecosystem: "conda", Name: "c", Version: "1", Scope: ScopeGlobal, Location: "/n"},
 		{Ecosystem: EcosystemNPM, Name: "c", Version: "1", Scope: "weird", Location: "/n"},
 		{Ecosystem: EcosystemNPM, Name: "d", Version: "1", Scope: ScopeGlobal, Location: "/n", User: strings.Repeat("u", maxUserLen+1)},
 		{Ecosystem: EcosystemNPM, Name: "e\xff", Version: "1", Scope: ScopeGlobal, Location: "/n"},

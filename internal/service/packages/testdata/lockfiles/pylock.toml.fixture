@@ -1,0 +1,40 @@
+lock-version = "1.0"
+environments = ["sys_platform == 'linux'"]
+requires-python = ">=3.12"
+created-by = "pip"
+
+[[packages]]
+name = "attrs"
+version = "25.1.0"
+requires-python = ">=3.8"
+index = "https://pypi.org/simple"
+
+[[packages.wheels]]
+name = "attrs-25.1.0-py3-none-any.whl"
+upload-time = 2025-01-25T11:30:10.164985+00:00
+url = "https://files.pythonhosted.org/packages/attrs-25.1.0-py3-none-any.whl"
+size = 63152
+hashes = {sha256 = "c75a69e28a550a7e93789579c22aa26b0f5b83b75dc4e08fe092980051e1090a"}
+
+[[packages]]
+name = "cattrs"
+version = "24.1.2"
+index = "https://pypi.org/simple"
+sdist = {url = "https://files.pythonhosted.org/cattrs-24.1.2.tar.gz", hashes = {sha256 = "8028cfe1ff5382df59dd36474a86e02d817b06eaf8af84555441bac915d2ef85"}}
+
+[[packages]]
+name = "local-pkg"
+version = "0.1.0"
+
+[packages.directory]
+path = "./local-pkg"
+editable = true
+
+[[packages]]
+name = "vcs-pkg"
+version = "2.0.0"
+vcs = {type = "git", url = "https://github.com/owner/vcs-pkg", commit-id = "abc"}
+
+[[packages]]
+name = "unversioned"
+archive = {url = "https://example.com/unversioned.tar.gz", hashes = {sha256 = "00"}}

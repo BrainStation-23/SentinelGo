@@ -149,6 +149,9 @@ func parseRequirements(data []byte) []nameVersion {
 		if i := strings.IndexAny(line, ";\\"); i >= 0 {
 			line = line[:i] // environment marker, or a line continuation (--hash follows)
 		}
+		if i := strings.Index(line, " --"); i >= 0 {
+			line = line[:i] // per-requirement options on the same line (--hash=…)
+		}
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' || line[0] == '-' {
 			continue
@@ -188,4 +191,80 @@ func parseComposerLock(data []byte) []nameVersion {
 		}
 	}
 	return out
+}
+
+// requirementsPinned reports whether a requirements file pins everything it
+// installs: it has at least one requirement, and every requirement is
+// "name==version". An editable install (-e), a URL or a range means the
+// installed versions are only in the environment (#543). Other options
+// (-r, -c, --index-url, --hash) don't install anything themselves.
+func requirementsPinned(data []byte) bool {
+	n := 0
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		if i := strings.Index(line, " #"); i >= 0 {
+			line = line[:i]
+		}
+		if i := strings.IndexAny(line, ";\\"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || line[0] == '#':
+			continue
+		case strings.HasPrefix(line, "-e") || strings.HasPrefix(line, "--editable"):
+			return false
+		case line[0] == '-':
+			continue
+		}
+		if len(parseRequirements([]byte(line))) != 1 {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// parsePdmLock reads pdm.lock: [[package]] tables with name and version.
+// Packages from a local path, a VCS or a direct URL aren't registry
+// packages and are skipped.
+func parsePdmLock(data []byte) []nameVersion {
+	var out []nameVersion
+	for _, t := range tomlArrayTables(data, "package") {
+		if hasAnyKey(t.keys, "path", "editable", "git", "hg", "svn", "bzr", "url") {
+			continue
+		}
+		if v, ok := pyVersion(t.keys["version"]); ok && strings.TrimSpace(t.keys["name"]) != "" {
+			out = append(out, nameVersion{t.keys["name"], v})
+		}
+	}
+	return out
+}
+
+// parsePylock reads a PEP 751 lockfile (pylock.toml): [[packages]] tables
+// with name and version. A package from a directory or a VCS isn't a
+// registry package, and one without a version names no release: both are
+// skipped.
+func parsePylock(data []byte) []nameVersion {
+	var out []nameVersion
+	for _, t := range tomlArrayTables(data, "packages") {
+		if t.subtables["directory"] || t.subtables["vcs"] || hasAnyKey(t.keys, "directory", "vcs") {
+			continue
+		}
+		if v, ok := pyVersion(t.keys["version"]); ok && strings.TrimSpace(t.keys["name"]) != "" {
+			out = append(out, nameVersion{t.keys["name"], v})
+		}
+	}
+	return out
+}
+
+func hasAnyKey(m map[string]string, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
 }

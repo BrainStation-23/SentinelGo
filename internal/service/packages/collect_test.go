@@ -63,7 +63,7 @@ func TestCollectGlobal(t *testing.T) {
 		{kindSitePackages, filepath.Join(".local", "lib", "python*", "site-packages")}, // missing: fine
 	})
 
-	pkgs, complete := CollectGlobal(context.Background())
+	pkgs, complete := CollectGlobal(context.Background(), nil)
 	if !complete {
 		t.Error("complete = false, want true")
 	}
@@ -114,7 +114,7 @@ func TestCollectGlobal_SkipsSymlinks(t *testing.T) {
 	}
 	pinRoots(t, sys, nil, nil)
 
-	pkgs, complete := CollectGlobal(context.Background())
+	pkgs, complete := CollectGlobal(context.Background(), nil)
 	if len(pkgs) != 0 || !complete {
 		t.Errorf("CollectGlobal = %+v, %v; want nothing, complete", pkgs, complete)
 	}
@@ -127,7 +127,7 @@ func TestCollectGlobal_CancelledIsIncomplete(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, complete := CollectGlobal(ctx); complete {
+	if _, complete := CollectGlobal(ctx, nil); complete {
 		t.Error("a cancelled run reported complete")
 	}
 }

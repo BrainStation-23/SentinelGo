@@ -35,17 +35,34 @@ var lockfiles = map[string]struct {
 	ecosystem string
 	parse     func([]byte) []nameVersion
 }{
-	"package-lock.json":   {EcosystemNPM, parsePackageLock},
-	"npm-shrinkwrap.json": {EcosystemNPM, parsePackageLock},
-	"yarn.lock":           {EcosystemNPM, parseYarnLock},
-	"pnpm-lock.yaml":      {EcosystemNPM, parsePnpmLock},
-	"poetry.lock":         {EcosystemPyPI, parseTOMLPackages},
-	"uv.lock":             {EcosystemPyPI, parseTOMLPackages},
-	"Pipfile.lock":        {EcosystemPyPI, parsePipfileLock},
-	"composer.lock":       {EcosystemPackagist, parseComposerLock},
+	"package-lock.json":           {EcosystemNPM, parsePackageLock},
+	"npm-shrinkwrap.json":         {EcosystemNPM, parsePackageLock},
+	"yarn.lock":                   {EcosystemNPM, parseYarnLock},
+	"pnpm-lock.yaml":              {EcosystemNPM, parsePnpmLock},
+	"bun.lock":                    {EcosystemNPM, parseBunLock},
+	"poetry.lock":                 {EcosystemPyPI, parseTOMLPackages},
+	"uv.lock":                     {EcosystemPyPI, parseTOMLPackages},
+	"Pipfile.lock":                {EcosystemPyPI, parsePipfileLock},
+	"pdm.lock":                    {EcosystemPyPI, parsePdmLock},
+	"composer.lock":               {EcosystemPackagist, parseComposerLock},
+	"project.assets.json":         {EcosystemNuGet, parseProjectAssets}, // only inside obj (see visit)
+	"packages.lock.json":          {EcosystemNuGet, parseNuGetLock},
+	"packages.config":             {EcosystemNuGet, parsePackagesConfig},
+	"gradle.lockfile":             {EcosystemMaven, parseGradleLockfile},
+	"buildscript-gradle.lockfile": {EcosystemMaven, parseGradleLockfile},
+	"pom.xml":                     {EcosystemMaven, parsePom},
+	"Cargo.lock":                  {EcosystemCargo, parseCargoLock},
+	"Gemfile.lock":                {EcosystemRubyGems, parseGemfileLock},
+	"gems.locked":                 {EcosystemRubyGems, parseGemfileLock},
+	"pubspec.lock":                {EcosystemPub, parsePubspecLock},
+	"mix.lock":                    {EcosystemHex, parseMixLock},
+	"Package.resolved":            {EcosystemSwift, parsePackageResolved},
+	"renv.lock":                   {EcosystemCRAN, parseRenvLock},
 }
 
-// lockfileFor returns the parser for a file name; requirements*.txt counts.
+// lockfileFor returns the parser for a file name; requirements*.txt and
+// pylock.toml / pylock.<name>.toml count. go.mod is read with its go.sum
+// (see visitGoModule), and project.assets.json only inside obj.
 func lockfileFor(name string) (ecosystem string, parse func([]byte) []nameVersion, ok bool) {
 	if l, found := lockfiles[name]; found {
 		return l.ecosystem, l.parse, true
@@ -53,7 +70,22 @@ func lockfileFor(name string) (ecosystem string, parse func([]byte) []nameVersio
 	if strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt") {
 		return EcosystemPyPI, parseRequirements, true
 	}
+	if isPylock(name) {
+		return EcosystemPyPI, parsePylock, true
+	}
 	return "", nil, false
+}
+
+// isPylock reports whether name is a PEP 751 lockfile: pylock.toml or
+// pylock.<name>.toml.
+func isPylock(name string) bool {
+	return name == "pylock.toml" || (strings.HasPrefix(name, "pylock.") && strings.HasSuffix(name, ".toml") && len(name) > len("pylock..toml"))
+}
+
+// pythonLockfiles are lockfiles that pin a Python project's packages. A
+// requirements*.txt counts only when every requirement in it is pinned.
+var pythonLockfiles = map[string]bool{
+	"poetry.lock": true, "uv.lock": true, "Pipfile.lock": true, "pdm.lock": true,
 }
 
 // skipDirs are never walked into: dependency trees (their packages come
@@ -64,6 +96,45 @@ var skipDirs = map[string]bool{
 	"__pycache__": true, "site-packages": true, "dist-packages": true,
 	"bower_components": true, "jspm_packages": true,
 }
+
+// skipBeside are build output and dependency folders, skipped only when the
+// project file that makes them one sits beside them: an unrelated folder
+// named "build" or "packages" is still walked.
+var skipBeside = map[string]func(files map[string]bool) bool{
+	"bin":      dotnetProject,
+	"packages": dotnetProject, // packages.config restores here
+	"target":   anyOf("pom.xml", "Cargo.toml"),
+	"build":    anyOf("build.gradle", "build.gradle.kts", "pubspec.yaml"),
+	"deps":     anyOf("mix.exs"),
+	"_build":   anyOf("mix.exs"),
+	"Pods":     anyOf("Podfile"),
+}
+
+func anyOf(names ...string) func(map[string]bool) bool {
+	return func(files map[string]bool) bool {
+		for _, n := range names {
+			if files[n] {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// dotnetProject reports whether a folder holds a .NET project or solution.
+func dotnetProject(files map[string]bool) bool {
+	for name := range files {
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".csproj", ".fsproj", ".vbproj", ".sln", ".slnx":
+			return true
+		}
+	}
+	return false
+}
+
+// venvDirs are the virtualenv folder names checked in a Python project
+// without a lockfile (#543).
+var venvDirs = []string{".venv", "venv", "env"}
 
 type projectRoot struct {
 	path   string
@@ -89,6 +160,9 @@ type projectScanner struct {
 	last    []Package // the last finished pass
 	hasLast bool
 	errors  int
+	// binaryLocks counts bun.lockb files: Bun's old binary lockfile can't be
+	// read without running Bun.
+	binaryLocks int
 }
 
 func newProjectScanner() *projectScanner { return &projectScanner{} }
@@ -103,7 +177,7 @@ func (p *projectScanner) reset() {
 // clear drops all pass state; key is the settings the next pass is for.
 // The caller holds mu.
 func (p *projectScanner) clear(key string) {
-	p.key, p.roots, p.queue, p.current, p.last, p.hasLast, p.errors = key, nil, nil, nil, nil, false, 0
+	p.key, p.roots, p.queue, p.current, p.last, p.hasLast, p.errors, p.binaryLocks = key, nil, nil, nil, nil, false, 0, 0
 }
 
 // run continues the current pass within the run budget. It returns the
@@ -141,6 +215,9 @@ func (p *projectScanner) run(ctx context.Context, s Settings) (pkgs []Package, c
 		if p.errors > 0 {
 			log.Printf("[packages] project scan: %d folders or lockfiles could not be read", p.errors)
 		}
+		if p.binaryLocks > 0 {
+			log.Printf("[packages] project scan: skipped %d bun.lockb files (binary; re-save as bun.lock to report them)", p.binaryLocks)
+		}
 		p.last, p.hasLast, p.current = p.current, true, nil
 		return slices.Clone(p.last), true, false
 	}
@@ -157,7 +234,7 @@ func (p *projectScanner) startPass(configured []string) {
 	if len(paths) == 0 {
 		paths = homes
 	}
-	p.roots, p.queue, p.current, p.errors = nil, nil, nil, 0
+	p.roots, p.queue, p.current, p.errors, p.binaryLocks = nil, nil, nil, 0, 0
 	for _, path := range paths {
 		path = filepath.Clean(path)
 		if !filepath.IsAbs(path) {
@@ -182,11 +259,38 @@ func (p *projectScanner) visit(item walkItem, maxDepth int) int {
 		return 1
 	}
 	root := p.roots[item.root]
+	files := make(map[string]bool)
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			files[e.Name()] = true
+		}
+	}
+	read := len(entries)
+	pyLocked := false
+	var venvs []fs.DirEntry
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() {
-			if item.depth >= maxDepth || !isDir(e) || strings.HasPrefix(name, ".") || skipDirs[name] || skipPlatformDir(name) {
+			if !isDir(e) {
+				continue // a link or junction: never followed
+			}
+			if slices.Contains(venvDirs, name) {
+				venvs = append(venvs, e)
+			}
+			if name == "obj" && dotnetProject(files) {
+				// Only the restore graph matters in obj; its build output
+				// isn't walked.
+				p.parseLockfileAt(filepath.Join(item.dir, name, "project.assets.json"), EcosystemNuGet, parseProjectAssets, root.user)
 				continue
+			}
+			if item.depth >= maxDepth || strings.HasPrefix(name, ".") || skipDirs[name] || skipPlatformDir(name) {
+				continue
+			}
+			if skip := skipBeside[name]; skip != nil && skip(files) {
+				continue
+			}
+			if name == "library" && filepath.Base(item.dir) == "renv" {
+				continue // renv's package library: renv.lock covers it
 			}
 			info, err := e.Info()
 			if err != nil || placeholder(info) {
@@ -201,34 +305,143 @@ func (p *projectScanner) visit(item walkItem, maxDepth int) int {
 		if !e.Type().IsRegular() {
 			continue
 		}
+		switch {
+		case name == "bun.lockb":
+			p.binaryLocks++
+			continue
+		case name == "go.mod":
+			p.visitGoModule(item.dir, e, files["go.sum"], root.user)
+			continue
+		case name == "project.assets.json" && filepath.Base(item.dir) != "obj":
+			continue
+		}
 		ecosystem, parse, ok := lockfileFor(name)
 		if !ok {
 			continue
 		}
-		p.parseLockfile(filepath.Join(item.dir, name), e, ecosystem, parse, root.user)
+		data := p.parseLockfile(filepath.Join(item.dir, name), e, ecosystem, parse, root.user)
+		if pythonLockfiles[name] || isPylock(name) ||
+			(ecosystem == EcosystemPyPI && data != nil && requirementsPinned(data)) {
+			pyLocked = true
+		}
 	}
-	return len(entries)
+	if !pyLocked {
+		for _, v := range venvs {
+			read += p.visitVenv(filepath.Join(item.dir, v.Name()), root.user)
+		}
+	}
+	return read
 }
 
-func (p *projectScanner) parseLockfile(path string, e fs.DirEntry, ecosystem string, parse func([]byte) []nameVersion, user string) {
+// parseLockfile parses one lockfile and returns its content (nil when it
+// wasn't read).
+func (p *projectScanner) parseLockfile(path string, e fs.DirEntry, ecosystem string, parse func([]byte) []nameVersion, user string) []byte {
 	info, err := e.Info()
-	if err != nil || placeholder(info) {
-		return // a cloud file not on this device: reading it would download it
-	}
-	if info.Size() > maxLockfileBytes {
-		p.errors++
-		log.Printf("[packages] lockfile over %d MB skipped: %s", maxLockfileBytes>>20, sanitize.ForLog(path))
-		return
-	}
-	data, err := readLimited(path, maxLockfileBytes)
 	if err != nil {
-		p.errors++
+		return nil
+	}
+	return p.parseLockfileInfo(path, info, ecosystem, parse, user)
+}
+
+// parseLockfileAt parses a lockfile that may not exist (a fixed name inside
+// a folder that isn't walked).
+func (p *projectScanner) parseLockfileAt(path, ecosystem string, parse func([]byte) []nameVersion, user string) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
 		return
+	}
+	p.parseLockfileInfo(path, info, ecosystem, parse, user)
+}
+
+func (p *projectScanner) parseLockfileInfo(path string, info fs.FileInfo, ecosystem string, parse func([]byte) []nameVersion, user string) []byte {
+	data := p.readLockfile(path, info)
+	if data == nil {
+		return nil
 	}
 	for _, nv := range parse(data) {
 		p.current = append(p.current, Package{Ecosystem: ecosystem, Name: nv.name, Version: nv.version,
 			Scope: ScopeProject, Location: path, User: user})
 	}
+	return data
+}
+
+// readLockfile reads a lockfile within the size cap. Cloud placeholders
+// are never read: reading one would download it.
+func (p *projectScanner) readLockfile(path string, info fs.FileInfo) []byte {
+	if placeholder(info) {
+		return nil
+	}
+	if info.Size() > maxLockfileBytes {
+		p.errors++
+		log.Printf("[packages] lockfile over %d MB skipped: %s", maxLockfileBytes>>20, sanitize.ForLog(path))
+		return nil
+	}
+	data, err := readLimited(path, maxLockfileBytes)
+	if err != nil {
+		p.errors++
+		return nil
+	}
+	return data
+}
+
+// visitGoModule reports a Go module's dependencies: the requirements of
+// go.mod (located at go.mod), and the other modules go.sum says were
+// downloaded (located at go.sum).
+func (p *projectScanner) visitGoModule(dir string, e fs.DirEntry, hasSum bool, user string) {
+	modPath := filepath.Join(dir, "go.mod")
+	info, err := e.Info()
+	if err != nil {
+		return
+	}
+	mod := p.readLockfile(modPath, info)
+	if mod == nil {
+		return
+	}
+	var sum []byte
+	sumPath := filepath.Join(dir, "go.sum")
+	if hasSum {
+		if si, err := os.Lstat(sumPath); err == nil && si.Mode().IsRegular() {
+			sum = p.readLockfile(sumPath, si)
+		}
+	}
+	direct, rest := parseGoModule(mod, sum)
+	for _, nv := range direct {
+		p.current = append(p.current, Package{Ecosystem: EcosystemGo, Name: nv.name, Version: nv.version,
+			Scope: ScopeProject, Location: modPath, User: user})
+	}
+	for _, nv := range rest {
+		p.current = append(p.current, Package{Ecosystem: EcosystemGo, Name: nv.name, Version: nv.version,
+			Scope: ScopeProject, Location: sumPath, User: user})
+	}
+}
+
+// visitVenv reports the packages installed in a project's virtualenv
+// (#543): only a folder with a pyvenv.cfg is one. Its site-packages is read
+// as a global install is, and nothing else in it is walked. The location is
+// the virtualenv. It returns the entries read.
+func (p *projectScanner) visitVenv(venv, user string) int {
+	if info, err := os.Lstat(filepath.Join(venv, "pyvenv.cfg")); err != nil || !info.Mode().IsRegular() {
+		return 0
+	}
+	s := newScan(context.Background())
+	for _, pattern := range []string{
+		filepath.Join(venv, "lib", "python*", "site-packages"), // Unix
+		filepath.Join(venv, "Lib", "site-packages"),            // Windows
+	} {
+		for _, dir := range s.glob(pattern) {
+			if info, err := os.Lstat(dir); err == nil && info.IsDir() {
+				s.collectSitePackages(dir, user)
+			}
+		}
+	}
+	if !s.complete {
+		p.errors++
+	}
+	for _, pkg := range s.pkgs {
+		pkg.Scope, pkg.Location = ScopeProject, venv
+		p.current = append(p.current, pkg)
+	}
+	return s.files + s.dirs
 }
 
 // ownerHome returns the user whose home holds path, or "" when none does.

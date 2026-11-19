@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"sentinelgo/internal/sanitize"
 )
@@ -21,6 +22,10 @@ const (
 	maxManifestBytes = 4 << 20
 	// maxFilesPerRun caps the files one run reads.
 	maxFilesPerRun = 200_000
+	// maxDirsPerRun caps the directories one run lists. The download caches
+	// (~/.m2, ~/.gradle, ~/go/pkg/mod, ~/.nuget) are read by listing their
+	// version folders, so a large cache costs directory listings, not files.
+	maxDirsPerRun = 500_000
 	// maxDirEntries caps the entries read from one directory.
 	maxDirEntries = 50_000
 )
@@ -35,6 +40,7 @@ type scan struct {
 	ctx      context.Context
 	pkgs     []Package
 	files    int
+	dirs     int
 	complete bool
 }
 
@@ -47,7 +53,7 @@ func (s *scan) add(p Package) { s.pkgs = append(s.pkgs, p) }
 // stopped reports whether the run must stop: ctx is done or the file budget
 // is spent. Either makes the run incomplete.
 func (s *scan) stopped() bool {
-	if s.ctx.Err() != nil || s.files >= maxFilesPerRun {
+	if s.ctx.Err() != nil || s.files >= maxFilesPerRun || s.dirs >= maxDirsPerRun {
 		s.complete = false
 		return true
 	}
@@ -78,6 +84,7 @@ func (s *scan) readDir(dir string) []os.DirEntry {
 	if s.stopped() {
 		return nil
 	}
+	s.dirs++
 	f, err := os.Open(dir) // #nosec G304 -- a fixed install location under a user home
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -94,6 +101,29 @@ func (s *scan) readDir(dir string) []os.DirEntry {
 		s.complete = false
 	}
 	return entries
+}
+
+// subdirs lists the real directories in dir, skipping links and names
+// starting with "." (tool state such as .bin, .pnpm or .store).
+func (s *scan) subdirs(dir string) []string {
+	var out []string
+	for _, e := range s.readDir(dir) {
+		if isDir(e) && !strings.HasPrefix(e.Name(), ".") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// regularFiles lists the regular files in dir.
+func (s *scan) regularFiles(dir string) []string {
+	var out []string
+	for _, e := range s.readDir(dir) {
+		if e.Type().IsRegular() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 // glob expands pattern. Patterns are fixed install locations with at most a

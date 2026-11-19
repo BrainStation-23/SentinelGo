@@ -262,3 +262,46 @@ func TestTick_UnfinishedProjectPassResumesSoon(t *testing.T) {
 		t.Errorf("an unfinished pass waited for the next collection (%d collects)", h.collects)
 	}
 }
+
+func TestSync_SendsOnlyAcceptedEcosystems(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		ecosystems []string
+		want       []string
+	}{
+		{"no list: the original three", nil, []string{EcosystemNPM, EcosystemPyPI}},
+		{"listed", []string{EcosystemNPM, EcosystemGo, EcosystemCargo}, []string{EcosystemGo, EcosystemNPM}}, // sorted by ecosystem
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(true)
+			h.settings.settings.Ecosystems = tt.ecosystems
+			h.pkgs = []Package{
+				{Ecosystem: EcosystemNPM, Name: "keyv", Version: "4.5.4", Scope: ScopeGlobal, Location: "/a"},
+				{Ecosystem: EcosystemPyPI, Name: "requests", Version: "2.31.0", Scope: ScopeGlobal, Location: "/b"},
+				{Ecosystem: EcosystemGo, Name: "golang.org/x/net", Version: "v0.17.0", Scope: ScopeCache, Location: "/c"},
+				{Ecosystem: EcosystemNuGet, Name: "Serilog", Version: "3.1.1", Scope: ScopeCache, Location: "/d"},
+			}
+			if _, err := h.s.SyncNow(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(h.enq.uploads) != 1 {
+				t.Fatalf("%d uploads", len(h.enq.uploads))
+			}
+			var got []string
+			for _, p := range h.enq.uploads[0].Packages {
+				got = append(got, p.Ecosystem)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("sent %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("sent %v, want %v", got, tt.want)
+				}
+			}
+			if h.enq.uploads[0].Snapshot != snapshotFull {
+				t.Errorf("snapshot = %q: dropping unaccepted ecosystems must not make the inventory incomplete", h.enq.uploads[0].Snapshot)
+			}
+		})
+	}
+}

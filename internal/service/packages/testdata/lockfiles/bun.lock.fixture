@@ -1,0 +1,28 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "app",
+      "dependencies": {
+        "@tanstack/query-core": "^5.59.0",
+        "keyv": "^4.5.4",
+        "lodash-alias": "npm:lodash@4.17.21",
+        "local-lib": "file:../local-lib",
+      },
+    },
+    "packages/ui": {
+      "name": "ui",
+      "version": "0.0.1",
+    },
+  },
+  "packages": {
+    "@tanstack/query-core": ["@tanstack/query-core@5.59.0", "", {}, "sha512-aaa"],
+    "json-buffer": ["json-buffer@3.0.1", "", {}, "sha512-bbb"],
+    "keyv": ["keyv@4.5.4", "", { "dependencies": { "json-buffer": "3.0.1" } }, "sha512-ccc"],
+    "keyv/json-buffer": ["json-buffer@3.0.0", "", {}, "sha512-ddd"],
+    "lodash-alias": ["lodash@4.17.21", "", {}, "sha512-eee"],
+    "local-lib": ["local-lib@file:../local-lib", {}],
+    "ui": ["ui@workspace:packages/ui"],
+    "gitdep": ["gitdep@github:owner/gitdep#abc123", {}, "owner-gitdep-abc123"],
+  }
+}

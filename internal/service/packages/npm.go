@@ -2,6 +2,8 @@ package packages
 
 import (
 	"encoding/json"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -45,7 +47,10 @@ func (s *scan) collectNodeModules(dir, user string) {
 	}
 }
 
-func (s *scan) addNPM(pkgDir, user string) {
+func (s *scan) addNPM(pkgDir, user string) { s.addNPMFrom(pkgDir, pkgDir, user) }
+
+// addNPMFrom reports the package.json in pkgDir, located at location.
+func (s *scan) addNPMFrom(pkgDir, location, user string) {
 	data, ok := s.readFile(filepath.Join(pkgDir, "package.json"))
 	if !ok {
 		return
@@ -55,5 +60,46 @@ func (s *scan) addNPM(pkgDir, user string) {
 		return
 	}
 	s.add(Package{Ecosystem: EcosystemNPM, Name: name, Version: version,
-		Scope: ScopeGlobal, Location: pkgDir, User: user})
+		Scope: ScopeGlobal, Location: location, User: user})
+}
+
+// collectPnpmGlobal reports the packages of a pnpm global install
+// (pnpm add -g): <PNPM_HOME>/global/<layout>/node_modules. Its top-level
+// entries are links (symlinks; junctions on Windows) into pnpm's virtual
+// store in node_modules/.pnpm. A link is followed only when it resolves
+// inside that node_modules, so it can't lead to a user's project or another
+// drive. The location is the link.
+func (s *scan) collectPnpmGlobal(dir, user string) {
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return
+	}
+	var visit func(d string, scoped bool)
+	visit = func(d string, scoped bool) {
+		for _, e := range s.readDir(d) {
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue // .pnpm (the store itself), .bin, .modules.yaml
+			}
+			p := filepath.Join(d, name)
+			if e.Type()&(fs.ModeSymlink|fs.ModeIrregular) == 0 {
+				switch {
+				case !e.IsDir():
+				case !scoped && strings.HasPrefix(name, "@"):
+					visit(p, true)
+				default:
+					s.addNPM(p, user) // node-linker=hoisted: a real folder
+				}
+				continue
+			}
+			target, err := filepath.EvalSymlinks(p)
+			if err != nil || !pathHasPrefix(target, realDir) {
+				continue
+			}
+			if info, err := os.Stat(target); err == nil && info.IsDir() {
+				s.addNPMFrom(target, p, user)
+			}
+		}
+	}
+	visit(dir, false)
 }

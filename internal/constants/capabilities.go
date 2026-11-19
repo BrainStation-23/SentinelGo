@@ -23,7 +23,7 @@ var AgentCapabilities = []string{
 	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
 	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
 	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
-	"packages_v1",           // npm/PyPI/Composer inventory: agent_enqueue_packages, settings poll, sync-packages task (#421)
+	"packages_v1",           // package inventory: agent_enqueue_packages, settings poll, sync-packages task (#421); more ecosystems once the server lists them (#535–#543)
 	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
 	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
 	"yara_scan_report_v1",   // threat hunting: scan_summary skip/error reasons, end reason, scope, problem files (contract v1.2, #497)

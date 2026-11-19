@@ -1,0 +1,1 @@
+- RubyGems packages in the package inventory (#539): the `GEM` specs of `Gemfile.lock` / `gems.locked` (platform suffixes dropped), and installed gems (user, rbenv, rvm, asdf, mise, system and Homebrew Ruby, RubyInstaller), read from the gemspec file names in `specifications/` and `specifications/default/` without running any Ruby.

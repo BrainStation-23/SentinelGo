@@ -1,0 +1,18 @@
+{
+  "R": {
+    "Version": "4.3.2",
+    "Repositories": [
+      { "Name": "CRAN", "URL": "https://cloud.r-project.org" },
+      { "Name": "MyMirror", "URL": "https://cran.example.org" },
+      { "Name": "Internal", "URL": "https://r.internal.example.com" }
+    ]
+  },
+  "Packages": {
+    "jsonlite": { "Package": "jsonlite", "Version": "1.8.8", "Source": "Repository", "Repository": "CRAN", "Hash": "aa" },
+    "rlang": { "Package": "rlang", "Version": "1.1.3", "Source": "Repository", "Repository": "RSPM", "Hash": "bb" },
+    "data.table": { "Package": "data.table", "Version": "1.15.0", "Source": "Repository", "Repository": "MyMirror", "Hash": "cc" },
+    "internalpkg": { "Package": "internalpkg", "Version": "0.1.0", "Source": "Repository", "Repository": "Internal", "Hash": "dd" },
+    "Biobase": { "Package": "Biobase", "Version": "2.62.0", "Source": "Bioconductor", "Hash": "ee" },
+    "ghpkg": { "Package": "ghpkg", "Version": "0.0.1", "Source": "GitHub", "RemoteUsername": "owner", "Hash": "ff" }
+  }
+}

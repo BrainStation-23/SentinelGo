@@ -1,0 +1,1 @@
+- crates.io packages in the package inventory (#538): `Cargo.lock` entries from crates.io (path, git and other registries left out), `cargo install` binaries from `~/.cargo/.crates2.json` (or `.crates.toml`), and the crates.io download cache as `cache`. `target` next to a `Cargo.toml` isn't walked.
