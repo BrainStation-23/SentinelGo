@@ -1,1 +1,0 @@
-- Go modules in the package inventory (#537): `go.mod` requirements (with `replace` applied; local replacements left out) and the other modules `go.sum` says were downloaded; the modules and Go version embedded in `go install` binaries in `~/go/bin` (read with `debug/buildinfo`, never run), with the standard library reported as `stdlib`; and the module download cache as `cache`.
