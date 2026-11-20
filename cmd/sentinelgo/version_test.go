@@ -60,3 +60,20 @@ func TestPrintVersion_ListsCapabilities(t *testing.T) {
 		t.Errorf("printVersion output = %q, want the capabilities line", out)
 	}
 }
+
+func TestPrintVersion_BuildFlavor(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	printVersion()
+	os.Stdout = orig
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+
+	if want := "Build flavor: " + buildflavor.Flavor + "\n"; !strings.Contains(string(out), want) {
+		t.Errorf("printVersion output = %q, want %q", out, want)
+	}
+}

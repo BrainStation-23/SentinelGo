@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Builds the generic macOS distribution package (#352):
 # sentinelgo-darwin-universal.pkg, which MDM installs on every Mac with
-# InstallEnterpriseApplication (Compliance-OS#555).
+# InstallEnterpriseApplication (Compliance-OS#555), and the read-only build's
+# sentinelgo-readonly-darwin-universal.pkg (#550), for third-party MDM
+# (Compliance-OS#1082).
 #
 # Usage (macOS only, run by the release workflow's pkg job):
 #   [MACOS_INSTALLER_P12=<base64 .p12> MACOS_INSTALLER_P12_PASSWORD=<password>] \
 #   [APPLE_NOTARY_KEY_P8=... APPLE_NOTARY_KEY_ID=... APPLE_NOTARY_ISSUER_ID=...] \
 #     scripts/macos-pkg.sh v4.1.0 dist/sentinelgo-darwin-amd64 dist/sentinelgo-darwin-arm64 \
 #       dist/sentinelgo-darwin-universal.pkg
+#
+# The output name sets the build: sentinelgo-<flavor>-darwin-universal.pkg
+# must hold that flavor's binaries (their `-version` says which), and
+# sentinelgo-darwin-universal.pkg the full build's. Both have the same
+# package identifier, so installing one replaces the other.
 #
 # The package:
 #   - holds one universal binary at /opt/sentinelgo/sentinelgo, made with
@@ -46,6 +53,14 @@ if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
     exit 2
 fi
 version="${BASH_REMATCH[1]}"
+case "$(basename "$out")" in
+    sentinelgo-darwin-universal.pkg) flavor=full title="SentinelGo Agent" ;;
+    sentinelgo-readonly-darwin-universal.pkg) flavor=readonly title="SentinelGo Agent (readonly)" ;;
+    *)
+        echo "macos-pkg: $out must be named sentinelgo[-readonly]-darwin-universal.pkg" >&2
+        exit 2
+        ;;
+esac
 
 emit_signed() {
     echo "signed=$1"
@@ -68,6 +83,14 @@ mkdir -p "$root/opt/sentinelgo"
 lipo -create -output "$root/opt/sentinelgo/sentinelgo" "$amd64" "$arm64"
 chmod 755 "$root/opt/sentinelgo" "$root/opt/sentinelgo/sentinelgo"
 lipo -info "$root/opt/sentinelgo/sentinelgo"
+# The binary must be the build the package is named for. (Captured first,
+# for the same SIGPIPE reason as below.)
+built="$("$root/opt/sentinelgo/sentinelgo" -version 2>&1 || true)"
+if ! grep -qx "Build flavor: $flavor" <<<"$built"; then
+    printf '%s\n' "$built" >&2
+    echo "macos-pkg: the binaries are not the $flavor build" >&2
+    exit 1
+fi
 # Certificate-signed slices must still verify after lipo. Unsigned builds have
 # nothing to check: Go's linker gives the arm64 slice an ad-hoc signature and
 # leaves amd64 unsigned, and the agent signs the binary ad-hoc at install. So
@@ -107,7 +130,7 @@ pkgbuild --root "$root" --scripts "$scripts" --identifier "$IDENTIFIER" \
 cat > "$work/Distribution" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>SentinelGo Agent $version</title>
+    <title>$title $version</title>
     <options customize="never" require-scripts="true" hostArchitectures="x86_64,arm64"/>
     <volume-check>
         <allowed-os-versions>
