@@ -382,7 +382,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # The installer object has no type info for PowerShell: call it
+          # through InvokeMember, as build.ps1 does.
           $installer = New-Object -ComObject WindowsInstaller.Installer
+          function Get-ProductState([string] $code) {
+            $installer.GetType().InvokeMember("ProductState", "GetProperty", $null, $installer, @($code))
+          }
           $codes = @{}
           foreach ($f in "full", "readonly") {
             $line = go run ./scripts/msi -version v0.0.1 -flavor $f -vars | Where-Object { $_ -like "PRODUCT_CODE=*" }
@@ -394,7 +399,7 @@ jobs:
             $p = Start-Process msiexec -ArgumentList "/i `"$((Resolve-Path $msi[$f]).Path)`" /qn /l*v `"$log`"" -Wait -PassThru
             if ($p.ExitCode -ne 0) { Get-Content $log -Tail 50; throw "installing the $f MSI: exit $($p.ExitCode)" }
             foreach ($other in $codes.Keys) {
-              $state = $installer.ProductState($codes[$other])
+              $state = Get-ProductState $codes[$other]
               $want = if ($other -eq $f) { 5 } else { -1 } # 5 installed, -1 unknown
               if ($state -ne $want) { throw "after the $f MSI, the $other product's state is $state, want $want" }
             }
