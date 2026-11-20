@@ -363,12 +363,62 @@ jobs:
           dotnet tool install wix --version 4.0.6 --tool-path "$RUNNER_TEMP/wix"
           "$RUNNER_TEMP/wix/wix" extension add --global WixToolset.Util.wixext/4.0.6
 
-      - name: Build and check the MSI
+      - name: Build and check the MSIs
         shell: pwsh
         run: |
           go build -trimpath -o build/sentinelgo-windows-amd64.exe ./cmd/sentinelgo
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          go build -trimpath -tags readonly -o build/sentinelgo-readonly-windows-amd64.exe ./cmd/sentinelgo
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           ./installer/msi/build.ps1 -Tag v0.0.1 -AgentExe build/sentinelgo-windows-amd64.exe -Out build/sentinelgo-windows-amd64.msi -Wix "$env:RUNNER_TEMP/wix/wix.exe"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./installer/msi/build.ps1 -Tag v0.0.1 -Flavor readonly -AgentExe build/sentinelgo-readonly-windows-amd64.exe -Out build/sentinelgo-readonly-windows-amd64.msi -Wix "$env:RUNNER_TEMP/wix/wix.exe"
+
+      # The two builds' MSIs share the UpgradeCode (#550): installing one at
+      # the same version must replace the other, never sit beside it. No
+      # enrollment properties, so nothing enrolls; the service may not start
+      # without a config, which the install doesn't wait for.
+      - name: Install them over each other
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The installer object has no type info for PowerShell: call it
+          # through InvokeMember, as build.ps1 does.
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          function Get-ProductState([string] $code) {
+            $installer.GetType().InvokeMember("ProductState", "GetProperty", $null, $installer, @($code))
+          }
+          $codes = @{}
+          foreach ($f in "full", "readonly") {
+            $line = go run ./scripts/msi -version v0.0.1 -flavor $f -vars | Where-Object { $_ -like "PRODUCT_CODE=*" }
+            $codes[$f] = $line.Split("=", 2)[1]
+          }
+          $msi = @{ full = "build/sentinelgo-windows-amd64.msi"; readonly = "build/sentinelgo-readonly-windows-amd64.msi" }
+          function Install-Flavor([string] $f) {
+            $log = "$env:RUNNER_TEMP/msi-$f.log"
+            $p = Start-Process msiexec -ArgumentList "/i `"$((Resolve-Path $msi[$f]).Path)`" /qn /l*v `"$log`"" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content $log -Tail 50; throw "installing the $f MSI: exit $($p.ExitCode)" }
+            foreach ($other in $codes.Keys) {
+              $state = Get-ProductState $codes[$other]
+              $want = if ($other -eq $f) { 5 } else { -1 } # 5 installed, -1 unknown
+              if ($state -ne $want) { throw "after the $f MSI, the $other product's state is $state, want $want" }
+            }
+            $v = & "$env:ProgramFiles/SentinelGo/sentinelgo.exe" -version
+            if (-not ($v -contains "Build flavor: $f")) { throw "after the $f MSI the installed exe is:`n$($v -join "`n")" }
+            Write-Host "$f MSI installed; the other build's product is gone."
+          }
+          Install-Flavor full
+          Install-Flavor readonly
+          Install-Flavor full
+
+      - name: Remove it
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($f in "full", "readonly") {
+            $code = (go run ./scripts/msi -version v0.0.1 -flavor $f -vars | Where-Object { $_ -like "PRODUCT_CODE=*" }).Split("=", 2)[1]
+            Start-Process msiexec -ArgumentList "/x $code /qn" -Wait
+          }
 
   # ── the generic macOS package (#352) ─────────────────────────────────────────
   # release.yml builds it only on a tag: build it here too, unsigned (no
@@ -390,11 +440,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build the package
+      - name: Build the packages
         run: |
-          make macos VERSION=v0.0.1
+          make macos readonly VERSION=v0.0.1
           bash scripts/macos-pkg.sh v0.0.1 build/darwin/sentinelgo-darwin-amd64 \
             build/darwin/sentinelgo-darwin-arm64 build/sentinelgo-darwin-universal.pkg
+          bash scripts/macos-pkg.sh v0.0.1 build/darwin/sentinelgo-readonly-darwin-amd64 \
+            build/darwin/sentinelgo-readonly-darwin-arm64 build/sentinelgo-readonly-darwin-universal.pkg
+          # The wrong build's binaries for a package name are refused.
+          if bash scripts/macos-pkg.sh v0.0.1 build/darwin/sentinelgo-darwin-amd64 \
+            build/darwin/sentinelgo-darwin-arm64 "$RUNNER_TEMP/sentinelgo-readonly-darwin-universal.pkg"; then
+            echo "a read-only package was built from the full binaries"; exit 1
+          fi
 
       - name: Check the package contents
         run: |
@@ -424,6 +481,21 @@ jobs:
           # A second install over the first (an upgrade) must work too.
           sudo installer -pkg build/sentinelgo-darwin-universal.pkg -target /
           sudo launchctl print system/com.sentinelgo.agent > /dev/null
+
+      # Same identifier (#550): the read-only package replaces the full one,
+      # and the other way round.
+      - name: Switch builds with the packages
+        run: |
+          set -euo pipefail
+          for f in readonly full; do
+            p=build/sentinelgo-darwin-universal.pkg
+            [[ "$f" == full ]] || p=build/sentinelgo-$f-darwin-universal.pkg
+            sudo installer -pkg "$p" -target /
+            ver="$(/opt/sentinelgo/sentinelgo -version 2>&1)"
+            grep -qx "Build flavor: $f" <<<"$ver" || { echo "$ver"; echo "not the $f build"; exit 1; }
+            sudo launchctl print system/com.sentinelgo.agent > /dev/null
+            pkgutil --pkg-info com.sentinelgo.agent
+          done
 
       - name: Remove it
         if: always()

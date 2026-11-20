@@ -7,11 +7,14 @@
   WixToolset.Util.wixext added) available:
 
     pwsh installer/msi/build.ps1 -Tag v4.1.0 -AgentExe dist/sentinelgo-windows-amd64.exe -Out dist/sentinelgo-windows-amd64.msi
+    pwsh installer/msi/build.ps1 -Tag v4.1.0 -Flavor readonly -AgentExe dist/sentinelgo-readonly-windows-amd64.exe -Out dist/sentinelgo-readonly-windows-amd64.msi
 
-  CI builds it on every pull request; release.yml builds the released one.
-  The checks read the built MSI's tables, so they hold for what ships, not
+  CI builds both on every pull request; release.yml builds the released ones.
+  The exe must be the -Flavor build: its `-version` says which it is. The
+  other checks read the built MSI's tables, so they hold for what ships, not
   for what the .wxs was meant to produce:
-    - ProductCode, UpgradeCode and ProductVersion are scripts/msi's;
+    - ProductCode, UpgradeCode, ProductVersion and ProductName are
+      scripts/msi's for the flavor;
     - the enrollment properties are hidden from logs and secure;
     - Installed apps offers no Uninstall (ARPNOREMOVE);
     - enrollment runs deferred, elevated, without logging its command line,
@@ -21,14 +24,22 @@ param(
   [Parameter(Mandatory)] [string] $Tag,
   [Parameter(Mandatory)] [string] $AgentExe,
   [Parameter(Mandatory)] [string] $Out,
+  [ValidateSet("full", "readonly")] [string] $Flavor = "full",
   [string] $Wix = "wix",
   [string] $Source = "installer/msi/sentinelgo.wxs"
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# The exe must be the build the MSI is named for.
+$exeVersion = & (Resolve-Path $AgentExe).Path -version
+if ($LASTEXITCODE -ne 0) { throw "$AgentExe -version failed" }
+if (-not ($exeVersion -contains "Build flavor: $Flavor")) {
+  throw "$AgentExe is not the $Flavor build:`n$($exeVersion -join "`n")"
+}
+
 $vars = @{}
-foreach ($line in (go run ./scripts/msi -version $Tag -vars)) {
+foreach ($line in (go run ./scripts/msi -version $Tag -flavor $Flavor -vars)) {
   if ($LASTEXITCODE -ne 0) { throw "scripts/msi failed" }
   $k, $v = $line -split "=", 2
   $vars[$k] = $v
@@ -37,7 +48,7 @@ if ($LASTEXITCODE -ne 0) { throw "scripts/msi failed" }
 
 & $Wix build $Source -arch x64 -ext WixToolset.Util.wixext `
   -d "Version=$($vars.MSI_VERSION)" -d "ProductCode=$($vars.PRODUCT_CODE)" -d "UpgradeCode=$($vars.UPGRADE_CODE)" `
-  -d "AgentExe=$AgentExe" -o $Out
+  -d "ProductName=$($vars.PRODUCT_NAME)" -d "AgentExe=$AgentExe" -o $Out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed" }
 Remove-Item -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, ".wixpdb"))
 
@@ -63,7 +74,7 @@ function Get-Prop([string] $name) {
 }
 
 $failed = @()
-foreach ($p in @(@("ProductCode", $vars.PRODUCT_CODE), @("UpgradeCode", $vars.UPGRADE_CODE), @("ProductVersion", $vars.MSI_VERSION))) {
+foreach ($p in @(@("ProductCode", $vars.PRODUCT_CODE), @("UpgradeCode", $vars.UPGRADE_CODE), @("ProductVersion", $vars.MSI_VERSION), @("ProductName", $vars.PRODUCT_NAME))) {
   $got = Get-Prop $p[0]
   if ($got -ne $p[1]) { $failed += "$($p[0]) is '$got', want '$($p[1])'" }
 }
@@ -81,6 +92,13 @@ $ca = Get-Rows "SELECT ``Type``, ``Target`` FROM ``CustomAction`` WHERE ``Action
 if ($ca.Count -ne 1 -or $ca[0][1] -ne "WixSilentExec64" -or (([int] $ca[0][0]) -band 0x2C00) -ne 0x2C00) {
   $failed += "EnrollAgent must be a deferred, no-impersonate, HideTarget WixSilentExec64 action: $($ca | ForEach-Object { $_ -join ' ' })"
 }
+# The other build's MSI of the same version (same UpgradeCode, another
+# ProductCode) must be removed, not installed beside this one: the upgrade
+# row's VersionMax is this version, inclusive (msidbUpgradeAttributesVersionMaxInclusive 0x200).
+$up = Get-Rows "SELECT ``Attributes``, ``VersionMax`` FROM ``Upgrade`` WHERE ``ActionProperty`` = 'WIX_UPGRADE_DETECTED'" 2
+if ($up.Count -ne 1 -or $up[0][1] -ne $vars.MSI_VERSION -or (([int] $up[0][0]) -band 0x200) -ne 0x200) {
+  $failed += "the major upgrade must include this version (AllowSameVersionUpgrades): $($up | ForEach-Object { $_ -join ' ' })"
+}
 $seq = @{}
 foreach ($r in (Get-Rows "SELECT ``Action``, ``Sequence`` FROM ``InstallExecuteSequence``" 2)) { $seq[$r[0]] = [int] $r[1] }
 if (-not ($seq.ContainsKey("EnrollAgent") -and $seq.InstallFiles -lt $seq.EnrollAgent -and $seq.EnrollAgent -lt $seq.StartServices)) {
@@ -91,4 +109,4 @@ if ($failed.Count -gt 0) {
   $failed | ForEach-Object { Write-Host "::error::$Out`: $_" }
   exit 1
 }
-Write-Host "Built $Out (version $($vars.MSI_VERSION), ProductCode $($vars.PRODUCT_CODE)); checks passed."
+Write-Host "Built $Out ($Flavor build, version $($vars.MSI_VERSION), ProductCode $($vars.PRODUCT_CODE)); checks passed."
