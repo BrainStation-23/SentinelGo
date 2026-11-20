@@ -1,1 +1,0 @@
-- More PyPI sources in the package inventory (#542): pipx venvs, uv tools and uv-managed Pythons, conda (Anaconda, Miniconda, Miniforge, Mambaforge: base and named envs, pip-visible packages only), Microsoft Store Python and Pythons installed with asdf or mise; and the `pdm.lock` and PEP 751 `pylock.toml` / `pylock.*.toml` lockfiles.

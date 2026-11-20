@@ -13,6 +13,36 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 ## [Unreleased]
 
+## [v5.0.0] - 2026-11-20
+
+### Added
+
+- NuGet packages in the package inventory (#535): project dependencies from `obj/project.assets.json`, `packages.lock.json` and `packages.config`; .NET global tools (`~/.dotnet/tools/.store`) as `global`; and the NuGet cache (`~/.nuget/packages`) as the new `cache` scope (downloaded, maybe run by a build, but not installed). The project scan skips `bin` and `packages` next to a `.csproj`/`.sln` and reads only `project.assets.json` in `obj`.
+- Maven packages in the package inventory (#536), named `groupId:artifactId`: `gradle.lockfile` and `buildscript-gradle.lockfile`, the direct dependencies of `pom.xml` (literal versions or `${properties}` from the same file; parent, BOM-managed and range versions aren't resolved), and the `~/.m2/repository` (or the `localRepository` in `~/.m2/settings.xml`) and Gradle module caches as `cache`. `target` and `build` next to a `pom.xml` / `build.gradle` aren't walked.
+- Go modules in the package inventory (#537): `go.mod` requirements (with `replace` applied; local replacements left out) and the other modules `go.sum` says were downloaded; the modules and Go version embedded in `go install` binaries in `~/go/bin` (read with `debug/buildinfo`, never run), with the standard library reported as `stdlib`; and the module download cache as `cache`.
+- crates.io packages in the package inventory (#538): `Cargo.lock` entries from crates.io (path, git and other registries left out), `cargo install` binaries from `~/.cargo/.crates2.json` (or `.crates.toml`), and the crates.io download cache as `cache`. `target` next to a `Cargo.toml` isn't walked.
+- RubyGems packages in the package inventory (#539): the `GEM` specs of `Gemfile.lock` / `gems.locked` (platform suffixes dropped), and installed gems (user, rbenv, rvm, asdf, mise, system and Homebrew Ruby, RubyInstaller), read from the gemspec file names in `specifications/` and `specifications/default/` without running any Ruby.
+- Pub, Hex, SwiftURL and CRAN packages in the package inventory (#540): `pubspec.lock` (pub.dev packages), `dart pub global activate` packages and the Pub cache; `mix.lock` (public Hex packages); `Package.resolved` v1–v3 (pins with a version, named by repository URL); `renv.lock` (CRAN and Posit Package Manager packages) and installed R libraries (`DESCRIPTION` with `Repository: CRAN`). The walk skips `build` next to `pubspec.yaml`, `deps` and `_build` next to `mix.exs`, `Pods` next to a `Podfile`, and `renv/library`.
+- The agent sends an ecosystem only when the server lists it in `agent_get_package_settings` (`ecosystems`). A server without the list gets npm, PyPI and Composer only, as before, so an older server never rejects a snapshot; roots of ecosystems the server doesn't accept aren't read.
+- More npm sources in the package inventory (#541): `bun.lock` (Bun 1.2+; the binary `bun.lockb` can't be read without Bun and is counted in the log instead), Bun global installs, pnpm global installs (their links are followed only inside pnpm's own store) and Node versions installed with asdf or mise.
+- More PyPI sources in the package inventory (#542): pipx venvs, uv tools and uv-managed Pythons, conda (Anaconda, Miniconda, Miniforge, Mambaforge: base and named envs, pip-visible packages only), Microsoft Store Python and Pythons installed with asdf or mise; and the `pdm.lock` and PEP 751 `pylock.toml` / `pylock.*.toml` lockfiles.
+- Virtualenv packages for Python projects without a lockfile (#543). When a project has no Python lockfile (or only a `requirements*.txt` that isn't fully pinned), the project scan reads the `site-packages` of its `.venv`, `venv` or `env` folder, if that folder has a `pyvenv.cfg`, and reports them as `project` packages located at the virtualenv. Nothing else in the virtualenv is walked.
+- A read-only build of the agent (`-tags readonly`, `make readonly`) that only reports (#547). It has no script execution (console scripts, inline bodies, artifacts) and no device actions (`device-reboot`, `firewall-enable`/`-disable`, `local-admin-add`/`-remove`, `admin-password-rotate`, `mdm-sync`, `mdm-unenroll`). DLP detects and reports every match as monitored but never blocks, warns, prompts or redirects uploads. YARA, `notify-user` and `mdm-enroll` are off in it for now. The code is left out of the binary, so no setting or server reply can turn it back on, and such tasks fail with "not available in this read-only build". The inventory carries `build_flavor` (`full` or `readonly`) and `build_features` (the features compiled in: `scripts`, `device_actions`, `dlp_enforcement`, `yara`, `notify_user`, `mdm_enroll`; `[]` in the read-only build), and the read-only build doesn't advertise the capabilities it lacks.
+- Every release ships the read-only build next to the full one: `sentinelgo-readonly-<os>-<arch>` binaries, signed, in SHA256SUMS, with SBOMs and attestations (#548). `install.sh` and `install.bat` take `--readonly` to install it.
+- The updater follows the build the server assigns: a `flavor` in `get_latest_agent_release` other than the running build's is installed at the same version too, watched by the update health check, so the console can move a device between the full and the read-only build in either direction. A release row whose asset isn't the build it names is refused, and a read-only agent never takes the full build from a server that doesn't send `flavor` yet.
+- Read-only MSI and macOS package (#550): every release also ships `sentinelgo-readonly-windows-amd64.msi` and `sentinelgo-readonly-darwin-universal.pkg`, the generic installers built from the read-only binaries, for deploying read-only agents with a third-party tool (Intune, GPO, Jamf…). They are signed, in `SHA256SUMS` and attested like the full ones; the package is notarized when the release keys are set. Both builds' MSIs share the UpgradeCode, and both packages the identifier `com.sentinelgo.agent`, so installing one build's installer replaces the other at the same or a newer version. Enrolling with them needs a deployment token from the server (Compliance-OS#1082).
+- `sentinelgo-installers.json` lists every build's installers under `flavors`, keyed by build (`full`, `readonly`); the top-level `msi` and `pkg` still describe the full build.
+- The enrollment request carries `build_flavor` and `build_features`, so the server can refuse a token issued for another build. `sentinelgo -version` prints a `Build flavor:` line.
+
+### Changed
+
+- macOS `mdm-enroll` (profile method) guides the user through approving the enrollment profile (#545). The agent waits up to 10 minutes, within the task's deadline, for the console user to be at the Mac (recent input, screen unlocked), and fails with `user_idle_timeout` if they never are. It fetches a new profile for every presentation; the once-a-day limit is gone and `force` is no longer needed. It opens System Settings at Device Management (Profiles on macOS 12 and earlier) and shows a dialog that says what to click. Until the Mac is enrolled, its user is offered an **Enroll now** dialog every 4 hours while they're at the Mac, which presents a new profile on the spot.
+
+### Fixed
+
+- `install.sh` re-runs itself under sudo with the command it was given; `./install.sh uninstall` (or `update`, `fix-service`) run as a normal user used to re-run as `install` (#548).
+- The Windows MSI removes the installed version inside the install transaction (#556), so an upgrade or a switch between the full and read-only MSIs that fails rolls back to the agent that was there, instead of leaving the device with none.
+
 ## [v4.0.13] - 2026-11-17
 
 ### Added
@@ -678,7 +708,8 @@ the contributing guide. History before v2.1.17 is not recorded here.
 
 - First release recorded in this repository: the cross-platform agent that reports system metrics to Supabase as a heartbeat and runs as a Windows Service, systemd unit or launchd daemon.
 
-[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.13...HEAD
+[Unreleased]: https://github.com/BrainStation-23/SentinelGo/compare/v5.0.0...HEAD
+[v5.0.0]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.13...v5.0.0
 [v4.0.13]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.12...v4.0.13
 [v4.0.12]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.11...v4.0.12
 [v4.0.11]: https://github.com/BrainStation-23/SentinelGo/compare/v4.0.10...v4.0.11

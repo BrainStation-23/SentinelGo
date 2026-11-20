@@ -1,1 +1,0 @@
-- The Windows MSI removes the installed version inside the install transaction (#556), so an upgrade or a switch between the full and read-only MSIs that fails rolls back to the agent that was there, instead of leaving the device with none.
