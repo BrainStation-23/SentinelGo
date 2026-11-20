@@ -109,7 +109,8 @@ before replacing itself.
 | `install.sh`, `install.command`, `install.bat`, `sentinelgo-install.desktop` | Installers. They verify the binary against `SHA256SUMS` before installing. |
 | `sentinelgo-windows-amd64.msi` | Generic Windows MSI for MDM (#358) |
 | `sentinelgo-darwin-universal.pkg` | Generic macOS package for MDM (#352), when its job succeeds |
-| `sentinelgo-installers.json` | The MSI's ProductCode and the signed package's identifier, with their SHA-256, for the backend mirror |
+| `sentinelgo-readonly-windows-amd64.msi`, `sentinelgo-readonly-darwin-universal.pkg` | The same, from the read-only binaries, for third-party deployment (#550, Compliance-OS#1082) |
+| `sentinelgo-installers.json` | Each MSI's ProductCode and each signed package's identifier, with their SHA-256, for the backend mirror. The top-level `msi` and `pkg` are the full build's; `flavors` lists every build's by name. |
 | `THIRD_PARTY_NOTICES.txt` | Licenses of every linked dependency |
 | `INSTALLATION.md` | Per-OS install guide |
 

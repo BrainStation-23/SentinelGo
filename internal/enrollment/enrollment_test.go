@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 )
 
@@ -76,7 +77,7 @@ func TestFind(t *testing.T) {
 	}
 }
 
-func enrollServer(t *testing.T, status int, resp map[string]string, got *map[string]string) *httptest.Server {
+func enrollServer(t *testing.T, status int, resp map[string]string, got *map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/functions/v1/"+enrollFunction || r.Header.Get("apikey") != "anon" {
@@ -93,7 +94,7 @@ func enrollServer(t *testing.T, status int, resp map[string]string, got *map[str
 }
 
 func TestExchange(t *testing.T) {
-	var body map[string]string
+	var body map[string]any
 	srv := enrollServer(t, 200, map[string]string{"agent_id": "a-1", "agent_secret": "s3cret"}, &body)
 	src := Source{Token: "tok", ServerURL: srv.URL, AnonKey: "anon", Origin: "test"}
 	creds, err := exchangeWith(context.Background(), src, Identity{Serial: "S", ProvisioningUDID: "U"}, srv.Client())
@@ -122,10 +123,36 @@ func TestExchange(t *testing.T) {
 	}
 }
 
+// The request carries the build, as the info payload does, so the backend can
+// refuse a token issued for another build (Compliance-OS#1082). The feature
+// list is always an array, [] in the read-only build: a missing key would
+// mean every feature.
+func TestExchange_Build(t *testing.T) {
+	var body map[string]any
+	srv := enrollServer(t, 200, map[string]string{"agent_id": "a-1", "agent_secret": "s3cret"}, &body)
+	src := Source{Token: "tok", ServerURL: srv.URL, AnonKey: "anon"}
+	if _, err := exchangeWith(context.Background(), src, Identity{}, srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if body["build_flavor"] != buildflavor.Flavor {
+		t.Errorf("build_flavor = %v, want %s", body["build_flavor"], buildflavor.Flavor)
+	}
+	got, ok := body["build_features"].([]any)
+	want := buildflavor.Features()
+	if !ok || len(got) != len(want) {
+		t.Fatalf("build_features = %#v, want %v", body["build_features"], want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("build_features = %v, want %v", got, want)
+		}
+	}
+}
+
 // Windows sends the OMA-DM DeviceID and SMBIOS UUID next to the serial, since
 // the backend's Windows MDM record has no serial (#398).
 func TestExchange_WindowsMDMIdentity(t *testing.T) {
-	var body map[string]string
+	var body map[string]any
 	srv := enrollServer(t, 200, map[string]string{"agent_id": "a-1", "agent_secret": "s3cret"}, &body)
 	src := Source{Token: "tok", ServerURL: srv.URL, AnonKey: "anon"}
 	id := Identity{Serial: "S", OMADMDeviceID: "6F3A1C2B-0D4E-4F5A-9B8C-7D6E5F4A3B2C", SMBIOSUUID: "4c4c4544-0042-3510-8052-b4c04f4e3132"}

@@ -423,6 +423,7 @@ msiexec /i sentinelgo-windows-amd64.msi /qn SERVER_URL=https://<project>.supabas
 - A newer MSI upgrades in place and keeps the agent's identity. Installed apps shows no Uninstall button for SentinelGo, so it isn't removed casually. The MDM or an administrator removes it with `msiexec /x sentinelgo-windows-amd64.msi /qn` (or `msiexec /x {ProductCode} /qn`; the code is in `sentinelgo-installers.json`). That removes the service and the program and leaves `C:\SentinelGo\.sentinelgo`.
 - It doesn't install over an agent installed by `install.bat` or a per-agent package: uninstall that first.
 - The MSI isn't Authenticode-signed yet, so SmartScreen warns when it is opened by hand. Check it against `SHA256SUMS` (it has a `.sig` like every asset). `sentinelgo-installers.json` lists the MSI's ProductCode and SHA-256 for deployment tools.
+- `sentinelgo-readonly-windows-amd64.msi` is the same package with the read-only agent, for deploying read-only devices with Intune, GPO or another tool. It takes the same properties, with a read-only deployment token. **The console doesn't issue deployment tokens yet** (Compliance-OS#1082): until it does, the read-only MSI installs but can't enroll. To install a read-only device today, use its per-device installer download from the console, or `install.bat --readonly`. It has its own ProductCode (in `sentinelgo-installers.json`, under `flavors.readonly`), and installing either MSI replaces the other. `sentinelgo-readonly-darwin-universal.pkg` is the read-only macOS package.
 
 ---
 

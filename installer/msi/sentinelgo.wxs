@@ -4,10 +4,14 @@
   MDM pushes with the device's enrollment token. Built by release.yml:
 
     wix build installer/msi/sentinelgo.wxs -arch x64 -ext WixToolset.Util.wixext
-      -d Version=… -d ProductCode=… -d UpgradeCode=… -d AgentExe=…
+      -d Version=… -d ProductCode=… -d UpgradeCode=… -d ProductName=… -d AgentExe=…
       -o sentinelgo-windows-amd64.msi
 
-  Version, ProductCode and UpgradeCode come from `go run ./scripts/msi -vars`.
+  Version, ProductCode, UpgradeCode and ProductName come from
+  `go run ./scripts/msi -flavor F -vars`. Each build (#547) has its MSI
+  (#550): the read-only one, sentinelgo-readonly-windows-amd64.msi, is this
+  package with the read-only exe, its own ProductCode and the same
+  UpgradeCode, so installing one build's MSI replaces the other's.
 
   Silent install with first-boot enrollment (#351):
 
@@ -28,7 +32,7 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Package Name="SentinelGo Agent"
+  <Package Name="$(var.ProductName)"
            Manufacturer="BrainStation-23"
            Version="$(var.Version)"
            ProductCode="$(var.ProductCode)"
@@ -36,11 +40,19 @@
            Scope="perMachine"
            InstallerVersion="500"
            Compressed="yes">
-    <SummaryInformation Description="SentinelGo Agent" />
+    <SummaryInformation Description="$(var.ProductName)" />
 
     <!-- The old version is removed first, so its service is gone before this
-         one installs; config.json stays, so the agent keeps its agent_id. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+         one installs; config.json stays, so the agent keeps its agent_id.
+         afterInstallInitialize: the removal is inside the install
+         transaction, so a failed install rolls it back and the device keeps
+         the old agent instead of having none.
+         AllowSameVersionUpgrades: the other build's MSI of the same version
+         has another ProductCode, and without it both would be installed
+         side by side, each owning the same service and files. -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of SentinelGo Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPNOMODIFY" Value="1" />

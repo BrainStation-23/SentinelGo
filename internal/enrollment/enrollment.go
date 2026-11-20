@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 
+	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 	"sentinelgo/internal/supabase"
 )
@@ -31,11 +32,18 @@ const FileName = "enrollment.json"
 // Compliance-OS#543; Windows MDM identity and mdm_host, Compliance-OS#555).
 // It's public: the anon key gates it, the token authenticates the device.
 //
-// Request:  {token, serial, provisioning_udid, omadm_device_id, smbios_uuid, os, arch}
+// Request:  {token, serial, provisioning_udid, omadm_device_id, smbios_uuid, os, arch,
+//
+//	build_flavor, build_features}
 //
 //	Every identity field is always sent, "" when unknown. provisioning_udid
 //	is filled on macOS; omadm_device_id and smbios_uuid on Windows (#398),
-//	where the backend's Windows MDM record has no serial.
+//	where the backend's Windows MDM record has no serial. smbios_uuid is
+//	there whether or not the PC is in an MDM.
+//
+//	build_flavor and build_features are the build (#547), as in the info
+//	payload, so the backend can refuse a token issued for another build
+//	(third-party deployment, Compliance-OS#1082). Older backends ignore them.
 //
 // Response: {agent_id, agent_secret, mdm_host?}
 //
@@ -140,7 +148,7 @@ func Exchange(ctx context.Context, src Source, id Identity) (Credentials, error)
 }
 
 func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (Credentials, error) {
-	body := map[string]string{
+	body := map[string]any{
 		"token":             src.Token,
 		"serial":            id.Serial,
 		"provisioning_udid": id.ProvisioningUDID,
@@ -148,6 +156,8 @@ func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client)
 		"smbios_uuid":       id.SMBIOSUUID,
 		"os":                runtime.GOOS,
 		"arch":              runtime.GOARCH,
+		"build_flavor":      buildflavor.Flavor,
+		"build_features":    buildflavor.Features(),
 	}
 	var resp struct {
 		AgentID     string `json:"agent_id"`
