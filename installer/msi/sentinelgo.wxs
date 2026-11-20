@@ -44,10 +44,14 @@
 
     <!-- The old version is removed first, so its service is gone before this
          one installs; config.json stays, so the agent keeps its agent_id.
+         afterInstallInitialize: the removal is inside the install
+         transaction, so a failed install rolls it back and the device keeps
+         the old agent instead of having none.
          AllowSameVersionUpgrades: the other build's MSI of the same version
          has another ProductCode, and without it both would be installed
          side by side, each owning the same service and files. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of SentinelGo Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
