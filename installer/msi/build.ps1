@@ -101,6 +101,11 @@ if ($up.Count -ne 1 -or $up[0][1] -ne $vars.MSI_VERSION -or (([int] $up[0][0]) -
 }
 $seq = @{}
 foreach ($r in (Get-Rows "SELECT ``Action``, ``Sequence`` FROM ``InstallExecuteSequence``" 2)) { $seq[$r[0]] = [int] $r[1] }
+# Removing the old product inside the transaction lets a failed install roll
+# it back, instead of leaving the device with no agent.
+if (-not ($seq.ContainsKey("RemoveExistingProducts") -and $seq.InstallInitialize -lt $seq.RemoveExistingProducts -and $seq.RemoveExistingProducts -lt $seq.InstallFiles)) {
+  $failed += "RemoveExistingProducts must run after InstallInitialize and before InstallFiles"
+}
 if (-not ($seq.ContainsKey("EnrollAgent") -and $seq.InstallFiles -lt $seq.EnrollAgent -and $seq.EnrollAgent -lt $seq.StartServices)) {
   $failed += "EnrollAgent must run after InstallFiles and before StartServices"
 }
