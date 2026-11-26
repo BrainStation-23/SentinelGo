@@ -11,7 +11,9 @@ import (
 	"sentinelgo/internal/uninstallprotect"
 )
 
-const testUninstallToken = "4K7QX-M2ZPA-91HVD-RT0EB-WJ6SN-C83FY"
+// testUninstallToken has the contract's shape; deliberately repetitive, so
+// secret scanners don't take it for a real credential.
+var testUninstallToken = strings.TrimSuffix(strings.Repeat("K1M0P-", 6), "-")
 
 // protectedConfig writes an enabled uninstall protection state next to a
 // config path in a temp dir and returns that config path.
@@ -27,9 +29,9 @@ func protectedConfig(t *testing.T, s *uninstallprotect.State) string {
 }
 
 func enabledUninstallState() *uninstallprotect.State {
-	salt := "695075aa60c9d4ae22b7e28ec9843f80"
+	salt := strings.Repeat("a5", 16)
 	b, _ := hex.DecodeString(salt)
-	sum := sha256.Sum256(append(b, "4K7QXM2ZPA91HVDRT0EBWJ6SNC83FY"...))
+	sum := sha256.Sum256(append(b, strings.Repeat("K1M0P", 6)...))
 	return &uninstallprotect.State{Enabled: true, Version: 3, Salt: salt, TokenHash: hex.EncodeToString(sum[:])}
 }
 
@@ -49,7 +51,7 @@ func TestRunUninstallCheck(t *testing.T) {
 		{"right token, lower case", on, []string{"-token", strings.ToLower(testUninstallToken)}, "", 0},
 		{"token on stdin", on, []string{"-token", "-"}, testUninstallToken + "\r\n", 0},
 		{"no token (empty MSI property)", on, []string{"-token", ""}, "", 1},
-		{"wrong token", on, []string{"-token", "AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA"}, "", 1},
+		{"wrong token", on, []string{"-token", strings.Repeat("A", 30)}, "", 1},
 		{"empty stdin", on, []string{"-token", "-"}, "", 2},
 		{"unknown flag", on, []string{"-bogus"}, "", 2},
 		{"stray argument", on, []string{"extra"}, "", 2},
@@ -64,7 +66,7 @@ func TestRunUninstallCheck(t *testing.T) {
 				t.Fatalf("exit %d, want %d (stdout %q, stderr %q)", got, c.want, out.String(), errOut.String())
 			}
 			all := strings.ToUpper(out.String() + errOut.String())
-			if strings.Contains(all, "4K7QX") {
+			if strings.Contains(all, "K1M0P") {
 				t.Fatalf("the token was printed: %q", all)
 			}
 		})

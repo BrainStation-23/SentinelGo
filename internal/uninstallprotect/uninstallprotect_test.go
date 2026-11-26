@@ -16,10 +16,13 @@ import (
 	"sentinelgo/internal/supabase"
 )
 
-// The contract's example token and a fixed salt.
-const (
-	exampleToken = "4K7QX-M2ZPA-91HVD-RT0EB-WJ6SN-C83FY"
-	exampleSalt  = "695075aa60c9d4ae22b7e28ec9843f80"
+// A test token in the contract's shape (30 Crockford base32 characters in
+// six groups of five) and a 16-byte salt. Deliberately repetitive, so secret
+// scanners don't take them for real credentials.
+var (
+	exampleCanonical = strings.Repeat("K1M0P", 6)
+	exampleToken     = strings.TrimSuffix(strings.Repeat("K1M0P-", 6), "-")
+	exampleSalt      = strings.Repeat("a5", 16)
 )
 
 // hashOf is the contract's token_hash: hex(sha256(salt_bytes || canonical)).
@@ -35,15 +38,15 @@ func hashOf(t *testing.T, saltHex, canonical string) string {
 
 func enabledState(t *testing.T) *State {
 	return &State{Enabled: true, Version: 3, Salt: exampleSalt,
-		TokenHash: hashOf(t, exampleSalt, "4K7QXM2ZPA91HVDRT0EBWJ6SNC83FY")}
+		TokenHash: hashOf(t, exampleSalt, exampleCanonical)}
 }
 
 func TestNormalize(t *testing.T) {
 	cases := map[string]string{
-		exampleToken:                            "4K7QXM2ZPA91HVDRT0EBWJ6SNC83FY",
-		"4k7qx m2zpa 91hvd rt0eb wj6sn c83fy\n": "4K7QXM2ZPA91HVDRT0EBWJ6SNC83FY",
-		"oOiIlL-01":                             "001111" + "01",
-		"":                                      "",
+		exampleToken:                        exampleCanonical,
+		strings.Repeat("kim op ", 6) + "\n": exampleCanonical,
+		"oOiIlL-01":                         "001111" + "01",
+		"":                                  "",
 	}
 	for in, want := range cases {
 		if got := Normalize(in); got != want {
@@ -64,11 +67,11 @@ func TestCheck(t *testing.T) {
 		{"protection off", &State{Version: 2}, "", DecisionOff},
 		{"on, no hash yet", &State{Enabled: true, Version: 1}, "", DecisionNoHash},
 		{"exact token", on, exampleToken, DecisionMatch},
-		{"typed loosely", on, "4k7qx m2zpa 9ihvd rtoeb wj6sn c83fy", DecisionMatch},
+		{"typed loosely", on, strings.Repeat("kLmOp ", 6), DecisionMatch},
 		{"no token", on, "", DecisionBlocked},
 		{"separators only", on, " - - ", DecisionBlocked},
-		{"wrong token", on, "4K7QX-M2ZPA-91HVD-RT0EB-WJ6SN-C83FZ", DecisionBlocked},
-		{"truncated token", on, "4K7QX-M2ZPA-91HVD-RT0EB-WJ6SN", DecisionBlocked},
+		{"wrong token", on, exampleToken[:len(exampleToken)-1] + "Q", DecisionBlocked},
+		{"truncated token", on, exampleToken[:29], DecisionBlocked},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -167,7 +170,7 @@ func newTestSyncer(t *testing.T, f *fakeRPC) (*Syncer, string, *time.Time) {
 }
 
 func TestSyncStoresAndReplaces(t *testing.T) {
-	h := hashOf(t, exampleSalt, "4K7QXM2ZPA91HVDRT0EBWJ6SNC83FY")
+	h := hashOf(t, exampleSalt, exampleCanonical)
 	f := &fakeRPC{answers: []any{
 		`{"enabled":true,"version":3,"salt":"` + exampleSalt + `","token_hash":"` + h + `"}`,
 		// Switched off: the hash must not linger.
