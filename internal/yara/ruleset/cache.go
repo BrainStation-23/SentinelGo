@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sentinelgo/internal/atomicfile"
 	"sentinelgo/internal/winsec"
 	"sentinelgo/internal/yara"
 )
@@ -112,27 +113,8 @@ func (c *Cache) Clear() error { return os.RemoveAll(c.dir) }
 
 // writeFile writes data next to path, syncs it and renames it over path.
 func writeFile(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("YARA cache: %w", err)
-	}
-	tmpPath := tmp.Name()
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(0o600)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("YARA cache: write %s: %w", filepath.Base(path), err)
 	}
 	if err := winsec.SecurePath(path); err != nil {
 		log.Printf("YARA: could not restrict access to %s: %v", path, err)

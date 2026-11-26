@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"sentinelgo/internal/atomicfile"
 	"sentinelgo/internal/winsec"
 )
 
@@ -96,27 +97,8 @@ func Save(path string, s State) error {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) { // #nosec G304 - see Load
 		return nil
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "uninstall_protection-*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return err
-	}
-	tmpPath := tmp.Name()
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(0o600)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmpPath, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
 	}
 	if err := winsec.SecurePath(path); err != nil {
 		log.Printf("Uninstall protection: could not restrict access to %s: %v", path, err)
