@@ -175,3 +175,40 @@ func TestUserFolders_HandsOff(t *testing.T) {
 		t.Error("ran without a hand-off sink")
 	}
 }
+
+// A late notification for a file already handed over (Windows reports the
+// size and last write of a closed file again) doesn't hand it over twice;
+// writing it again does.
+func TestUserFolders_UnchangedFileHandedOnce(t *testing.T) {
+	dir := t.TempDir() + `\`
+	path := filepath.Join(dir, "report.txt")
+	if err := os.WriteFile(path, []byte("TOPSECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sink := &recordingHandoff{}
+	w := newUserWatcher(policy.ChannelFileCloudSync, policy.FilesModule{}, sink)
+	w.roots = map[string]userRoot{strings.ToLower(dir): {path: dir, label: "OneDrive"}}
+	var unreadable atomic.Uint64
+
+	for i := 0; i < 2; i++ {
+		if _, st := w.handOff(path, &unreadable); st != openSkip {
+			t.Fatalf("hand-off %d: status %v, want openSkip (nothing left pending)", i, st)
+		}
+	}
+	if n := len(sink.got()); n != 1 {
+		t.Fatalf("an unchanged file was handed over %d times, want 1", n)
+	}
+
+	if err := os.WriteFile(path, []byte("TOPSECRET, longer now"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, st := w.handOff(path, &unreadable); st != openSkip {
+		t.Fatalf("after a write: status %v", st)
+	}
+	if n := len(sink.got()); n != 2 {
+		t.Fatalf("a rewritten file was handed over %d times in all, want 2", n)
+	}
+	if unreadable.Load() != 0 {
+		t.Fatalf("unreadable = %d", unreadable.Load())
+	}
+}
