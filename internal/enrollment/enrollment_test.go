@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"sentinelgo/internal/buildflavor"
@@ -309,5 +310,53 @@ func TestEnroll_LinuxMakesNoRequest(t *testing.T) {
 	}
 	if !Needed(cfg) {
 		t.Error("config was changed")
+	}
+}
+
+// A refused request isn't sent again while nothing in it changes; a new
+// token is tried (#563).
+func TestEnroll_RejectedTokenNotResent(t *testing.T) {
+	prevClient := httpClient
+	t.Cleanup(func() {
+		httpClient = prevClient
+		rejected.Lock()
+		rejected.set = false
+		rejected.Unlock()
+	})
+
+	var mu sync.Mutex
+	requests, status := 0, http.StatusBadRequest
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		requests++
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"agent_id": "a-1", "agent_secret": "s", "message": "bad token"})
+	}))
+	t.Cleanup(srv.Close)
+	httpClient = srv.Client()
+	count := func() int { mu.Lock(); defer mu.Unlock(); return requests }
+
+	cfg := tempConfig(t)
+	writeToken(t, cfg, map[string]string{"enrollment_token": "old", "server_url": srv.URL, "anon_key": "anon"})
+	for i := range 3 {
+		if err := Enroll(context.Background(), cfg, Identity{Serial: "S"}); !errors.Is(err, ErrRejected) {
+			t.Fatalf("attempt %d: %v, want ErrRejected", i+1, err)
+		}
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("%d requests for an unchanged refused token, want 1", n)
+	}
+
+	// A replacement token is a new request.
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
+	writeToken(t, cfg, map[string]string{"enrollment_token": "new", "server_url": srv.URL, "anon_key": "anon"})
+	if err := Enroll(context.Background(), cfg, Identity{Serial: "S"}); err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	if n := count(); n != 2 {
+		t.Errorf("%d requests, want 2", n)
 	}
 }

@@ -12,11 +12,14 @@ import (
 	"sentinelgo/internal/enrollment"
 )
 
+// enrollConfig runs the command against cfg, as a platform with token
+// enrollment.
 func enrollConfig(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	prev := loadDefaultConfig
+	prev, prevSupported := loadDefaultConfig, enrollSupported
 	loadDefaultConfig = func() (*config.Config, error) { return cfg, nil }
-	t.Cleanup(func() { loadDefaultConfig = prev })
+	enrollSupported = func() bool { return true }
+	t.Cleanup(func() { loadDefaultConfig, enrollSupported = prev, prevSupported })
 }
 
 // The token from stdin lands in enrollment.json, where first-boot
@@ -70,5 +73,30 @@ func TestRunEnroll_Refusals(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, enrollment.FileName)); err == nil {
 		t.Error("a token file was written for a configured agent")
+	}
+}
+
+// Linux has no token enrollment (#563): the command refuses the token and
+// saves nothing, instead of promising an enrollment that never happens.
+func TestRunEnroll_UnsupportedPlatform(t *testing.T) {
+	dir := t.TempDir()
+	enrollConfig(t, &config.Config{Path: filepath.Join(dir, "config.json")})
+	enrollSupported = func() bool { return false }
+
+	var out, errOut bytes.Buffer
+	code := RunEnroll([]string{"-token", "t", "-server-url", "https://api.example.com", "-anon-key", "a"}, nil, &out, &errOut)
+	if code != 1 || !strings.Contains(errOut.String(), "config.json") {
+		t.Errorf("exit %d stderr %q, want 1 and the per-device config.json hint", code, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, enrollment.FileName)); err == nil {
+		t.Error("a token file was written on a platform without token enrollment")
+	}
+
+	// An already configured agent still answers as before.
+	enrollConfig(t, &config.Config{Path: filepath.Join(dir, "config.json"), SupabaseURL: "https://api.example.com"})
+	enrollSupported = func() bool { return false }
+	out.Reset()
+	if code := RunEnroll([]string{"-token", "t", "-server-url", "https://api.example.com", "-anon-key", "a"}, nil, &out, &errOut); code != 0 || !strings.Contains(out.String(), "already configured") {
+		t.Errorf("configured agent: exit %d %q", code, out.String())
 	}
 }

@@ -210,6 +210,7 @@ func (p *Program) tryEnroll(ctx context.Context) error {
 // service stops, then starts the agent.
 func (p *Program) enrollThenStart(ctx context.Context) {
 	defer p.enrollWG.Done()
+	var lastLogged string
 	for n := 1; ; n++ {
 		t := time.NewTimer(enrollRetry(n))
 		select {
@@ -225,8 +226,11 @@ func (p *Program) enrollThenStart(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if n == 1 || errors.Is(err, enrollment.ErrRejected) {
-			log.Printf("First-boot enrollment: %s", sanitize.ForLog(err.Error()))
+		// A refused token is skipped until it changes (enrollment.Enroll),
+		// so the same refusal comes back every tick: log it once.
+		if msg := err.Error(); n == 1 || (errors.Is(err, enrollment.ErrRejected) && msg != lastLogged) {
+			log.Printf("First-boot enrollment: %s", sanitize.ForLog(msg))
+			lastLogged = msg
 		}
 	}
 	if err := p.startIntegration(ctx); err != nil {

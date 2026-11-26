@@ -10,6 +10,7 @@ package enrollment
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
@@ -152,6 +154,41 @@ var goos = runtime.GOOS
 // a token.
 func tokenEnrollmentSupported() bool { return goos != "linux" }
 
+// Supported reports whether this OS has token enrollment. `sentinelgo
+// enroll` checks it before saving a token that would never be used.
+func Supported() bool { return tokenEnrollmentSupported() }
+
+// rejected is the fingerprint of the last request the backend refused for
+// good (ErrRejected). The same request gets the same answer, so Enroll
+// doesn't send it again; a new token, server or device identity is a new
+// request and is tried (#563).
+var rejected struct {
+	sync.Mutex
+	key [sha256.Size]byte
+	set bool
+}
+
+// requestKey fingerprints everything that makes up an exchange request. The
+// token is only hashed, never kept.
+func requestKey(src Source, id Identity) [sha256.Size]byte {
+	return sha256.Sum256([]byte(strings.Join([]string{
+		src.ServerURL, src.AnonKey, src.Token,
+		id.Serial, id.ProvisioningUDID, id.OMADMDeviceID, id.SMBIOSUUID,
+	}, "\x00")))
+}
+
+func wasRejected(key [sha256.Size]byte) bool {
+	rejected.Lock()
+	defer rejected.Unlock()
+	return rejected.set && rejected.key == key
+}
+
+func setRejected(key [sha256.Size]byte) {
+	rejected.Lock()
+	defer rejected.Unlock()
+	rejected.key, rejected.set = key, true
+}
+
 // httpClient is the client for the exchange; nil means the supabase
 // package's default. A var for tests.
 var httpClient *http.Client
@@ -247,8 +284,15 @@ func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
 	if !tokenEnrollmentSupported() {
 		return fmt.Errorf("found a token in %s: %w", src.Origin, ErrUnsupportedPlatform)
 	}
+	key := requestKey(src, id)
+	if wasRejected(key) {
+		return fmt.Errorf("the token from %s was already refused; waiting for a new one: %w", src.Origin, ErrRejected)
+	}
 	creds, err := Exchange(ctx, src, id)
 	if err != nil {
+		if errors.Is(err, ErrRejected) {
+			setRejected(key)
+		}
 		return fmt.Errorf("enrolling with the token from %s: %w", src.Origin, err)
 	}
 	return Apply(cfg, src, creds)
