@@ -45,7 +45,7 @@ func (h *localAdminHandler) Slugs() []string {
 	return []string{localAdminAddSlug, localAdminRemoveSlug}
 }
 
-// PostRun reports the new membership (local_admin_members, admin_grants) at
+// PostRun reports the new membership (local_admin_members) at
 // once: the console confirms a grant from it.
 func (h *localAdminHandler) PostRun() []string { return []string{"sync-inventory"} }
 

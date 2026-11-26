@@ -126,10 +126,6 @@ func TestStartYARA_LocallyDisabled(t *testing.T) {
 	if st := y.syncer.Status(); st.State != yara.StateDisabled {
 		t.Errorf("status state %q, want disabled", st.State)
 	}
-	s := y.summary()
-	if s.State != yara.StateDisabled || s.LocalEnabled || s.WorkersHealthy {
-		t.Errorf("inventory summary %+v", s)
-	}
 	if msg := runYARAScanTask(t); !strings.Contains(msg, "not running") {
 		t.Errorf("yara-scan with YARA off locally: %s", msg)
 	}

@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	rpcGetPolicy    = "agent_get_dlp_policy"
-	headerXDeviceID = "X-Device-ID"
+	rpcGetPolicy = "agent_get_dlp_policy"
 
 	// codeInvalidParameter is PostgREST's code when the function rejects a
 	// parameter; agent_get_dlp_policy uses it for a malformed or oversized
@@ -24,15 +23,15 @@ const (
 )
 
 // Service calls the DLP RPCs. client is called per request, so it always
-// carries the current access token.
+// carries the current access token. The server takes the device from the
+// token's agent, so no device header is sent.
 type Service struct {
-	client   func() *supabase.Client
-	deviceID string
+	client func() *supabase.Client
 }
 
 // New returns a Service.
-func New(client func() *supabase.Client, deviceID string) *Service {
-	return &Service{client: client, deviceID: deviceID}
+func New(client func() *supabase.Client) *Service {
+	return &Service{client: client}
 }
 
 type getPolicyParams struct {
@@ -47,7 +46,7 @@ func (s *Service) FetchPolicy(ctx context.Context, knownVersion string, status *
 		params.KnownVersion = &knownVersion
 	}
 	var raw []byte
-	err := s.client().RPC(ctx, rpcGetPolicy, params, &raw, s.deviceHeader())
+	err := s.client().RPC(ctx, rpcGetPolicy, params, &raw)
 	if err != nil {
 		if e, ok := supabase.AsAPIError(err); ok && e.Code == codeInvalidParameter && status != nil {
 			return dlp.FetchResult{}, fmt.Errorf("%w: %w", dlp.ErrStatusRejected, err)
@@ -55,10 +54,6 @@ func (s *Service) FetchPolicy(ctx context.Context, knownVersion string, status *
 		return dlp.FetchResult{}, err
 	}
 	return decodePolicyResponse(raw)
-}
-
-func (s *Service) deviceHeader() supabase.CallOption {
-	return supabase.WithHeader(headerXDeviceID, s.deviceID)
 }
 
 // decodePolicyResponse tells {"unchanged":true,...} from a bundle.

@@ -24,14 +24,14 @@ const maxProfileBytes = 1 << 20
 type Retrier func(ctx context.Context, fn func() error) error
 
 // ProfileFetcher returns a Deps.FetchProfile that calls the backend through
-// client, with the device id header like the other agent RPCs.
-func ProfileFetcher(client func() *supabase.Client, deviceID string, retry Retrier) func(ctx context.Context) ([]byte, error) {
+// client. The server takes the device from the token's agent.
+func ProfileFetcher(client func() *supabase.Client, retry Retrier) func(ctx context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
 		var resp struct {
 			ProfileBase64 string `json:"profile_base64"`
 		}
 		call := func() error {
-			return client().RPC(ctx, rpcEnrollmentProfile, map[string]any{}, &resp, supabase.WithHeader("X-Device-ID", deviceID))
+			return client().RPC(ctx, rpcEnrollmentProfile, map[string]any{}, &resp)
 		}
 		var err error
 		if retry != nil {
@@ -86,11 +86,11 @@ type WindowsEnrollment struct {
 
 // WindowsEnrollmentFetcher returns a Deps.FetchWindowsEnrollment. The token
 // is never logged.
-func WindowsEnrollmentFetcher(client func() *supabase.Client, deviceID string, retry Retrier) func(ctx context.Context) (WindowsEnrollment, error) {
+func WindowsEnrollmentFetcher(client func() *supabase.Client, retry Retrier) func(ctx context.Context) (WindowsEnrollment, error) {
 	return func(ctx context.Context) (WindowsEnrollment, error) {
 		var resp WindowsEnrollment
 		call := func() error {
-			return client().RPC(ctx, rpcWindowsEnrollment, map[string]any{}, &resp, supabase.WithHeader("X-Device-ID", deviceID))
+			return client().RPC(ctx, rpcWindowsEnrollment, map[string]any{}, &resp)
 		}
 		var err error
 		if retry != nil {

@@ -15,7 +15,7 @@ import (
 const rpcPath = "/rest/v1/rpc/agent_get_dlp_policy"
 
 func newService(fake *supabasetest.Server) *Service {
-	return New(func() *supabase.Client { return fake.Client(nil) }, "device-1")
+	return New(func() *supabase.Client { return fake.Client(nil) })
 }
 
 func TestFetchPolicy_FirstPollSendsNullVersionAndStatus(t *testing.T) {
@@ -32,7 +32,7 @@ func TestFetchPolicy_FirstPollSendsNullVersionAndStatus(t *testing.T) {
 	}
 
 	req := fake.Requests()[0]
-	if req.Header.Get("X-Device-ID") != "device-1" || req.Header.Get("Authorization") == "" {
+	if req.Header.Get("X-Device-ID") != "" || req.Header.Get("Authorization") == "" {
 		t.Errorf("headers = %v", req.Header)
 	}
 	var body map[string]json.RawMessage

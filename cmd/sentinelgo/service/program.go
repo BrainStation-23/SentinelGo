@@ -176,11 +176,15 @@ func (p *Program) Start(_ AgentService) error {
 	// no token yet where one can still arrive (the MDM can install the
 	// package before the profile that carries it), or a failed exchange,
 	// keep the service up and retry instead of exiting into a restart loop.
-	// With no token where none will come, start as before: config
-	// validation fails and the service exits with ExitConfigInvalid.
+	// With no token where none will come, or on a platform without token
+	// enrollment (Linux, #563), start as before: config validation fails
+	// and the service exits with ExitConfigInvalid.
 	if enrollment.Needed(p.Cfg) {
 		err := p.tryEnroll(ctx)
-		if err != nil && (tokenMayArriveLater || !errors.Is(err, enrollment.ErrNoToken)) {
+		if errors.Is(err, enrollment.ErrUnsupportedPlatform) {
+			log.Printf("First-boot enrollment: %s", sanitize.ForLog(err.Error()))
+			emergencylog.Record("startup", "first-boot enrollment: %v", err)
+		} else if err != nil && (tokenMayArriveLater || !errors.Is(err, enrollment.ErrNoToken)) {
 			log.Printf("First-boot enrollment: %s; retrying in the background", sanitize.ForLog(err.Error()))
 			emergencylog.Record("startup", "waiting for first-boot enrollment: %v", err)
 			p.enrollWG.Add(1)

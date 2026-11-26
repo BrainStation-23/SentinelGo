@@ -209,3 +209,24 @@ func TestProgramStart_ExistingInstallSkipsEnrollment(t *testing.T) {
 	}
 	_ = NewProgram(cfg).Start(nil) // fails validation (no key); that's fine here
 }
+
+// On a platform without token enrollment (Linux, #563), a found token is
+// reported once and never retried: the service starts as it would without a
+// token, and config validation ends it.
+func TestProgramStart_UnsupportedEnrollmentPlatform(t *testing.T) {
+	_, cfg := useTempLock(t)
+	tokenMayArriveLater = true // even where a token could arrive later
+	calls, mu := countingEnroll(1_000_000, fmt.Errorf("found a token in test: %w", enrollment.ErrUnsupportedPlatform))
+
+	p := NewProgram(cfg)
+	err := p.Start(nil)
+	if code := StartExitCode(err); code != ExitConfigInvalid {
+		t.Errorf("StartExitCode(%v) = %d, want %d", err, code, ExitConfigInvalid)
+	}
+	p.enrollWG.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if *calls != 1 {
+		t.Errorf("enrollment tried %d times, want 1", *calls)
+	}
+}

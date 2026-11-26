@@ -135,8 +135,22 @@ func validate(s Source) (Source, error) {
 }
 
 // ErrRejected means the backend refused the token (expired, used, or bound
-// to another device). Retrying the same token won't help; a new one will.
+// to another device) or the request (400). Retrying the same token won't
+// help; a new one will.
 var ErrRejected = errors.New("the enrollment token was rejected")
+
+// ErrUnsupportedPlatform means this OS has no token enrollment: the backend
+// issues enrollment tokens for macOS and Windows only, and refuses a Linux
+// device (Compliance-OS#1131). A Linux agent is installed with its own
+// config.json instead. No request is made, and retrying won't help (#563).
+var ErrUnsupportedPlatform = errors.New("token enrollment isn't supported on this platform; install with a per-device config.json")
+
+// goos is runtime.GOOS; a var so tests can check other platforms.
+var goos = runtime.GOOS
+
+// tokenEnrollmentSupported reports whether the backend enrolls this OS with
+// a token.
+func tokenEnrollmentSupported() bool { return goos != "linux" }
 
 // httpClient is the client for the exchange; nil means the supabase
 // package's default. A var for tests.
@@ -148,6 +162,9 @@ func Exchange(ctx context.Context, src Source, id Identity) (Credentials, error)
 }
 
 func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (Credentials, error) {
+	if !tokenEnrollmentSupported() {
+		return Credentials{}, ErrUnsupportedPlatform
+	}
 	body := map[string]any{
 		"token":             src.Token,
 		"serial":            id.Serial,
@@ -170,7 +187,10 @@ func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client)
 	}
 	c := supabase.New(src.ServerURL, src.AnonKey, func() string { return "" }, opts...)
 	if err := c.InvokeFunction(ctx, enrollFunction, body, &resp); err != nil {
-		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) {
+		// 400 is a request the backend won't take (an unsupported OS or
+		// a malformed token); sending it again gets the same answer.
+		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) ||
+			supabase.StatusCode(err) == http.StatusBadRequest {
 			return Credentials{}, fmt.Errorf("%w: %v", ErrRejected, err)
 		}
 		return Credentials{}, err
@@ -223,6 +243,9 @@ func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
 	src, err := Find(cfg)
 	if err != nil {
 		return err
+	}
+	if !tokenEnrollmentSupported() {
+		return fmt.Errorf("found a token in %s: %w", src.Origin, ErrUnsupportedPlatform)
 	}
 	creds, err := Exchange(ctx, src, id)
 	if err != nil {

@@ -84,8 +84,8 @@ func TestEventRoundTrip(t *testing.T) {
 	if len(got) != 2 || got[0].RepeatCount != 2 || got[1].RepeatCount != 1 || got[0].Findings[0].Detector != "secrets.github-pat" {
 		t.Errorf("events = %+v", got)
 	}
-	if reqs[0].Header.Get("X-Device-ID") != "device-1" {
-		t.Error("X-Device-ID missing")
+	if reqs[0].Header.Get("X-Device-ID") != "" {
+		t.Error("X-Device-ID sent; the server takes the device from the token")
 	}
 }
 

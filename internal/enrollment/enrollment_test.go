@@ -16,6 +16,14 @@ import (
 	"sentinelgo/internal/config"
 )
 
+// TestMain runs the tests as a platform with token enrollment, so the
+// exchange tests also run on a Linux CI runner; the Linux tests set goos
+// themselves.
+func TestMain(m *testing.M) {
+	goos = "windows"
+	os.Exit(m.Run())
+}
+
 // tempConfig is a config with defaults and no config.json yet, as on a
 // device installed from a generic package.
 func tempConfig(t *testing.T) *config.Config {
@@ -252,5 +260,54 @@ func TestEnrollAndApply(t *testing.T) {
 	}
 	if err := Enroll(context.Background(), cfg2, Identity{}); err != nil && strings.Contains(err.Error(), "s3cret") {
 		t.Error("an error carries the secret")
+	}
+}
+
+// 400 from agent-enroll is a rejected request, not a transient failure: the
+// same request gets the same answer (#563, Compliance-OS#1131).
+func TestExchange_BadRequestIsRejected(t *testing.T) {
+	srv := enrollServer(t, 400, map[string]string{"message": "unsupported os"}, nil)
+	_, err := exchangeWith(context.Background(), Source{Token: "t", ServerURL: srv.URL, AnonKey: "anon"}, Identity{}, srv.Client())
+	if !errors.Is(err, ErrRejected) {
+		t.Errorf("400: %v, want ErrRejected", err)
+	}
+	busy := enrollServer(t, 503, map[string]string{"message": "busy"}, nil)
+	_, err = exchangeWith(context.Background(), Source{Token: "t", ServerURL: busy.URL, AnonKey: "anon"}, Identity{}, busy.Client())
+	if err == nil || errors.Is(err, ErrRejected) {
+		t.Errorf("503: %v, want a transient error", err)
+	}
+}
+
+// Linux has no token enrollment (#563): even with a token, no request is
+// made and the token file is left alone.
+func TestEnroll_LinuxMakesNoRequest(t *testing.T) {
+	prevGOOS, prevClient := goos, httpClient
+	t.Cleanup(func() { goos, httpClient = prevGOOS, prevClient })
+	goos = "linux"
+
+	requests := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	httpClient = srv.Client()
+
+	cfg := tempConfig(t)
+	tokenFile := writeToken(t, cfg, map[string]string{"enrollment_token": "tok", "server_url": srv.URL, "anon_key": "anon"})
+	if err := Enroll(context.Background(), cfg, Identity{}); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("Enroll on linux: %v, want ErrUnsupportedPlatform", err)
+	}
+	if _, err := exchangeWith(context.Background(), Source{Token: "t", ServerURL: srv.URL, AnonKey: "anon"}, Identity{}, srv.Client()); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("Exchange on linux: %v, want ErrUnsupportedPlatform", err)
+	}
+	if requests != 0 {
+		t.Errorf("%d enrollment requests made on linux, want 0", requests)
+	}
+	if _, err := os.Stat(tokenFile); err != nil {
+		t.Errorf("token file: %v, want it left in place", err)
+	}
+	if !Needed(cfg) {
+		t.Error("config was changed")
 	}
 }

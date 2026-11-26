@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 type fakeEnqueuer struct {
@@ -60,8 +59,7 @@ func TestSplitParts(t *testing.T) {
 
 func TestSend_FullMultiPart(t *testing.T) {
 	e := &fakeEnqueuer{}
-	now := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
-	n, err := send(context.Background(), e, manyPackages(maxPartPackages*2+1, 5), true, now)
+	n, err := send(context.Background(), e, manyPackages(maxPartPackages*2+1, 5), true)
 	if err != nil || n != 3 {
 		t.Fatalf("send = %d, %v", n, err)
 	}
@@ -69,9 +67,6 @@ func TestSend_FullMultiPart(t *testing.T) {
 	for i, u := range e.uploads {
 		if u.Snapshot != snapshotFull || u.SnapshotID != id || u.Part != i+1 || u.Parts != 3 {
 			t.Errorf("upload %d = %+v", i, u)
-		}
-		if u.CollectedAt != "2026-11-10T08:00:00Z" {
-			t.Errorf("collected_at = %q", u.CollectedAt)
 		}
 	}
 	if id == "" {
@@ -81,7 +76,7 @@ func TestSend_FullMultiPart(t *testing.T) {
 
 func TestSend_OnePartOmitsPartFields(t *testing.T) {
 	e := &fakeEnqueuer{}
-	if _, err := send(context.Background(), e, manyPackages(3, 5), true, time.Now()); err != nil {
+	if _, err := send(context.Background(), e, manyPackages(3, 5), true); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(e.uploads[0])
@@ -92,7 +87,7 @@ func TestSend_OnePartOmitsPartFields(t *testing.T) {
 
 func TestSend_IncompleteIsDelta(t *testing.T) {
 	e := &fakeEnqueuer{}
-	if _, err := send(context.Background(), e, manyPackages(3, 5), false, time.Now()); err != nil {
+	if _, err := send(context.Background(), e, manyPackages(3, 5), false); err != nil {
 		t.Fatal(err)
 	}
 	u := e.uploads[0]
@@ -104,7 +99,7 @@ func TestSend_IncompleteIsDelta(t *testing.T) {
 func TestSend_StopsOnError(t *testing.T) {
 	boom := errors.New("boom")
 	e := &fakeEnqueuer{failAt: 2, err: boom}
-	n, err := send(context.Background(), e, manyPackages(maxPartPackages*3, 5), true, time.Now())
+	n, err := send(context.Background(), e, manyPackages(maxPartPackages*3, 5), true)
 	if !errors.Is(err, boom) || n != 1 || len(e.uploads) != 1 {
 		t.Errorf("send = %d, %v (%d uploads)", n, err, len(e.uploads))
 	}

@@ -61,7 +61,7 @@ func TestSessionNotifier(t *testing.T) {
 func TestExceptionRequester(t *testing.T) {
 	fake := supabasetest.New(t)
 	fake.Handle(http.MethodPost, "/rest/v1/rpc/agent_request_dlp_exception", supabasetest.Response{Status: 200, Body: `{}`})
-	svc := dlpsvc.New(func() *supabase.Client { return fake.Client(nil) }, "dev-1")
+	svc := dlpsvc.New(func() *supabase.Client { return fake.Client(nil) })
 	mi := &MainIntegration{}
 	name := "plan.xlsx"
 	send := mi.exceptionRequester(&config.Config{}, svc)
