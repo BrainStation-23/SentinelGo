@@ -19,7 +19,7 @@ func TestReadOnly_Capabilities(t *testing.T) {
 				t.Errorf("%s: advertises %s", g, c)
 			}
 		}
-		for _, c := range []string{"users_inventory_v2", "packages_v1"} {
+		for _, c := range []string{"packages_v1"} {
 			if !slices.Contains(caps, c) {
 				t.Errorf("%s: lost %s", g, c)
 			}

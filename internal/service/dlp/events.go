@@ -38,7 +38,7 @@ func (s *Service) SendEvents(ctx context.Context, evs []events.Event) error {
 	notEnqueued := false
 	err = rpcutil.WithEnqueueRetry(rpcutil.ReportDroppedPayloads(ctx), func(ctx context.Context) error {
 		var raw []byte
-		if err := s.client().RPC(ctx, rpcEnqueueEvents, json.RawMessage(body), &raw, s.deviceHeader()); err != nil {
+		if err := s.client().RPC(ctx, rpcEnqueueEvents, json.RawMessage(body), &raw); err != nil {
 			return err
 		}
 		var resp rpcutil.EnqueueResponse

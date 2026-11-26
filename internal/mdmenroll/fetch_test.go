@@ -49,8 +49,8 @@ func TestProfileFetcher(t *testing.T) {
 	client := func() *supabase.Client { return supabase.New(srv.URL, "anon", func() string { return "tok" }) }
 	retry := func(ctx context.Context, fn func() error) error { retried++; return fn() }
 
-	data, err := ProfileFetcher(client, "dev-1", retry)(context.Background())
-	if err != nil || string(data) != "<?xml p" || gotDevice != "dev-1" || retried != 1 {
+	data, err := ProfileFetcher(client, retry)(context.Background())
+	if err != nil || string(data) != "<?xml p" || gotDevice != "" || retried != 1 {
 		t.Errorf("data %q err %v device %q retried %d", data, err, gotDevice, retried)
 	}
 }
@@ -63,7 +63,7 @@ func TestProfileFetcher_NotDeployed(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := func() *supabase.Client { return supabase.New(srv.URL, "anon", func() string { return "tok" }) }
-	if _, err := ProfileFetcher(client, "d", nil)(context.Background()); err == nil || !strings.Contains(err.Error(), "doesn't offer MDM enrollment") {
+	if _, err := ProfileFetcher(client, nil)(context.Background()); err == nil || !strings.Contains(err.Error(), "doesn't offer MDM enrollment") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -75,16 +75,16 @@ func TestWindowsEnrollmentFetcher(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := func() *supabase.Client { return supabase.New(srv.URL, "anon", func() string { return "t" }) }
-	got, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background())
+	got, err := WindowsEnrollmentFetcher(client, nil)(context.Background())
 	if err != nil || got.UPN != "alice@corp.com" || got.AccessToken != "tok" {
 		t.Fatalf("got %+v err %v", got, err)
 	}
 	answer["discovery_url"] = "http://mdm.example.com/x"
-	if _, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background()); err == nil {
+	if _, err := WindowsEnrollmentFetcher(client, nil)(context.Background()); err == nil {
 		t.Error("an http discovery URL was accepted")
 	}
 	answer["discovery_url"], answer["access_token"] = "https://mdm.example.com/x", ""
-	if _, err := WindowsEnrollmentFetcher(client, "d", nil)(context.Background()); err == nil {
+	if _, err := WindowsEnrollmentFetcher(client, nil)(context.Background()); err == nil {
 		t.Error("an answer without a token was accepted")
 	}
 }

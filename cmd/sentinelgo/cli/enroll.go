@@ -16,6 +16,10 @@ import (
 // action with its ENROLLMENT_TOKEN and SERVER_URL properties.
 const EnrollCommand = "enroll"
 
+// enrollSupported is enrollment.Supported; a var so tests can run the
+// command as any platform.
+var enrollSupported = enrollment.Supported
+
 // RunEnroll runs `sentinelgo enroll -token TOKEN|- -server-url URL
 // -anon-key KEY [-config PATH]` and returns the exit code. With -token -, the
 // token is read from stdin, so it doesn't show in the process list.
@@ -54,6 +58,10 @@ func RunEnroll(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !enrollment.Needed(cfg) {
 		_, _ = fmt.Fprintln(stdout, "This agent is already configured; the token isn't needed and wasn't saved.")
 		return 0
+	}
+	if !enrollSupported() {
+		_, _ = fmt.Fprintf(stderr, "enroll: %v\n", enrollment.ErrUnsupportedPlatform)
+		return 1
 	}
 	path, err := enrollment.WriteToken(cfg, *token, *serverURL, *anonKey)
 	if err != nil {

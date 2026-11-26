@@ -10,11 +10,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
 )
+
+// TestMain runs the tests as a platform with token enrollment, so the
+// exchange tests also run on a Linux CI runner; the Linux tests set goos
+// themselves.
+func TestMain(m *testing.M) {
+	goos = "windows"
+	os.Exit(m.Run())
+}
 
 // tempConfig is a config with defaults and no config.json yet, as on a
 // device installed from a generic package.
@@ -252,5 +261,102 @@ func TestEnrollAndApply(t *testing.T) {
 	}
 	if err := Enroll(context.Background(), cfg2, Identity{}); err != nil && strings.Contains(err.Error(), "s3cret") {
 		t.Error("an error carries the secret")
+	}
+}
+
+// 400 from agent-enroll is a rejected request, not a transient failure: the
+// same request gets the same answer (#563, Compliance-OS#1131).
+func TestExchange_BadRequestIsRejected(t *testing.T) {
+	srv := enrollServer(t, 400, map[string]string{"message": "unsupported os"}, nil)
+	_, err := exchangeWith(context.Background(), Source{Token: "t", ServerURL: srv.URL, AnonKey: "anon"}, Identity{}, srv.Client())
+	if !errors.Is(err, ErrRejected) {
+		t.Errorf("400: %v, want ErrRejected", err)
+	}
+	busy := enrollServer(t, 503, map[string]string{"message": "busy"}, nil)
+	_, err = exchangeWith(context.Background(), Source{Token: "t", ServerURL: busy.URL, AnonKey: "anon"}, Identity{}, busy.Client())
+	if err == nil || errors.Is(err, ErrRejected) {
+		t.Errorf("503: %v, want a transient error", err)
+	}
+}
+
+// Linux has no token enrollment (#563): even with a token, no request is
+// made and the token file is left alone.
+func TestEnroll_LinuxMakesNoRequest(t *testing.T) {
+	prevGOOS, prevClient := goos, httpClient
+	t.Cleanup(func() { goos, httpClient = prevGOOS, prevClient })
+	goos = "linux"
+
+	requests := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	httpClient = srv.Client()
+
+	cfg := tempConfig(t)
+	tokenFile := writeToken(t, cfg, map[string]string{"enrollment_token": "tok", "server_url": srv.URL, "anon_key": "anon"})
+	if err := Enroll(context.Background(), cfg, Identity{}); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("Enroll on linux: %v, want ErrUnsupportedPlatform", err)
+	}
+	if _, err := exchangeWith(context.Background(), Source{Token: "t", ServerURL: srv.URL, AnonKey: "anon"}, Identity{}, srv.Client()); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("Exchange on linux: %v, want ErrUnsupportedPlatform", err)
+	}
+	if requests != 0 {
+		t.Errorf("%d enrollment requests made on linux, want 0", requests)
+	}
+	if _, err := os.Stat(tokenFile); err != nil {
+		t.Errorf("token file: %v, want it left in place", err)
+	}
+	if !Needed(cfg) {
+		t.Error("config was changed")
+	}
+}
+
+// A refused request isn't sent again while nothing in it changes; a new
+// token is tried (#563).
+func TestEnroll_RejectedTokenNotResent(t *testing.T) {
+	prevClient := httpClient
+	t.Cleanup(func() {
+		httpClient = prevClient
+		rejected.Lock()
+		rejected.set = false
+		rejected.Unlock()
+	})
+
+	var mu sync.Mutex
+	requests, status := 0, http.StatusBadRequest
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		requests++
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"agent_id": "a-1", "agent_secret": "s", "message": "bad token"})
+	}))
+	t.Cleanup(srv.Close)
+	httpClient = srv.Client()
+	count := func() int { mu.Lock(); defer mu.Unlock(); return requests }
+
+	cfg := tempConfig(t)
+	writeToken(t, cfg, map[string]string{"enrollment_token": "old", "server_url": srv.URL, "anon_key": "anon"})
+	for i := range 3 {
+		if err := Enroll(context.Background(), cfg, Identity{Serial: "S"}); !errors.Is(err, ErrRejected) {
+			t.Fatalf("attempt %d: %v, want ErrRejected", i+1, err)
+		}
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("%d requests for an unchanged refused token, want 1", n)
+	}
+
+	// A replacement token is a new request.
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
+	writeToken(t, cfg, map[string]string{"enrollment_token": "new", "server_url": srv.URL, "anon_key": "anon"})
+	if err := Enroll(context.Background(), cfg, Identity{Serial: "S"}); err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	if n := count(); n != 2 {
+		t.Errorf("%d requests, want 2", n)
 	}
 }

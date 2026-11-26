@@ -229,7 +229,7 @@ func (s *Syncer) run(ctx context.Context, settings Settings, force bool) (Result
 
 	sentAt := s.now()
 	err := s.retry(ctx, func() error {
-		n, serr := send(ctx, s.enqueue, pkgs, complete, sentAt)
+		n, serr := send(ctx, s.enqueue, pkgs, complete)
 		res.Parts = n
 		return serr
 	})

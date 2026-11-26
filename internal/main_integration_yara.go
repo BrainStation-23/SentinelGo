@@ -17,7 +17,6 @@ import (
 	"sentinelgo/internal/dlp/filedlp"
 	"sentinelgo/internal/dlp/scanworker"
 	"sentinelgo/internal/scheduler"
-	agentsvc "sentinelgo/internal/service/agent"
 	authsvc "sentinelgo/internal/service/auth"
 	"sentinelgo/internal/service/task/native"
 	"sentinelgo/internal/store"
@@ -182,7 +181,6 @@ func (mi *MainIntegration) startYARA() {
 	if y.runner != nil {
 		native.SetYARAScanner(yaraTaskHook{y})
 	}
-	agentsvc.SetYARASource(y.summary)
 	y.writeStatus()
 }
 
@@ -196,7 +194,6 @@ func (mi *MainIntegration) stopYARA() {
 	}
 	mi.yara = nil
 	native.SetYARAScanner(nil)
-	agentsvc.SetYARASource(nil)
 	if y.onWrite != nil {
 		y.onWrite.Stop() // its window's summary is queued before the flush below
 	}
@@ -310,19 +307,6 @@ func (y *yaraState) writeStatus() {
 		return
 	}
 	y.lastStatus = data
-}
-
-// summary is the inventory's threat hunting block (#416).
-func (y *yaraState) summary() *yara.Summary {
-	ls := y.local()
-	s := yara.SummaryOf(ls.Status)
-	s.LocalEnabled = y.cfg.YARAEnabled
-	s.WorkersHealthy = ls.Workers != nil && !ls.Workers.Disabled
-	s.QueuedEvents = ls.QueuedEvents
-	if ls.Scanning != nil {
-		s.Scanning = ls.Scanning.ScanID
-	}
-	return &s
 }
 
 // yaraTaskHook is what the yara-scan and yara-scan-cancel tasks call.

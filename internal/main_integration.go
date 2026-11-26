@@ -497,7 +497,7 @@ func (mi *MainIntegration) startDLP(ctx context.Context) {
 		removeUploadLeftovers(cfg)
 	}
 	cache := policy.NewCache(filepath.Join(filepath.Dir(cfg.Path), policy.CacheFileName))
-	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID)
+	fetcher := dlpsvc.New(func() *supabase.Client { return supabase.FromConfig(cfg) })
 
 	// Helper events go to the evidence queue (when it opens).
 	var sink channel.EventSink = discardEvents{}
@@ -632,13 +632,13 @@ func (mi *MainIntegration) mdmEnrollHook(cfg *config.Config) native.MDMEnroller 
 	}
 	e := mdmenroll.New(mdmenroll.Deps{
 		OurHost:        func() string { return cfg.MDMHost },
-		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+		FetchProfile:   mdmenroll.ProfileFetcher(func() *supabase.Client { return supabase.FromConfig(cfg) }, retry),
 		ConsoleSession: mdmenroll.ConsoleSession,
 		UserActive:     mdmenroll.UserActive,
 		OfferState:     mdmenroll.OfferStatePath(cfg.Path),
 		RenewADE:       mdmenroll.RenewADE,
 		FetchWindowsEnrollment: mdmenroll.WindowsEnrollmentFetcher(
-			func() *supabase.Client { return supabase.FromConfig(cfg) }, cfg.DeviceID, retry),
+			func() *supabase.Client { return supabase.FromConfig(cfg) }, retry),
 		RegisterWindows: mdmenroll.RegisterWindows,
 		PresentURL: func(ctx context.Context, sessionID string, u ipc.OpenURL) error {
 			mi.mu.Lock()

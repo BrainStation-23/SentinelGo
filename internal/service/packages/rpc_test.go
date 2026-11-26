@@ -70,12 +70,12 @@ func TestFetchSettings(t *testing.T) {
 func TestEnqueue_Payload(t *testing.T) {
 	r := &fakeRPC{resp: `{"success":true,"enqueued":true}`}
 	c := NewClient(func() RPC { return r })
-	u := Upload{Snapshot: snapshotFull, SnapshotID: "id", Part: 1, Parts: 2, CollectedAt: "2026-11-10T08:00:00Z",
+	u := Upload{Snapshot: snapshotFull, SnapshotID: "id", Part: 1, Parts: 2,
 		Packages: []Package{{Ecosystem: EcosystemNPM, Name: "keyv", Version: "4.5.4", Scope: ScopeGlobal, Location: "/x", User: "alice"}}}
 	if err := c.Enqueue(context.Background(), u); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"payload":{"snapshot":"full","snapshot_id":"id","part":1,"parts":2,"collected_at":"2026-11-10T08:00:00Z",` +
+	want := `{"payload":{"snapshot":"full","snapshot_id":"id","part":1,"parts":2,` +
 		`"packages":[{"ecosystem":"npm","name":"keyv","version":"4.5.4","scope":"global","location":"/x","user":"alice"}]}}`
 	if r.fn != rpcEnqueue || paramsJSON(t, r.params) != want {
 		t.Errorf("call = %s\n%s\nwant\n%s", r.fn, paramsJSON(t, r.params), want)

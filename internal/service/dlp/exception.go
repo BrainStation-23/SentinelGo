@@ -49,5 +49,5 @@ func (s *Service) RequestException(ctx context.Context, r ExceptionRequest) erro
 		return fmt.Errorf("%s: request too large", rpcRequestException)
 	}
 	var raw json.RawMessage
-	return s.client().RPC(ctx, rpcRequestException, map[string]json.RawMessage{"p_request": b}, &raw, s.deviceHeader())
+	return s.client().RPC(ctx, rpcRequestException, map[string]json.RawMessage{"p_request": b}, &raw)
 }

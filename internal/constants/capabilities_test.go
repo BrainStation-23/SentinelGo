@@ -60,30 +60,64 @@ func TestCapabilities_PwshDependsOnDevice(t *testing.T) {
 	}
 }
 
-// apple_mdm_state_v1 is advertised on macOS only (#349).
-func TestCapabilities_AppleMDMStateOnMacOnly(t *testing.T) {
-	prev := goos
-	t.Cleanup(func() { goos = prev })
-	for os, want := range map[string]bool{"darwin": true, "linux": false, "windows": false} {
+// documentedCapabilities is what the full build advertises on each OS
+// without pwsh: every entry is one the server checks (#563). Changing what
+// the agent advertises means changing this list and the comment next to the
+// capability, in the same change.
+var documentedCapabilities = map[string][]string{
+	"linux": {
+		"script_inline_body_v1", "task_artifacts_v1", "desktop_notify_v1", "dlp_warn_v1",
+		"packages_v1", "yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1",
+	},
+	"darwin": {
+		"script_inline_body_v1", "task_artifacts_v1", "desktop_notify_v1", "dlp_warn_v1",
+		"packages_v1", "yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1",
+		"mdm_enroll_v1",
+	},
+	"windows": {
+		"script_inline_body_v1", "task_artifacts_v1", "desktop_notify_v1", "dlp_warn_v1",
+		"packages_v1", "yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1",
+		"mdm_sync_v1", "mdm_enroll_v1", "mdm_unenroll_v1", "admin_password_rotation_v1", "dlp_network_control_v1",
+	},
+}
+
+func TestCapabilities_MatchDocumentedList(t *testing.T) {
+	defer func(g string, p func() bool) { goos, pwshInstalled = g, p }(goos, pwshInstalled)
+	pwshInstalled = func() bool { return false }
+	for os, want := range documentedCapabilities {
 		goos = os
-		if got := slices.Contains(Capabilities(), CapabilityAppleMDMState); got != want {
-			t.Errorf("%s: apple_mdm_state_v1 advertised = %v, want %v", os, got, want)
+		if got := Capabilities(); !slices.Equal(got, want) {
+			t.Errorf("%s: Capabilities() = %q, want %q", os, got, want)
 		}
-	}
-	if slices.Contains(AgentCapabilities, CapabilityAppleMDMState) {
-		t.Error("apple_mdm_state_v1 must not be in the static list")
 	}
 }
 
-// windows_mdm_state_v1 is advertised on Windows only (#355).
-func TestCapabilities_WindowsMDMStateOnWindowsOnly(t *testing.T) {
+// A retired capability name is never advertised again (#563).
+func TestRetiredCapabilities_NeverAdvertised(t *testing.T) {
+	defer func(g string, p func() bool) { goos, pwshInstalled = g, p }(goos, pwshInstalled)
+	pwshInstalled = func() bool { return true }
+	for _, os := range []string{"linux", "darwin", "windows"} {
+		goos = os
+		for _, c := range Capabilities() {
+			if slices.Contains(RetiredCapabilities, c) {
+				t.Errorf("%s advertises retired capability %q", os, c)
+			}
+		}
+	}
+	for _, c := range []string{CapabilityScriptPwsh, CapabilityMDMEnroll, CapabilityMDMSync, CapabilityMDMUnenroll,
+		CapabilityAdminPasswordRotation, CapabilityDLPNetworkControl} {
+		if slices.Contains(RetiredCapabilities, c) {
+			t.Errorf("constant %q reuses a retired name", c)
+		}
+	}
+}
+
+// mdm_sync_v1 is advertised on Windows only (#357).
+func TestCapabilities_MDMSyncOnWindowsOnly(t *testing.T) {
 	prev := goos
 	t.Cleanup(func() { goos = prev })
 	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
 		goos = os
-		if got := slices.Contains(Capabilities(), CapabilityWindowsMDMState); got != want {
-			t.Errorf("%s: windows_mdm_state_v1 advertised = %v, want %v", os, got, want)
-		}
 		if got := slices.Contains(Capabilities(), CapabilityMDMSync); got != want {
 			t.Errorf("%s: mdm_sync_v1 advertised = %v, want %v", os, got, want)
 		}
@@ -180,18 +214,6 @@ func TestCapabilities_DLPNetworkControlOnWindowsOnly(t *testing.T) {
 	}
 }
 
-// dlp_at_rest_v1 is advertised on Windows only (#331 part 2).
-func TestCapabilities_DLPAtRestOnWindowsOnly(t *testing.T) {
-	prev := goos
-	t.Cleanup(func() { goos = prev })
-	for os, want := range map[string]bool{"windows": true, "darwin": false, "linux": false} {
-		goos = os
-		if got := slices.Contains(Capabilities(), CapabilityDLPAtRest); got != want {
-			t.Errorf("%s: dlp_at_rest_v1 advertised = %v, want %v", os, got, want)
-		}
-	}
-}
-
 // Every capability the read-only build drops is one the full build has
 // somewhere, so a typo or a rename can't leave one advertised (#547).
 func TestReadOnlyLacks_Known(t *testing.T) {
@@ -213,8 +235,8 @@ func TestReadOnlyLacks_Known(t *testing.T) {
 }
 
 func TestWithoutReadOnlyLacks(t *testing.T) {
-	got := withoutReadOnlyLacks([]string{"users_inventory_v2", "script_inline_body_v1", "yara_scan_v1", CapabilityMDMEnroll, "packages_v1"})
-	if !slices.Equal(got, []string{"users_inventory_v2", "packages_v1"}) {
+	got := withoutReadOnlyLacks([]string{"script_inline_body_v1", "yara_scan_v1", CapabilityMDMEnroll, "packages_v1"})
+	if !slices.Equal(got, []string{"packages_v1"}) {
 		t.Errorf("withoutReadOnlyLacks = %v", got)
 	}
 }

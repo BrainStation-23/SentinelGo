@@ -59,13 +59,13 @@ func splitParts(pkgs []Package) [][]Package {
 // server retires packages the device no longer has once every part has
 // arrived. An incomplete one goes as deltas without removals: it adds and
 // refreshes what was seen and retires nothing.
-func send(ctx context.Context, e Enqueuer, pkgs []Package, complete bool, now time.Time) (parts int, err error) {
+func send(ctx context.Context, e Enqueuer, pkgs []Package, complete bool) (parts int, err error) {
 	chunks := splitParts(pkgs)
 	if len(chunks) > maxParts {
 		chunks = chunks[:maxParts]
 		complete = false
 	}
-	base := Upload{Snapshot: snapshotDelta, CollectedAt: now.UTC().Format(time.RFC3339)}
+	base := Upload{Snapshot: snapshotDelta}
 	if complete {
 		base.Snapshot = snapshotFull
 		base.SnapshotID = rand.Text()

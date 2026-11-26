@@ -19,7 +19,6 @@ import (
 
 const (
 	rpcEnqueueAuditLogs = "agent_enqueue_audit_logs"
-	headerXDeviceID     = "X-Device-ID"
 )
 
 // ErrInvalidInput is returned when an audit log is missing required fields.
@@ -67,8 +66,7 @@ func auditLogCategoryKey(category string) string {
 func (s *AuditLogService) enqueue(ctx context.Context, body []byte) ([]byte, error) {
 	c := supabase.FromConfig(s.config, supabase.WithHTTPClient(s.client))
 	var raw []byte
-	err := c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), &raw,
-		supabase.WithHeader(headerXDeviceID, s.config.DeviceID))
+	err := c.RPC(ctx, rpcEnqueueAuditLogs, json.RawMessage(body), &raw)
 	if err == nil {
 		// The reply carries the server's agent settings (#466).
 		rpcutil.ObserveConfigIn(raw)

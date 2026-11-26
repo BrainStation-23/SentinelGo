@@ -22,7 +22,7 @@ func TestRequestException(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := fake.Requests()[0]
-	if req.Header.Get("X-Device-ID") != "device-1" {
+	if req.Header.Get("X-Device-ID") != "" {
 		t.Errorf("headers %v", req.Header)
 	}
 	var body struct {

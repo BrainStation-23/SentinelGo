@@ -104,12 +104,11 @@ func decodeSettings(raw []byte) (Settings, bool, error) {
 // Upload is one agent_enqueue_packages call: a part of a full snapshot, or a
 // delta.
 type Upload struct {
-	Snapshot    string    `json:"snapshot"`
-	SnapshotID  string    `json:"snapshot_id,omitempty"`
-	Part        int       `json:"part,omitempty"`
-	Parts       int       `json:"parts,omitempty"`
-	CollectedAt string    `json:"collected_at"`
-	Packages    []Package `json:"packages"`
+	Snapshot   string    `json:"snapshot"`
+	SnapshotID string    `json:"snapshot_id,omitempty"`
+	Part       int       `json:"part,omitempty"`
+	Parts      int       `json:"parts,omitempty"`
+	Packages   []Package `json:"packages"`
 }
 
 // Enqueue sends one upload, with the agent-enqueue retry policy (transient

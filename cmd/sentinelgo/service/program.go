@@ -176,11 +176,15 @@ func (p *Program) Start(_ AgentService) error {
 	// no token yet where one can still arrive (the MDM can install the
 	// package before the profile that carries it), or a failed exchange,
 	// keep the service up and retry instead of exiting into a restart loop.
-	// With no token where none will come, start as before: config
-	// validation fails and the service exits with ExitConfigInvalid.
+	// With no token where none will come, or on a platform without token
+	// enrollment (Linux, #563), start as before: config validation fails
+	// and the service exits with ExitConfigInvalid.
 	if enrollment.Needed(p.Cfg) {
 		err := p.tryEnroll(ctx)
-		if err != nil && (tokenMayArriveLater || !errors.Is(err, enrollment.ErrNoToken)) {
+		if errors.Is(err, enrollment.ErrUnsupportedPlatform) {
+			log.Printf("First-boot enrollment: %s", sanitize.ForLog(err.Error()))
+			emergencylog.Record("startup", "first-boot enrollment: %v", err)
+		} else if err != nil && (tokenMayArriveLater || !errors.Is(err, enrollment.ErrNoToken)) {
 			log.Printf("First-boot enrollment: %s; retrying in the background", sanitize.ForLog(err.Error()))
 			emergencylog.Record("startup", "waiting for first-boot enrollment: %v", err)
 			p.enrollWG.Add(1)
@@ -206,6 +210,7 @@ func (p *Program) tryEnroll(ctx context.Context) error {
 // service stops, then starts the agent.
 func (p *Program) enrollThenStart(ctx context.Context) {
 	defer p.enrollWG.Done()
+	var lastLogged string
 	for n := 1; ; n++ {
 		t := time.NewTimer(enrollRetry(n))
 		select {
@@ -221,8 +226,11 @@ func (p *Program) enrollThenStart(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if n == 1 || errors.Is(err, enrollment.ErrRejected) {
-			log.Printf("First-boot enrollment: %s", sanitize.ForLog(err.Error()))
+		// A refused token is skipped until it changes (enrollment.Enroll),
+		// so the same refusal comes back every tick: log it once.
+		if msg := err.Error(); n == 1 || (errors.Is(err, enrollment.ErrRejected) && msg != lastLogged) {
+			log.Printf("First-boot enrollment: %s", sanitize.ForLog(msg))
+			lastLogged = msg
 		}
 	}
 	if err := p.startIntegration(ctx); err != nil {

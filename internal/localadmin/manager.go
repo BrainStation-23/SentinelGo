@@ -17,7 +17,7 @@ import (
 // StoreFile is the grant store, next to config.json.
 const StoreFile = "local_admin_grants.json"
 
-// Grant states, as reported in the inventory's admin_grants.
+// Grant states, as shown by "sentinelgo local-admin".
 const (
 	GrantActive  = "active"
 	GrantRemoved = "removed"
@@ -48,7 +48,7 @@ type Grant struct {
 	Backup    bool       `json:"backup,omitempty"` // a backup OS task exists
 }
 
-// GrantReport is a grant as sent in the inventory (admin_grants).
+// GrantReport is a grant as the local-admin CLI reports it.
 type GrantReport struct {
 	GrantID   string     `json:"grant_id"`
 	Member    string     `json:"member"`

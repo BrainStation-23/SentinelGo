@@ -10,6 +10,7 @@ package enrollment
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"sentinelgo/internal/buildflavor"
 	"sentinelgo/internal/config"
@@ -135,8 +137,57 @@ func validate(s Source) (Source, error) {
 }
 
 // ErrRejected means the backend refused the token (expired, used, or bound
-// to another device). Retrying the same token won't help; a new one will.
+// to another device) or the request (400). Retrying the same token won't
+// help; a new one will.
 var ErrRejected = errors.New("the enrollment token was rejected")
+
+// ErrUnsupportedPlatform means this OS has no token enrollment: the backend
+// issues enrollment tokens for macOS and Windows only, and refuses a Linux
+// device (Compliance-OS#1131). A Linux agent is installed with its own
+// config.json instead. No request is made, and retrying won't help (#563).
+var ErrUnsupportedPlatform = errors.New("token enrollment isn't supported on this platform; install with a per-device config.json")
+
+// goos is runtime.GOOS; a var so tests can check other platforms.
+var goos = runtime.GOOS
+
+// tokenEnrollmentSupported reports whether the backend enrolls this OS with
+// a token.
+func tokenEnrollmentSupported() bool { return goos != "linux" }
+
+// Supported reports whether this OS has token enrollment. `sentinelgo
+// enroll` checks it before saving a token that would never be used.
+func Supported() bool { return tokenEnrollmentSupported() }
+
+// rejected is the fingerprint of the last request the backend refused for
+// good (ErrRejected). The same request gets the same answer, so Enroll
+// doesn't send it again; a new token, server or device identity is a new
+// request and is tried (#563).
+var rejected struct {
+	sync.Mutex
+	key [sha256.Size]byte
+	set bool
+}
+
+// requestKey fingerprints everything that makes up an exchange request. The
+// token is only hashed, never kept.
+func requestKey(src Source, id Identity) [sha256.Size]byte {
+	return sha256.Sum256([]byte(strings.Join([]string{
+		src.ServerURL, src.AnonKey, src.Token,
+		id.Serial, id.ProvisioningUDID, id.OMADMDeviceID, id.SMBIOSUUID,
+	}, "\x00")))
+}
+
+func wasRejected(key [sha256.Size]byte) bool {
+	rejected.Lock()
+	defer rejected.Unlock()
+	return rejected.set && rejected.key == key
+}
+
+func setRejected(key [sha256.Size]byte) {
+	rejected.Lock()
+	defer rejected.Unlock()
+	rejected.key, rejected.set = key, true
+}
 
 // httpClient is the client for the exchange; nil means the supabase
 // package's default. A var for tests.
@@ -148,6 +199,9 @@ func Exchange(ctx context.Context, src Source, id Identity) (Credentials, error)
 }
 
 func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client) (Credentials, error) {
+	if !tokenEnrollmentSupported() {
+		return Credentials{}, ErrUnsupportedPlatform
+	}
 	body := map[string]any{
 		"token":             src.Token,
 		"serial":            id.Serial,
@@ -170,7 +224,10 @@ func exchangeWith(ctx context.Context, src Source, id Identity, hc *http.Client)
 	}
 	c := supabase.New(src.ServerURL, src.AnonKey, func() string { return "" }, opts...)
 	if err := c.InvokeFunction(ctx, enrollFunction, body, &resp); err != nil {
-		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) {
+		// 400 is a request the backend won't take (an unsupported OS or
+		// a malformed token); sending it again gets the same answer.
+		if supabase.IsUnauthorized(err) || supabase.IsForbidden(err) || supabase.IsNotFound(err) ||
+			supabase.StatusCode(err) == http.StatusBadRequest {
 			return Credentials{}, fmt.Errorf("%w: %v", ErrRejected, err)
 		}
 		return Credentials{}, err
@@ -224,8 +281,18 @@ func Enroll(ctx context.Context, cfg *config.Config, id Identity) error {
 	if err != nil {
 		return err
 	}
+	if !tokenEnrollmentSupported() {
+		return fmt.Errorf("found a token in %s: %w", src.Origin, ErrUnsupportedPlatform)
+	}
+	key := requestKey(src, id)
+	if wasRejected(key) {
+		return fmt.Errorf("the token from %s was already refused; waiting for a new one: %w", src.Origin, ErrRejected)
+	}
 	creds, err := Exchange(ctx, src, id)
 	if err != nil {
+		if errors.Is(err, ErrRejected) {
+			setRejected(key)
+		}
 		return fmt.Errorf("enrolling with the token from %s: %w", src.Origin, err)
 	}
 	return Apply(cfg, src, creds)

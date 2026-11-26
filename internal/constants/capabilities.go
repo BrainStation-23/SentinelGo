@@ -16,64 +16,65 @@ import (
 //
 // Add an entry only in the same change that implements it: advertising a
 // capability the binary lacks makes the backend send tasks that fail on
-// the device.
+// the device. Advertise only what the server checks, and name that check
+// next to the entry; an unchecked capability is dead contract (#563).
+// Names are a contract: never reuse one in RetiredCapabilities.
 var AgentCapabilities = []string{
-	"script_inline_body_v1", // inline scripts[<os>].body (#135)
-	"task_artifacts_v1",     // verified task artifacts (#136, #137)
-	"users_inventory_v2",    // built-in accounts, local_admin_members, signed_in_users, … (#223)
-	"exposure_scope_v1",     // risky_services[].remote_scope, remote_addresses, on_public_address (#251)
-	"desktop_notify_v1",     // notify-user native task: an admin's desktop notification (#301)
-	"dlp_warn_v1",           // DLP policy action "warn": keep the content, notify the user (#343)
-	"local_admin_v1",        // local-admin-add/-remove run natively; an add with expires_at ends on the device, even offline (#388)
-	"packages_v1",           // package inventory: agent_enqueue_packages, settings poll, sync-packages task (#421); more ecosystems once the server lists them (#535–#543)
-	"yara_scan_v1",          // threat hunting: YARA ruleset sync, scheduled and yara-scan/-cancel scans, match events (#404, #416)
-	"yara_on_write_v1",      // threat hunting: scan files written into watched folders, bundle on_write (contract v1.1, #418)
-	"yara_scan_report_v1",   // threat hunting: scan_summary skip/error reasons, end reason, scope, problem files (contract v1.2, #497)
+	"script_inline_body_v1", // inline scripts[<os>].body (#135). Server: agent_has_capability before dispatching installer and App Catalog scripts
+	"task_artifacts_v1",     // verified task artifacts (#136, #137). Server: installer-artifact dispatch, the console's custom install form
+	"desktop_notify_v1",     // notify-user native task (#301). Server: native command → capability map
+	"dlp_warn_v1",           // DLP action "warn" (#343). Server: agent_get_dlp_policy downgrades warn to monitor without it
+	"packages_v1",           // package inventory and the sync-packages task (#421). Server: native command → capability map
+	"yara_scan_v1",          // YARA ruleset sync, scans, match events (#404, #416). Server: agent_get_yara_ruleset sends a disabled bundle without it
+	"yara_on_write_v1",      // scan files written into watched folders (#418). Server: bundle on_write only for agents with it
+	"yara_scan_report_v1",   // scan progress and richer scan_summary (#497). Server: agent_enqueue_yara_events accepts scan_progress only with it
+}
+
+// RetiredCapabilities were advertised once and dropped because nothing on
+// the server checks them (#563). Their names must never be reused, so an
+// old agent that still sends one is never mistaken for a new feature.
+var RetiredCapabilities = []string{
+	"users_inventory_v2",   // #223
+	"exposure_scope_v1",    // #251
+	"local_admin_v1",       // #388
+	"windows_mdm_state_v1", // #355
+	"dlp_at_rest_v1",       // #331
+	"apple_mdm_state_v1",   // #349
 }
 
 // CapabilityScriptPwsh means .ps1 scripts run under PowerShell 7 (pwsh) on
 // macOS and Linux (#222). It depends on the device, so Capabilities adds it
 // only when pwsh is installed. Windows runs .ps1 with Windows PowerShell and
-// never reports it.
+// never reports it. Server: script rendering picks the pwsh slot with it.
 const CapabilityScriptPwsh = "script_pwsh_v1" // #nosec G101 - a capability name, not a credential
 
 // CapabilityMDMEnroll means the agent runs the mdm-enroll native task: on
 // macOS ADE re-enrollment or a profile presented to the console user (#350),
-// on Windows silent enrollment (#356).
+// on Windows silent enrollment (#356). Server: native command → capability
+// map.
 const CapabilityMDMEnroll = "mdm_enroll_v1"
 
-// CapabilityWindowsMDMState means the inventory carries the Windows "mdm"
-// block: edition eligibility, MDM enrollments and the OMA-DM identity (#355).
-const CapabilityWindowsMDMState = "windows_mdm_state_v1"
-
 // CapabilityMDMSync means the agent runs the mdm-sync native task: start an
-// MDM session now, standing in for push (#357).
+// MDM session now, standing in for push (#357). Server: native command →
+// capability map, and the Windows MDM sync answers "unsupported" without it.
 const CapabilityMDMSync = "mdm_sync_v1"
 
 // CapabilityMDMUnenroll means the agent runs the mdm-unenroll native task:
-// remove this deployment's MDM enrollment (#356).
+// remove this deployment's MDM enrollment (#356). Server: native command →
+// capability map.
 const CapabilityMDMUnenroll = "mdm_unenroll_v1"
 
 // CapabilityAdminPasswordRotation means the agent rotates a local admin
 // account's password and escrows it before setting it: the
 // agent_*_admin_password RPCs and the admin-password-rotate task (#361).
-// Windows only.
+// Windows only. Server: rotation is scheduled only for agents with it.
 const CapabilityAdminPasswordRotation = "admin_password_rotation_v1" // #nosec G101 - a capability name, not a credential
 
 // CapabilityDLPNetworkControl means the agent applies the file DLP bundle's
 // modules.files.network_control: blocked apps and taint blocks through WFP
-// (#427, Compliance-OS#910). Windows only.
+// (#427, Compliance-OS#910). Windows only. Server: the policy bundle
+// carries network_control only for agents with it.
 const CapabilityDLPNetworkControl = "dlp_network_control_v1"
-
-// CapabilityDLPAtRest means the agent applies the file DLP bundle's
-// modules.files.at_rest: it classifies the files in the user folders ahead
-// of time, so process taint and taint blocks use a stored verdict (#331
-// part 2). Windows only.
-const CapabilityDLPAtRest = "dlp_at_rest_v1"
-
-// CapabilityAppleMDMState means the inventory carries the macOS "mdm" block:
-// enrollment state, ADE assignment and the provisioning UDID (#349).
-const CapabilityAppleMDMState = "apple_mdm_state_v1"
 
 // goos is runtime.GOOS; a var so tests can check other platforms' lists.
 var goos = runtime.GOOS
@@ -110,8 +111,8 @@ func withoutReadOnlyLacks(caps []string) []string {
 // (#547): its gated features are compiled out, so it never advertises them.
 var ReadOnlyLacks = []string{
 	"script_inline_body_v1", "task_artifacts_v1", CapabilityScriptPwsh, // Scripts
-	"local_admin_v1", CapabilityAdminPasswordRotation, CapabilityMDMSync, CapabilityMDMUnenroll, // DeviceActions
-	"dlp_warn_v1", CapabilityDLPNetworkControl, CapabilityDLPAtRest, // DLPEnforcement
+	CapabilityAdminPasswordRotation, CapabilityMDMSync, CapabilityMDMUnenroll, // DeviceActions
+	"dlp_warn_v1", CapabilityDLPNetworkControl, // DLPEnforcement
 	"yara_scan_v1", "yara_on_write_v1", "yara_scan_report_v1", // YARA
 	"desktop_notify_v1", // NotifyUser
 	CapabilityMDMEnroll, // MDMEnroll
@@ -125,10 +126,10 @@ func deviceCapabilities() []string {
 	}
 	switch goos {
 	case "darwin":
-		caps = append(caps, CapabilityAppleMDMState, CapabilityMDMEnroll)
+		caps = append(caps, CapabilityMDMEnroll)
 	case "windows":
-		caps = append(caps, CapabilityWindowsMDMState, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation,
-			CapabilityDLPNetworkControl, CapabilityDLPAtRest)
+		caps = append(caps, CapabilityMDMSync, CapabilityMDMEnroll, CapabilityMDMUnenroll, CapabilityAdminPasswordRotation,
+			CapabilityDLPNetworkControl)
 	}
 	return caps
 }

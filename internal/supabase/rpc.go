@@ -12,7 +12,7 @@ type callOptions struct {
 	headers map[string]string
 }
 
-// WithHeader adds a request header (e.g. X-Device-ID). It cannot override the
+// WithHeader adds a request header. It cannot override the
 // apikey or Authorization headers.
 func WithHeader(key, value string) CallOption {
 	return func(o *callOptions) {
