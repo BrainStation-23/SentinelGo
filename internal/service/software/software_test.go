@@ -3,6 +3,7 @@ package software_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -257,5 +258,126 @@ func TestSoftwareEnqueueMetadataFields(t *testing.T) {
 		if _, ok := items[1][k]; ok {
 			t.Errorf("items[1] has %q; empty metadata must be omitted", k)
 		}
+	}
+}
+
+// ── TestSoftwareEnqueueWindowsIdentifiers ────────────────────────────────────
+
+// enqueueCapture starts a server that records the software items of each
+// agent_enqueue_software call and the raw request body size.
+func enqueueCapture(t *testing.T) (*software.SoftwareService, *[]map[string]any, *int) {
+	t.Helper()
+	var items []map[string]any
+	var size int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		size = len(body)
+		var payload struct {
+			Payload struct {
+				Software []map[string]any `json:"software"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		items = payload.Payload.Software
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"enqueued":true,"msg_id":4}`))
+	}))
+	t.Cleanup(server.Close)
+	svc := software.NewSoftwareService()
+	svc.SetSupabaseURL(server.URL)
+	return svc, &items, &size
+}
+
+// The Windows identifiers (#562) are sent under the names the console reads
+// and left out when empty, so an older console that ignores them is unaffected.
+func TestSoftwareEnqueueWindowsIdentifiers(t *testing.T) {
+	svc, items, _ := enqueueCapture(t)
+	list := []software.SoftwareInfo{
+		{
+			Name: "Microsoft Visual C++ 2022 X64 Minimum Runtime", Source: "programs", Type: "programs",
+			ProductCode: "{A181A302-3F6D-4BAD-97A8-A426A6499D78}", SystemComponent: true,
+			ParentKeyName: "VC_Redist", ReleaseType: "Update", HomepageURL: "https://visualstudio.microsoft.com",
+		},
+		{
+			Name: "Microsoft.WindowsTerminal", Source: "microsoft_store", Type: "microsoft_store",
+			PackageFamilyName: "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+		},
+		{Name: "bad homepage", Source: "programs", Type: "programs", HomepageURL: "javascript:alert(1)"},
+	}
+	if err := svc.SendByRPC(context.Background(), "dev-1", list, nil); err != nil {
+		t.Fatalf("SendByRPC: %v", err)
+	}
+	if len(*items) != 3 {
+		t.Fatalf("got %d items, want 3", len(*items))
+	}
+	got := *items
+
+	want := map[string]any{
+		"product_code":     "{A181A302-3F6D-4BAD-97A8-A426A6499D78}",
+		"system_component": true,
+		"parent_key_name":  "VC_Redist",
+		"release_type":     "Update",
+		"homepage_url":     "https://visualstudio.microsoft.com",
+	}
+	for k, v := range want {
+		if got[0][k] != v {
+			t.Errorf("items[0][%q] = %v, want %v", k, got[0][k], v)
+		}
+		if _, ok := got[1][k]; ok {
+			t.Errorf("items[1] has %q; empty fields must be omitted", k)
+		}
+	}
+	if got[1]["package_family_name"] != "Microsoft.WindowsTerminal_8wekyb3d8bbwe" {
+		t.Errorf("items[1][package_family_name] = %v", got[1]["package_family_name"])
+	}
+	if _, ok := got[0]["package_family_name"]; ok {
+		t.Error("items[0] has package_family_name; empty fields must be omitted")
+	}
+	if _, ok := got[2]["homepage_url"]; ok {
+		t.Error("a non-http(s) homepage must not be sent")
+	}
+}
+
+// A large Windows inventory with every new field filled stays well under the
+// ingest cap (agent_enqueue rejects a payload over 1 MiB).
+func TestSoftwareEnqueueWindowsPayloadSize(t *testing.T) {
+	const programs = 600
+	const ingestCap = 1 << 20
+
+	svc, items, size := enqueueCapture(t)
+	list := make([]software.SoftwareInfo, 0, programs)
+	for i := range programs {
+		list = append(list, software.SoftwareInfo{
+			Name:             fmt.Sprintf("Contoso Example Application %03d (x64)", i),
+			Source:           "programs",
+			Type:             "programs",
+			InstalledVersion: "123.45.6789.0",
+			FilePath:         fmt.Sprintf(`C:\Program Files\Contoso\Example Application %03d\`, i),
+			FirstSeenAt:      "2026-11-26T00:00:00Z",
+			Publisher:        "Contoso Software Corporation",
+			InstallDate:      "2026-11-26T00:00:00Z",
+			SizeBytes:        123456789,
+			Architecture:     "x64",
+			ProductCode:      fmt.Sprintf("{%08X-3F6D-4BAD-97A8-A426A6499D78}", i),
+			SystemComponent:  i%3 == 0,
+			ParentKeyName:    "Contoso Example Suite",
+			ReleaseType:      "Security Update",
+			HomepageURL:      fmt.Sprintf("https://www.contoso.example.com/products/example-application-%03d", i),
+		})
+	}
+	if err := svc.SendByRPC(context.Background(), "dev-1", list, nil); err != nil {
+		t.Fatalf("SendByRPC: %v", err)
+	}
+	if len(*items) != programs {
+		t.Fatalf("got %d items, want %d", len(*items), programs)
+	}
+	t.Logf("%d programs: %d bytes (%.0f%% of the %d-byte ingest cap)", programs, *size, 100*float64(*size)/ingestCap, ingestCap)
+	if *size > ingestCap/2 {
+		t.Errorf("payload is %d bytes, over half the %d-byte ingest cap", *size, ingestCap)
 	}
 }

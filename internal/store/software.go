@@ -43,9 +43,22 @@ ALTER TABLE software ADD COLUMN architecture  TEXT    NOT NULL DEFAULT '';
 ALTER TABLE software ADD COLUMN bundle_id     TEXT    NOT NULL DEFAULT '';
 `
 
+// softwareSchemaV3 adds the Windows identifiers used for catalog matching
+// (#562): ARP key / product code, the Apps & features flags, homepage and the
+// Store package family name.
+const softwareSchemaV3 = `
+ALTER TABLE software ADD COLUMN product_code        TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN system_component    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE software ADD COLUMN parent_key_name     TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN release_type        TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN homepage_url        TEXT    NOT NULL DEFAULT '';
+ALTER TABLE software ADD COLUMN package_family_name TEXT    NOT NULL DEFAULT '';
+`
+
 var softwareMigrations = []Migration{
 	{Version: 1, SQL: softwareSchemaV1},
 	{Version: 2, SQL: softwareSchemaV2},
+	{Version: 3, SQL: softwareSchemaV3},
 }
 
 // SoftwareStore is a SQLite-backed local cache for installed-software state.
@@ -91,8 +104,9 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 	stmt, err := tx.Prepare(`
 		INSERT INTO software
 			(agent_id, name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at, updated_at,
-			 publisher, install_date, size_bytes, architecture, bundle_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 publisher, install_date, size_bytes, architecture, bundle_id,
+			 product_code, system_component, parent_key_name, release_type, homepage_url, package_family_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id, name, source) DO UPDATE SET
 			type              = excluded.type,
 			installed_version = excluded.installed_version,
@@ -106,7 +120,13 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 			install_date      = excluded.install_date,
 			size_bytes        = excluded.size_bytes,
 			architecture      = excluded.architecture,
-			bundle_id         = excluded.bundle_id
+			bundle_id         = excluded.bundle_id,
+			product_code        = excluded.product_code,
+			system_component    = excluded.system_component,
+			parent_key_name     = excluded.parent_key_name,
+			release_type        = excluded.release_type,
+			homepage_url        = excluded.homepage_url,
+			package_family_name = excluded.package_family_name
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare upsert stmt: %w", err)
@@ -127,6 +147,7 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 			sw.DisplayName, sw.SoftwarePackage, sw.AppStoreApp, sw.LastOpened,
 			sw.FilePath, firstSeen, now,
 			sw.Publisher, sw.InstallDate, sw.SizeBytes, sw.Architecture, sw.BundleID,
+			sw.ProductCode, sw.SystemComponent, sw.ParentKeyName, sw.ReleaseType, sw.HomepageURL, sw.PackageFamilyName,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert software %q: %w", sw.Name, err)
@@ -140,7 +161,8 @@ func (s *SoftwareStore) Upsert(agentID string, items []models.SoftwareInfo) erro
 func (s *SoftwareStore) GetAll(agentID string) ([]models.SoftwareInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT name, source, type, installed_version, display_name, software_package, app_store_app, last_opened, file_path, first_seen_at,
-			publisher, install_date, size_bytes, architecture, bundle_id
+			publisher, install_date, size_bytes, architecture, bundle_id,
+			product_code, system_component, parent_key_name, release_type, homepage_url, package_family_name
 		FROM software
 		WHERE agent_id = ?
 		ORDER BY source, name
@@ -161,6 +183,7 @@ func (s *SoftwareStore) GetAll(agentID string) ([]models.SoftwareInfo, error) {
 			&sw.Name, &sw.Source, &sw.Type, &sw.InstalledVersion, &sw.DisplayName,
 			&sw.SoftwarePackage, &sw.AppStoreApp, &sw.LastOpened, &sw.FilePath, &sw.FirstSeenAt,
 			&sw.Publisher, &sw.InstallDate, &sw.SizeBytes, &sw.Architecture, &sw.BundleID,
+			&sw.ProductCode, &sw.SystemComponent, &sw.ParentKeyName, &sw.ReleaseType, &sw.HomepageURL, &sw.PackageFamilyName,
 		); err != nil {
 			return nil, fmt.Errorf("scan software: %w", err)
 		}

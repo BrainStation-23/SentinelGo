@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"sentinelgo/internal/config"
@@ -19,6 +21,29 @@ const rpcTimeout = 60 * time.Second
 // metadata the agent does not control (a package names its own maintainer or
 // vendor), and no real value comes close to this length.
 const maxMetadataLen = 256
+
+// maxHomepageLen caps HomepageURL. A longer URL is dropped, not cut: a
+// truncated URL points somewhere else.
+const maxHomepageLen = 500
+
+// sanitizeHomepageURL returns s trimmed when it is an http(s) URL of at most
+// maxHomepageLen bytes, and "" otherwise. The value comes from the vendor's
+// uninstall key, so javascript:, file: and the like are possible.
+func sanitizeHomepageURL(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > maxHomepageLen || strings.ContainsAny(s, " \t\r\n") {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return s
+}
 
 // truncateRunes shortens s to at most n runes without splitting a character.
 // The result is always a prefix of s (an invalid byte counts as one rune).
@@ -60,6 +85,13 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 		SizeBytes        int64  `json:"size_bytes,omitempty"`
 		Architecture     string `json:"architecture,omitempty"`
 		BundleID         string `json:"bundle_id,omitempty"`
+
+		ProductCode       string `json:"product_code,omitempty"`
+		SystemComponent   bool   `json:"system_component,omitempty"`
+		ParentKeyName     string `json:"parent_key_name,omitempty"`
+		ReleaseType       string `json:"release_type,omitempty"`
+		HomepageURL       string `json:"homepage_url,omitempty"`
+		PackageFamilyName string `json:"package_family_name,omitempty"`
 	}
 
 	items := make([]softwareItem, 0, len(software))
@@ -80,6 +112,13 @@ func (s *SoftwareService) SendByRPC(ctx context.Context, _ string, software []So
 			SizeBytes:        sw.SizeBytes,
 			Architecture:     truncateRunes(sw.Architecture, maxMetadataLen),
 			BundleID:         truncateRunes(sw.BundleID, maxMetadataLen),
+
+			ProductCode:       truncateRunes(sw.ProductCode, maxMetadataLen),
+			SystemComponent:   sw.SystemComponent,
+			ParentKeyName:     truncateRunes(sw.ParentKeyName, maxMetadataLen),
+			ReleaseType:       truncateRunes(sw.ReleaseType, maxMetadataLen),
+			HomepageURL:       sanitizeHomepageURL(sw.HomepageURL),
+			PackageFamilyName: truncateRunes(sw.PackageFamilyName, maxMetadataLen),
 		})
 	}
 

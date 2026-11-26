@@ -226,6 +226,49 @@ func TestSoftwareStore_MetadataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSoftwareStore_WindowsIdentifiersRoundTrip(t *testing.T) {
+	s := openSoftwareStoreInMemory(t)
+
+	want := []models.SoftwareInfo{
+		{
+			Name: "Microsoft Visual C++ 2022 X64 Minimum Runtime", Source: "programs", Type: "programs",
+			ProductCode: "{A181A302-3F6D-4BAD-97A8-A426A6499D78}", SystemComponent: true,
+			ParentKeyName: "VC_Redist", ReleaseType: "Update", HomepageURL: "https://visualstudio.microsoft.com",
+		},
+		{
+			Name: "Microsoft.WindowsTerminal", Source: "microsoft_store", Type: "microsoft_store",
+			PackageFamilyName: "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+		},
+	}
+	if err := s.Upsert("agent-1", want); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := s.GetAll("agent-1")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("GetAll = %v, %v; want 2 items", got, err)
+	}
+	// GetAll orders by source, then name.
+	if got[0].PackageFamilyName != want[1].PackageFamilyName || got[0].ProductCode != "" || got[0].SystemComponent {
+		t.Errorf("store app round-trip = %+v, want %+v", got[0], want[1])
+	}
+	vc := got[1]
+	if vc.ProductCode != want[0].ProductCode || !vc.SystemComponent || vc.ParentKeyName != want[0].ParentKeyName ||
+		vc.ReleaseType != want[0].ReleaseType || vc.HomepageURL != want[0].HomepageURL {
+		t.Errorf("program round-trip = %+v, want %+v", vc, want[0])
+	}
+
+	updated := want[0]
+	updated.SystemComponent = false
+	updated.HomepageURL = ""
+	if err := s.Upsert("agent-1", []models.SoftwareInfo{updated}); err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+	got, _ = s.GetAll("agent-1")
+	if got[1].SystemComponent || got[1].HomepageURL != "" {
+		t.Errorf("after update: SystemComponent=%v HomepageURL=%q, want false and empty", got[1].SystemComponent, got[1].HomepageURL)
+	}
+}
+
 // A catalog created before the metadata columns existed must upgrade in place
 // and keep its rows.
 func TestNewSoftwareStore_MigratesV1Catalog(t *testing.T) {
