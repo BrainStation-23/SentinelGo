@@ -18,7 +18,10 @@
     - the enrollment properties are hidden from logs and secure;
     - Installed apps offers no Uninstall (ARPNOREMOVE);
     - enrollment runs deferred, elevated, without logging its command line,
-      after InstallFiles and before StartServices.
+      after InstallFiles and before StartServices;
+    - the uninstall check (#566) runs the same way, right after
+      InstallInitialize and before StopServices, only on a full removal
+      that isn't a major upgrade.
 #>
 param(
   [Parameter(Mandatory)] [string] $Tag,
@@ -81,16 +84,17 @@ foreach ($p in @(@("ProductCode", $vars.PRODUCT_CODE), @("UpgradeCode", $vars.UP
 if ((Get-Prop "ARPNOREMOVE") -ne "1") { $failed += "ARPNOREMOVE isn't set: Installed apps would offer Uninstall" }
 $hidden = (Get-Prop "MsiHiddenProperties") -split ";"
 $secure = (Get-Prop "SecureCustomProperties") -split ";"
-foreach ($p in "SERVER_URL", "ANON_KEY", "ENROLLMENT_TOKEN") {
+foreach ($p in "SERVER_URL", "ANON_KEY", "ENROLLMENT_TOKEN", "UNINSTALL_TOKEN") {
   if ($hidden -notcontains $p) { $failed += "$p isn't in MsiHiddenProperties" }
   if ($secure -notcontains $p) { $failed += "$p isn't in SecureCustomProperties" }
 }
-if ($hidden -notcontains "EnrollAgent") { $failed += "the enrollment command line (EnrollAgent) isn't hidden" }
-
-$ca = Get-Rows "SELECT ``Type``, ``Target`` FROM ``CustomAction`` WHERE ``Action`` = 'EnrollAgent'" 2
-# 0x400 deferred, 0x800 no impersonation (SYSTEM), 0x2000 HideTarget.
-if ($ca.Count -ne 1 -or $ca[0][1] -ne "WixSilentExec64" -or (([int] $ca[0][0]) -band 0x2C00) -ne 0x2C00) {
-  $failed += "EnrollAgent must be a deferred, no-impersonate, HideTarget WixSilentExec64 action: $($ca | ForEach-Object { $_ -join ' ' })"
+foreach ($p in "EnrollAgent", "UninstallCheck") {
+  if ($hidden -notcontains $p) { $failed += "the command line of $p isn't hidden" }
+  $ca = Get-Rows "SELECT ``Type``, ``Target`` FROM ``CustomAction`` WHERE ``Action`` = '$p'" 2
+  # 0x400 deferred, 0x800 no impersonation (SYSTEM), 0x2000 HideTarget.
+  if ($ca.Count -ne 1 -or $ca[0][1] -ne "WixSilentExec64" -or (([int] $ca[0][0]) -band 0x2C00) -ne 0x2C00) {
+    $failed += "$p must be a deferred, no-impersonate, HideTarget WixSilentExec64 action: $($ca | ForEach-Object { $_ -join ' ' })"
+  }
 }
 # The other build's MSI of the same version (same UpgradeCode, another
 # ProductCode) must be removed, not installed beside this one: the upgrade
@@ -100,7 +104,8 @@ if ($up.Count -ne 1 -or $up[0][1] -ne $vars.MSI_VERSION -or (([int] $up[0][0]) -
   $failed += "the major upgrade must include this version (AllowSameVersionUpgrades): $($up | ForEach-Object { $_ -join ' ' })"
 }
 $seq = @{}
-foreach ($r in (Get-Rows "SELECT ``Action``, ``Sequence`` FROM ``InstallExecuteSequence``" 2)) { $seq[$r[0]] = [int] $r[1] }
+$cond = @{}
+foreach ($r in (Get-Rows "SELECT ``Action``, ``Sequence``, ``Condition`` FROM ``InstallExecuteSequence``" 3)) { $seq[$r[0]] = [int] $r[1]; $cond[$r[0]] = $r[2] }
 # Removing the old product inside the transaction lets a failed install roll
 # it back, instead of leaving the device with no agent.
 if (-not ($seq.ContainsKey("RemoveExistingProducts") -and $seq.InstallInitialize -lt $seq.RemoveExistingProducts -and $seq.RemoveExistingProducts -lt $seq.InstallFiles)) {
@@ -108,6 +113,14 @@ if (-not ($seq.ContainsKey("RemoveExistingProducts") -and $seq.InstallInitialize
 }
 if (-not ($seq.ContainsKey("EnrollAgent") -and $seq.InstallFiles -lt $seq.EnrollAgent -and $seq.EnrollAgent -lt $seq.StartServices)) {
   $failed += "EnrollAgent must run after InstallFiles and before StartServices"
+}
+# The uninstall check runs before anything is stopped or removed, and never
+# on a major upgrade (UPGRADINGPRODUCTCODE), which must not need the token.
+if (-not ($seq.ContainsKey("UninstallCheck") -and $seq.InstallInitialize -lt $seq.UninstallCheck -and $seq.UninstallCheck -lt $seq.StopServices -and $seq.UninstallCheck -lt $seq.RemoveFiles)) {
+  $failed += "UninstallCheck must run after InstallInitialize and before StopServices and RemoveFiles"
+}
+if ($cond.UninstallCheck -ne 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE') {
+  $failed += "UninstallCheck's condition is '$($cond.UninstallCheck)', want 'REMOVE~=`"ALL`" AND NOT UPGRADINGPRODUCTCODE'"
 }
 
 if ($failed.Count -gt 0) {

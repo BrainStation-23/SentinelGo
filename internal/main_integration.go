@@ -199,6 +199,9 @@ func (mi *MainIntegration) Start(ctx context.Context) error {
 	// the task manager accepts admin-password-rotate.
 	mi.startAdminPassword()
 
+	// 6e. Sync the uninstall token's hash for uninstall-check (#566, Windows).
+	mi.startUninstallProtection()
+
 	// 7. Start the task manager (polling + execution) if enabled.
 	mi.startTaskManager(ctx)
 
