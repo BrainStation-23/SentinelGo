@@ -32,7 +32,7 @@ import (
 // information (TestPinnedVersionMatchesGoMod keeps the two in step).
 const (
 	goYaraModule  = "github.com/cawalch/go-yara"
-	pinnedVersion = "v0.10.0"
+	pinnedVersion = "v0.11.1"
 )
 
 // Name is the engine name the bundle's engine.name refers to.

@@ -1,0 +1,1 @@
+- YARA: the engine is go-yara v0.11.1 (was v0.10.0), and the status reports `engine_version` `0.11.1` (#559).
