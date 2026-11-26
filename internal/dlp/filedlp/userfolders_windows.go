@@ -116,6 +116,7 @@ type userWatcher struct {
 	start   map[string]bool      // roots being started
 	retry   map[string]time.Time // roots that failed or went away → not before
 	roots   map[string]userRoot
+	handed  map[string]Identity // lower-case path → the file as last handed over
 	changes chan fsChange
 	started chan startedWatch
 	lost    chan *watchToken
@@ -139,6 +140,7 @@ type startedWatch struct {
 func newUserWatcher(name string, files policy.FilesModule, hand HandOffer) *userWatcher {
 	return &userWatcher{name: name, files: files, hand: hand,
 		watches: map[string]userWatch{}, start: map[string]bool{}, retry: map[string]time.Time{}, roots: map[string]userRoot{},
+		handed:  map[string]Identity{},
 		changes: make(chan fsChange, changeQueueSize), started: make(chan startedWatch), lost: make(chan *watchToken, 64)}
 }
 
@@ -259,20 +261,45 @@ func (w *userWatcher) closeAll() {
 	}
 }
 
+// maxHanded bounds the files remembered as handed over; past it the memory
+// starts again (at worst one more hand-off of an unchanged file).
+const maxHanded = 4096
+
 // handOff opens a quiet file as the user and hands it to the service. It
 // never queues a Request: the pending set's queue is unused here.
+//
+// Windows can report a file again after it was handed over (the size and
+// last-write notifications that come with closing it can arrive late), so a
+// file that is still exactly as it was handed over (same file, size and
+// last write) isn't handed over twice.
 func (w *userWatcher) handOff(path string, unreadable *atomic.Uint64) (Request, openStatus) {
 	root, ok := w.rootOf(path)
 	if !ok {
 		return Request{}, openSkip
 	}
-	h, _, st := openForDecision(path, unreadable)
+	h, id, st := openForDecision(path, unreadable)
 	if st != openOK {
 		return Request{}, st
 	}
+	key := strings.ToLower(path)
+	if sameContent(w.handed[key], id) {
+		_ = windows.CloseHandle(h)
+		return Request{}, openSkip
+	}
+	if len(w.handed) >= maxHanded {
+		clear(w.handed)
+	}
+	w.handed[key] = id
 	w.hand.HandOff(ipc.UserFile{Handle: uint64(h), Channel: w.name, Root: root.path, Label: root.label},
 		func() { _ = windows.CloseHandle(h) })
 	return Request{}, openSkip // handed over: nothing left for the pending set
+}
+
+// sameContent reports whether a and b are the same file with the same size
+// and last write. The change time is left out: it also moves for metadata
+// that doesn't change what the file holds.
+func sameContent(a, b Identity) bool {
+	return a.Ino != 0 && a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.ModTime == b.ModTime
 }
 
 func (w *userWatcher) rootOf(path string) (userRoot, bool) {

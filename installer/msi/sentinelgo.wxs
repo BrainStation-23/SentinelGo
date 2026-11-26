@@ -71,6 +71,11 @@
     <Property Id="ENROLLMENT_TOKEN" Hidden="yes" Secure="yes" />
     <!-- The enrollment command line (it holds the token): hidden as well. -->
     <Property Id="EnrollAgent" Hidden="yes" />
+    <!-- The device's uninstall token (#566), on the msiexec /x command line.
+         Hidden and Secure like the enrollment token, and so is the check's
+         command line that carries it. -->
+    <Property Id="UNINSTALL_TOKEN" Hidden="yes" Secure="yes" />
+    <Property Id="UninstallCheck" Hidden="yes" />
 
     <Launch Condition="NOT ENROLLMENT_TOKEN OR (SERVER_URL AND ANON_KEY)"
             Message="ENROLLMENT_TOKEN needs SERVER_URL and ANON_KEY too." />
@@ -157,8 +162,26 @@
                  Condition="ENROLLMENT_TOKEN AND NOT REMOVE" />
     <CustomAction Id="EnrollAgent" BinaryRef="Wix4UtilCA_X64" DllEntry="WixSilentExec64"
                   Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+
+    <!-- Uninstall protection (#566): before anything is removed, the
+         installed binary checks UNINSTALL_TOKEN against the hash it synced
+         from the console (`sentinelgo uninstall-check`). Exit 0 (token
+         matches, protection off, or no hash synced yet) lets the uninstall go
+         on; anything else fails it with 1603 and the service keeps running.
+         Deferred and elevated, right after InstallInitialize, before
+         StopServices. Only a full removal: a major upgrade sets
+         UPGRADINGPRODUCTCODE on the old product and is never blocked. As with
+         enrollment, the token is on the command line while the check runs:
+         an MSI custom action can't feed stdin. -->
+    <SetProperty Id="UninstallCheck"
+                 Value="&quot;[INSTALLFOLDER]sentinelgo.exe&quot; uninstall-check -token &quot;[UNINSTALL_TOKEN]&quot; -config &quot;[CONFIGFOLDER]config.json&quot;"
+                 Before="UninstallCheck" Sequence="execute"
+                 Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="UninstallCheck" BinaryRef="Wix4UtilCA_X64" DllEntry="WixSilentExec64"
+                  Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <InstallExecuteSequence>
       <Custom Action="EnrollAgent" After="InstallFiles" Condition="ENROLLMENT_TOKEN AND NOT REMOVE" />
+      <Custom Action="UninstallCheck" After="InstallInitialize" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

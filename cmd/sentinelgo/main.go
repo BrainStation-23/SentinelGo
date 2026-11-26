@@ -48,6 +48,11 @@ func main() {
 		os.Exit(cli.RunLocalAdmin(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
+	// `sentinelgo uninstall-check -token T`: the MSI's uninstall gate (#566).
+	if len(os.Args) > 1 && os.Args[1] == cli.UninstallCheckCommand {
+		os.Exit(cli.RunUninstallCheck(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	f := parseFlags()
 
 	// CLI subcommands that don't require a loaded config.
@@ -155,6 +160,14 @@ func runServiceLifecycle(f *cliFlags, cfg *config.Config) {
 	case *f.install:
 		svcsub.HandleInstall(svc)
 	case *f.uninstall:
+		// The uninstall token (#566), before anything is removed.
+		token, err := cli.ReadUninstallToken(*f.uninstallToken, os.Stdin)
+		if err != nil {
+			log.Fatalf("Uninstall: %v", err)
+		}
+		if !cli.CheckUninstallToken(cfg.Path, token, os.Stdout, os.Stderr) {
+			os.Exit(1)
+		}
 		svcsub.HandleUninstall(svc)
 	case *f.run:
 		if err := svcsub.RunForeground(prg); err != nil {
