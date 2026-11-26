@@ -7,6 +7,7 @@ type cliFlags struct {
 	cfgPath            *string
 	install            *bool
 	uninstall          *bool
+	uninstallToken     *string
 	run                *bool
 	statusFlag         *bool
 	stop               *bool
@@ -38,6 +39,7 @@ func parseFlags() *cliFlags {
 		cfgPath:            flag.String("config", "", "Path to config file (optional)"),
 		install:            flag.Bool("install", false, "Install service"),
 		uninstall:          flag.Bool("uninstall", false, "Uninstall service"),
+		uninstallToken:     flag.String("uninstall-token", "", "With -uninstall: the device's uninstall token from the console, or - to read it from stdin"),
 		run:                flag.Bool("run", false, "Run in foreground (console mode)"),
 		statusFlag:         flag.Bool("status", false, "Show running SentinelGo processes and versions"),
 		stop:               flag.Bool("stop", false, "Stop all running SentinelGo processes"),
