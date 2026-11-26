@@ -1,7 +1,7 @@
-github.com/cawalch/go-pe v0.0.0-20261115152824-c75b66411b12 h1:o6g0uRmigkzPkl0dABhAWeEq+ASKhPELbPbnAgh+R38=
-github.com/cawalch/go-pe v0.0.0-20261115152824-c75b66411b12/go.mod h1:EoVGEYn1l0W480qiRMsr++ZaaqHabaHBEeMwu1BH3MU=
-github.com/cawalch/go-yara v0.10.0 h1:FpX4wc9G9z7A8xzwLyNDCbQFMEo6ujUblsvvsWxjnKo=
-github.com/cawalch/go-yara v0.10.0/go.mod h1:2/YOBtkPACGoVPCYaGpUzCI22yOL5dB1VK8l9sa1UIk=
+github.com/cawalch/go-pe v0.1.0 h1:VyUzry7zsTR6zoK20r9NIW8ySrwsb8q/WTLFmvcs3E0=
+github.com/cawalch/go-pe v0.1.0/go.mod h1:EoVGEYn1l0W480qiRMsr++ZaaqHabaHBEeMwu1BH3MU=
+github.com/cawalch/go-yara v0.11.1 h1:Tr3ucuV6hHot3XOBaAfJ2C6ob1K7Bu00sC/RF2mjWTc=
+github.com/cawalch/go-yara v0.11.1/go.mod h1:c0J2GV82Go3md2hrA+J3Uk5pjCXK6FkN/17ODGqE0xE=
 github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/ebitengine/purego v0.11.3 h1:OB+JLpdm7ioymhyA+6s5kbb/uOuYycAgL8NNTFc5MLg=
