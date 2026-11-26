@@ -55,9 +55,17 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	// under Wow6432Node, i.e. 32-bit programs on a 64-bit OS. Duplicates are
 	// removed in parsePowerShellOutput by name and architecture, not here by
 	// name, so an x86 and an x64 install of one program are both kept.
+	//
+	// ArpKey is the uninstall key's own name: the ProductCode GUID for MSI
+	// installs, the installer's chosen key otherwise. It is how winget matches
+	// installed programs to packages. Sorting by it after Name makes the row
+	// kept for a duplicate name (and so its ProductCode) stable between runs.
+	// SystemComponent, ParentKeyName and ReleaseType mark rows Apps & features
+	// hides (runtimes, child components, updates); they are reported, not
+	// filtered, and the console decides what to show.
 	const registryQuery = `$paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 $paths += Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $_.PSPath + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; $_.PSPath + '\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
-Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='Publisher';E={$_.Publisher}},@{N='EstimatedSize';E={$_.EstimatedSize}},@{N='Wow64';E={$_.PSPath -match 'Wow6432Node'}} | Sort-Object Name | ConvertTo-Json`
+Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='Publisher';E={$_.Publisher}},@{N='EstimatedSize';E={$_.EstimatedSize}},@{N='Wow64';E={$_.PSPath -match 'Wow6432Node'}},@{N='ArpKey';E={$_.PSChildName}},@{N='SystemComponent';E={[int]$_.SystemComponent}},@{N='ParentKeyName';E={$_.ParentKeyName}},@{N='ReleaseType';E={$_.ReleaseType}},@{N='Homepage';E={if ($_.URLInfoAbout) { $_.URLInfoAbout } else { $_.HelpLink }}} | Sort-Object Name,ArpKey | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
@@ -95,7 +103,7 @@ func (s *SoftwareService) queryAppxPackages(allUsers bool) ([]SoftwareInfo, bool
 	if allUsers {
 		enumerator += " -AllUsers"
 	}
-	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='Publisher';E={$_.Publisher}},@{N='Architecture';E={$_.Architecture.ToString()}},@{N='InstallDate';E={if ($_.InstallLocation) { $d = (Get-Item -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue).CreationTimeUtc; if ($d) { $d.ToString('o') } }}} | Sort-Object Name | ConvertTo-Json`
+	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='Publisher';E={$_.Publisher}},@{N='Architecture';E={$_.Architecture.ToString()}},@{N='PackageFamilyName';E={$_.PackageFamilyName}},@{N='InstallDate';E={if ($_.InstallLocation) { $d = (Get-Item -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue).CreationTimeUtc; if ($d) { $d.ToString('o') } }}} | Sort-Object Name | ConvertTo-Json`
 	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", query)
 	output, err := cmd.Output()
 	if err != nil {
@@ -290,6 +298,19 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 			InstallDate:      installDate,
 			Publisher:        stripEmail(publisher),
 		}
+		if source == sourceMicrosoftStore {
+			sw.PackageFamilyName = psString(item, "PackageFamilyName")
+		} else {
+			// The ARP key is kept as Windows reports it; the server
+			// normalises GUID case and braces.
+			sw.ProductCode = psString(item, "ArpKey")
+			sw.ParentKeyName = psString(item, "ParentKeyName")
+			sw.ReleaseType = psString(item, "ReleaseType")
+			sw.HomepageURL = sanitizeHomepageURL(psString(item, "Homepage"))
+			if n, ok := item["SystemComponent"].(float64); ok && n == 1 {
+				sw.SystemComponent = true
+			}
+		}
 		// EstimatedSize is a DWORD in KB; anything larger is not a real value.
 		if kb, ok := item["EstimatedSize"].(float64); ok && kb > 0 && kb <= math.MaxUint32 {
 			sw.SizeBytes = int64(kb) * 1024
@@ -313,6 +334,13 @@ func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source strin
 	qualifyMultiArch(found, archs)
 	*software = append(*software, found...)
 	return true
+}
+
+// psString returns item[key] trimmed when it is a string, and "" otherwise
+// (missing, null, or a number from a registry value of another type).
+func psString(item map[string]any, key string) string {
+	v, _ := item[key].(string)
+	return strings.TrimSpace(v)
 }
 
 // chromeExtDirGlobs returns Chrome extension directory glob patterns on Windows.

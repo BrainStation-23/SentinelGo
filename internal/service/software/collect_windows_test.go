@@ -262,3 +262,81 @@ func TestParsePowerShellOutputMultiArch(t *testing.T) {
 		}
 	})
 }
+
+// TestParsePowerShellOutputIdentifiers covers the identifiers added for
+// catalog matching (#562) on a recorded registry and Appx query result.
+func TestParsePowerShellOutputIdentifiers(t *testing.T) {
+	orig := windowsOSArch
+	windowsOSArch = func() string { return "AMD64" }
+	t.Cleanup(func() { windowsOSArch = orig })
+
+	// Sorted by Name, ArpKey as the registry query emits it.
+	registry := `[
+		{"Name":"7-Zip 23.01 (x64)","Version":"23.01","InstallLocation":"","InstallDate":null,"Publisher":"Igor Pavlov","EstimatedSize":5771,"Wow64":false,
+		 "ArpKey":"7-Zip","SystemComponent":0,"ParentKeyName":null,"ReleaseType":null,"Homepage":" https://www.7-zip.org/ "},
+		{"Name":"Google Chrome","Version":"131.0.6778.86","InstallLocation":"","InstallDate":"20261120","Publisher":"Google LLC","EstimatedSize":null,"Wow64":false,
+		 "ArpKey":"{8A69D345-D564-463c-AFF1-A69D9E530F96}","SystemComponent":0,"ParentKeyName":null,"ReleaseType":null,"Homepage":null},
+		{"Name":"Google Chrome","Version":"130.0.0.0","InstallLocation":"","InstallDate":"","Publisher":"Google LLC","EstimatedSize":null,"Wow64":false,
+		 "ArpKey":"Google Chrome","SystemComponent":0,"ParentKeyName":null,"ReleaseType":null,"Homepage":null},
+		{"Name":"Microsoft Visual C++ 2022 X64 Minimum Runtime - 14.38.33130","Version":"14.38.33130","InstallLocation":"","InstallDate":"20261001","Publisher":"Microsoft Corporation","EstimatedSize":2312,"Wow64":false,
+		 "ArpKey":"{A181A302-3F6D-4BAD-97A8-A426A6499D78}","SystemComponent":1,"ParentKeyName":null,"ReleaseType":null,"Homepage":null},
+		{"Name":"Security Update for Contoso Office (KB5002651)","Version":"","InstallLocation":"","InstallDate":"","Publisher":"Contoso","EstimatedSize":null,"Wow64":true,
+		 "ArpKey":"{90160000-0011-0000-0000-0000000FF1CE}_Office16.PROPLUS_{6E5A7F8B}","SystemComponent":0,"ParentKeyName":"Office16.PROPLUS","ReleaseType":" Update ","Homepage":"javascript:alert(document.cookie)"}
+	]`
+	var got []SoftwareInfo
+	if !parsePowerShellOutput([]byte(registry), &got, sourcePrograms) {
+		t.Fatal("parse registry failed")
+	}
+	type ids struct {
+		ProductCode, ParentKeyName, ReleaseType, HomepageURL string
+		SystemComponent                                      bool
+	}
+	want := []struct {
+		name string
+		ids  ids
+	}{
+		{"7-Zip 23.01 (x64)", ids{ProductCode: "7-Zip", HomepageURL: "https://www.7-zip.org/"}},
+		// A duplicate name keeps the first row in sort order, so its
+		// ProductCode is stable between runs.
+		{"Google Chrome", ids{ProductCode: "{8A69D345-D564-463c-AFF1-A69D9E530F96}"}},
+		{"Microsoft Visual C++ 2022 X64 Minimum Runtime - 14.38.33130", ids{ProductCode: "{A181A302-3F6D-4BAD-97A8-A426A6499D78}", SystemComponent: true}},
+		{"Security Update for Contoso Office (KB5002651)", ids{
+			ProductCode:   "{90160000-0011-0000-0000-0000000FF1CE}_Office16.PROPLUS_{6E5A7F8B}",
+			ParentKeyName: "Office16.PROPLUS", ReleaseType: "Update",
+		}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d programs, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		gotIDs := ids{g.ProductCode, g.ParentKeyName, g.ReleaseType, g.HomepageURL, g.SystemComponent}
+		if g.Name != w.name || gotIDs != w.ids {
+			t.Errorf("[%d] %q %+v, want %q %+v", i, g.Name, gotIDs, w.name, w.ids)
+		}
+		if g.PackageFamilyName != "" {
+			t.Errorf("[%d] PackageFamilyName = %q on a registry program", i, g.PackageFamilyName)
+		}
+	}
+	if got[1].InstalledVersion != "131.0.6778.86" {
+		t.Errorf("Chrome kept version %q, want the first row's", got[1].InstalledVersion)
+	}
+
+	store := `[
+		{"Name":"Microsoft.WindowsTerminal","Version":"1.21.3231.0","InstallLocation":"","Publisher":"CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US","Architecture":"X64","PackageFamilyName":"Microsoft.WindowsTerminal_8wekyb3d8bbwe","InstallDate":null,"ArpKey":"ignored"},
+		{"Name":"Legacy.App","Version":"1.0.0.0","InstallLocation":"","Publisher":"CN=Legacy","Architecture":"Neutral","InstallDate":null}
+	]`
+	got = nil
+	if !parsePowerShellOutput([]byte(store), &got, sourceMicrosoftStore) {
+		t.Fatal("parse store failed")
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d store apps, want 2", len(got))
+	}
+	if got[0].PackageFamilyName != "Microsoft.WindowsTerminal_8wekyb3d8bbwe" || got[0].ProductCode != "" {
+		t.Errorf("Terminal = %+v", got[0])
+	}
+	if got[1].PackageFamilyName != "" {
+		t.Errorf("Legacy.App PackageFamilyName = %q, want empty", got[1].PackageFamilyName)
+	}
+}
