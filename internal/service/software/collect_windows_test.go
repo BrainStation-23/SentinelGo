@@ -3,8 +3,11 @@
 package software
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
+
+	"sentinelgo/internal/binpath"
 )
 
 func TestParsePowerShellOutput(t *testing.T) {
@@ -338,5 +341,35 @@ func TestParsePowerShellOutputIdentifiers(t *testing.T) {
 	}
 	if got[1].PackageFamilyName != "" {
 		t.Errorf("Legacy.App PackageFamilyName = %q, want empty", got[1].PackageFamilyName)
+	}
+}
+
+// Windows PowerShell writes redirected output in the console's legacy code
+// page unless told otherwise; psUTF8 makes a non-ASCII uninstall key arrive
+// intact. The script builds the name from [char] codes so the command line
+// itself stays ASCII, as the real queries are.
+func TestPowerShellOutputIsUTF8(t *testing.T) {
+	ps := binpath.Resolve("powershell")
+	if _, err := exec.LookPath(ps); err != nil {
+		t.Skipf("powershell not available: %v", err)
+	}
+	script := psUTF8 + `@(@{Name=('Caf' + [char]0xE9 + ' Tools'); ArpKey=('Caf' + [char]0xE9 + ' Tools_is1'); Version='1.0'}) | ConvertTo-Json`
+	out, err := exec.Command(ps, "-NoProfile", "-Command", script).Output()
+	if err != nil {
+		t.Fatalf("powershell: %v", err)
+	}
+	var got []SoftwareInfo
+	if !parsePowerShellOutput(out, &got, sourcePrograms) || len(got) != 1 {
+		t.Fatalf("parse %q: %+v", out, got)
+	}
+	if got[0].Name != "Café Tools" || got[0].ProductCode != "Café Tools_is1" {
+		t.Errorf("Name %q ProductCode %q, want the é intact (output %q)", got[0].Name, got[0].ProductCode, out)
+	}
+}
+
+func TestParsePowerShellOutput_BOM(t *testing.T) {
+	var got []SoftwareInfo
+	if !parsePowerShellOutput([]byte("\xEF\xBB\xBF[{\"Name\":\"Git\"}]"), &got, sourcePrograms) || len(got) != 1 {
+		t.Fatalf("output with a BOM: %+v", got)
 	}
 }

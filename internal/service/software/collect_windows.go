@@ -1,6 +1,7 @@
 package software
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log"
@@ -13,6 +14,13 @@ import (
 
 	"sentinelgo/internal/binpath"
 )
+
+// psUTF8 makes Windows PowerShell 5.1 write its output as UTF-8 without a
+// BOM. Redirected, it otherwise uses the console's legacy code page, and a
+// non-ASCII name or uninstall key would arrive as invalid UTF-8 that the JSON
+// decoder replaces with U+FFFD: the key would no longer match the program.
+const psUTF8 = `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+`
 
 // platformSoftware collects currently installed software on Windows. It returns
 // the aggregated list and whether the scan was complete (the registry uninstall
@@ -66,7 +74,7 @@ func (s *SoftwareService) getWindowsSoftware() ([]SoftwareInfo, bool) {
 	const registryQuery = `$paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
 $paths += Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notmatch '_Classes$' } | ForEach-Object { $_.PSPath + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; $_.PSPath + '\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' }
 Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName} | Select-Object @{N='Name';E={$_.DisplayName}},@{N='Version';E={$_.DisplayVersion}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='InstallDate';E={$_.InstallDate}},@{N='Publisher';E={$_.Publisher}},@{N='EstimatedSize';E={$_.EstimatedSize}},@{N='Wow64';E={$_.PSPath -match 'Wow6432Node'}},@{N='ArpKey';E={$_.PSChildName}},@{N='SystemComponent';E={[int]$_.SystemComponent}},@{N='ParentKeyName';E={$_.ParentKeyName}},@{N='ReleaseType';E={$_.ReleaseType}},@{N='Homepage';E={if ($_.URLInfoAbout) { $_.URLInfoAbout } else { $_.HelpLink }}} | Sort-Object Name,ArpKey | ConvertTo-Json`
-	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", registryQuery)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", psUTF8+registryQuery)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("software: registry uninstall query failed: %v", err)
@@ -104,7 +112,7 @@ func (s *SoftwareService) queryAppxPackages(allUsers bool) ([]SoftwareInfo, bool
 		enumerator += " -AllUsers"
 	}
 	query := enumerator + ` | Where-Object {$_.SignatureKind -ne 'System'} | Select-Object @{N='Name';E={$_.Name}},@{N='Version';E={$_.Version}},@{N='InstallLocation';E={$_.InstallLocation}},@{N='Publisher';E={$_.Publisher}},@{N='Architecture';E={$_.Architecture.ToString()}},@{N='PackageFamilyName';E={$_.PackageFamilyName}},@{N='InstallDate';E={if ($_.InstallLocation) { $d = (Get-Item -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue).CreationTimeUtc; if ($d) { $d.ToString('o') } }}} | Sort-Object Name | ConvertTo-Json`
-	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", query)
+	cmd := exec.CommandContext(ctx, binpath.Resolve("powershell"), "-NoProfile", "-Command", psUTF8+query)
 	output, err := cmd.Output()
 	if err != nil {
 		if !allUsers {
@@ -260,6 +268,7 @@ func parseWindowsInstallDate(s string) string {
 // architecture is qualified with it (see qualifyMultiArch) so the variants do
 // not overwrite each other in the catalog.
 func parsePowerShellOutput(output []byte, software *[]SoftwareInfo, source string) bool {
+	output = bytes.TrimPrefix(output, []byte("\xEF\xBB\xBF")) // a UTF-8 BOM, should one be written
 	var psOutput []map[string]any
 	if err := json.Unmarshal(output, &psOutput); err != nil {
 		var single map[string]any
