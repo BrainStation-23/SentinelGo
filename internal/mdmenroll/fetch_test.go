@@ -97,22 +97,29 @@ func TestWindowsEnrollmentFetcher(t *testing.T) {
 func TestProfileFetcher_SignedProfile(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	signed := []byte{0x30, 0x82, 0x01, 0x00, 0xAA}
-	unsigned := []byte("<?xml unsigned")
+	// the unsigned profile names the MDM host (httptest's TLS server is 127.0.0.1)
+	profileOn := func(host string) []byte {
+		return []byte(`<?xml version="1.0"?><plist><dict><key>ServerURL</key>
+			<string>https://` + host + `/mdm/connect</string></dict></plist>`)
+	}
 	bigSigned := append([]byte{0x30}, bytes.Repeat([]byte{0}, maxProfileBytes+1)...)
 
 	for name, tc := range map[string]struct {
 		status   int
 		body     []byte
 		httpOnly bool
-		want     []byte
+		mdmHost  string
+		wantSig  bool
 		hits     int
 	}{
-		"signed":           {http.StatusOK, signed, false, signed, 1},
-		"used token (410)": {http.StatusGone, []byte(`{"error":"used"}`), false, unsigned, 1},
-		"can't sign (503)": {http.StatusServiceUnavailable, nil, false, unsigned, 1},
-		"not signed":       {http.StatusOK, []byte("<html>proxy page</html>"), false, unsigned, 1},
-		"too large":        {http.StatusOK, bigSigned, false, unsigned, 1},
-		"http, not https":  {http.StatusOK, signed, true, unsigned, 0},
+		"signed":           {http.StatusOK, signed, false, "127.0.0.1", true, 1},
+		"used token (410)": {http.StatusGone, []byte(`{"error":"used"}`), false, "127.0.0.1", false, 1},
+		"can't sign (503)": {http.StatusServiceUnavailable, nil, false, "127.0.0.1", false, 1},
+		"not signed":       {http.StatusOK, []byte("<html>proxy page</html>"), false, "127.0.0.1", false, 1},
+		"too large":        {http.StatusOK, bigSigned, false, "127.0.0.1", false, 1},
+		"http, not https":  {http.StatusOK, signed, true, "127.0.0.1", false, 0},
+		// the token never leaves for a host the profile doesn't name
+		"another host": {http.StatusOK, signed, false, "mdm.example.com", false, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			hits := 0
@@ -132,6 +139,11 @@ func TestProfileFetcher_SignedProfile(t *testing.T) {
 			if tc.httpOnly {
 				profileURL = strings.Replace(profileURL, "https://", "http://", 1)
 			}
+			unsigned := profileOn(tc.mdmHost)
+			want := unsigned
+			if tc.wantSig {
+				want = signed
+			}
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewEncoder(w).Encode(map[string]string{
 					"profile_base64": base64.StdEncoding.EncodeToString(unsigned),
@@ -146,13 +158,13 @@ func TestProfileFetcher_SignedProfile(t *testing.T) {
 
 			client := func() *supabase.Client { return supabase.New(api.URL, "anon", func() string { return "tok" }) }
 			data, err := profileFetcher(client, nil, web.Client())(context.Background())
-			if err != nil || !bytes.Equal(data, tc.want) || hits != tc.hits {
+			if err != nil || !bytes.Equal(data, want) || hits != tc.hits {
 				t.Fatalf("data %q err %v hits %d", data[:min(len(data), 16)], err, hits)
 			}
 			if strings.Contains(logs.String(), token) {
 				t.Fatalf("the token was logged: %s", logs.String())
 			}
-			if !bytes.Equal(tc.want, signed) && !strings.Contains(logs.String(), "using the unsigned enrollment profile") {
+			if !tc.wantSig && !strings.Contains(logs.String(), "using the unsigned enrollment profile") {
 				t.Fatalf("the fallback wasn't logged: %q", logs.String())
 			}
 		})

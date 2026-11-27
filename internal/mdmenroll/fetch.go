@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -67,26 +68,53 @@ func profileFetcher(client func() *supabase.Client, retry Retrier, web *http.Cli
 		if err != nil {
 			return nil, err
 		}
+		unsigned, uerr := decodeProfile(resp.ProfileBase64)
 		if resp.ProfileURL != "" && resp.ProfileToken != "" {
-			signed, serr := fetchSignedProfile(ctx, web, resp.ProfileURL, resp.ProfileToken)
+			// the token goes only to the MDM host the profile itself names
+			mdmHost := ""
+			if uerr == nil {
+				mdmHost = profileServerHost(unsigned)
+			}
+			signed, serr := fetchSignedProfile(ctx, web, resp.ProfileURL, resp.ProfileToken, mdmHost)
 			if serr == nil {
 				return signed, nil
 			}
 			// never the token: it is a one-time credential
 			log.Printf("mdm-enroll: using the unsigned enrollment profile: %v", serr)
 		}
-		return decodeProfile(resp.ProfileBase64)
+		return unsigned, uerr
 	}
 }
 
+// serverURLRe finds the MDM payload's ServerURL in an unsigned profile.
+var serverURLRe = regexp.MustCompile(`<key>ServerURL</key>\s*<string>([^<]+)</string>`)
+
+// profileServerHost is the host of the profile's MDM ServerURL, or "".
+func profileServerHost(profile []byte) string {
+	m := serverURLRe.FindSubmatch(profile)
+	if m == nil {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(string(m[1])))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	return u.Hostname()
+}
+
 // fetchSignedProfile trades the one-time token for the signed profile:
-// POST {"token": …} to the https URL the server gave, answer 200 with the
+// POST {"token": …} to the https URL the server gave (on the MDM host the
+// unsigned profile's ServerURL names, so the token can't be sent elsewhere),
+// answer 200 with the
 // CMS-signed .mobileconfig. Anything else is an error, and the caller uses
 // the unsigned copy. The token is used once, so this isn't retried.
-func fetchSignedProfile(ctx context.Context, web *http.Client, rawURL, token string) ([]byte, error) {
+func fetchSignedProfile(ctx context.Context, web *http.Client, rawURL, token, mdmHost string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return nil, errors.New("the signed profile's URL isn't https")
+	}
+	if mdmHost == "" || !strings.EqualFold(u.Hostname(), mdmHost) {
+		return nil, errors.New("the signed profile's URL isn't on the profile's MDM host")
 	}
 	body, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
