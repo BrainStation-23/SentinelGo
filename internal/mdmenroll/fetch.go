@@ -4,11 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"time"
 
+	"sentinelgo/internal/httpx"
 	"sentinelgo/internal/supabase"
 )
 
@@ -23,12 +30,28 @@ const maxProfileBytes = 1 << 20
 // (auth.Service.DoWithAuthRetry bound to the config).
 type Retrier func(ctx context.Context, fn func() error) error
 
+// signedProfileTimeout bounds the download of the signed profile from the
+// MDM host; past it the unsigned copy is used.
+const signedProfileTimeout = 30 * time.Second
+
 // ProfileFetcher returns a Deps.FetchProfile that calls the backend through
 // client. The server takes the device from the token's agent.
+//
+// A server with Compliance-OS#1164 also returns profile_url and a one-time
+// profile_token: the same profile signed (CMS) on the MDM host, so macOS
+// names who it is from (#569). The agent prefers it and falls back to the
+// unsigned profile_base64 on any failure; the server keeps that copy usable
+// until the signed one is handed out.
 func ProfileFetcher(client func() *supabase.Client, retry Retrier) func(ctx context.Context) ([]byte, error) {
+	return profileFetcher(client, retry, httpx.NewClient(signedProfileTimeout))
+}
+
+func profileFetcher(client func() *supabase.Client, retry Retrier, web *http.Client) func(ctx context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
 		var resp struct {
 			ProfileBase64 string `json:"profile_base64"`
+			ProfileURL    string `json:"profile_url"`
+			ProfileToken  string `json:"profile_token"`
 		}
 		call := func() error {
 			return client().RPC(ctx, rpcEnrollmentProfile, map[string]any{}, &resp)
@@ -45,8 +68,85 @@ func ProfileFetcher(client func() *supabase.Client, retry Retrier) func(ctx cont
 		if err != nil {
 			return nil, err
 		}
-		return decodeProfile(resp.ProfileBase64)
+		unsigned, uerr := decodeProfile(resp.ProfileBase64)
+		if resp.ProfileURL != "" && resp.ProfileToken != "" {
+			// the token goes only to the MDM host the profile itself names
+			mdmHost := ""
+			if uerr == nil {
+				mdmHost = profileServerHost(unsigned)
+			}
+			signed, serr := fetchSignedProfile(ctx, web, resp.ProfileURL, resp.ProfileToken, mdmHost)
+			if serr == nil {
+				return signed, nil
+			}
+			// never the token: it is a one-time credential
+			log.Printf("mdm-enroll: using the unsigned enrollment profile: %v", serr)
+		}
+		return unsigned, uerr
 	}
+}
+
+// serverURLRe finds the MDM payload's ServerURL in an unsigned profile.
+var serverURLRe = regexp.MustCompile(`<key>ServerURL</key>\s*<string>([^<]+)</string>`)
+
+// profileServerHost is the host of the profile's MDM ServerURL, or "".
+func profileServerHost(profile []byte) string {
+	m := serverURLRe.FindSubmatch(profile)
+	if m == nil {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(string(m[1])))
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// fetchSignedProfile trades the one-time token for the signed profile:
+// POST {"token": …} to the https URL the server gave (on the MDM host the
+// unsigned profile's ServerURL names, so the token can't be sent elsewhere),
+// answer 200 with the
+// CMS-signed .mobileconfig. Anything else is an error, and the caller uses
+// the unsigned copy. The token is used once, so this isn't retried.
+func fetchSignedProfile(ctx context.Context, web *http.Client, rawURL, token, mdmHost string) ([]byte, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return nil, errors.New("the signed profile's URL isn't https")
+	}
+	if mdmHost == "" || !strings.EqualFold(u.Hostname(), mdmHost) {
+		return nil, errors.New("the signed profile's URL isn't on the profile's MDM host")
+	}
+	body, err := json.Marshal(map[string]string{"token": token})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-apple-aspen-config")
+	res, err := web.Do(req)
+	if err != nil {
+		// a url.Error carries the URL, not the token (it is in the body)
+		return nil, fmt.Errorf("downloading the signed profile: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+		return nil, fmt.Errorf("the MDM host answered %d for the signed profile", res.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxProfileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading the signed profile: %w", err)
+	}
+	if len(data) > maxProfileBytes {
+		return nil, fmt.Errorf("the signed profile is over %d bytes", maxProfileBytes)
+	}
+	if len(data) == 0 || data[0] != 0x30 {
+		return nil, errors.New("the MDM host's answer isn't a signed profile")
+	}
+	return data, nil
 }
 
 // decodeProfile checks that what the server sent is a configuration profile:

@@ -1,0 +1,1 @@
+- **Enroll in MDM** on a Mac now shows the enrollment profile signed by the ComplianceOS server when the server offers it (ComplianceOS with BrainStation-23/Compliance-OS#1164), so macOS shows who it is from. If the signed copy can't be fetched, the agent shows the unsigned profile as before. (#570)
